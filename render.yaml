@@ -64,6 +64,12 @@ services:
         sync: false
       - key: ADMIN_TOKEN
         sync: false
+      # Hosted Play is a cashier, not operator subsidy. Desktop play.py stays
+      # BYOK via billing.mark_local_app() and must never inherit this flag.
+      - key: FEATURE_BILLING
+        value: "1"
+      - key: SOMEWHERE_BILLING_PATH
+        value: /opt/render/project/src/sessions/_billing/billing.json
       # Reactor realtime world-model renderer (optional). REACTOR_API_KEY is a
       # secret used only server-side to mint short-lived browser tokens.
       - key: REACTOR_API_KEY

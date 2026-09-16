@@ -359,7 +359,14 @@ def generate_choices(
 
     # Build parts list (text + optional image)
     parts = [{"text": full_prompt}]
-    
+
+    # Whether the model actually got to LOOK at the frame, and the file it read.
+    # Everything below that gates a choice against text has to know this:
+    # `dispatch` and `image_description` describe the shot we ASKED the renderer
+    # for, so gating on them deletes choices about what actually came back.
+    frame_attached = False
+    attached_frame_path = None
+
     # Add current timestep image if provided
     if image_url:
         print(f"[CHOICES DEBUG] Received image_url: {image_url}")
@@ -387,6 +394,8 @@ def generate_choices(
                     "data": image_data
                 }
             })
+            frame_attached = True
+            attached_frame_path = str(use_path)
             size_note = "(480x270)" if small_path.exists() else "(full-res)"
             print(f"[GEMINI TEXT+IMG] Including CURRENT timestep image for choices: {image_url} {size_note}")
         else:
@@ -602,8 +611,12 @@ def generate_choices(
             if len(clipped) > 4 and key not in seen:
                 opts.append(clipped)
                 seen.add(key)
-    # Stricter filtering: remove out-of-context choices
-    opts = filter_choices(opts, seen_elements, recent_choices, dispatch=last_dispatch, image_description=image_description, world_prompt=world_prompt)
+    # Stricter filtering: remove out-of-context choices. Skipped when the frame
+    # was attached — the model was looking at the picture, and this gate would
+    # drop a choice about a barrel that rendered in favour of one about the
+    # crate we asked for and didn't get.
+    if not frame_attached:
+        opts = filter_choices(opts, seen_elements, recent_choices, dispatch=last_dispatch, image_description=image_description, world_prompt=world_prompt)
     # Filter out repeated choices
     # Remove any choices containing 'retreat' or 'flee' (case-insensitive)
     opts = [c for c in opts if 'retreat' not in c.lower() and 'flee' not in c.lower()]
@@ -658,7 +671,9 @@ def generate_choices(
         elif isinstance(recent_choices, str):
             recent = [recent_choices]
     try:
-        improved_choices = choice_critic(last_dispatch, vision, opts, world_prompt, recent_choices=recent)
+        improved_choices = choice_critic(last_dispatch, vision, opts, world_prompt,
+                                         recent_choices=recent, frame_attached=frame_attached,
+                                         frame_path=attached_frame_path)
     except Exception as _critic_err:
         print(f"[CHOICE CRITIC] Crashed: {_critic_err} — keeping un-critiqued options", flush=True)
         improved_choices = opts
@@ -754,7 +769,17 @@ def filter_risky_choices(choices, dispatch, vision):
     # Let the player make bold, dangerous decisions
     return choices
 
-def choice_critic(dispatch, vision, choices, world_prompt, recent_choices=None):
+def choice_critic(dispatch, vision, choices, world_prompt, recent_choices=None,
+                  frame_attached: bool = False, frame_path: str = None):
+    """Polish a slate. `frame_attached` means the generator was looking at the
+    rendered still, so the noun-overlap gate below is skipped: it can only
+    compare against text, and the text is the render REQUEST.
+
+    `frame_path` puts that same still in front of the critic. Judging "grounded
+    in the current context" from prose alone is what made this step the drift:
+    told to keep only choices that reference visible objects, and shown nothing
+    but the caption we asked the renderer for, it rewrote committed actions on
+    what was on screen into actions on props that never rendered."""
     # Remove placeholders and duplicates first
     filtered = [c for c in choices if c and c.strip() and c.strip() != '—']
     seen = set()
@@ -763,7 +788,8 @@ def choice_critic(dispatch, vision, choices, world_prompt, recent_choices=None):
     if recent_choices:
         filtered = [c for c in filtered if c not in recent_choices[-2:]]
     # Stricter: Only allow choices referencing scene elements
-    filtered = filter_choices_strict(filtered, dispatch, vision, world_prompt, recent_choices)
+    if not frame_attached:
+        filtered = filter_choices_strict(filtered, dispatch, vision, world_prompt, recent_choices)
     # Contextual risk assessment
     filtered = filter_risky_choices(filtered, dispatch, vision)
     # Build critic prompt
@@ -774,7 +800,13 @@ def choice_critic(dispatch, vision, choices, world_prompt, recent_choices=None):
     # which is the opposite of how this world is supposed to read. It gets the
     # house rules now, and its answer is re-filtered below rather than trusted.
     critic_prompt = (
-        "You are a choice critic for an interactive story. Given the scene and choices, remove any choices that are illogical, impossible, or not grounded in the current context. "
+        ("THE ATTACHED IMAGE IS THE FRAME ON SCREEN AND THE ONLY SOURCE OF TRUTH. "
+         "SCENE and VISION below are background prose and may describe props that "
+         "never rendered. Keep choices that act on what you can SEE; delete a "
+         "choice only when its target is absent from the image. Never replace a "
+         "choice with one about something the text mentions but the image does "
+         "not show.\n" if frame_path else "")
+        + "You are a choice critic for an interactive story. Given the scene and choices, remove any choices that are illogical, impossible, or not grounded in the current context. "
         "If a choice is not logical, suggest a replacement that fits the scene. "
         "Do not repeat choices from the last two turns. "
         "Only allow choices that reference visible objects, characters, or threats in the current scene. "
@@ -800,7 +832,8 @@ def choice_critic(dispatch, vision, choices, world_prompt, recent_choices=None):
     critic_prompt += "\nReturn only the improved list of choices, no commentary."
     # Use LLM to review and rewrite choices (don't use lore - this is mechanical choice refinement)
     try:
-        improved = engine._ask(critic_prompt, temp=0.3, tokens=48, use_lore=False)
+        improved = engine._ask(critic_prompt, temp=0.3, tokens=48, use_lore=False,
+                               image_path=frame_path)
         # Parse as list
         import re
         lines = [l.strip('-* ",') for l in improved.splitlines() if l.strip()]

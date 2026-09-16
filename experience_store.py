@@ -104,6 +104,15 @@ DEFAULT_BEAT_ESCALATING = (
 DEFAULT_BEAT_CRITICAL = (
     "BEAT: the situation is critical. Offer a way through or a last stand."
 )
+# The opening act used to send the choice slate nothing at all — calm turns
+# fell through to "" and the slate leaned on whatever generic forward-motion
+# bias it already had, so turn one looked exactly like a quiet turn fifteen
+# minutes in: no one on screen, no reason to be afraid yet. A cold open needs
+# its own line just as much as the two escalation marks do.
+DEFAULT_BEAT_NORMAL = (
+    "BEAT: put a character or a direct threat in view early — a patrol, a "
+    "figure, a voice — don't let the opening stay empty."
+)
 _BEAT_MAX = 500
 _LORE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _LORE_MAX_DOCS = 40
@@ -446,6 +455,10 @@ def _normalize_threat(raw: Any, fallback: Any = None) -> Dict[str, Any]:
     return {
         "escalate_at": esc,
         "critical_at": crit,
+        "beat_normal": _clip_beat(
+            src.get("beat_normal"),
+            fb.get("beat_normal") or DEFAULT_BEAT_NORMAL,
+        ),
         "beat_escalating": _clip_beat(
             src.get("beat_escalating"),
             fb.get("beat_escalating") or DEFAULT_BEAT_ESCALATING,
@@ -593,7 +606,7 @@ def set_pacing(payload: Any, slug: str = "") -> Dict[str, Any]:
     current = exp.get("threat") if isinstance(exp.get("threat"), dict) else {}
     incoming = payload if isinstance(payload, dict) else {}
     merged = dict(current)
-    for key in ("escalate_at", "critical_at", "beat_escalating", "beat_critical"):
+    for key in ("escalate_at", "critical_at", "beat_normal", "beat_escalating", "beat_critical"):
         if key in incoming:
             merged[key] = incoming[key]
     exp["threat"] = _normalize_threat(merged)

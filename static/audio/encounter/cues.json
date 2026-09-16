@@ -1,0 +1,22 @@
+{
+  "dir": "/static/audio/encounter/",
+  "stock": "/audio/sting_encounter_<stem>.mp3",
+  "note": "Drop a WAV or MP3 named after the stem to replace the synth. Stock ElevenLabs MP3s fill the gap when a file is missing. Hover/select stay synth-only unless you drop a short file here.",
+  "cues": [
+    {"cue": "encounterHitch", "stem": "hitch", "when": "world hitch, t=0"},
+    {"cue": "encounterTitle", "stem": "title", "when": "full-screen ENCOUNTER flare — the stinger"},
+    {"cue": "encounterEnter", "stem": "enter", "when": "letterbox takes over"},
+    {"cue": "encounterStance", "stem": "stance", "when": "generic stance color; prefer stance-*"},
+    {"cue": "encounterStanceHostile", "stem": "stance-hostile", "when": "hostile plate lock"},
+    {"cue": "encounterStanceDesperate", "stem": "stance-desperate", "when": "desperate plate lock"},
+    {"cue": "encounterStanceOpportunistic", "stem": "stance-opportunistic", "when": "opportunistic plate lock"},
+    {"cue": "encounterStanceCreature", "stem": "stance-creature", "when": "creature plate lock"},
+    {"cue": "encounterLock", "stem": "lock", "when": "confrontation plate and choices lock"},
+    {"cue": "encounterChoiceHover", "stem": "choice-hover", "when": "pointer on an encounter verb"},
+    {"cue": "encounterChoiceSelect", "stem": "choice-select", "when": "an encounter verb is taken"},
+    {"cue": "encounterResolve", "stem": "resolve", "when": "action committed, world resolving"},
+    {"cue": "encounterSurvive", "stem": "survive", "when": "walk out of the interrupt"},
+    {"cue": "encounterDie", "stem": "die", "when": "the encounter kills you"},
+    {"cue": "encounterExit", "stem": "exit", "when": "overlay releases"}
+  ]
+}

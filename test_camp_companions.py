@@ -39,7 +39,8 @@ def test_resolve_image_path_finds_session_companion():
 def test_collect_camp_companions_uses_state_and_disk():
     sid = "test_camp_roster"
     img_dir = Path(engine._get_image_dir(sid))
-    for name in ("companion_kane.png", "companion_maya.png", "companion_orphan.png"):
+    for name in ("companion_kane.png", "companion_maya.png", "companion_orphan.png",
+                 "companion_the_watcher.png"):
         _write_tiny_png(img_dir / name)
     # Downsample must be ignored as a separate roster entry.
     _write_tiny_png(img_dir / "companion_kane_small.png")
@@ -51,12 +52,23 @@ def test_collect_camp_companions_uses_state_and_disk():
                 "kind": "person",
                 "portrait_url": "/images/companion_kane.png",
                 "last_seen_turn": 9,
+                "portrait_gen": 2,
+                "portrait_source": "crop",
             },
             "maya": {
                 "label": "Maya",
                 "kind": "person",
                 "portrait_url": "/images/companion_maya.png",
                 "last_seen_turn": 3,
+                "portrait_gen": 2,
+                "portrait_source": "crop",
+            },
+            # Old invented plate (player-as-Watcher) — must not sit at camp.
+            "the watcher": {
+                "label": "The Watcher",
+                "kind": "person",
+                "portrait_url": "/images/companion_the_watcher.png",
+                "last_seen_turn": 12,
             },
             # Missing file on disk — must be skipped, not crash.
             "ghost": {
@@ -72,8 +84,9 @@ def test_collect_camp_companions_uses_state_and_disk():
     assert "Kane" in labels
     assert "Maya" in labels
     assert "Ghost" not in labels
-    # Disk-only companion still included.
-    assert any(l.lower().startswith("orphan") for l in labels)
+    assert "The Watcher" not in labels
+    # Disk-only orphans (old invented plates) stay out of camp.
+    assert not any(l.lower().startswith("orphan") for l in labels)
     # Most recently seen first.
     assert labels[0] == "Kane"
     for r in roster:

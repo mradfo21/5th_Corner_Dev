@@ -1,36 +1,31 @@
 """
-scene_audio.py — realtime scene audio from the guide image.
+scene_audio.py — scene music and world sound from ElevenLabs.
 
 Turns the scene descriptor that already rides along with every guide image
-(the `metadata.prompt` the engine emits) into a short, scene-matched
-instrumental music clip using Google **Lyria RealTime**
-(`models/lyria-realtime-exp`) via the already-installed `google-genai` SDK and
-the already-deployed `GEMINI_API_KEY`. No new provider, no new secret.
+(the `metadata.prompt` the engine emits) into:
 
-Increment 1 (this module): open a Lyria RealTime session, buffer a few seconds
-of PCM, encode to a WAV, cache it under the session dir, and hand back a web
-URL the standalone UI loops as an ambient score. The frontend re-requests audio
-on every new scene so the soundtrack re-scores itself as the world changes.
+  • a short instrumental bed via ElevenLabs Music (`music_v2`)
+  • a looping ambience clip via ElevenLabs Sound Effects
+  • encounter stingers (pre-cached stock catalog, not per-scene)
 
-Everything degrades gracefully: if `GEMINI_API_KEY` is unset, the SDK is too old
-to expose Lyria, or the stream errors, `get_scene_audio()` returns ``None`` and
-the client simply stays silent (mirrors how image-disabled mode is handled).
+The standalone UI loops the bed + ambience and crossfades on each new scene.
+Stock stingers live under ``assets/music/stock/`` so encounter hits do not
+wait on a live generation.
+
+Everything degrades gracefully: if `ELEVENLABS_API_KEY` is unset or a call
+fails, `get_scene_audio()` returns ``None`` (or stock-only URLs when those
+files already exist) and the client stays silent on the missing layer.
 """
 
-import asyncio
 import hashlib
 import json
 import os
 import threading
 import time
-import wave
-from io import BytesIO
 from pathlib import Path
 
 ROOT = Path(__file__).parent.resolve()
 
-# Best-effort cost tracking (see ADMIN_COST_ANALYTICS_DASHBOARD_PLAN.md). A
-# broken/missing analytics module must never break scene audio.
 try:
     import cost_tracker
 except Exception:
@@ -40,36 +35,42 @@ except Exception:
 
     cost_tracker = _NoopCostTracker()
 
-# Reuse the same key the rest of the stack already deploys (see
-# veo_video_utils.py / engine.py). Env wins, then config.json.
 try:
     _CONFIG = json.load((ROOT / "config.json").open(encoding="utf-8"))
 except Exception:
     _CONFIG = {}
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", _CONFIG.get("GEMINI_API_KEY", ""))
+# Seed only. Call `_api_key()` at use-time — keys_store can patch this
+# attribute AND os.environ after import.
+ELEVENLABS_API_KEY = (
+    os.getenv("ELEVENLABS_API_KEY") or _CONFIG.get("ELEVENLABS_API_KEY") or ""
+).strip()
 
-# Lyria RealTime emits raw 16-bit PCM, 48 kHz, stereo.
-LYRIA_MODEL = "models/lyria-realtime-exp"
-SAMPLE_RATE = 48000
-CHANNELS = 2
-SAMPLE_WIDTH = 2  # bytes per sample (16-bit)
+MUSIC_MODEL = "music_v2"
+SFX_MODEL = "eleven_text_to_sound_v2"
+ELEVEN_MUSIC_URL = "https://api.elevenlabs.io/v1/music"
+ELEVEN_SFX_URL = "https://api.elevenlabs.io/v1/sound-generation"
 
-# How much audio a single scene clip should contain. The client loops it, so a
-# dozen seconds is enough to feel like a bed without a long first-scene wait.
-DEFAULT_CLIP_SECONDS = 12
-# Never block a request forever if the stream stalls.
-_STREAM_TIMEOUT_SECONDS = 45
+# Scene beds used to be 12s Lyria loops. A bit longer hides the loop point
+# and Eleven Music's minimum is 3s.
+DEFAULT_CLIP_SECONDS = 20
+DEFAULT_SFX_SECONDS = 14
+_MUSIC_TIMEOUT_SECONDS = 90
+_SFX_TIMEOUT_SECONDS = 45
+
+
+def _api_key() -> str:
+    return (
+        os.environ.get("ELEVENLABS_API_KEY") or ELEVENLABS_API_KEY or ""
+    ).strip()
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Prompt mapping: scene descriptor -> Lyria weighted prompts + generation config
+# Prompt mapping: scene descriptor -> weighted prompts + generation config
+# (same shape the unit tests already assert; flattened for Eleven Music)
 # ────────────────────────────────────────────────────────────────────────────
 
-# Coarse mood cues we can read straight out of the scene descriptor to nudge
-# tempo/brightness without an extra model call. Ordered by priority.
 _MOOD_CUES = [
-    # (keywords, weighted-prompt phrase, bpm, brightness 0..1)
     (("battle", "fight", "chase", "run", "escape", "explosion", "alarm", "attack"),
      "urgent, driving, percussive tension", 128, 0.7),
     (("horror", "terror", "monster", "blood", "corpse", "nightmare", "dread", "haunt"),
@@ -92,28 +93,26 @@ _MOOD_CUES = [
      "dreamy, ethereal, shimmering ambient", 80, 0.65),
 ]
 
-# Always-on style anchors so the score stays a tasteful, vocal-free underscore.
 _STYLE_ANCHORS = "cinematic instrumental score, atmospheric, no vocals, no drums lead"
 
-
-def _clean_scene_text(scene_prompt: str) -> str:
-    """Compress a (possibly long, comma-stuffed image) prompt into a short
-    descriptor suitable as a music style cue."""
-    if not scene_prompt:
-        return ""
-    text = " ".join(str(scene_prompt).split())
-    # Image prompts can be enormous; Lyria only needs the gist.
-    return text[:240]
-
-
-# Conversation Moment music: warmer, more intimate instrumentation so the
-# dialogue screen feels like a different register from the exploration bed.
 _CONVERSATION_STYLE_ANCHORS = (
     "intimate cinematic underscore, warm low strings, soft piano, hushed pads, "
     "no vocals, no drums lead, dialogue-friendly sparse arrangement"
 )
+# Encounter beds recolor from the music_prompt the client sends after the
+# brief lands: "stance — kind — label — danger — stakes". Creature is
+# checked first so kind wins over a generic hostile stance.
+_ENCOUNTER_STANCE_CUES = [
+    (("creature", "monster", "inhuman", "beast"),
+     "unsettling organic confrontation drone, wet texture, held breath", 62, 0.22),
+    (("desperate", "frantic", "panic"),
+     "frantic pulse, taut strings, short breath, danger accelerating", 92, 0.38),
+    (("opportunistic", "sly", "quiet threat"),
+     "quiet predatory hush, sparse analog, danger waiting", 64, 0.26),
+    (("hostile", "threat", "attack"),
+     "tense low-drone confrontation, analog-horror pulse, held breath", 72, 0.28),
+]
 _CONVERSATION_KIND_CUES = [
-    # (keywords in prompt, mood phrase, bpm, brightness)
     (("machine", "radio", "intercom", "terminal", "static"),
      "cold electronic hum, distant radio static beds, tense intimacy", 72, 0.35),
     (("creature", "monster", "inhuman", "strange"),
@@ -125,26 +124,56 @@ _CONVERSATION_KIND_CUES = [
 ]
 
 
-def _scene_to_music_prompt(scene_prompt: str, mode: str = "scene"):
+def _clean_scene_text(scene_prompt: str) -> str:
+    """Compress a (possibly long, comma-stuffed image) prompt into a short
+    descriptor suitable as a music style cue."""
+    if not scene_prompt:
+        return ""
+    text = " ".join(str(scene_prompt).split())
+    # Image prompts open with a style stamp that barely changes. Scoring the
+    # first 240 characters made every turn the same piece of music. The unique
+    # shot — what the camera sees now — is at the end.
+    if len(text) > 240:
+        return text[-240:]
+    return text
+
+
+def _scene_to_music_prompt(scene_prompt: str, mode: str = "scene",
+                           direction: str | None = None):
     """Map a scene descriptor to (weighted_prompts, generation_config_kwargs).
 
     Returns plain data (list of {text, weight} dicts + a kwargs dict) so this is
-    unit-testable without importing the SDK. The caller converts them to SDK
-    types just before the network call.
-
-    ``mode="conversation"`` selects a warmer, dialogue-friendly profile used by
-    Conversation Moments (ducked under the character's voice on the client).
+    unit-testable without a network call. Eleven Music gets the flattened text.
     """
     scene = _clean_scene_text(scene_prompt)
     low = scene.lower()
     mode = (mode or "scene").strip().lower()
 
-    # "verbatim" is a music prompt somebody wrote, not a scene to interpret, so
-    # it goes to Lyria as-is. Deriving mood cues from it would be second-guessing
-    # the person who typed "slow detuned piano, tape hiss, no drums".
     if mode == "verbatim":
         return ([{"text": scene, "weight": 1.0}],
                 {"bpm": 80, "temperature": 1.0, "guidance": 4.0})
+
+    if mode == "encounter":
+        mood_phrase = "tense low-drone confrontation, analog-horror pulse, held breath"
+        bpm = 68
+        brightness = 0.28
+        for keywords, phrase, cue_bpm, cue_bright in _ENCOUNTER_STANCE_CUES:
+            if any(k in low for k in keywords):
+                mood_phrase = phrase
+                bpm = cue_bpm
+                brightness = cue_bright
+                break
+        prompts = [
+            {"text": (scene or "a sudden confrontation"), "weight": 1.0},
+            {"text": mood_phrase, "weight": 1.2},
+            {"text": "sparse analog underscore, no melody, danger in the room", "weight": 0.8},
+        ]
+        if direction is None:
+            direction = get_music_direction()
+        if direction:
+            prompts.insert(0, {"text": direction, "weight": 1.1})
+        return (prompts, {"bpm": bpm, "temperature": 1.05, "guidance": 4.2,
+                          "brightness": brightness})
 
     if mode == "conversation":
         mood_phrase = "warm, intimate, hushed cinematic conversation underscore"
@@ -156,11 +185,9 @@ def _scene_to_music_prompt(scene_prompt: str, mode: str = "scene"):
                 bpm = cue_bpm
                 brightness = cue_bright
                 break
-        # Fall back to scene mood cues if the prompt is just a place description.
         if mood_phrase.startswith("warm, intimate"):
             for keywords, phrase, cue_bpm, cue_bright in _MOOD_CUES:
                 if any(k in low for k in keywords):
-                    # Soften scene-mood cues toward intimacy.
                     mood_phrase = phrase + ", intimate and sparse"
                     bpm = max(60, min(96, cue_bpm - 8))
                     brightness = min(0.6, cue_bright)
@@ -170,6 +197,10 @@ def _scene_to_music_prompt(scene_prompt: str, mode: str = "scene"):
             {"text": mood_phrase, "weight": 1.0},
             {"text": _CONVERSATION_STYLE_ANCHORS, "weight": 0.8},
         ]
+        if direction is None:
+            direction = get_music_direction()
+        if direction:
+            prompts.insert(0, {"text": direction, "weight": 1.1})
         config = {"bpm": bpm, "brightness": brightness, "temperature": 1.05}
         return prompts, config
 
@@ -184,163 +215,567 @@ def _scene_to_music_prompt(scene_prompt: str, mode: str = "scene"):
             break
 
     prompts = [
-        # The scene itself, weighted highest, so the bed tracks the image.
         {"text": (scene or "an unknown place"), "weight": 1.0},
         {"text": mood_phrase, "weight": 0.9},
         {"text": _STYLE_ANCHORS, "weight": 0.6},
     ]
+    if direction is None:
+        direction = get_music_direction()
+    if direction:
+        prompts.insert(0, {"text": direction, "weight": 1.25})
     config = {"bpm": bpm, "brightness": brightness, "temperature": 1.1}
     return prompts, config
 
 
+def flatten_music_prompt(scene_prompt: str, mode: str = "scene",
+                         direction: str | None = None) -> str:
+    """One natural-language prompt Eleven Music can compose from."""
+    prompts, cfg = _scene_to_music_prompt(scene_prompt, mode=mode,
+                                          direction=direction)
+    parts = [str(p.get("text") or "").strip() for p in prompts if p.get("text")]
+    bpm = cfg.get("bpm")
+    text = ". ".join(p for p in parts if p)
+    extras = [
+        "cinematic instrumental underscore",
+        "seamless looping",
+        "no vocals",
+        "no lyrics",
+    ]
+    if bpm:
+        extras.append(f"{int(bpm)} bpm")
+    for extra in extras:
+        if extra.lower() not in text.lower():
+            text = f"{text}. {extra}" if text else extra
+    return text[:2000]
+
+
 # ────────────────────────────────────────────────────────────────────────────
-# Lyria RealTime session -> PCM buffer -> WAV
+# World SFX prompts + pre-cached stock library
 # ────────────────────────────────────────────────────────────────────────────
 
-def _pcm_to_wav_bytes(pcm: bytes) -> bytes:
-    """Wrap raw 16-bit/48k/stereo PCM in a WAV container."""
-    buf = BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(SAMPLE_WIDTH)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(pcm)
-    return buf.getvalue()
+_AMBIENCE_CUES = [
+    (("rain", "storm", "downpour", "wet", "thunder"), "rain"),
+    (("cave", "tunnel", "underground", "basement", "sewer", "mine"), "cave"),
+    (("forest", "jungle", "trees", "woods", "meadow", "garden"), "forest"),
+    (("city", "street", "neon", "traffic", "market", "station", "crowd"), "urban"),
+    (("wind", "ruin", "wasteland", "desolate", "empty", "abandoned"), "wind"),
+    (("factory", "machine", "steam", "industrial", "pipe", "boiler"), "industrial"),
+    (("snow", "ice", "frozen", "tundra", "winter"), "wind"),
+    (("ocean", "sea", "river", "shore", "dock"), "rain"),
+    (("space", "void", "orbit", "cosmic"), "room"),
+]
+
+STOCK_STINGERS = {
+    "encounter_enter": {
+        "file": "sting_encounter_enter.mp3",
+        "prompt": (
+            "tense analog-horror confrontation stinger, low cinematic braam, "
+            "held breath, no melody, no vocals, short one-shot"
+        ),
+        "seconds": 3.0,
+        "loop": False,
+    },
+    "encounter_lock": {
+        "file": "sting_encounter_lock.mp3",
+        "prompt": (
+            "heavy metallic lock slam, confrontation plate locking into place, "
+            "analog horror, no music, no vocals, short one-shot"
+        ),
+        "seconds": 2.0,
+        "loop": False,
+    },
+    "encounter_resolve": {
+        "file": "sting_encounter_resolve.mp3",
+        "prompt": (
+            "short committed action impact, analog thud and tape scrape, "
+            "no melody, no vocals, one-shot"
+        ),
+        "seconds": 2.0,
+        "loop": False,
+    },
+    "encounter_exit": {
+        "file": "sting_encounter_exit.mp3",
+        "prompt": (
+            "aftermath release, air leaving a room, distant tape unwind, "
+            "soft analog fade, no melody, no vocals, one-shot"
+        ),
+        "seconds": 2.5,
+        "loop": False,
+    },
+    "encounter_hitch": {
+        "file": "sting_encounter_hitch.mp3",
+        "prompt": (
+            "world hitch-step analog tape jump, brief glitch stutter, "
+            "VHS scrape, no music, no vocals, one-shot"
+        ),
+        "seconds": 1.2,
+        "loop": False,
+    },
+    "encounter_die": {
+        "file": "sting_encounter_die.mp3",
+        "prompt": (
+            "fatal analog collapse, descending low tone and tape death, "
+            "no melody, no vocals, short one-shot"
+        ),
+        "seconds": 2.8,
+        "loop": False,
+    },
+    "encounter_title": {
+        "file": "sting_encounter_title.mp3",
+        "prompt": (
+            "full-screen ENCOUNTER title slam, analog-horror braam, "
+            "low cinematic impact, no melody, no vocals, short one-shot"
+        ),
+        "seconds": 2.2,
+        "loop": False,
+    },
+    "encounter_survive": {
+        "file": "sting_encounter_survive.mp3",
+        "prompt": (
+            "survive the interrupt, air returns, analog release rising, "
+            "soft hope without melody, no vocals, one-shot"
+        ),
+        "seconds": 2.4,
+        "loop": False,
+    },
+    "encounter_stance_hostile": {
+        "file": "sting_encounter_stance_hostile.mp3",
+        "prompt": (
+            "hostile confrontation color, low brass growl, analog tension, "
+            "no melody, no vocals, short one-shot"
+        ),
+        "seconds": 1.8,
+        "loop": False,
+    },
+    "encounter_stance_desperate": {
+        "file": "sting_encounter_stance_desperate.mp3",
+        "prompt": (
+            "desperate confrontation color, rising pulse, taut strings, "
+            "short breath, no vocals, short one-shot"
+        ),
+        "seconds": 1.8,
+        "loop": False,
+    },
+    "encounter_stance_opportunistic": {
+        "file": "sting_encounter_stance_opportunistic.mp3",
+        "prompt": (
+            "opportunistic confrontation color, quiet predatory hush, "
+            "sly analog drop, no vocals, short one-shot"
+        ),
+        "seconds": 1.8,
+        "loop": False,
+    },
+    "encounter_stance_creature": {
+        "file": "sting_encounter_stance_creature.mp3",
+        "prompt": (
+            "creature confrontation color, wet organic drone, inhuman rasp, "
+            "held breath, no vocals, short one-shot"
+        ),
+        "seconds": 1.8,
+        "loop": False,
+    },
+}
+
+STOCK_AMBIENCE = {
+    "industrial": {
+        "file": "amb_industrial.mp3",
+        "prompt": (
+            "seamless looping industrial machinery hum, steam pipes, distant "
+            "metal, no music, no melody, no vocals"
+        ),
+        "seconds": 16.0,
+        "loop": True,
+    },
+    "rain": {
+        "file": "amb_rain.mp3",
+        "prompt": (
+            "seamless looping rain on concrete and distant thunder rumble, "
+            "no music, no melody, no vocals"
+        ),
+        "seconds": 16.0,
+        "loop": True,
+    },
+    "cave": {
+        "file": "amb_cave.mp3",
+        "prompt": (
+            "seamless looping cave drip, subterranean room tone, distant echo, "
+            "no music, no melody, no vocals"
+        ),
+        "seconds": 16.0,
+        "loop": True,
+    },
+    "wind": {
+        "file": "amb_wind.mp3",
+        "prompt": (
+            "seamless looping cold wind through ruins, sparse debris, "
+            "no music, no melody, no vocals"
+        ),
+        "seconds": 16.0,
+        "loop": True,
+    },
+    "room": {
+        "file": "amb_room.mp3",
+        "prompt": (
+            "seamless looping quiet indoor room tone, faint electrical hum, "
+            "no music, no melody, no vocals"
+        ),
+        "seconds": 16.0,
+        "loop": True,
+    },
+    "urban": {
+        "file": "amb_urban.mp3",
+        "prompt": (
+            "seamless looping distant night city ambience, low traffic, "
+            "no music, no melody, no vocals"
+        ),
+        "seconds": 16.0,
+        "loop": True,
+    },
+    "forest": {
+        "file": "amb_forest.mp3",
+        "prompt": (
+            "seamless looping night forest insects and distant leaves, "
+            "no music, no melody, no vocals"
+        ),
+        "seconds": 16.0,
+        "loop": True,
+    },
+}
+
+_ENCOUNTER_STINGER = "encounter_enter"
 
 
-async def _stream_pcm(scene_prompt: str, seconds: int, mode: str = "scene") -> bytes:
-    """Open a Lyria RealTime session and collect ~`seconds` of PCM."""
-    from google import genai
-    from google.genai import types
+def _ambience_kind(scene_prompt: str, mode: str = "scene") -> str:
+    """Which stock ambience bed matches this scene."""
+    mode = (mode or "scene").strip().lower()
+    if mode == "conversation":
+        return "room"
+    low = _clean_scene_text(scene_prompt).lower()
+    for keywords, kind in _AMBIENCE_CUES:
+        if any(k in low for k in keywords):
+            return kind
+    return "industrial" if mode == "encounter" else "room"
 
-    prompts, cfg = _scene_to_music_prompt(scene_prompt, mode=mode)
 
-    client = genai.Client(
-        api_key=GEMINI_API_KEY,
-        http_options={"api_version": "v1alpha"},
-    )
-
-    bytes_needed = int(seconds * SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH)
-    collected = bytearray()
-
-    async with client.aio.live.music.connect(model=LYRIA_MODEL) as session:
-        await session.set_weighted_prompts(
-            prompts=[types.WeightedPrompt(text=p["text"], weight=p["weight"]) for p in prompts]
+def _scene_to_sfx_prompt(scene_prompt: str, mode: str = "scene",
+                         direction: str | None = None) -> str:
+    """Short Foley/ambience description — not a second music score."""
+    kind = _ambience_kind(scene_prompt, mode=mode)
+    spec = STOCK_AMBIENCE.get(kind) or STOCK_AMBIENCE["room"]
+    scene = _clean_scene_text(scene_prompt)
+    if mode == "conversation":
+        text = (
+            f"seamless looping quiet room tone under a conversation, "
+            f"{spec['prompt']}"
         )
-        await session.set_music_generation_config(
-            config=types.LiveMusicGenerationConfig(
-                bpm=cfg["bpm"],
-                brightness=cfg["brightness"],
-                temperature=cfg["temperature"],
-            )
+    elif mode == "encounter":
+        text = (
+            f"seamless looping tense close-mic ambience, danger in the room, "
+            f"{spec['prompt']}"
         )
-        await session.play()
-
-        async for message in session.receive():
-            server_content = getattr(message, "server_content", None)
-            chunks = getattr(server_content, "audio_chunks", None) if server_content else None
-            if chunks:
-                data = getattr(chunks[0], "data", None)
-                if data:
-                    collected.extend(data)
-                    if len(collected) >= bytes_needed:
-                        break
-            # Yield to the loop so back-pressure / cancellation behaves.
-            await asyncio.sleep(0)
-
-    return bytes(collected[:bytes_needed])
+    elif scene:
+        text = f"seamless looping environmental ambience of {scene}. {spec['prompt']}"
+    else:
+        text = spec["prompt"]
+    if direction is None:
+        direction = get_sfx_direction()
+    if direction:
+        text = f"{direction.strip()}. {text}"
+    return text[:500]
 
 
-def _run_stream_blocking(scene_prompt: str, seconds: int, mode: str = "scene") -> bytes:
-    """Run the async Lyria stream to completion from a sync (gunicorn) worker.
+# ────────────────────────────────────────────────────────────────────────────
+# ElevenLabs HTTP
+# ────────────────────────────────────────────────────────────────────────────
 
-    Uses a dedicated thread + event loop so it is safe regardless of whether the
-    calling thread already has a running loop, and bounds the whole thing with a
-    hard timeout so a stalled stream can never hang the request thread forever.
+def _offline_mock() -> bool:
+    """True when this process promised not to call the network.
+
+    ``--mock`` / ``MOCK_MODE`` / ``STORYGEN_BACKEND=mock`` still inherit
+    ``ELEVENLABS_API_KEY`` from the parent shell. Without this gate, a
+    "fully offline" run bills Music + SFX on every scene.
     """
-    result = {"pcm": b"", "error": None}
-
-    def _worker():
-        try:
-            result["pcm"] = asyncio.run(
-                asyncio.wait_for(
-                    _stream_pcm(scene_prompt, seconds, mode=mode),
-                    timeout=_STREAM_TIMEOUT_SECONDS,
-                )
-            )
-        except Exception as e:  # noqa: BLE001 — degrade gracefully, never crash the request
-            result["error"] = e
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    t.join(timeout=_STREAM_TIMEOUT_SECONDS + 5)
-
-    if result["error"] is not None:
-        raise result["error"]
-    return result["pcm"]
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# Public entry point: cached WAV on disk -> web URL
-# ────────────────────────────────────────────────────────────────────────────
-
-def is_available() -> bool:
-    """True when we can plausibly generate audio (key present + SDK importable)."""
-    if not GEMINI_API_KEY:
-        return False
+    if (os.environ.get("MOCK_MODE") or "").strip().lower() in ("1", "true", "yes"):
+        return True
+    if (os.environ.get("STORYGEN_BACKEND") or "").strip().lower() == "mock":
+        return True
     try:
-        import google.genai  # noqa: F401
+        import keys_store
+        return bool(keys_store.is_explicit_mock())
     except Exception:
         return False
-    return True
+
+
+def unavailable_reason() -> str | None:
+    """Why generation cannot run, or None when the key looks usable.
+
+    The dashboard lists keys by ID (bare hex). That value is not a key —
+    ElevenLabs rejects it. Same diagnosis as ``engine.elevenlabs_key_problem``.
+    """
+    if _offline_mock():
+        return "offline mock — ElevenLabs is not called"
+    key = _api_key()
+    if not key:
+        return "ELEVENLABS_API_KEY is not set."
+    if key.startswith("sk_"):
+        return None
+    if key.startswith("agent_"):
+        return "that's an agent id, not the sk_ secret"
+    if len(key) in (32, 64) and all(c in "0123456789abcdefABCDEF" for c in key):
+        return "that's the key ID from the dashboard list, not the sk_ secret"
+    return "ElevenLabs API keys start with sk_"
+
+
+def is_available() -> bool:
+    """True when we can plausibly generate audio (usable ElevenLabs key)."""
+    return unavailable_reason() is None
+
+
+def _record(session_id: str, model: str, operation: str, seconds: float,
+            t0: float, success: bool, error: str = ""):
+    cost_tracker.record_usage(
+        session_id or "default", "voice", "elevenlabs", model,
+        operation=operation,
+        output_units=seconds if success else None,
+        unit_type="seconds",
+        success=success,
+        error_message=error or None,
+        latency_ms=int((time.time() - t0) * 1000),
+    )
+
+
+def _eleven_music(prompt: str, seconds: int, session_id: str = "default") -> bytes:
+    import requests
+
+    seconds = max(3, min(30, int(seconds or DEFAULT_CLIP_SECONDS)))
+    t0 = time.time()
+    try:
+        resp = requests.post(
+            ELEVEN_MUSIC_URL,
+            headers={"xi-api-key": _api_key(), "Content-Type": "application/json"},
+            params={"output_format": "mp3_44100_128"},
+            json={
+                "prompt": (prompt or "").strip()[:2000],
+                "music_length_ms": seconds * 1000,
+                "model_id": MUSIC_MODEL,
+                "force_instrumental": True,
+            },
+            timeout=_MUSIC_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        _record(session_id, MUSIC_MODEL, "music_compose", seconds, t0, False, str(e))
+        raise
+    if resp.status_code != 200 or not resp.content:
+        err = f"http_{resp.status_code}: {(resp.text or '')[:180]}"
+        _record(session_id, MUSIC_MODEL, "music_compose", seconds, t0, False, err)
+        raise RuntimeError(f"eleven music {err}")
+    _record(session_id, MUSIC_MODEL, "music_compose", seconds, t0, True)
+    return resp.content
+
+
+def _eleven_sfx(prompt: str, seconds: float, loop: bool = True,
+                session_id: str = "default") -> bytes:
+    import requests
+
+    seconds = max(0.5, min(30.0, float(seconds or DEFAULT_SFX_SECONDS)))
+    t0 = time.time()
+    try:
+        resp = requests.post(
+            ELEVEN_SFX_URL,
+            headers={"xi-api-key": _api_key(), "Content-Type": "application/json"},
+            params={"output_format": "mp3_44100_128"},
+            json={
+                "text": (prompt or "").strip()[:500],
+                "model_id": SFX_MODEL,
+                "duration_seconds": seconds,
+                "prompt_influence": 0.4,
+                "loop": bool(loop),
+            },
+            timeout=_SFX_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        _record(session_id, SFX_MODEL, "sfx_generate", seconds, t0, False, str(e))
+        raise
+    if resp.status_code != 200 or not resp.content:
+        err = f"http_{resp.status_code}: {(resp.text or '')[:180]}"
+        _record(session_id, SFX_MODEL, "sfx_generate", seconds, t0, False, err)
+        raise RuntimeError(f"eleven sfx {err}")
+    _record(session_id, SFX_MODEL, "sfx_generate", seconds, t0, True)
+    return resp.content
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Paths / cache
+# ────────────────────────────────────────────────────────────────────────────
+
+def _session_audio_dir(session_id: str = "default", *, create: bool = True) -> Path:
+    """Per-session scratch dir for generated audio (mirrors the image dir)."""
+    safe = Path(str(session_id or "default")).name or "default"
+    try:
+        import engine
+        audio_dir = Path(engine._get_session_root(safe)) / "audio"
+    except Exception:
+        audio_dir = ROOT / "sessions" / safe / "audio"
+    if create:
+        audio_dir.mkdir(parents=True, exist_ok=True)
+    return audio_dir
 
 
 def _get_audio_dir(session_id: str = "default") -> Path:
-    """Per-session scratch dir for generated audio (mirrors the image dir)."""
-    try:
-        import engine
-        audio_dir = Path(engine._get_session_root(session_id)) / "audio"
-    except Exception:
-        audio_dir = ROOT / "sessions" / session_id / "audio"
-    audio_dir.mkdir(parents=True, exist_ok=True)
-    return audio_dir
+    return _session_audio_dir(session_id, create=True)
 
 
 def _cache_name(scene_prompt: str, seconds: int, mode: str = "scene") -> str:
     """Stable filename keyed on the derived music prompt so identical scenes
-    reuse the same clip instead of re-billing Lyria."""
+    reuse the same clip instead of re-billing ElevenLabs."""
     prompts, cfg = _scene_to_music_prompt(scene_prompt, mode=mode)
-    key = json.dumps({"p": prompts, "c": cfg, "s": seconds, "m": mode}, sort_keys=True)
+    key = json.dumps({"p": prompts, "c": cfg, "s": seconds, "m": mode,
+                      "prov": "eleven-music"}, sort_keys=True)
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
-    prefix = "convo" if mode == "conversation" else "scene"
-    return f"{prefix}_{digest}.wav"
+    prefix = {"conversation": "convo", "encounter": "enc"}.get(mode, "scene")
+    return f"{prefix}_{digest}.mp3"
 
 
-# Coalesce concurrent identical requests so two turns landing at once don't both
-# open a (billed) Lyria session for the same scene.
+def _sfx_cache_name(scene_prompt: str, seconds: int, mode: str = "scene") -> str:
+    prompt = _scene_to_sfx_prompt(scene_prompt, mode=mode)
+    key = json.dumps({"p": prompt, "s": seconds, "m": mode, "prov": "eleven-sfx"},
+                     sort_keys=True)
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+    prefix = {"conversation": "amb_convo", "encounter": "amb_enc"}.get(mode, "amb")
+    return f"{prefix}_{digest}.mp3"
+
+
 _INFLIGHT_LOCK = threading.Lock()
 _INFLIGHT = {}
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # THE CHOSEN LOOP
-#
-# Per-scene scoring is the default and it re-scores itself as the world changes,
-# which is the right behaviour — right up until you have a track you want. Then
-# it is the only part of the soundtrack you cannot touch.
-#
-# So: one loop, either uploaded or generated from a music prompt you wrote,
-# which takes precedence over scene scoring until you clear it. It lives beside
-# the reference art rather than in a session dir, so a reset or a session sweep
-# can't take your music with it.
 # ────────────────────────────────────────────────────────────────────────────
+
 MUSIC_DIR = ROOT / "assets" / "music"
+STOCK_DIR = MUSIC_DIR / "stock"
 _LOOP_META = MUSIC_DIR / "loop.json"
-# What a browser may hand us. WAV and MP3 cover recordings and exports; OGG and
-# M4A cover most of what a phone produces.
+_DIRECTION_PATH = MUSIC_DIR / "direction.json"
+_SFX_DIRECTION_PATH = MUSIC_DIR / "sfx_direction.json"
+_MENU_META = MUSIC_DIR / "menu.json"
+_MENU_DIRECTION_PATH = MUSIC_DIR / "menu_direction.json"
 LOOP_EXTS = {"wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg",
              "m4a": "audio/mp4", "mp4": "audio/mp4", "webm": "audio/webm"}
 MAX_LOOP_BYTES = 12 * 1024 * 1024
+
+
+def _loop_url(meta: dict) -> str:
+    fname = Path(str(meta.get("file") or "")).name
+    return f"/audio/{fname}?v={int(float(meta.get('created_at') or 0) * 1000)}"
+
+
+def _file_url(path: Path) -> str | None:
+    try:
+        if not path.is_file() or path.stat().st_size < 32:
+            return None
+        stamp = int(path.stat().st_mtime * 1000)
+        return f"/audio/{path.name}?v={stamp}"
+    except OSError:
+        return None
+
+
+def get_sfx_direction() -> str:
+    """Authored 'how this place sounds as Foley', or empty."""
+    try:
+        if not _SFX_DIRECTION_PATH.exists():
+            return ""
+        data = json.loads(_SFX_DIRECTION_PATH.read_text(encoding="utf-8")) or {}
+        return str(data.get("prompt") or "").strip()
+    except Exception:
+        return ""
+
+
+def set_sfx_direction(prompt: str) -> str:
+    text = (prompt or "").strip()[:400]
+    MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+    _SFX_DIRECTION_PATH.write_text(
+        json.dumps({"prompt": text}, indent=2), encoding="utf-8")
+    return text
+
+
+def get_music_direction() -> str:
+    """The authored 'how this world sounds' line, or empty."""
+    try:
+        if not _DIRECTION_PATH.exists():
+            return ""
+        data = json.loads(_DIRECTION_PATH.read_text(encoding="utf-8")) or {}
+        return str(data.get("prompt") or "").strip()
+    except Exception:
+        return ""
+
+
+def _preview_name(stem: str = "preview") -> str:
+    return "menu_preview" if stem == "menu_preview" else "preview"
+
+
+def last_preview(stem: str = "preview") -> dict | None:
+    """The last generated sample for this stem, if it is still on disk."""
+    safe = _preview_name(stem)
+    for ext in ("mp3", "wav"):
+        fname = f"{safe}.{ext}"
+        rec = _file_url(MUSIC_DIR / fname)
+        if rec:
+            return {"url": rec, "file": fname}
+    return None
+
+
+def _clear_preview(stem: str = "preview") -> None:
+    safe = _preview_name(stem)
+    for ext in ("mp3", "wav"):
+        path = MUSIC_DIR / f"{safe}.{ext}"
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+
+
+def set_music_direction(prompt: str) -> str:
+    """Persist the music direction. Next scene (and the next run) uses it."""
+    text = (prompt or "").strip()[:400]
+    old = get_music_direction()
+    MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+    _DIRECTION_PATH.write_text(
+        json.dumps({"prompt": text}, indent=2), encoding="utf-8")
+    if text != old:
+        _clear_preview("preview")
+    loop = custom_loop()
+    if loop and loop.get("source") == "generated":
+        clear_custom_loop()
+    return text
+
+
+def generate_preview(prompt: str, seconds: int = 8, stem: str = "preview") -> dict | None:
+    """Hear the prompt without locking it as the game's only track."""
+    if not is_available():
+        return None
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return None
+    seconds = max(3, min(16, int(seconds or 8)))
+    data = _eleven_music(flatten_music_prompt(prompt, mode="verbatim"), seconds)
+    if not data:
+        return None
+    MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+    safe = _preview_name(stem)
+    for ext in ("mp3", "wav"):
+        stale = MUSIC_DIR / f"{safe}.{ext}"
+        try:
+            if stale.exists():
+                stale.unlink()
+        except OSError:
+            pass
+    fname = f"{safe}.mp3"
+    (MUSIC_DIR / fname).write_bytes(data)
+    stamp = int(time.time() * 1000)
+    return {"url": f"/audio/{fname}?v={stamp}", "file": fname,
+            "prompt": prompt[:400], "seconds": seconds}
 
 
 def custom_loop() -> dict | None:
@@ -352,60 +787,56 @@ def custom_loop() -> dict | None:
         fname = Path(str(meta.get("file") or "")).name
         if not fname or not (MUSIC_DIR / fname).exists():
             return None
-        meta["url"] = f"/audio/{fname}"
+        meta["url"] = _loop_url(meta)
         return meta
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
 def _write_loop(data: bytes, ext: str, source: str,
-                prompt: str = "", name: str = "") -> dict:
+                prompt: str = "", name: str = "", stem: str = "loop") -> dict:
     ext = (ext or "wav").lower().lstrip(".")
+    stem = "menu" if stem == "menu" else "loop"
     if ext not in LOOP_EXTS:
         raise ValueError(f"unsupported audio type {ext!r}")
     if not data or len(data) > MAX_LOOP_BYTES:
         raise ValueError("audio is empty or too large")
     MUSIC_DIR.mkdir(parents=True, exist_ok=True)
-    # One loop at a time: clear whatever was there so the directory can't grow
-    # a graveyard of old tracks.
-    for old in MUSIC_DIR.glob("loop.*"):
+    for old in MUSIC_DIR.glob(f"{stem}.*"):
         try:
             old.unlink()
         except OSError:
             pass
-    fname = f"loop.{ext}"
+    fname = f"{stem}.{ext}"
     (MUSIC_DIR / fname).write_bytes(data)
     meta = {"file": fname, "source": source, "prompt": prompt[:400],
             "name": (name or "")[:80], "bytes": len(data),
             "created_at": time.time()}
-    _LOOP_META.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    meta["url"] = f"/audio/{fname}"
+    meta_path = _MENU_META if stem == "menu" else _LOOP_META
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    meta["url"] = _loop_url(meta)
     return meta
 
 
-def set_uploaded_loop(data: bytes, ext: str, name: str = "") -> dict:
+def set_uploaded_loop(data: bytes, ext: str, name: str = "",
+                      stem: str = "loop") -> dict:
     """Adopt a file the player uploaded as the loop."""
-    return _write_loop(data, ext, "upload", name=name)
+    return _write_loop(data, ext, "upload", name=name, stem=stem)
 
 
-def generate_loop(prompt: str, seconds: int = DEFAULT_CLIP_SECONDS) -> dict | None:
-    """Generate a loop from a MUSIC prompt and adopt it.
-
-    Note the difference from get_scene_audio: that takes a description of a
-    scene and derives music direction from it. This takes the music direction
-    itself, verbatim, because you wrote it.
-    """
+def generate_loop(prompt: str, seconds: int = DEFAULT_CLIP_SECONDS,
+                  stem: str = "loop") -> dict | None:
+    """Generate a loop from a MUSIC prompt and adopt it."""
     if not is_available():
         return None
     prompt = (prompt or "").strip()
     if not prompt:
         return None
-    seconds = max(4, min(30, int(seconds or DEFAULT_CLIP_SECONDS)))
-    pcm = _run_stream_blocking(prompt, seconds, mode="verbatim")
-    if not pcm:
+    seconds = max(3, min(30, int(seconds or DEFAULT_CLIP_SECONDS)))
+    data = _eleven_music(flatten_music_prompt(prompt, mode="verbatim"), seconds)
+    if not data:
         return None
-    return _write_loop(_pcm_to_wav_bytes(pcm), "wav", "generated",
-                       prompt=prompt, name="")
+    return _write_loop(data, "mp3", "generated", prompt=prompt, name="", stem=stem)
 
 
 def clear_custom_loop() -> None:
@@ -417,183 +848,590 @@ def clear_custom_loop() -> None:
         pass
 
 
-def get_scene_audio(scene_prompt: str, session_id: str = "default",
-                    seconds: int = DEFAULT_CLIP_SECONDS,
-                    mode: str = "scene") -> dict | None:
-    """Return {"audio_url": "/audio/<file>.wav", "cached": bool} for a scene, or
-    ``None`` when audio can't be produced (no key / SDK / stream failure).
+def get_menu_direction() -> str:
+    try:
+        if not _MENU_DIRECTION_PATH.exists():
+            return ""
+        data = json.loads(_MENU_DIRECTION_PATH.read_text(encoding="utf-8")) or {}
+        return str(data.get("prompt") or "").strip()
+    except Exception:
+        return ""
 
-    ``mode="conversation"`` selects the intimate Conversation Moment profile.
+
+def set_menu_direction(prompt: str) -> str:
+    text = (prompt or "").strip()[:400]
+    old = get_menu_direction()
+    MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+    _MENU_DIRECTION_PATH.write_text(
+        json.dumps({"prompt": text}, indent=2), encoding="utf-8")
+    if text != old:
+        _clear_preview("menu_preview")
+        global _MENU_WARMUP_STARTED
+        _MENU_WARMUP_STARTED = False
+    loop = menu_loop()
+    if loop and loop.get("source") == "generated":
+        clear_menu_loop()
+    return text
+
+
+def menu_loop() -> dict | None:
+    try:
+        if not _MENU_META.exists():
+            return None
+        meta = json.loads(_MENU_META.read_text(encoding="utf-8")) or {}
+        fname = Path(str(meta.get("file") or "")).name
+        if not fname or not (MUSIC_DIR / fname).exists():
+            return None
+        meta["url"] = _loop_url(meta)
+        return meta
+    except Exception:
+        return None
+
+
+def clear_menu_loop() -> None:
+    try:
+        for old in MUSIC_DIR.glob("menu.*"):
+            old.unlink()
+    except OSError:
+        pass
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Stock stingers / fallback ambience
+# ────────────────────────────────────────────────────────────────────────────
+
+def _stock_path(filename: str) -> Path:
+    return STOCK_DIR / Path(filename).name
+
+
+def _stock_url(filename: str) -> str | None:
+    return _file_url(_stock_path(filename))
+
+
+def stock_stinger_url(kind: str = _ENCOUNTER_STINGER) -> str | None:
+    spec = STOCK_STINGERS.get(kind)
+    return _stock_url(spec["file"]) if spec else None
+
+
+def encounter_designer_urls() -> dict:
+    """Authored one-shots sitting in static/audio/encounter/<stem>.wav|mp3."""
+    folder = ROOT / "static" / "audio" / "encounter"
+    out = {}
+    if not folder.is_dir():
+        return out
+    try:
+        for path in folder.iterdir():
+            if path.suffix.lower() not in (".wav", ".mp3"):
+                continue
+            if path.stat().st_size < 32:
+                continue
+            out[path.stem] = f"/static/audio/encounter/{path.name}"
+    except OSError:
+        return out
+    return out
+
+
+def encounter_stinger_urls() -> dict:
+    """Ready stock one-shots keyed by catalog id (encounter_hitch, …).
+
+    Missing files are omitted so the client can fall through to designer
+    WAVs and then the built-in synth. Warmup fills these in the background.
     """
-    # A chosen loop wins over scene scoring, and it wins HERE rather than in the
-    # client: every existing caller — scenes, conversation moments, the realtime
-    # renderer — already loops whatever URL this hands back, so the override
-    # needs no playback changes anywhere.
-    loop = custom_loop()
-    if loop:
-        return {"audio_url": loop["url"], "cached": True, "mode": mode,
-                "source": loop.get("source") or "custom"}
+    out = {}
+    for key in STOCK_STINGERS:
+        url = stock_stinger_url(key)
+        if url:
+            out[key] = url
+    return out
+
+
+def stock_ambience_url(kind: str) -> str | None:
+    spec = STOCK_AMBIENCE.get(kind)
+    return _stock_url(spec["file"]) if spec else None
+
+
+def stock_spec(key: str) -> tuple[dict | None, str]:
+    """Return (spec, kind) for a catalog id, or (None, "")."""
+    if key in STOCK_STINGERS:
+        return STOCK_STINGERS[key], "stinger"
+    if key in STOCK_AMBIENCE:
+        return STOCK_AMBIENCE[key], "ambience"
+    return None, ""
+
+
+def stock_status() -> dict:
+    """What's already on disk — used by tests, the editor, and warmup."""
+    out = {}
+    for key, spec in {**STOCK_STINGERS, **STOCK_AMBIENCE}.items():
+        url = _stock_url(spec["file"])
+        kind = "stinger" if key in STOCK_STINGERS else "ambience"
+        out[key] = {
+            "file": spec["file"],
+            "ready": bool(url),
+            "url": url,
+            "prompt": spec["prompt"],
+            "seconds": spec["seconds"],
+            "loop": spec["loop"],
+            "kind": kind,
+        }
+    return out
+
+
+def ensure_one_stock(key: str, *, force: bool = False,
+                     session_id: str = "default") -> dict | None:
+    """Generate or reuse one catalog entry. Returns a status dict."""
+    spec, kind = stock_spec(key)
+    if not spec:
+        return None
+    STOCK_DIR.mkdir(parents=True, exist_ok=True)
+    path = _stock_path(spec["file"])
+    url = _stock_url(spec["file"])
+    if url and not force:
+        return {"id": key, "kind": kind, "url": url, "cached": True,
+                "prompt": spec["prompt"], "file": spec["file"]}
     if not is_available():
-        return None
+        return {"id": key, "kind": kind, "url": url, "cached": bool(url),
+                "prompt": spec["prompt"], "file": spec["file"],
+                "error": "no_key"}
+    data = _eleven_sfx(
+        spec["prompt"], spec["seconds"], loop=spec["loop"],
+        session_id=session_id,
+    )
+    path.write_bytes(data)
+    return {"id": key, "kind": kind, "url": _stock_url(spec["file"]),
+            "cached": False, "prompt": spec["prompt"], "file": spec["file"]}
 
-    mode = (mode or "scene").strip().lower()
-    if mode not in ("scene", "conversation"):
-        mode = "scene"
 
-    scene_prompt = _clean_scene_text(scene_prompt)
-    if not scene_prompt:
-        return None
+def ensure_stock_sounds(*, force: bool = False,
+                        session_id: str = "default") -> dict:
+    """Generate any missing stock stingers and fallback ambience beds.
 
-    audio_dir = _get_audio_dir(session_id)
-    fname = _cache_name(scene_prompt, seconds, mode=mode)
-    fpath = audio_dir / fname
-    web_url = f"/audio/{fname}"
+    Safe to call repeatedly. Missing files are created; present ones are kept.
+    """
+    if not is_available():
+        return {"ok": False, "reason": "no_key", "files": stock_status()}
+    STOCK_DIR.mkdir(parents=True, exist_ok=True)
+    results = {}
+    catalog = list(STOCK_STINGERS.items()) + list(STOCK_AMBIENCE.items())
+    for key, spec in catalog:
+        path = _stock_path(spec["file"])
+        if path.exists() and path.stat().st_size > 32 and not force:
+            results[key] = {"url": _stock_url(spec["file"]), "cached": True}
+            continue
+        try:
+            data = _eleven_sfx(
+                spec["prompt"], spec["seconds"], loop=spec["loop"],
+                session_id=session_id,
+            )
+            path.write_bytes(data)
+            results[key] = {"url": _stock_url(spec["file"]), "cached": False}
+            print(f"[SCENE AUDIO] stock {key} -> {path.name} ({len(data)} bytes)",
+                  flush=True)
+        except Exception as e:
+            results[key] = {"error": str(e)}
+            print(f"[SCENE AUDIO] stock {key} failed: {e}", flush=True)
+    ready = sum(1 for v in results.values() if v.get("url"))
+    return {"ok": ready > 0, "ready": ready, "total": len(catalog),
+            "files": results}
 
-    if fpath.exists() and fpath.stat().st_size > 44:  # >WAV header
-        return {"audio_url": web_url, "cached": True, "mode": mode}
 
-    # Only one generation per (session, file) in flight at a time.
-    ikey = (session_id, fname)
+_STOCK_WARMUP_LOCK = threading.Lock()
+_STOCK_WARMUP_STARTED = False
+
+
+def kick_stock_warmup() -> None:
+    """Fill missing stock files in the background. Not called from gameplay
+    scoring — that would race the first scene's Music call and stall the worker.
+    The editor and /api/music kick this once a usable key is present.
+    """
+    global _STOCK_WARMUP_STARTED
+    if not is_available():
+        return
+    with _STOCK_WARMUP_LOCK:
+        if _STOCK_WARMUP_STARTED:
+            return
+        _STOCK_WARMUP_STARTED = True
+    threading.Thread(target=lambda: ensure_stock_sounds(), daemon=True,
+                     name="stock-audio-warmup").start()
+
+
+_MENU_WARMUP_LOCK = threading.Lock()
+_MENU_WARMUP_STARTED = False
+
+
+def kick_menu_preview() -> None:
+    """Write the title-screen sample in the background so PLAY does not wait
+    on a 10s generate, and so a late preview cannot start after LEAVE.
+    """
+    global _MENU_WARMUP_STARTED
+    if not is_available():
+        return
+    if last_preview("menu_preview"):
+        return
+    prompt = get_menu_direction()
+    if not prompt:
+        return
+    with _MENU_WARMUP_LOCK:
+        if _MENU_WARMUP_STARTED:
+            return
+        _MENU_WARMUP_STARTED = True
+
+    def _go():
+        global _MENU_WARMUP_STARTED
+        try:
+            generate_preview(prompt, seconds=10, stem="menu_preview")
+        except Exception as e:
+            print(f"[SCENE AUDIO] menu preview failed: {e}", flush=True)
+            _MENU_WARMUP_STARTED = False
+
+    threading.Thread(target=_go, daemon=True, name="menu-preview-warmup").start()
+
+
+def _with_inflight(ikey, fn):
     with _INFLIGHT_LOCK:
         lock = _INFLIGHT.get(ikey)
         if lock is None:
             lock = threading.Lock()
             _INFLIGHT[ikey] = lock
-
     with lock:
-        # Another waiter may have finished while we blocked on the lock.
-        if fpath.exists() and fpath.stat().st_size > 44:
-            return {"audio_url": web_url, "cached": True, "mode": mode}
-        gen_t0 = time.time()
         try:
-            # Conversation clips re-steer via cache key+mode (intimate profile).
-            pcm = _run_stream_blocking(scene_prompt, seconds, mode=mode)
-            if not pcm:
-                cost_tracker.record_usage(
-                    session_id, "voice", "gemini", LYRIA_MODEL, operation="lyria_music",
-                    success=False, error_message="empty_pcm",
-                    latency_ms=int((time.time() - gen_t0) * 1000),
-                )
-                return None
-            fpath.write_bytes(_pcm_to_wav_bytes(pcm))
-            cost_tracker.record_usage(
-                session_id, "voice", "gemini", LYRIA_MODEL, operation="lyria_music",
-                output_units=seconds, unit_type="seconds", success=True,
-                latency_ms=int((time.time() - gen_t0) * 1000),
-            )
-        except Exception as e:  # noqa: BLE001
-            print(f"[SCENE AUDIO] generation failed: {e}", flush=True)
-            cost_tracker.record_usage(
-                session_id, "voice", "gemini", LYRIA_MODEL, operation="lyria_music",
-                success=False, error_message=str(e),
-                latency_ms=int((time.time() - gen_t0) * 1000),
-            )
-            return None
+            return fn()
         finally:
             with _INFLIGHT_LOCK:
                 _INFLIGHT.pop(ikey, None)
 
-    return {"audio_url": web_url, "cached": False, "mode": mode}
+
+def _kick(ikey, fn) -> None:
+    threading.Thread(
+        target=lambda: _with_inflight(ikey, fn),
+        daemon=True, name="scene-audio-gen",
+    ).start()
+
+
+def _cached_or_generate(fpath: Path, generate):
+    if fpath.exists() and fpath.stat().st_size > 32:
+        return True, False
+    data = generate()
+    if not data:
+        return False, False
+    fpath.parent.mkdir(parents=True, exist_ok=True)
+    tmp = fpath.with_name(fpath.name + ".part")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, fpath)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    return True, True
+
+
+def _resolve_music(scene_prompt: str, session_id: str, seconds: int,
+                   mode: str) -> tuple[str | None, bool, bool]:
+    """Return (web_url, cached, pending).
+
+    Uncached music starts in the background. The first scene must not wait
+    20–90s on Eleven Music — the client retries until the file lands.
+    """
+    # A locked explore loop must not steal the confrontation bed.
+    if (mode or "scene").strip().lower() != "encounter":
+        loop = custom_loop()
+        if loop:
+            return loop["url"], True, False
+    fname = _cache_name(scene_prompt, seconds, mode=mode)
+    fpath = _get_audio_dir(session_id) / fname
+    web_url = f"/audio/{fname}"
+    if fpath.exists() and fpath.stat().st_size > 32:
+        return web_url, True, False
+    if not is_available():
+        return None, False, False
+
+    def _go():
+        dest = _get_audio_dir(session_id) / fname
+        try:
+            _cached_or_generate(
+                dest,
+                lambda: _eleven_music(
+                    flatten_music_prompt(scene_prompt, mode=mode),
+                    seconds, session_id=session_id,
+                ),
+            )
+        except Exception as e:
+            print(f"[SCENE AUDIO] music failed: {e}", flush=True)
+
+    _kick((session_id, fname), _go)
+    return None, False, True
+
+
+def _resolve_sfx(scene_prompt: str, session_id: str, seconds: int,
+                 mode: str) -> tuple[str | None, bool, bool]:
+    """Scene-specific looping ambience, falling back to a stock bed.
+
+    Stock plays immediately. Scene-specific fill-in (or a first generate when
+    stock is missing) always runs in the background.
+    """
+    kind = _ambience_kind(scene_prompt, mode=mode)
+    stock = stock_ambience_url(kind)
+    if mode == "conversation":
+        return stock, True, False
+    fname = _sfx_cache_name(scene_prompt, seconds, mode=mode)
+    fpath = _session_audio_dir(session_id, create=False) / fname
+    web_url = f"/audio/{fname}"
+    if fpath.exists() and fpath.stat().st_size > 32:
+        return web_url, True, False
+    if not is_available():
+        return stock, bool(stock), False
+
+    def _go():
+        dest = _get_audio_dir(session_id) / fname
+        try:
+            _cached_or_generate(
+                dest,
+                lambda: _eleven_sfx(
+                    _scene_to_sfx_prompt(scene_prompt, mode=mode),
+                    seconds, loop=True, session_id=session_id,
+                ),
+            )
+        except Exception as e:
+            print(f"[SCENE AUDIO] sfx failed, using stock {kind}: {e}", flush=True)
+
+    _kick((session_id, fname), _go)
+    if stock:
+        return stock, True, False
+    return None, False, True
+
+
+def get_scene_audio(scene_prompt: str, session_id: str = "default",
+                    seconds: int = DEFAULT_CLIP_SECONDS,
+                    mode: str = "scene") -> dict | None:
+    """Return music + world-SFX URLs for a scene, or ``None`` when nothing
+    can be produced.
+
+    ``mode="conversation"`` selects the intimate Conversation Moment profile.
+    ``mode="encounter"`` selects a stance-colored confrontation bed, tense
+    ambience, and the stock stinger catalog (``stingers``).
+
+    Uncached ElevenLabs work is kicked to a background thread. The response
+    is immediate: stock ambience / a pending flag, then the client retries.
+    """
+    mode = (mode or "scene").strip().lower()
+    if mode not in ("scene", "conversation", "encounter"):
+        mode = "scene"
+    scene_prompt = _clean_scene_text(scene_prompt)
+    loop = None if mode == "encounter" else custom_loop()
+    if mode == "encounter":
+        if is_available() and not stock_stinger_url(_ENCOUNTER_STINGER):
+            try:
+                ensure_one_stock(_ENCOUNTER_STINGER, session_id=session_id)
+            except Exception as e:
+                print(f"[SCENE AUDIO] enter stinger failed: {e}", flush=True)
+        kick_stock_warmup()
+    if not loop and not scene_prompt and mode != "encounter":
+        return None
+
+    seconds = max(3, min(30, int(seconds or DEFAULT_CLIP_SECONDS)))
+    sfx_seconds = DEFAULT_SFX_SECONDS
+    place = scene_prompt or "an unknown place"
+
+    music_url, music_cached, music_pending = _resolve_music(
+        place, session_id, seconds, mode)
+    sfx_url, sfx_cached, sfx_pending = _resolve_sfx(
+        place, session_id, sfx_seconds, mode)
+    stinger_url = stock_stinger_url(_ENCOUNTER_STINGER) if mode == "encounter" else None
+    stingers = encounter_stinger_urls() if mode == "encounter" else None
+
+    if not music_url and not sfx_url and not stinger_url and not (
+            music_pending or sfx_pending):
+        return None
+
+    result = {
+        "audio_url": music_url,
+        "sfx_url": sfx_url,
+        "stinger_url": stinger_url,
+        "cached": bool(music_cached and sfx_cached),
+        "pending_music": bool(music_pending),
+        "pending_sfx": bool(sfx_pending),
+        "mode": mode,
+    }
+    if session_id and session_id != "default":
+        result["audio_url"] = _sessionize_url(result["audio_url"], session_id)
+        result["sfx_url"] = _sessionize_url(result["sfx_url"], session_id)
+    if not music_url and not music_pending:
+        why = unavailable_reason()
+        if why:
+            result["reason"] = why
+    if stingers:
+        result["stingers"] = stingers
+    if loop:
+        result["source"] = loop.get("source") or "custom"
+    return result
 
 
 def resolve_audio_path(filename: str, session_id: str = "default") -> Path | None:
     """Resolve a served '/audio/<filename>' back to disk (path-traversal safe).
 
-    Looks in the session's scratch dir first, then the chosen loop — which lives
-    outside any session so a reset can't delete somebody's music.
+    Looks in the requested session, then default, then stock / locked loops,
+    then any session's audio dir — same last-resort scan as /images so a
+    URL that lost its ?session= param still plays.
     """
     safe = Path(filename).name
-    candidate = _get_audio_dir(session_id) / safe
-    if candidate.exists():
-        return candidate
+    if not safe or safe.endswith(".part"):
+        return None
+    for sid in (session_id, "default"):
+        if not sid:
+            continue
+        candidate = _session_audio_dir(sid, create=False) / safe
+        if candidate.exists():
+            return candidate
+    stock = STOCK_DIR / safe
+    if stock.exists():
+        return stock
     loop = MUSIC_DIR / safe
-    return loop if (safe.startswith("loop.") and loop.exists()) else None
+    if loop.exists() and (
+        safe.startswith("loop.") or safe.startswith("preview.")
+        or safe.startswith("menu") or safe.startswith("test_")
+    ):
+        return loop
+    return _find_audio_in_any_session(safe)
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Increment 2 — true realtime streaming (continuous, re-steerable score)
-#
-# A persistent Lyria RealTime session bridged to a browser WebSocket: raw PCM
-# flows out as binary frames; JSON steer messages ({"prompt": ...}) flow in and
-# re-weight the prompts live, so the score morphs between scenes instead of
-# looping a clip. Opt-in from the client (?music=stream); the clip-loop MVP
-# above stays the default.
-# ────────────────────────────────────────────────────────────────────────────
+def _sessionize_url(url: str | None, session_id: str) -> str | None:
+    """Stamp a non-default session onto a generated clip URL."""
+    if not url or not session_id or session_id == "default":
+        return url
+    name = Path(str(url).split("?", 1)[0]).name
+    if name.startswith(("loop.", "preview.", "menu", "test_", "sting_")):
+        return url
+    if name.startswith("amb_") and not name.startswith(("amb_convo_", "amb_enc_")):
+        # stock amb_rain.mp3 etc. live outside the session dir
+        digest_like = name[4:].split(".", 1)[0]
+        if not any(c in "0123456789abcdef" for c in digest_like) or len(digest_like) < 12:
+            return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}session={session_id}"
 
-def stream_music_over_ws(ws, initial_prompt: str = "") -> None:
-    """Blocking bridge between a flask-sock WebSocket (`ws`) and a Lyria session.
 
-    Runs its own asyncio loop for the lifetime of the socket. `ws.send` (bytes)
-    ships PCM to the browser; `ws.receive` yields steer JSON. Any error tears the
-    session down quietly — the client falls back to the clip loop / silence.
-    """
-    if not is_available():
-        return
-
-    async def _run():
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client(
-            api_key=GEMINI_API_KEY,
-            http_options={"api_version": "v1alpha"},
-        )
-
-        async with client.aio.live.music.connect(model=LYRIA_MODEL) as session:
-            async def _apply(prompt_text: str, set_config: bool):
-                prompts, cfg = _scene_to_music_prompt(prompt_text or "an unknown place")
-                await session.set_weighted_prompts(
-                    prompts=[types.WeightedPrompt(text=p["text"], weight=p["weight"]) for p in prompts]
-                )
-                if set_config:
-                    await session.set_music_generation_config(
-                        config=types.LiveMusicGenerationConfig(
-                            bpm=cfg["bpm"], brightness=cfg["brightness"], temperature=cfg["temperature"]
-                        )
-                    )
-
-            await _apply(initial_prompt, set_config=True)
-            await session.play()
-
-            loop = asyncio.get_event_loop()
-            stop = asyncio.Event()
-
-            async def pump_audio():
-                try:
-                    async for message in session.receive():
-                        sc = getattr(message, "server_content", None)
-                        chunks = getattr(sc, "audio_chunks", None) if sc else None
-                        if chunks:
-                            data = getattr(chunks[0], "data", None)
-                            if data:
-                                await loop.run_in_executor(None, ws.send, data)
-                        await asyncio.sleep(0)
-                        if stop.is_set():
-                            break
-                except Exception:
-                    stop.set()
-
-            async def pump_control():
-                try:
-                    while not stop.is_set():
-                        raw = await loop.run_in_executor(None, lambda: ws.receive(timeout=1))
-                        if raw is None:
-                            continue  # idle keep-alive tick
-                        try:
-                            msg = json.loads(raw)
-                        except Exception:
-                            continue
-                        prompt = (msg.get("prompt") or "").strip()
-                        if prompt:
-                            # Re-weight prompts only (no BPM change) so the score
-                            # morphs smoothly without a reset_context() glitch.
-                            await _apply(prompt, set_config=False)
-                except Exception:
-                    stop.set()
-
-            await asyncio.gather(pump_audio(), pump_control())
-
+def _find_audio_in_any_session(filename: str) -> Path | None:
+    root = ROOT / "sessions"
+    if not root.is_dir():
+        return None
     try:
-        asyncio.run(_run())
-    except Exception as e:  # noqa: BLE001
-        print(f"[SCENE AUDIO] stream ended: {e}", flush=True)
+        for audio_dir in root.glob("*/audio"):
+            candidate = audio_dir / filename
+            if candidate.is_file():
+                return candidate
+    except OSError:
+        return None
+    return None
+
+
+def inspect_scene(scene_prompt: str, mode: str = "scene") -> dict:
+    """The prompts that would be sent — no generation, no billing."""
+    mode = (mode or "scene").strip().lower()
+    if mode not in ("scene", "conversation", "encounter"):
+        mode = "scene"
+    scene = _clean_scene_text(scene_prompt)
+    stinger_id = _ENCOUNTER_STINGER if mode == "encounter" else None
+    return {
+        "mode": mode,
+        "scene": scene,
+        "direction": get_music_direction(),
+        "sfx_direction": get_sfx_direction(),
+        "music_prompt": flatten_music_prompt(scene or "an unknown place", mode=mode),
+        "sfx_prompt": _scene_to_sfx_prompt(scene or "an unknown place", mode=mode),
+        "ambience_kind": _ambience_kind(scene, mode=mode),
+        "stinger_id": stinger_id,
+        "stinger_url": stock_stinger_url(stinger_id) if stinger_id else None,
+        "can_generate": is_available(),
+    }
+
+
+def generate_test_clip(scene_prompt: str, mode: str = "scene",
+                       layer: str = "music", seconds: int | None = None,
+                       session_id: str = "default") -> dict | None:
+    """Write a one-off test file the editor can play without locking a loop."""
+    layer = (layer or "music").strip().lower()
+    mode = (mode or "scene").strip().lower()
+    if mode not in ("scene", "conversation", "encounter", "verbatim"):
+        mode = "scene"
+    if layer == "stinger":
+        key = _ENCOUNTER_STINGER
+        return ensure_one_stock(key, force=False, session_id=session_id)
+    if not is_available():
+        return None
+    MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+    if layer == "sfx":
+        seconds = max(3, min(16, int(seconds or 8)))
+        prompt = _scene_to_sfx_prompt(scene_prompt, mode=mode)
+        data = _eleven_sfx(prompt, seconds, loop=True, session_id=session_id)
+        fname = "test_sfx.mp3"
+    else:
+        seconds = max(3, min(16, int(seconds or 8)))
+        prompt = flatten_music_prompt(scene_prompt, mode=mode)
+        data = _eleven_music(prompt, seconds, session_id=session_id)
+        fname = "test_music.mp3"
+    if not data:
+        return None
+    (MUSIC_DIR / fname).write_bytes(data)
+    stamp = int(time.time() * 1000)
+    return {
+        "url": f"/audio/{fname}?v={stamp}",
+        "file": fname,
+        "prompt": prompt,
+        "layer": layer,
+        "mode": mode,
+        "seconds": seconds,
+    }
+
+
+def list_generated_cache(session_id: str = "default") -> list[dict]:
+    """Session-scored clips currently on disk."""
+    out = []
+    try:
+        audio_dir = _get_audio_dir(session_id)
+    except Exception:
+        return out
+    for path in sorted(audio_dir.glob("*")):
+        if not path.is_file() or path.name.endswith(".part"):
+            continue
+        if path.suffix.lower().lstrip(".") not in LOOP_EXTS:
+            continue
+        kind = "other"
+        for prefix, label in (("scene_", "music"), ("convo_", "conversation"),
+                              ("enc_", "encounter"), ("amb_", "ambience")):
+            if path.name.startswith(prefix):
+                kind = label
+                break
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        out.append({
+            "file": path.name,
+            "url": f"/audio/{path.name}",
+            "bytes": size,
+            "kind": kind,
+        })
+    return out
+
+
+def clear_generated_cache(session_id: str = "default") -> int:
+    """Delete per-scene generated clips. Does not touch stock or locked loops."""
+    removed = 0
+    try:
+        audio_dir = _get_audio_dir(session_id)
+    except Exception:
+        return 0
+    for path in list(audio_dir.glob("*")):
+        if not path.is_file():
+            continue
+        if path.name.endswith(".part") or path.name.startswith(
+                ("scene_", "convo_", "enc_", "amb_")):
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed

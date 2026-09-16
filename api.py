@@ -1427,6 +1427,11 @@ def api_status():
             # Free stills the start menu can warm — last run frame, or the
             # authored level plate. Never triggers generation.
             "current_image_url": s.get("current_image_url") or None,
+            # Flipbook: the frames of the CURRENT beat, so a client that joined
+            # or reloaded mid-run gets this turn's motion and not just the still
+            # it ends on. None on a still-only turn.
+            "current_sequence": s.get("current_sequence") or None,
+            "flipbook": engine.flipbook_settings(s),
             "setting_plate_url": _setting_plate_url(),
             # Live Experience graph: which World this run is standing in, so
             # the editor overlay can mark it during Play / Watch.
@@ -4678,6 +4683,57 @@ def studio_tunables_put():
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         return error_response("Failed to save settings", str(e))
+
+
+@app.route('/api/flipbook', methods=['GET', 'POST'])
+def api_flipbook():
+    """Flipbook for ONE session: on/off, how many in-betweens, how fast.
+
+    The same three knobs live in tunables (studio settings) as the process-wide
+    default. This route is the per-session override, which is what a Watch
+    render needs: it turns flipbook on for its own session and leaves live Play
+    alone, instead of flipping a global and hoping nobody else is playing.
+
+    POST body: {"enabled": bool, "frames": 2|4|8|16, "frame_ms": int,
+                "session": "<id>"}. Omitted keys are left as they were; a null
+    `enabled` drops the session back to following the global setting.
+    """
+    try:
+        import flipbook as flipbook_mod
+        body = request.get_json(silent=True) or {}
+        session_id = (body.get("session") or body.get("session_id")
+                      or request.args.get("session") or "default")
+        session_id = Path(str(session_id)).name or "default"
+
+        if request.method == 'POST':
+            with engine.WORLD_STATE_LOCK:
+                st = engine._load_state(session_id)
+                if "enabled" in body:
+                    st["flipbook_mode"] = (None if body["enabled"] is None
+                                           else bool(body["enabled"]))
+                if body.get("frames") is not None:
+                    st["flipbook_frames"] = flipbook_mod.normalize_frames(body["frames"])
+                if body.get("frame_ms") is not None:
+                    st["flipbook_frame_ms"] = max(
+                        80, min(1000, int(body["frame_ms"])))
+                engine._save_state(st, session_id)
+        else:
+            st = engine._load_state(session_id)
+
+        return jsonify({"data": {
+            "session": session_id,
+            "settings": engine.flipbook_settings(st),
+            "frame_counts": list(flipbook_mod.FRAME_COUNTS),
+            # What the process default is, so a client can show whether this
+            # session is following it or overriding it.
+            "global_enabled": bool(engine.FLIPBOOK_ENABLED),
+            "current_sequence": st.get("current_sequence") or None,
+        }})
+    except ValueError as e:
+        return jsonify({"error": "invalid", "message": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to set flipbook", str(e))
 
 
 @app.route('/api/talk/voices/library', methods=['GET'])

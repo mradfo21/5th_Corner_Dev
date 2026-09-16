@@ -142,9 +142,38 @@ class TestTheLiveStateReachesTheLine(NarratorPromptCase):
         self.seed(current_observed_vision=ON_SCREEN, current_phase="normal")
         self.assertNotIn("the situation is normal", self.narrate())
 
-    def test_injuries_are_carried(self):
-        self.seed(current_observed_vision=ON_SCREEN, injuries=["gashed left hand"])
-        self.assertIn("gashed left hand", self.narrate())
+    def test_being_hunted_is_carried(self):
+        """This used to assert the tracked injury list reached the line. That
+        list is gone with the wound parser; being hunted is the live stake now,
+        and the narrator gets the wound prose from RECENT EVENTS regardless."""
+        self.seed(current_observed_vision=ON_SCREEN,
+                  detection={"heat": 9, "level": 3, "since_turn": 1})
+        self.assertIn("hunted", self.narrate())
+
+    def test_staying_hidden_is_not_worth_saying(self):
+        self.seed(current_observed_vision=ON_SCREEN,
+                  detection={"heat": 0, "level": 0, "since_turn": 0})
+        self.assertNotIn("you are hidden", self.narrate())
+
+    def test_the_action_just_taken_reaches_the_line(self):
+        self.seed(current_observed_vision=ON_SCREEN,
+                  last_choice="Move to the rusted truck")
+        p = self.narrate()
+        self.assertIn("Move to the rusted truck", p)
+        self.assertIn("THE PLAYER JUST DID", p)
+
+    def test_acted_on_the_request_beats_stale_last_choice(self):
+        # MOVE TO narrates on the click, before /api/choose writes last_choice.
+        self.seed(current_observed_vision=ON_SCREEN,
+                  last_choice="Look at the vent")
+        engine._narrator_script(
+            "The player has just committed to travel to the rusted truck.",
+            False, SESSION_ID, acted="Move to the rusted truck",
+        )
+        p = self.prompts[-1]
+        self.assertIn("Move to the rusted truck", p)
+        self.assertIn("WHERE THEY WERE LEAVING", p)
+        self.assertNotIn("Look at the vent", p)
 
 
 class TestDoNotRepeatYourself(NarratorPromptCase):

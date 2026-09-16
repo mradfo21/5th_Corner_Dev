@@ -1956,9 +1956,12 @@
     // Fade the play button back in — the progress bar occupied its spot.
     if (el.actionWheel) el.actionWheel.classList.remove("turn-active");
     document.body.classList.remove("turn-active");
-    // Safety net: never leave the prose + SNAP tool stuck hidden once the boot
-    // veil is gone (covers text-only mode and any path where no frame lands).
-    markSceneVisible();
+    // The turn is done, which is half of what the boot gate waits for. It is
+    // NOT evidence that a picture landed — claiming that here (this used to
+    // call markSceneVisible) is what put the HUD on a black screen when the
+    // turn resolved before its still did. The gate's own ceiling covers a run
+    // that genuinely never renders a frame.
+    markBootTurnLanded();
     try { updateScanButton(); } catch (_) {} // turn's over — SCAN is live again
     Ceremony.reset();
   }
@@ -1967,15 +1970,86 @@
   // SNAP camera tool until the world is actually on screen (a still lands or the
   // realtime feed goes live), so a fresh instance doesn't show floating text and
   // a lone SNAP button over a black void while the first scene renders.
+  // A run's opening frame is often a cached authored still, so it paints
+  // almost immediately — while the first turn's narration and choices are
+  // still being written. Lifting the gate on the picture alone therefore put a
+  // live-looking rail, danger bar and menu on screen several seconds before
+  // there was anything to choose. Hold the gate until the first turn actually
+  // lands. The ceiling is the safety valve: a stalled first turn must never
+  // strand the UI behind the gate (the turn watchdog handles recovery).
+  const BOOT_GATE_MAX_HOLD_MS = 20000;
+
   function markSceneAwaiting() {
     state.sceneVisible = false;
     document.body.classList.add("awaiting-first-scene");
+    state.bootGateHeld = true;
+    state.bootTurnLanded = false;
+    clearTimeout(state.bootGateTimer);
+    state.bootGateTimer = setTimeout(() => {
+      console.warn("[standalone] boot gate released on timeout — waited for " +
+                   "scene=" + state.sceneVisible + " turn=" + state.bootTurnLanded);
+      releaseBootGate(true);
+    }, BOOT_GATE_MAX_HOLD_MS);
+  }
+
+  // The chrome may only come up once the run is BOTH looking at something and
+  // playable. Releasing on the turn alone put the HUD over a black screen;
+  // releasing on the picture alone put it over a run with nothing to choose.
+  function releaseBootGate(force) {
+    if (!state.bootGateHeld) return;
+    if (!force && !(state.sceneVisible && state.bootTurnLanded)) return;
+    clearTimeout(state.bootGateTimer);
+    state.bootGateTimer = null;
+    state.bootGateHeld = false;
+    document.body.classList.remove("awaiting-first-scene");
+    revealSceneChrome();
+  }
+
+  // The first turn has arrived. Still not enough on its own — see above.
+  function markBootTurnLanded() {
+    state.bootTurnLanded = true;
+    releaseBootGate(false);
+  }
+
+  // Called by setScene once the incoming image has actually decoded and been
+  // swapped in, so "visible" means visible.
+  function markScenePainted() {
+    // The new frame is genuinely on screen now, so release anything waiting to
+    // hand off to it before the realtime gate below can return early.
+    flushScenePaintedWaiters();
+    try {
+      if (typeof scanInRealtime === "function" && scanInRealtime()) return;
+    } catch (_) {}
+    markSceneVisible();
+  }
+
+  // One-shot subscribers for "the next scene image is actually painted".
+  // INTERACT's close-up hands off on this beat instead of polling for the turn
+  // to settle, so the dive cannot outlive the frame it dove out of.
+  const scenePaintedWaiters = [];
+
+  function onNextScenePainted(fn) {
+    if (typeof fn === "function") scenePaintedWaiters.push(fn);
+  }
+
+  function flushScenePaintedWaiters() {
+    if (!scenePaintedWaiters.length) return;
+    const due = scenePaintedWaiters.splice(0, scenePaintedWaiters.length);
+    for (const fn of due) {
+      try { fn(); } catch (_) {}
+    }
   }
 
   function markSceneVisible() {
     if (state.sceneVisible) return;
     state.sceneVisible = true;
-    document.body.classList.remove("awaiting-first-scene");
+    // Mid-run this is the moment the chrome belongs on screen. At boot it also
+    // has to wait for the first turn, so the reveal rides on releaseBootGate.
+    if (state.bootGateHeld) { releaseBootGate(false); return; }
+    revealSceneChrome();
+  }
+
+  function revealSceneChrome() {
     // There is now something to photograph, which is what reveals the camera
     // (see updateRendererButton) — in stills that's this call, not a renderer
     // status change, so nothing else would refresh it.
@@ -2372,8 +2446,21 @@
   // Scene rendering
   // ------------------------------------------------------------------
 
+  // How long the CURRENT picture may stay up while the next one loads. Past
+  // this we swap regardless, rather than sit on a stale frame forever.
+  const SCENE_SWAP_MAX_WAIT_MS = 8000;
+  const SCENE_LOAD_RETRIES = 3;
+  // Only the most recently requested scene may paint. Two turns landing close
+  // together used to be able to finish loading out of order and leave the
+  // older picture on screen.
+  let sceneSwapSeq = 0;
+
   function setScene(imageUrl, opts) {
     if (!imageUrl) return;
+    // Any scene arriving from somewhere OTHER than the sequence player ends
+    // playback: a fallback still, a camera plate or the next turn must not have
+    // last turn's in-betweens painting over the top of it.
+    if (!(opts && opts.fromSequence)) sceneSequence.stop();
     state.currentStillUrl = imageUrl; // remember for stills-mode SCAN capture
     // A new scene is on screen: any hotspots from the previous shot are now
     // stale, so drop them. Scanning is manual (behind the SCAN button) — we
@@ -2382,37 +2469,254 @@
     updateScanButton();
     const silent = !!(opts && opts.silent);
     const instant = !!(opts && opts.instant);
-    const incoming = state.activeScene === "A" ? el.sceneB : el.sceneA;
-    const outgoing = state.activeScene === "A" ? el.sceneA : el.sceneB;
-    // `instant` swaps with NO crossfade — used to keep a silent still "floor"
-    // under the realtime video without any visible transition/flash.
-    if (instant) {
-      const prevIn = incoming.style.transition;
-      const prevOut = outgoing.style.transition;
-      incoming.style.transition = "none";
-      outgoing.style.transition = "none";
-      incoming.style.backgroundImage = `url('${imageUrl}')`;
+    const mine = ++sceneSwapSeq;
+
+    const apply = (paintUrl) => {
+      const incoming = state.activeScene === "A" ? el.sceneB : el.sceneA;
+      const outgoing = state.activeScene === "A" ? el.sceneA : el.sceneB;
+      // `instant` swaps with NO crossfade — used to keep a silent still "floor"
+      // under the realtime video without any visible transition/flash.
+      if (instant) {
+        const prevIn = incoming.style.transition;
+        const prevOut = outgoing.style.transition;
+        incoming.style.transition = "none";
+        outgoing.style.transition = "none";
+        incoming.style.backgroundImage = `url('${paintUrl}')`;
+        incoming.classList.add("scene-active");
+        outgoing.classList.remove("scene-active");
+        void incoming.offsetWidth;
+        incoming.style.transition = prevIn || "";
+        outgoing.style.transition = prevOut || "";
+        state.activeScene = state.activeScene === "A" ? "B" : "A";
+        markScenePainted();
+        return;
+      }
+      incoming.style.backgroundImage = `url('${paintUrl}')`;
       incoming.classList.add("scene-active");
       outgoing.classList.remove("scene-active");
-      void incoming.offsetWidth;
-      incoming.style.transition = prevIn || "";
-      outgoing.style.transition = prevOut || "";
       state.activeScene = state.activeScene === "A" ? "B" : "A";
-      return;
-    }
+      // Skip the white scene flash AND the VCR glitch when we're staging a still
+      // *behind* the live video (silent): both overlays sit above the video, so
+      // firing them here would strobe over the running stream. The re-anchor's own
+      // glitch (on the reactor 'reset' command) masks that hand-off instead.
+      if (!silent) {
+        flashScene();
+        glitchTransition();
+      }
+      // A still is genuinely on screen NOW — this is the only honest place to
+      // say so, because the swap above waited for the image to decode. Callers
+      // used to announce it when they handed us the URL, which is what let the
+      // UI come up over a picture that had not arrived.
+      markScenePainted();
+    };
+
+    // Decode the new picture BEFORE tearing down the one already on screen.
+    // Assigning an undownloaded background-image and activating the layer in
+    // the same breath hides the still we have and shows the layer's near-black
+    // background colour until the file lands — a black screen under a live
+    // HUD, which is what a hard transition (MOVE TO) looked like for as long
+    // as the fetch took. Worse, the server can still be writing the PNG when
+    // the feed item naming it arrives, so the first read can fail outright and
+    // the scene stays black until something happens to repaint it. Retry a
+    // partial read rather than swapping to nothing.
+    let settled = false;
+    let attempt = 0;
+
+    const commit = (paintUrl) => {
+      if (settled || mine !== sceneSwapSeq) return;
+      settled = true;
+      apply(paintUrl);
+    };
+
+    const tryLoad = () => {
+      attempt++;
+      // A failed fetch is cached as a failure, so a retry needs a fresh URL.
+      const probeUrl = attempt === 1
+        ? imageUrl
+        : imageUrl + (imageUrl.indexOf("?") >= 0 ? "&" : "?") + "_retry=" + attempt;
+      const img = new Image();
+      img.onload = () => {
+        if (img.decode) img.decode().then(() => commit(probeUrl), () => commit(probeUrl));
+        else commit(probeUrl);
+      };
+      img.onerror = () => {
+        if (settled || mine !== sceneSwapSeq) return;
+        if (attempt <= SCENE_LOAD_RETRIES) {
+          setTimeout(tryLoad, 600 * attempt);
+          return;
+        }
+        console.warn("[standalone] scene image never loaded:", imageUrl);
+        commit(imageUrl);
+      };
+      img.src = probeUrl;
+    };
+
+    // Never hold the old picture indefinitely.
+    setTimeout(() => commit(imageUrl), SCENE_SWAP_MAX_WAIT_MS);
+    tryLoad();
+  }
+
+  // Swap the picture on the layer that is ALREADY showing: no crossfade, no
+  // flash, no glitch. This is frame-to-frame animation, as opposed to setScene's
+  // "a new scene has arrived" ceremony — running that ceremony per frame would
+  // strobe the whole screen four to sixteen times a turn, and its own 1.5s
+  // crossfade is longer than a frame is on screen.
+  //
+  // setScene flips state.activeScene AFTER painting, so the letter it holds
+  // names the layer currently visible.
+  function paintActiveScene(imageUrl) {
+    if (!imageUrl) return;
+    const layer = state.activeScene === "A" ? el.sceneA : el.sceneB;
+    if (layer) layer.style.backgroundImage = `url('${imageUrl}')`;
+  }
+
+  // Double-buffered frame swap for flipbook playback: paint the HIDDEN layer,
+  // then flip which one is showing. Repainting the visible layer's background
+  // in place (paintActiveScene) left it unrasterized for a beat and the
+  // near-black underlay showed through — the black frames in playback. The
+  // frames on disk were never black; this was always a paint artifact.
+  //
+  // Deliberately does NOT call markScenePainted(): that is the boot gate and
+  // the interact dive's hand-off signal, and must fire once per SCENE, not
+  // once per frame.
+  function paintSequenceFrame(imageUrl) {
+    if (!imageUrl) return;
+    const incoming = state.activeScene === "A" ? el.sceneB : el.sceneA;
+    const outgoing = state.activeScene === "A" ? el.sceneA : el.sceneB;
+    if (!incoming || !outgoing) { paintActiveScene(imageUrl); return; }
+    const prevIn = incoming.style.transition;
+    const prevOut = outgoing.style.transition;
+    incoming.style.transition = "none";
+    outgoing.style.transition = "none";
     incoming.style.backgroundImage = `url('${imageUrl}')`;
     incoming.classList.add("scene-active");
     outgoing.classList.remove("scene-active");
+    void incoming.offsetWidth;
+    incoming.style.transition = prevIn || "";
+    outgoing.style.transition = prevOut || "";
     state.activeScene = state.activeScene === "A" ? "B" : "A";
-    // Skip the white scene flash AND the VCR glitch when we're staging a still
-    // *behind* the live video (silent): both overlays sit above the video, so
-    // firing them here would strobe over the running stream. The re-anchor's own
-    // glitch (on the reactor 'reset' command) masks that hand-off instead.
-    if (!silent) {
-      flashScene();
-      glitchTransition();
-      markSceneVisible(); // a still is now genuinely on screen
+  }
+
+  // ------------------------------------------------------------------
+  // Sequence playback (flipbook)
+  //
+  // A flipbook turn arrives as N full-quality PNG frames instead of one still
+  // (see flipbook.py), and the two places a scene gets shown want different
+  // playback from the same frames: Watch loops the motion while the next turn
+  // renders, Play watches it once and holds on the frame the action ended on.
+  // That difference is one argument, not two implementations.
+  //
+  // Deliberately not a GIF, even though a GIF would loop itself with no
+  // JavaScript at all: GIF is 256 colours with dithering, which throws away
+  // exactly the resolution that splitting a high-resolution grid was for.
+  // ------------------------------------------------------------------
+  function createSequencePlayer(paint) {
+    let timer = null;
+    let token = 0;      // bumped on every stop, so in-flight work can tell it's stale
+    let frames = [];
+    let idx = -1;
+    let key = "";
+
+    function stop() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      token += 1;
+      key = "";
     }
+
+    // Decode every frame before animating. Without this the first pass runs at
+    // the speed of the network and the motion arrives as a slideshow.
+    function preload(urls) {
+      return Promise.all(urls.map((u) => new Promise((resolve) => {
+        const img = new Image();
+        img.onload = img.onerror = () => resolve(u);
+        img.src = u;
+      })));
+    }
+
+    function step(mine, ms, loop) {
+      timer = setTimeout(() => {
+        if (mine !== token) return;
+        idx += 1;
+        if (idx >= frames.length) {
+          if (!loop) { idx = frames.length - 1; return; }  // hold the last frame
+          idx = 0;
+        }
+        paint(frames[idx]);
+        step(mine, ms, loop);
+      }, ms);
+    }
+
+    // `urls` are painted in order. opts: {frameMs, loop, key}. `key` lets a
+    // caller that re-paints on a timer (the Watch stage polls) ask for the same
+    // sequence repeatedly without restarting it from frame 1 every poll.
+    function play(urls, opts) {
+      const list = (urls || []).filter(Boolean);
+      const o = opts || {};
+      if (list.length < 2) { stop(); return false; }
+      if (o.key && o.key === key && timer) return true;
+      stop();
+      const mine = token;
+      key = o.key || "";
+      frames = list;
+      idx = 0;
+      const ms = Math.max(60, Number(o.frameMs) || 420);
+      if (prefersReducedMotion()) {
+        // Show where the action ended and leave it there.
+        frames = [list[list.length - 1]];
+        paint(frames[0], { first: true });
+        return true;
+      }
+      paint(list[0], { first: true });
+      preload(list).then(() => {
+        if (mine !== token) return;
+        step(mine, ms, !!o.loop);
+      });
+      return true;
+    }
+
+    return { play, stop, playing: () => !!timer };
+  }
+
+  // The frames of a scene beat, as URLs. Accepts the engine's sequence payload
+  // (metadata.sequence) or a bare array, and returns [] for a still-only beat.
+  function sequenceFrames(sequence) {
+    if (!sequence) return [];
+    const list = Array.isArray(sequence) ? sequence : sequence.frames;
+    return (list || []).filter((u) => typeof u === "string" && u);
+  }
+
+  // One second a frame. 420ms read as a flicker rather than a held drawing.
+  function sequenceFrameMs(sequence) {
+    const ms = sequence && !Array.isArray(sequence) ? Number(sequence.frame_ms) : 0;
+    return ms > 0 ? ms : 1000;
+  }
+
+  // Play mode: the motion runs ONCE and stops on the last frame. The engine
+  // reports that same last frame as the turn's still, so "held on the end of the
+  // sequence" and "showing the turn's still" are the same picture — the scene
+  // never has to jump when playback finishes.
+  const sceneSequence = createSequencePlayer(function (url, info) {
+    if (info && info.first) setScene(url, { fromSequence: true });
+    else paintSequenceFrame(url);
+  });
+
+  function playSceneSequence(sequence, stillUrl) {
+    const frames = sequenceFrames(sequence);
+    if (frames.length < 2) { setScene(stillUrl); return; }
+    // The `key` is what stops the feed poll from restarting this every second.
+    // Without it the sequence was torn down and replayed from frame 1 on every
+    // repaint, so a 4-frame beat only ever showed its first two frames and
+    // never reached the end it is supposed to hold on.
+    sceneSequence.play(frames, {
+      frameMs: sequenceFrameMs(sequence),
+      loop: false,
+      key: frames.length + "|" + frames[0] + "|" + frames[frames.length - 1],
+    });
+    // SCAN and PHOTO capture whatever is in currentStillUrl, and they must get
+    // the frame the turn ENDS on — never a mid-motion blur. play() paints frame
+    // 1 synchronously (which sets this), so the correction goes after it.
+    state.currentStillUrl = stillUrl || frames[frames.length - 1];
   }
 
   function flashScene() {
@@ -3113,6 +3417,10 @@
     // still; `meta` carries flags like hard_transition (location change) and
     // image_prompt (the text that generated the still).
     applyScene(imageUrl, prompt, meta) {
+      // Flipbook turns carry their in-between frames on the beat. `imageUrl` is
+      // still the single still every other consumer wants (it's the sequence's
+      // last frame), so nothing below has to know the difference.
+      const sequence = meta && (meta.sequence || meta.flipbook);
       const imagePrompt = String((meta && (meta.image_prompt || meta.imagePrompt)) || "").trim();
       if (imagePrompt) this.lastImagePrompt = imagePrompt;
       if (meta && meta.base) this.lastBase = meta.base;
@@ -3150,12 +3458,24 @@
         }
         return;
       }
+      // A flipbook sequence IS the motion for this beat, so it plays here on
+      // the stills renderer instead of being handed to the world model. This
+      // has to come BEFORE the reactor branch: reactorAvailable() stays true
+      // whenever a key is configured even if the session never connects, so
+      // that branch returned every single time and the frames the server had
+      // just generated were dropped on the floor, every turn.
+      if (sequence) {
+        playSceneSequence(sequence, imageUrl);
+        return;
+      }
       // Always paint the still first. If we can upgrade, the world model
       // covers it; if we can't, this IS the picture.
       if (!this.lockedStills && this.reactorAvailable()) {
         this.mode = "reactor";
+        // setScene announces the still once it has actually decoded and been
+        // painted; claiming it here (the moment we had a URL) is what let the
+        // HUD come up over a black screen.
         if (scene.imageUrl) setScene(scene.imageUrl, { silent: true, instant: true });
-        if (scene.imageUrl && !scanInRealtime()) markSceneVisible();
         const steer = () => {
           const next = this.liveScene({ hard: scene.hardTransition }) || scene;
           if (next && next.prompt) window.ReactorRenderer.applyScene(next);
@@ -3169,7 +3489,9 @@
         this.upgradeToLive({ reason: "scene" }).then((ok) => { if (ok) steer(); });
         return;
       }
-      if (imageUrl) setScene(imageUrl);
+      // Stills renderer: this IS the picture, so play the motion if there is any.
+      if (sequence) playSceneSequence(sequence, imageUrl);
+      else if (imageUrl) setScene(imageUrl);
     },
 
     // Drop out of realtime and show the still renderer instead. Used whenever
@@ -4423,7 +4745,15 @@
   try { window.__DangerSystem = DangerSystem; } catch (_) {}
 
   function updateRendererButton() {
-    const realtime = Renderer.mode === "reactor" && Renderer.reactorAvailable();
+    // Same trap as the lamp below: mode stays "reactor" on the stills floor, so
+    // this used to stamp realtime-on over a run that was rendering stills. That
+    // class lifts #reactor-video/#reactor-freeze above the still (z-index 1/2)
+    // and puts a first-person move-pad on a static frame, so a dead stream
+    // could cover a perfectly good picture. It means "live video is presenting".
+    const realtime = Renderer.mode === "reactor"
+      && Renderer.reactorAvailable()
+      && !Renderer._terminalStills
+      && !Renderer.lockedStills;
     document.body.classList.toggle("realtime-on", realtime);
     // The camera works on a still frame just as well as on live video, so it's
     // revealed by "there is a scene", not "realtime is up". Gating it on
@@ -8408,6 +8738,10 @@
     let progressFrames = [];
     let progressIdx = -1;
     let followLive = true;
+    // Flipbook frames per turn (job.sequences), for the turns of this run that
+    // drew a sequence instead of a still. Empty for an ordinary stills run.
+    let progressSequences = {};
+    let stageFrameMs = 420;
     // Timeline: which job the rail belongs to, how many dots are already
     // drawn, and which turn's card is open. A fresh start wipes these so
     // the last run's picture and dots never linger on "START RENDER".
@@ -8942,18 +9276,45 @@
     // ── live scrubbing through the run in progress ──────────────────────
     let lastJob = null;
 
-    function updateProgressFrames(frames) {
+    function updateProgressFrames(frames, sequences, frameMs) {
       progressFrames = frames || [];
+      if (sequences) progressSequences = sequences;
+      if (frameMs > 0) stageFrameMs = frameMs;
       if (followLive || progressIdx < 0 || progressIdx > progressFrames.length - 1) {
         progressIdx = progressFrames.length - 1;
       }
     }
 
+    // Watch loops: the stage holds a turn until the next one renders, and a
+    // looping sequence is the difference between watching the run move and
+    // watching it cut between outcomes.
+    const stageSequence = createSequencePlayer(function (url) {
+      if (el.renderFrame) el.renderFrame.src = url;
+    });
+
+    // The flipbook frames behind a view frame, from job.sequences (keyed by the
+    // view frame's turn prefix — see render_jobs._sequences).
+    function stageSequenceFor(src) {
+      if (!src || !progressSequences) return [];
+      const name = String(src).split("/").pop() || "";
+      const key = name.replace(/_view\.png$/, "");
+      return progressSequences[key] || [];
+    }
+
     function paintStageFrame() {
       const src = progressFrames[progressIdx];
+      const seq = stageSequenceFor(src);
       if (el.renderFrame) {
         el.renderFrame.classList.toggle("hidden", !src);
-        if (src) el.renderFrame.src = "/api/render/file/" + src;
+        if (seq.length > 1) {
+          // Keyed on the turn so the poll loop below, which repaints every few
+          // seconds, doesn't restart the motion from frame 1 each time.
+          stageSequence.play(seq.map((p) => "/api/render/file/" + p),
+                             { frameMs: stageFrameMs, loop: true, key: src });
+        } else {
+          stageSequence.stop();
+          if (src) el.renderFrame.src = "/api/render/file/" + src;
+        }
       }
       if (el.renderFrameEmpty) el.renderFrameEmpty.classList.toggle("hidden", !!src);
       if (el.renderPrev) el.renderPrev.disabled = progressIdx <= 0;
@@ -8988,6 +9349,7 @@
     function resetLiveStage() {
       ensureTimelineDom();
       progressFrames = []; progressIdx = -1; followLive = true; lastJob = null;
+      progressSequences = {}; stageSequence.stop();
       railJobId = null; railSig = ""; openTurn = null;
       stopCeremonyWatch();
       clearCeremony();
@@ -9289,7 +9651,7 @@
       if (running) {
         lastJob = job;
         show("progress");
-        updateProgressFrames(job.frames);
+        updateProgressFrames(job.frames, job.sequences, job.sequence_frame_ms);
         paintStageFrame();
         paintRail(job.beats, job.id);
         paintScanOverlay(job.beats);
@@ -9328,7 +9690,7 @@
       // to skip paintStageFrame, so the last turn never landed — then the
       // ceremony video wiped whatever was there.
       lastJob = job;
-      updateProgressFrames(job.frames);
+      updateProgressFrames(job.frames, job.sequences, job.sequence_frame_ms);
       paintStageFrame();
       // The run reached a terminal state — hand the recorded live film (if any)
       // to the server so it lands in this run's folder as the Film cut.
@@ -11470,10 +11832,29 @@
       revealTimer = null;
     }
 
+    // A menu press made DURING a transition used to be dropped on the floor:
+    // every confirm handler bails on isBusy(), and the veil owns ~1.3s. So
+    // pressing PLAY (or Enter) while the picker was still animating in did
+    // nothing at all, and the app read as stuck on the startup screen — the
+    // player has no way to know their press was swallowed. Hold the LAST
+    // intent instead and run it once the veil clears. Last-one-wins is the
+    // right semantic for menu navigation: it can't queue up a backlog of
+    // stale screens.
+    let pending = null;
+
+    function whenFree(fn) {
+      if (typeof fn !== "function") return;
+      if (!busy) { fn(); return; }
+      pending = fn;
+    }
+
     function finish() {
       document.body.classList.remove("buck-on", "buck-out");
       busy = false;
       clear();
+      const next = pending;
+      pending = null;
+      if (next) { try { next(); } catch (_) {} }
     }
 
     function play(swap) {
@@ -11501,7 +11882,7 @@
       });
     }
 
-    return { play, isBusy };
+    return { play, isBusy, whenFree };
   })();
 
   // ── START MENU ─────────────────────────────────────────────────────────
@@ -11856,13 +12237,13 @@
 
     function openPicker() {
       if (isPickerOpen()) return;
-      if (Buck.isBusy()) return;
+      if (Buck.isBusy()) { Buck.whenFree(openPicker); return; }
       Buck.play(applyPickerOpen);
     }
 
     function closePicker() {
       if (!isPickerOpen()) return;
-      if (Buck.isBusy()) return;
+      if (Buck.isBusy()) { Buck.whenFree(closePicker); return; }
       Buck.play(applyPickerClose);
     }
 
@@ -11915,7 +12296,9 @@
     }
 
     async function confirmPlay() {
-      if (!isPickerOpen() || Buck.isBusy()) return;
+      if (!isPickerOpen()) return;
+      // Don't discard the press just because the picker is still animating.
+      if (Buck.isBusy()) { Buck.whenFree(confirmPlay); return; }
       const item = await activateSelected();
       if (item && item.preview_url) {
         try { Signal.hold(item.preview_url); } catch (_) {}
@@ -11926,7 +12309,8 @@
     }
 
     async function confirmWatch() {
-      if (!isPickerOpen() || Buck.isBusy()) return;
+      if (!isPickerOpen()) return;
+      if (Buck.isBusy()) { Buck.whenFree(confirmWatch); return; }
       const item = await activateSelected();
       if (item && item.preview_url) {
         try { Signal.hold(item.preview_url); } catch (_) {}
@@ -11937,7 +12321,8 @@
     }
 
     async function confirmEdit() {
-      if (!isPickerOpen() || Buck.isBusy()) return;
+      if (!isPickerOpen()) return;
+      if (Buck.isBusy()) { Buck.whenFree(confirmEdit); return; }
       const item = await activateSelected();
       if (item && item.preview_url) {
         try { Signal.hold(item.preview_url); } catch (_) {}
@@ -15161,6 +15546,21 @@
       });
       el.choices.appendChild(btn);
     });
+    // A fourth row, the way an encounter offers one: doing something nobody
+    // wrote is a CHOICE sitting with the others, not a separate button off to
+    // the side. It opens the same free-will input the ACT hub did.
+    const custom = document.createElement("button");
+    custom.className = "choice-btn choice-btn-custom";
+    custom.style.animationDelay = `${promptItem.choices.length * 70}ms`;
+    custom.innerHTML = `<span class="choice-num">${promptItem.choices.length + 1}</span>`
+      + `<span>Custom</span>`;
+    custom.addEventListener("click", () => {
+      if (state.processing || state.gameOver) return;
+      Sound.select();
+      try { Haptics.select(); } catch (_) {}
+      openFreeWill();
+    });
+    el.choices.appendChild(custom);
   }
 
   function enterGameOver(message) {
@@ -15336,6 +15736,9 @@
         // The engine pairs a death with a "GAME OVER" restart prompt; when
         // we're in the death state we let the overlay own restart instead.
         clearTurnWatchdog();
+        // The turn is playable now (or it's a death, which the overlay owns).
+        // The gate still waits on the picture; see releaseBootGate.
+        markBootTurnLanded();
         state.lastTurnTs = Date.now(); // post-turn cooldown for pre-warm counts from here
         if (state.gameOver || (item.content || "").toUpperCase() === "GAME OVER") {
           state.gameOver = true;
@@ -15591,7 +15994,22 @@
   // way to act. This guarantees the player is never permanently stuck: we do one
   // forced feed catch-up, then — if still unresolved — release the UI with
   // recovery choices so the game can continue.
-  const TURN_WATCHDOG_MS = (typeof window !== "undefined" && window.__TURN_WATCHDOG_MS__) || 26000;
+  // 26s was below the cost of a healthy turn. Ordinary scan/move turns resolve
+  // in ~29-30s because the frame has to be generated, so the watchdog was
+  // firing a few seconds BEFORE the good turn landed — interrupting working
+  // turns and dumping "the world hesitated" plus generic verbs over a turn that
+  // then arrived anyway. Zero 409s the whole time, because the server was never
+  // the problem.
+  const TURN_WATCHDOG_MS = (typeof window !== "undefined" && window.__TURN_WATCHDOG_MS__) || 45000;
+
+  // A deadline alone cannot tell a slow turn from a dead one, which is what
+  // made this recur: any fixed number is either short enough to interrupt real
+  // turns or long enough to strand the player. So we also check liveness. The
+  // feed cursor (state.lastId) advances only when the server emits another
+  // item, so if it moved while we were waiting the backend is demonstrably
+  // working and we extend instead of interrupting. Bounded, so a server that
+  // chatters without ever resolving still recovers the UI.
+  const TURN_WATCHDOG_MAX_EXTENSIONS = 4;
   function encounterBusy() {
     try {
       return !!(window.Encounter && (
@@ -15605,15 +16023,22 @@
   function clearTurnWatchdog() {
     if (state.turnWatchdog) { clearTimeout(state.turnWatchdog); state.turnWatchdog = null; }
   }
-  function armTurnWatchdog() {
+  function armTurnWatchdog(extension) {
     clearTurnWatchdog();
+    const ext = extension || 0;
     const ms = encounterBusy() ? 120000 : TURN_WATCHDOG_MS;
+    const armedAtId = state.lastId; // liveness baseline, see above
     state.turnWatchdog = setTimeout(async () => {
       state.turnWatchdog = null;
       if (!state.awaitingResolution) return; // already resolved
       try { await pollOnce(); } catch (_) {} // maybe a poll was just missed
       if (!state.awaitingResolution) return; // catch-up delivered the prompt
       if (encounterBusy()) return; // do not dump explore verbs over a Moment
+      // The turn is still arriving, not stuck: give it another window.
+      if (state.lastId > armedAtId && ext < TURN_WATCHDOG_MAX_EXTENSIONS) {
+        armTurnWatchdog(ext + 1);
+        return;
+      }
       try {
         if (window.Cutscene && Cutscene.isActive && Cutscene.isActive()) return;
         if (window.Moments && Moments.topType && Moments.topType() === "cutscene") return;
@@ -15862,7 +16287,21 @@
     // blackout can transiently flip it to false during the very moment we want
     // to fade (a recent re-anchor / stream sample), and silently dropping the
     // fade there is exactly the "world keeps going" symptom this fixes.
-    if (Renderer.mode !== "reactor") {
+    //
+    // `mode` is NOT sufficient on its own: fallbackToStills deliberately leaves
+    // mode === "reactor" so a fixed key can upgrade the session without a
+    // toggle. So after a fallback (an empty Reactor balance answers 402 on
+    // every connect) this guard passed, we faded #reactor-freeze to opaque
+    // black over the still, and the lift never came — exactly the "stuck dark
+    // until the safety cap" this comment warns about, for 60s, on every MOVE
+    // TO. Nav mode looked broken while camera mode was fine, because the
+    // camera never takes this path. Ask whether realtime can actually present
+    // frames, not what the mode string says.
+    const realtimePresenting = Renderer.mode === "reactor"
+      && !Renderer._terminalStills
+      && !Renderer.lockedStills
+      && Renderer.reactorAvailable();
+    if (!realtimePresenting) {
       try { RtLog.push("dim", "\u2298 MOVE TO fade skipped (still mode \u2014 no live drift)"); } catch (_) {}
       return;
     }
@@ -16046,8 +16485,11 @@
     const kind = cameraCaptureKind();
     if (kind === "wait") return null;
     if (kind === "plate") return cropStillRegion(getStillImage(), normBox, out);
-    const wantLive = kind === "live" || (kind === "play" &&
-      Renderer.mode === "reactor" && Renderer.reactorAvailable() && window.ReactorRenderer);
+    // Same gate as captureScanFrame: "is the feed showing", not "is a key
+    // configured". reactorAvailable() stays true after the stream fails to
+    // connect, which sent this down the live path and cropped the empty video
+    // element — every photo filed a black texture as evidence.
+    const wantLive = kind === "live" || (kind === "play" && scanInRealtime());
     if (wantLive) {
       const live = window.ReactorRenderer.captureRegion
         ? window.ReactorRenderer.captureRegion(normBox, out) : null;
@@ -18278,8 +18720,13 @@
   }
 
   // Take the shot: crop the region under the reticle, flash, sound, file it to
-  // the case file, and pop the satisfying evidence flourish. Stays armed so you
-  // can keep gathering evidence tap after tap.
+  // the case file, and pop the satisfying evidence flourish.
+  //
+  // ONE SHOT PER RAISE. The camera used to stay armed for tap-after-tap
+  // shooting, which made a photograph cost nothing — you could spray the room
+  // and sort it out later. Lowering the camera on the shot makes raising it a
+  // decision and the shutter a commitment. A MISS does not spend the raise
+  // (see the worthy-shot gate below): you are still hunting, so you stay up.
   function captureAt() {
     if (state.viewfinderFailed) {
       showRendererToast("Camera couldn't restage \u2014 put away and try again");
@@ -18310,7 +18757,9 @@
     photoKick();
     try { Sound.shutter(); } catch (_) {}
     try { Haptics.shutter(); } catch (_) {}
-    presentCapture(texture); // full-screen cinematic hold on the shot
+    // The shot is taken: lower the camera once the reveal has had the screen,
+    // so the takeover is never cut off by the put-away fade.
+    presentCapture(texture, lowerCameraAfterShot);
     // NOTE: the subject is "spent" (document-once) only once the appraisal is
     // actually credited in printReceipt — never eagerly here, so a cancelled or
     // empty shot never burns a POI without banking its evidence.
@@ -18321,6 +18770,24 @@
       focusGrade: shot.ok ? shot.grade : null,
     });
   }
+
+  // The raise is spent — put the camera away. Tied to the capture reveal
+  // finishing rather than a fixed delay, so skipping the hold lowers the
+  // camera immediately instead of leaving the viewfinder up for the remainder
+  // of a timer the player already dismissed.
+  function lowerCameraAfterShot() {
+    if (!isCameraMode() && !state.touchMode) return; // already put away
+    try {
+      closeTouch();
+    } catch (err) {
+      console.warn("[standalone] auto put-away after shot failed", err);
+    }
+  }
+
+  // Longest the put-away will hold the camera veil waiting for realtime to
+  // re-present the 3P world. Past this the still underneath is a better answer
+  // than a black screen.
+  const CAMERA_REVEAL_MAX_WAIT_MS = 4000;
 
   function closeTouch() {
     if (!isCameraMode() && !state.touchMode) return;
@@ -18365,18 +18832,43 @@
       if (token !== state.viewfinderToken) return;
       clearSceneZoom();
       revealPlayWorld();
-      if (back) setScene(back, { instant: true });
+      // Putting the camera away uncovers the 3P world, so there must be a 3P
+      // picture to uncover. `back` is the snapshot taken when the camera went
+      // up and is empty on several paths (a capture clears it, a raise before
+      // any still landed never set it) — and an empty `back` used to mean this
+      // simply painted nothing, lifting the veil onto black. Fall back to
+      // whatever the run's current picture actually is.
+      const restore = back
+        || state.currentStillUrl
+        || (Renderer.lastScene && Renderer.lastScene.imageUrl)
+        || null;
+      if (restore) setScene(restore, { instant: true });
+      else console.warn("[standalone] camera put away with no still to restore");
       const steered = retargeted ? restorePlayReactor() : false;
       state.gameplayStillUrl = null;
       state.gameplayPrompt = null;
       state.playCameraSnapshot = null;
-      if (!steered) endCameraFade();
-      else {
-        whenReactorReveals(token, () => {
-          if (token !== state.viewfinderToken) return;
-          endCameraFade();
-        });
-      }
+      // endCameraFade is the only thing that lifts the camera veil, so every
+      // path has to reach it. Waiting on a reactor reveal that can never come
+      // (an empty balance 402s on connect) left the veil down permanently —
+      // the whole run stayed black after one photograph, with no way back.
+      // Same trap as beginMoveTransition: ask whether realtime can actually
+      // present, and keep a timeout so a reveal that merely never arrives
+      // cannot strand the veil either.
+      const canReveal = steered
+        && Renderer.mode === "reactor"
+        && !Renderer._terminalStills
+        && !Renderer.lockedStills
+        && Renderer.reactorAvailable();
+      if (!canReveal) { endCameraFade(); return; }
+      let lifted = false;
+      const lift = () => {
+        if (lifted || token !== state.viewfinderToken) return;
+        lifted = true;
+        endCameraFade();
+      };
+      whenReactorReveals(token, lift);
+      setTimeout(lift, CAMERA_REVEAL_MAX_WAIT_MS);
     };
     // Fade first. Clearing zoom or un-hiding video before the veil is down
     // flashes the plate and the guide still. A failed raise is already
@@ -18412,10 +18904,15 @@
   // classic war-photography reveal in a film — then fades, handing off to the
   // scoring receipt (which is developing underneath). Tap anywhere to skip.
   let _cinemaHoldTimer = 0, _cinemaOutTimer = 0;
-  function presentCapture(texture) {
+  // `onDone` fires when the takeover is finished with the screen — whether it
+  // ran its full hold, the player tapped to skip, or it declined to show at
+  // all. One shot per raise hangs the camera's put-away on it, so it must be
+  // called on EVERY path out of here or the camera would stay up.
+  function presentCapture(texture, onDone) {
+    const done = () => { try { if (onDone) onDone(); } catch (_) {} };
     const c = el.captureCinema;
-    if (!c || !texture) return;
-    if (prefersReducedMotion()) return; // no full-screen takeover under reduced motion
+    if (!c || !texture) { done(); return; }
+    if (prefersReducedMotion()) { done(); return; } // no full-screen takeover under reduced motion
     const photo = c.querySelector(".capture-cinema-photo");
     if (photo) photo.style.backgroundImage = `url('${texture}')`;
     clearTimeout(_cinemaHoldTimer);
@@ -18434,6 +18931,7 @@
       _cinemaOutTimer = setTimeout(() => {
         c.classList.remove("out");
         c.classList.add("hidden");
+        done();
       }, 520);
     };
     function onTap(e) { e.preventDefault(); e.stopPropagation(); dismiss(); }
@@ -18483,7 +18981,9 @@
     photoKick();
     try { Sound.shutter(); } catch (_) {}
     try { Haptics.shutter(); } catch (_) {}
-    presentCapture(texture); // full-screen cinematic hold on the shot
+    // One shot per raise applies here too: C is the same photograph, just
+    // centered. No-ops when the camera was never up (shooting from 3P).
+    presentCapture(texture, lowerCameraAfterShot);
     // Spent only when the appraisal is credited (see printReceipt), not here.
     Photo.capture({
       texture, region, kind: "photo", label: "the center of the view",
@@ -18525,8 +19025,12 @@
     const kind = cameraCaptureKind();
     if (kind === "live") return true;
     if (kind === "plate" || kind === "wait") return false;
+    // window.ReactorRenderer is checked before the reach: every capture path
+    // gates on this function now, so a throw here takes SCAN and the camera
+    // down together.
     return Renderer.mode === "reactor" && Renderer.reactorAvailable() &&
-      window.ReactorRenderer.isShowing && window.ReactorRenderer.isShowing();
+      !!window.ReactorRenderer && window.ReactorRenderer.isShowing &&
+      window.ReactorRenderer.isShowing();
   }
 
   // A loaded <img> of the current still (stills mode), cached per URL, or null
@@ -18547,6 +19051,17 @@
       // (naturalWidth 0 -> no detection), which never affects the visible scene.
       img.crossOrigin = "anonymous";
       img.setAttribute("data-src", url);
+      // SCAN's gate is `!!getStillImage()`, which is false until this decodes.
+      // Callers check it once, at a moment they choose — closeTouch() checks it
+      // the instant the camera comes down, which is precisely when this Image
+      // has just been created for the restored 3P still and cannot possibly be
+      // complete. With nothing re-checking, SCAN stayed greyed out for the rest
+      // of the run and the player had no way to turn the scene into options
+      // again. Re-arm the button the moment the frame is actually scannable.
+      img.addEventListener("load", () => {
+        if (state.scanStillImg !== img) return; // superseded by a newer scene
+        try { updateScanButton(); } catch (_) {}
+      });
       img.src = url;
       state.scanStillImg = img;
     }
@@ -18590,13 +19105,24 @@
     const kind = cameraCaptureKind();
     if (kind === "wait") return null;
     if (kind === "plate") return stillScanFrame(getStillImage());
-    const reactorUp = kind === "live" || (kind === "play" &&
-      Renderer.mode === "reactor" && Renderer.reactorAvailable() && window.ReactorRenderer);
+    // `scanInRealtime()` — NOT reactorAvailable() — is the question that
+    // matters: is the live stream actually the thing on screen? A configured
+    // key makes the renderer "available" even when the stream never connected
+    // (no credits, offline, dropped), and taking this branch on that basis
+    // captured the dead video element instead of the still the player is
+    // looking at. scanAvailable() already reasons this way; this didn't, so the
+    // button stayed lit over a scannable still while every tap captured nothing
+    // and triggerScan() dropped the pass in silence.
+    const reactorUp = kind === "live" || (kind === "play" && scanInRealtime());
     if (reactorUp) {
       const frame = window.ReactorRenderer.captureFrame
         ? window.ReactorRenderer.captureFrame(640) : null;
       const size = (window.ReactorRenderer.getVideoSize && window.ReactorRenderer.getVideoSize()) || null;
       if (frame) return { frame, size };
+      // Deliberately NO still fallback here: we only get in this branch when
+      // the live feed is genuinely on screen, and the last Gemini still is the
+      // PREVIOUS location — scanning it is how MOVE TO ends up offering nouns
+      // from a place the player already left. Miss instead.
       if (kind === "live" && getStillImage()) return stillScanFrame(getStillImage());
       return null;
     }
@@ -18645,7 +19171,18 @@
     if (state.scanBusy) return; // a pass is already in flight — ignore re-taps
     if (!scanAvailable()) return; // nothing readable on screen yet
     const cap = captureScanFrame();
-    if (!cap || !cap.frame) return;
+    if (!cap || !cap.frame) {
+      // scanAvailable() said there was something to read, so a miss here is a
+      // disagreement between those two — the bug that made SCAN look dead for a
+      // whole session. Never fail silently again.
+      console.warn("[standalone] SCAN had nothing to capture", {
+        mode: Renderer.mode,
+        reactorAvailable: (() => { try { return Renderer.reactorAvailable(); } catch (_) { return "?"; } })(),
+        realtime: (() => { try { return scanInRealtime(); } catch (_) { return "?"; } })(),
+        still: !!getStillImage(),
+      });
+      return;
+    }
     // A fresh pass restarts the fade clock and cancels any pending teardown.
     clearTimeout(state.scanFadeTimer); state.scanFadeTimer = null;
     clearTimeout(state.scanFadeOutTimer); state.scanFadeOutTimer = null;
@@ -19226,7 +19763,7 @@
   //     time, unconditionally. MOVE is currently the only object verb on the bar.
   //   • INTERACT — injects a LIVE realtime event into the running world model (a
   //     prompt hot-swap) so the world reacts in place, without changing scene.
-  //     Shelved for now; see INTERACT_ENABLED below.
+  //     Realtime-only shelving; see interactEnabled() below.
   //   • TALK — opens a live conversation overlay (unchanged).
   // MOVE composes a clean, natural prompt from the verb + the object's own name;
   // the consequence LLM (server-side) turns that intent into an in-world outcome
@@ -19294,14 +19831,39 @@
     return !OBJECT_LABEL_RE.test(obj.label || "");
   }
 
-  // INTERACT is shelved. Its whole premise is that the live world model reacts
-  // to a poke in place — no backend turn, no new scene — and today's models are
-  // not good enough for that to read as anything happening at all. Offering it
-  // beside MOVE TO just splits players onto the dead path. MOVE crosses ground
-  // and comes back with a new vantage, which is the verb that actually shows.
-  // Flip this back on when the world model can honour interact() visibly; the
-  // action definition below is kept intact for that day.
-  const INTERACT_ENABLED = false;
+  // INTERACT is shelved for the REALTIME path only. Its premise there is that
+  // the live world model reacts to a poke in place — no backend turn, no new
+  // scene — and today's models don't make that read as anything happening, so
+  // offering it beside MOVE TO just split players onto a dead path.
+  //
+  // That reasoning does not apply to STILLS, and a flat `false` shelved it
+  // everywhere. On stills, INTERACT is a full backend turn that draws a new
+  // frame (see this action's `phrase`, handed to the consequence LLM), and
+  // engine.py routes an interaction to a SOFT continuation that develops the
+  // frame the player is already looking at instead of cutting away. Without
+  // it, MOVE TO was the only verb any scanned object ever offered — and MOVE
+  // is an unconditional hard cut, so the whole loop became scan-and-teleport
+  // with nothing that deepens the place you are standing in.
+  // ON for stills, still shelved for live video. The original reasoning — the
+  // live world model can't make a poke in place read as anything happening —
+  // holds only for the realtime path, but a flat `false` shelved the verb
+  // everywhere and left MOVE TO as the only verb any scanned object offered.
+  //
+  // On stills INTERACT commits a real turn, and engine.py routes it to the SOFT
+  // transition (see the `elif interaction` branch): the new frame is refined
+  // img2img from the frame the player was already looking at, so the result is
+  // a CHANGED VERSION OF THE SAME SCENE rather than a fresh composition. That
+  // is the whole point of the verb next to MOVE, which is always a hard cut to
+  // somewhere new.
+  //
+  // The TALK-style ceremony (zoom into the object, choices in a Moment, exit
+  // back out) is not built yet — see docs/plans/INTERACT_MOMENT_PLAN.md.
+  function interactEnabled() {
+    try {
+      if (typeof scanInRealtime === "function" && scanInRealtime()) return false;
+    } catch (_) {}
+    return true;
+  }
 
   const SCAN_ACTIONS = [
     {
@@ -19317,7 +19879,7 @@
       // to the poke NOW where the object sits. Falls back to a full turn when
       // realtime isn't live (still mode).
       id: "interact", label: "INTERACT", title: "Interact with",
-      when: () => INTERACT_ENABLED,
+      when: () => interactEnabled(),
       realtime: true,
       phrase: (o) => "Interact with the " + o + ".",
       // Happy Oyster interaction verb — a concise action string handed to
@@ -19507,7 +20069,11 @@
     // turn is resolving, so it isn't gated on the pipeline being idle. If
     // realtime isn't live (still mode), fall through to a full turn so INTERACT
     // still does something.
-    if (action.realtime) {
+    // `scanInRealtime()` is the gate, NOT action.realtime alone: steerRealtime()
+    // reports success for a steer it merely accepted, so on stills this branch
+    // used to swallow the press — toast, tag pop, `return`, no turn, nothing on
+    // screen — instead of reaching the full-turn fall-through below.
+    if (action.realtime && scanInRealtime()) {
       // Prefer a REAL interaction verb command when the live model takes them
       // (Happy Oyster): the world reacts in place with no rebuild. Otherwise
       // steer with the CONCRETE, renderable reaction phrase (not the abstract
@@ -19552,6 +20118,12 @@
     // may paraphrase away, whereas this is the exact noun detection found.
     const source = action.id === "move" ? "scan_move" : "scan_interact";
     const moveTarget = action.id === "move" ? obj.label : null;
+    // MOVE commits and waits behind the normal ceremony. INTERACT dives in
+    // first (see openInteractMoment) and rides the same turn underneath.
+    if (action.id === "interact" && window.Moments &&
+        typeof window.Moments.push === "function") {
+      openInteractMoment(obj);
+    }
     makeChoice(phrase, null, { source, moveTarget, subject: obj.label });
   }
 
@@ -20740,6 +21312,153 @@
   })();
 
   // ------------------------------------------------------------------
+  // INTERACT — dive into the object, the way SPEAK dives into a person.
+  // Same ceremony: zoom, then a close-up of the thing itself. `object_subject`
+  // on the portrait path keeps the model from inventing a face on something
+  // that hasn't got one.
+  //
+  // The dive runs WHILE the turn resolves, which is the point: an interact
+  // turn takes ~30s to generate a frame, so the wait becomes the dive instead
+  // of a progress bar. And because the turn is the soft/img2img path, popping
+  // the Moment hands the player back their OWN scene, changed by what they
+  // just did — not a cut to somewhere new the way MOVE is.
+  // ------------------------------------------------------------------
+  // Set while a dive is open: asks to leave, and lands on the regenerated
+  // scene once it exists. Shared by the ✕ row and the Esc handler.
+  let interactExit = null;
+
+  (function registerInteractMoment() {
+    if (!window.Moments || typeof window.Moments.register !== "function") return;
+    window.Moments.register("interact", {
+      async enter(payload, entry) {
+        const subj = (payload && payload.subject) || {};
+        try {
+          window.Moments.setNameplate(subj.label || "\u2014", "reaching out\u2026");
+        } catch (_) {}
+        // Pin the live crop first so the dive lands on the object's own pixels
+        // while the close-up develops, rather than on an empty shimmer.
+        const ref = (payload && payload.reference_image) || null;
+        if (ref) {
+          try { window.Moments.setPortrait(ref); } catch (_) {}
+        }
+        try {
+          const res = await postJSON("/api/talk/portrait", {
+            // Pass the detection whole: it carries cx/cy/w/h, so the server
+            // crops the close-up from THIS object where it sits in the frame
+            // (subject_crop) instead of imagining one from the label. `kind`
+            // is what routes the image layer to object_subject, which keeps a
+            // face off a thing that hasn't got one.
+            subject: Object.assign({}, subj, { kind: subj.kind || "object" }),
+            // Required, not optional: with no reference the endpoint answers
+            // no_crop by design (it will not invent a subject it has never
+            // seen), which is what left this dive on a shimmer forever.
+            reference_image: ref || undefined,
+            reference_cropped: ref ? true : undefined,
+          });
+          if (entry && entry.aborted) return true;
+          if (res && res.image_url) window.Moments.setPortrait(res.image_url);
+          else console.warn("[interact] no close-up:", (res && res.reason) || "unknown");
+        } catch (err) {
+          console.warn("[interact] close-up failed:", err);
+        }
+        return true;
+      },
+      async exit() {
+        try { window.Moments.clearChoices(); } catch (_) {}
+        return true;
+      },
+      // Esc is the keyboard version of the ✕: ask to leave, which lands on the
+      // regenerated scene rather than dumping the player out where they were.
+      onEsc() {
+        if (interactExit) interactExit();
+        return true;
+      },
+    });
+  })();
+
+  // Holds the dive open until the turn it was issued alongside resolves.
+  async function openInteractMoment(obj) {
+    // Crop the object's own pixels NOW, before Moments.push letterboxes and
+    // dims the scene — the same discipline TALK follows. This crop is the
+    // likeness the close-up is generated from; without it the portrait
+    // endpoint has nothing to work from and returns no_crop.
+    let referenceFrame = null;
+    try {
+      const box = subjectNormBox(obj);
+      if (box) referenceFrame = captureSceneRegion(box, 768);
+    } catch (_) {}
+    try {
+      await window.Moments.push("interact", {
+        subject: obj,
+        reference_image: referenceFrame,
+      });
+    } catch (e) {
+      console.warn("[interact] moment push failed:", e);
+      return;
+    }
+    // The dive no longer pops itself the instant the turn settles. Leaving is
+    // the player's call, and the whole point of the verb is that they walk out
+    // into the scene they just changed — so an exit asked for before that frame
+    // exists WAITS for it, and hands off to it on the beat it paints.
+    let scenePainted = false;
+    let wantsOut = false;
+    let done = false;
+
+    const pop = () => {
+      if (done) return;
+      done = true;
+      interactExit = null;
+      clearInterval(tick);
+      try {
+        if (window.Moments.topType && window.Moments.topType() === "interact") {
+          window.Moments.pop();
+        }
+      } catch (_) {}
+    };
+
+    const requestExit = () => {
+      if (done) return;
+      wantsOut = true;
+      if (scenePainted) { pop(); return; }
+      // The changed scene is still developing. Say so instead of popping onto
+      // the frame they were trying to leave.
+      try {
+        window.Moments.setNameplate(obj.label || "\u2014", "stepping back\u2026");
+        window.Moments.clearChoices();
+      } catch (_) {}
+    };
+    interactExit = requestExit;
+
+    onNextScenePainted(() => {
+      scenePainted = true;
+      if (wantsOut) { pop(); return; }
+      // Only offer the way out once the frame it leads to actually exists.
+      // Offered earlier, the ✕ promised a scene that was not drawn yet.
+      showInteractExit(obj);
+    });
+
+    // Never trap the player in a close-up, even if no frame ever paints.
+    const HOLD_MAX_MS = 180000;
+    const started = Date.now();
+    const tick = setInterval(() => {
+      if (Date.now() - started > HOLD_MAX_MS) pop();
+    }, 1000);
+  }
+
+  // The way out of a dive. Offered immediately — a close-up you cannot leave is
+  // a trap — and wired to the same exit that waits for the regenerated frame.
+  function showInteractExit(obj) {
+    if (!window.Moments || typeof window.Moments.setChoices !== "function") return;
+    try {
+      window.Moments.setChoices(
+        [{ label: "\u2715\u2003Back to the scene", text: "leave" }],
+        () => { if (interactExit) interactExit(); },
+        {},
+      );
+    } catch (_) {}
+  }
+
+  // ------------------------------------------------------------------
   // Encounter — generated character + danger interrupt.
   // Hitch the live world, develop a confrontation plate of THIS place, offer
   // three laned verbs, then POST /api/encounter/resolve so the play-out
@@ -20764,6 +21483,11 @@
     let pendingFinish = null;
     let releasePending = false;
     let releaseWatchdog = null;
+    // Whether the aftermath turn's choice prompt has already landed for the
+    // round being resolved. Leaving a fight sets the turn gate so the player
+    // cannot act into a turn still in flight, and that gate is only safe to set
+    // while there is still a turn coming to lift it.
+    let promptAfterResolve = false;
     // Last resort for a released fight whose aftermath never arrives. The
     // global turn watchdog stands down while an encounter is busy, so without
     // this a lost turn leaves the player staring at a frozen standoff.
@@ -20853,7 +21577,7 @@
       });
     }
 
-    function playVerdict(outcome, sub) {
+    function playVerdict(outcome, sub, wordOverride) {
       const reduce = (typeof prefersReducedMotion === "function" && prefersReducedMotion());
       const el = document.getElementById("encounter-verdict");
       const wordEl = el && el.querySelector(".encounter-verdict-word");
@@ -20864,14 +21588,20 @@
         escape: "CLEAR",
         die: "DEAD",
       };
-      const word = labels[outcome] || "SURVIVED";
+      // The outcome alone cannot tell winning from merely not dying: putting the
+      // other body down and standing them down are both outcome "survive", so
+      // both came up as SURVIVED. The server sends the word for those (DOWN /
+      // SETTLED) because it is the side that knows the enemy's state.
+      const word = wordOverride || labels[outcome] || "SURVIVED";
       if (wordEl) wordEl.textContent = word;
       if (subEl) subEl.textContent = sub || "";
       if (el) {
         el.classList.remove("is-dead", "is-hurt", "is-clear");
         if (outcome === "die") el.classList.add("is-dead");
         else if (outcome === "wounded") el.classList.add("is-hurt");
-        else if (outcome === "escape") el.classList.add("is-clear");
+        else if (outcome === "escape" || word === "DOWN" || word === "SETTLED") {
+          el.classList.add("is-clear");
+        }
         el.classList.remove("hidden");
         el.setAttribute("aria-hidden", "false");
       }
@@ -20922,6 +21652,7 @@
     }
 
     function restoreExploreIfAborted() {
+      stopPlateFrames(); // never leave frames painting into a scene we just left
       if (!plateLive) return;
       plateLive = false;
       try {
@@ -20942,6 +21673,136 @@
           });
         }
       } catch (_) {}
+    }
+
+    // Play a plate as flipbook frames inside the Moment overlay. Every stage of
+    // an encounter (the standoff, each resolve) should move like the ordinary
+    // view does; the overlay only ever knew how to show one still. Frames are
+    // walked with setScene and the LAST one is held, so a stage that returns no
+    // sequence behaves exactly as it did before.
+    let plateFrameTimer = null;
+    // Bumped by every stop, so a decode that finishes after the Moment has
+    // moved on cannot start an interval over the top of the next beat.
+    let plateFrameToken = 0;
+    // The decoded frames of the sequence being played, held for as long as it
+    // is playing. See playPlateFrames: an unreferenced Image is free to be
+    // collected, and a collected decode is a black frame.
+    let plateFrameHold = null;
+    // Resolves when the running sequence has reached its last frame and is
+    // holding there. The slate waits on this: a standoff is meant to breathe
+    // BEFORE the player reads their options, not underneath them.
+    let plateFramesDone = null;
+    let plateFramesResolve = null;
+
+    function stopPlateFrames() {
+      if (plateFrameTimer) { clearInterval(plateFrameTimer); plateFrameTimer = null; }
+      plateFrameToken += 1;
+      plateFrameHold = null;
+      if (plateFramesResolve) {
+        const done = plateFramesResolve;
+        plateFramesResolve = null;
+        done();
+      }
+    }
+
+    // Decode a picture BEFORE it is assigned to the visible <img>.
+    //
+    // Holding the old plate is only worth anything if the swap to the new one
+    // is clean: assigning a src that has not decoded blanks the element (see
+    // playPlateFrames), so a "hold" that ends in a black flash is just a
+    // shorter version of the same complaint. Bounded, so a slow decode delays
+    // the swap rather than stranding the beat.
+    function decodeBeforePaint(urls, maxMs) {
+      const first = (urls || []).filter(Boolean)[0];
+      if (!first) return Promise.resolve();
+      return new Promise((resolve) => {
+        let done = false;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        const im = new Image();
+        im.onload = im.onerror = finish;
+        im.src = first;
+        setTimeout(finish, Math.max(0, maxMs || 4000));
+      });
+    }
+
+    // Bounded, because a sequence that stalls must not hold the slate hostage.
+    function waitPlateFrames(maxMs) {
+      if (!plateFramesDone) return Promise.resolve();
+      return Promise.race([
+        plateFramesDone,
+        new Promise((r) => setTimeout(r, Math.max(0, maxMs || 6000))),
+      ]);
+    }
+
+    function playPlateFrames(sequence, stillUrl) {
+      stopPlateFrames();
+      const frames = (typeof sequenceFrames === "function") ? sequenceFrames(sequence) : [];
+      if (frames.length < 2) {
+        if (stillUrl) { try { window.Moments.setScene(stillUrl); } catch (_) {} }
+        return false;
+      }
+      const ms = (typeof sequenceFrameMs === "function") ? sequenceFrameMs(sequence) : 1000;
+      // Frame 1 goes through setScene (it owns the develop-in reveal). The rest
+      // set the src directly: setScene re-runs the developing→ready shimmer and
+      // its cue every call, which strobed the plate once per frame.
+      let i = 0;
+      try { window.Moments.setScene(frames[0]); } catch (_) {}
+      const img = document.getElementById("moment-scene-img");
+      const mine = ++plateFrameToken;
+
+      // THE BLACK FRAME. This is an <img> whose src is reassigned per frame,
+      // and an <img> whose new src has not decoded yet renders NOTHING —
+      // naturalWidth 0, a transparent hole over the near-black underlay. The
+      // world layers cannot do this: a background-image div keeps showing the
+      // PREVIOUS picture until the next one is ready, which is why only the
+      // Moment plate went black.
+      //
+      // The old preload was `frames.forEach((u) => { const im = new Image();
+      // im.src = u; })` with the interval starting on the next line — two
+      // faults in one breath. Nothing waited for the decodes, and each Image
+      // was unreferenced the instant the loop moved on, so the browser was
+      // free to drop the load it had just been asked for. Whichever frame's
+      // decode had not landed when its slot came up was black. Traced at 60Hz:
+      // f03 with naturalWidth 0 while f01, f02 and f04 were fine — "every 3rd
+      // frame is black". It read as a flash here because the server was warm
+      // and local; on a slower decode it is the whole slot.
+      //
+      // So: hold the references, and never assign a src that has no pixels.
+      //
+      // What this deliberately does NOT do is wait for the whole set before
+      // starting. That was the first fix and it traded one bug for a worse
+      // one: the plate's motion arrived only once every frame had decoded, so
+      // on a slow decode — an encounter is generating the next plate while
+      // this one plays — the flipbook ran AFTER the player had already read
+      // the slate and chosen. A beat that plays late is worse than a beat with
+      // a repeated frame, because it lands on top of the next decision.
+      //
+      // Instead the cadence starts immediately and each slot swaps only if
+      // that frame is ready. A frame that is not holds the picture on screen
+      // for another beat — which is what the world layers do for free, since a
+      // background-image keeps the previous image until the next one decodes.
+      const decoding = frames.map((u) => { const im = new Image(); im.src = u; return im; });
+      plateFrameHold = decoding;
+      plateFramesDone = new Promise((resolve) => { plateFramesResolve = resolve; });
+      let stalls = 0;
+      plateFrameTimer = setInterval(() => {
+        if (mine !== plateFrameToken) return;
+        const next = i + 1;
+        if (next >= frames.length) { stopPlateFrames(); return; } // hold the last
+        const im = decoding[next];
+        if (im && !(im.complete && im.naturalWidth > 0)) {
+          // Give it another beat. Bounded, so a frame that never arrives (a
+          // 404, a dropped load) holds the plate instead of spinning forever.
+          stalls += 1;
+          if (stalls > 12) stopPlateFrames();
+          return;
+        }
+        stalls = 0;
+        i = next;
+        if (img) img.src = frames[i];
+        else { try { window.Moments.setScene(frames[i]); } catch (_) {} }
+      }, ms);
+      return true;
     }
 
     function waitSceneReady() {
@@ -20974,7 +21835,20 @@
           lane: c.lane || "",
         };
       }).filter((c) => c.label);
-      window.Moments.setChoices(mapped, (item) => pick(item));
+      // The three authored verbs, plus a way to do something nobody wrote.
+      // What gets typed is posted as the choice and drives the roll, the
+      // resolve plate and the aftermath turn exactly like a picked one — the
+      // only difference is that the server has to read it to decide which lane
+      // it is (see match_encounter_choice).
+      window.Moments.setChoices(mapped, (item) => pick(item), {
+        custom: {
+          key: String(mapped.length + 1),
+          label: "Do something else — type it",
+          placeholder: "what do you do?",
+          maxLength: 200,
+          onSubmit: (text) => pick({ text, custom: true }),
+        },
+      });
       armAutoPick(mapped);
     }
 
@@ -20999,6 +21873,9 @@
       const seq = slateSeq;
       autoPickTimer = setTimeout(async () => {
         if (seq !== slateSeq || !active || resolving || !state.autoPlay) return;
+        // Somebody is at the keyboard writing their own answer. Do not commit
+        // one over the top of them mid-sentence.
+        if (customChoiceOpen()) return;
         const idx = await Director.choose(slate.map((c) => c.text));
         // The fight can move on while the director is thinking.
         if (seq !== slateSeq || !active || resolving || !state.autoPlay
@@ -21020,6 +21897,7 @@
       releasePending = false;
       resolveShown = false;
       pendingFinish = null;
+      promptAfterResolve = false;
       clearReleaseWatchdog();
       try { clearTurnWatchdog(); } catch (_) {}
       state.awaitingResolution = false;
@@ -21059,6 +21937,11 @@
       aftermath = null;
       resolveShown = false;
       pendingFinish = null;
+      promptAfterResolve = false;
+      // Whatever the last beat was still animating is over the moment a verb
+      // is committed — a leftover sequence painting into the next plate is
+      // how the standoff bled into its own play-out.
+      stopPlateFrames();
       clearAutoPick();
       try { Sound.encounterResolve(); } catch (_) {}
       try { if (Haptics && Haptics.encounterResolve) Haptics.encounterResolve(); } catch (_) {}
@@ -21071,11 +21954,13 @@
           window.Moments.setSceneLive(false);
         }
       } catch (_) {}
-      try {
-        if (window.Moments && typeof window.Moments.holdBlack === "function") {
-          window.Moments.holdBlack();
-        }
-      } catch (_) {}
+      // HOLD THE PLATE. This used to call Moments.holdBlack(), which strips the
+      // <img> src and raises the solid #050505 shimmer — for the entire
+      // play-out generation, which is ~25s per round. Four rounds of that is
+      // most of a fight spent looking at nothing. The standoff we are resolving
+      // is the truest picture available until the play-out exists, so leave it
+      // on screen and swap when the new one has actually decoded (see the
+      // decode gate before playPlateFrames below).
       await playCeremony("COMMIT");
       if (!active || !resolving) return;
       state.awaitingResolution = true;
@@ -21086,6 +21971,9 @@
         res = await postJSON("/api/encounter/resolve", {
           choice: text,
           lane: (item && item.lane) || "",
+          // Typed: no lane to send, and the server must not fall back to the
+          // index-0 lane (confront) for a line it does not recognise.
+          custom: !!(item && item.custom),
         });
         try { CoinOp.onTurnCompleted(); } catch (_) {}
         try { beginFastPolling(); } catch (_) {}
@@ -21108,15 +21996,52 @@
         if (res.danger) brief.danger = res.danger;
         if (res.stakes) brief.stakes = res.stakes;
       }
-      try { window.Moments.setScene(res.resolve_url); } catch (_) {}
+      // Leave live-world BEFORE pinning the reaction shot. The standoff plate
+      // is composited over the reactor underlay (#moment-scene goes
+      // transparent in live-world), so setting a still while that was still on
+      // let the ORIGINAL plate show through the moment the new one was
+      // decoding: reaction shot, original, reaction shot. This still is a hard
+      // cut and deliberately never goes through the world model, so it has no
+      // business being layered over a live one.
+      if (plateLive) {
+        plateLive = false;
+        try {
+          if (window.Moments && typeof window.Moments.setSceneLive === "function") {
+            window.Moments.setSceneLive(false);
+          }
+        } catch (_) {}
+      }
+      // The standoff has been held on screen all through the generation, so
+      // the first thing the player sees of the play-out must be the picture
+      // itself and not the gap where it is decoding.
+      const firstOut = (typeof sequenceFrames === "function"
+        ? sequenceFrames(res.sequence) : []) || [];
+      await decodeBeforePaint(firstOut.concat([res.resolve_url]));
+      if (!active || !resolving) return;
+      // The play-out moves if the server sent frames for it; otherwise this is
+      // the single still it has always been.
+      if (!playPlateFrames(res.sequence, res.resolve_url)) {
+        try { window.Moments.setScene(res.resolve_url); } catch (_) {}
+      }
       await waitSceneReady();
+      // waitSceneReady only waits for FRAME ONE — #moment-scene goes `ready`
+      // the moment the first image loads. So the remaining three seconds of
+      // the play-out used to run underneath the next round's slate. Let the
+      // motion land before the next decision is offered.
+      await waitPlateFrames();
       if (!active || !resolving) return;
       // Do not send the action still through the world model. liveThePlate
       // restages it as a breathing standoff and recasts the people.
       const outcome = res.outcome || "";
       const released = res.released === true || outcome === "escape" || outcome === "die";
-      const consequence = (res.dispatch || res.stakes || "").trim();
-      await playVerdict(outcome, consequence);
+      // `closing` is the server saying what the fight DID — "A creature is
+      // down. You are still standing." On a release there is no dispatch to
+      // fall back on (the aftermath turn writes that later, on another
+      // thread), so winning used to put the STAKES line under the card: a
+      // sentence about what happens if you hesitate, over a fight you had
+      // already won.
+      const consequence = (res.closing || res.dispatch || res.stakes || "").trim();
+      await playVerdict(outcome, consequence, res.verdict_word || "");
       if (!active || !resolving) return;
       resolveShown = true;
       if (consequence) {
@@ -21137,6 +22062,44 @@
         const next = pendingFinish;
         pendingFinish = null;
         finish(next);
+        return;
+      }
+      // The fight is over the moment the verdict has played, so leave. Waiting
+      // for the aftermath TURN to come back first meant standing in a dead
+      // standoff for however long that turn took — 39 seconds in the session
+      // that prompted this — with no choices, no prose, nothing moving and no
+      // way to act. That is the "it never exits" bug: the exit was gated on a
+      // full turn (LLM + image) rather than on the fight ending.
+      //
+      // Nothing is lost by going now. `aftermath` already holds the resolve
+      // plate, so the world resumes on the picture of what just happened, and
+      // the aftermath turn's prose and choices land through the ordinary feed
+      // path the same way any other turn's do.
+      //
+      // Death is the exception: how a run ends is the server's call and it
+      // arrives as a game_over item, so that one still waits.
+      if (outcome !== "die" && res.alive !== false) {
+        finish({ survived: true });
+        // The fight is over but the aftermath TURN is still generating, so the
+        // world is mid-turn and has to be treated as such. Enter the ordinary
+        // turn state for it: the ceremony stepper is the visible "the world is
+        // catching up", and — the part that actually matters — it sets
+        // state.processing, which is the ONE flag the input paths check.
+        // makeChoice() and submitCustomAction() both bail on state.processing
+        // and neither looks at awaitingResolution, so leaving only that set
+        // meant the player could type an action into a turn that had not landed
+        // yet: two turns ran against each other and their images arrived in
+        // whatever order they finished.
+        //
+        // Skipped if the aftermath prompt already came in, or nothing would
+        // ever clear the gate.
+        if (!promptAfterResolve) {
+          try { Ceremony.begin(); } catch (_) {}
+          state.processing = true;
+          state.awaitingResolution = true;
+          state.lastTurnTs = Date.now();
+          try { armTurnWatchdog(); } catch (_) {}
+        }
         return;
       }
       armReleaseWatchdog();
@@ -21163,6 +22126,7 @@
       resolveShown = false;
       pendingFinish = null;
       releasePending = false;
+      promptAfterResolve = false;
       clearReleaseWatchdog();
       active = true;
       await hitch();
@@ -21228,8 +22192,16 @@
           sc.classList.add("developing");
           sc.classList.remove("ready");
         }
-        try { window.Moments.setScene(plateUrl); } catch (_) {}
+        if (!playPlateFrames(res.sequence, plateUrl)) {
+          try { window.Moments.setScene(plateUrl); } catch (_) {}
+        }
         await waitSceneReady();
+        if (entry && entry.aborted) return false;
+        // The standoff breathes BEFORE the slate, not under it. Measured: the
+        // choices came up 50ms after frame one, so three more seconds of
+        // motion played while the player was already reading — and on a quick
+        // decision the last frames landed on top of the resolve beat.
+        await waitPlateFrames();
         if (entry && entry.aborted) return false;
         await liveThePlate(plateUrl, res.prompt || "");
       }
@@ -21309,6 +22281,7 @@
       // it is done, and it can arrive before this client has finished playing
       // the verdict. requestFinish holds it until the release is ready.
       if (item.type === "player_choice_prompt") {
+        promptAfterResolve = true;
         requestFinish({ survived: true });
       }
     }
@@ -21355,6 +22328,7 @@
       resolveShown = false;
       pendingFinish = null;
       releasePending = false;
+      promptAfterResolve = false;
       clearAutoPick();
       try { if (Sound && Sound.heartbeatStop) Sound.heartbeatStop(); } catch (_) {}
       try {
@@ -21364,9 +22338,19 @@
       } catch (_) {}
     }
 
+    function customChoiceOpen() {
+      try {
+        return !!(window.Moments && window.Moments.customChoiceOpen
+          && window.Moments.customChoiceOpen());
+      } catch (_) { return false; }
+    }
+
     function onKey(e) {
       if (!active) return false;
       if (resolving) return true;
+      // The prompt bar owns the keyboard while it is open, or typing "1 more
+      // step back" would commit the first verb on the slate.
+      if (customChoiceOpen()) return false;
       const k = e && e.key;
       if (k === "1" || k === "2" || k === "3") {
         const idx = parseInt(k, 10) - 1;
@@ -21376,12 +22360,28 @@
         }
         return true;
       }
+      // The typed action sits after the slate, so it answers to the next
+      // number — and to the same key that opens ACT in normal play.
+      if (k === String(choices.length + 1) || k === "f" || k === "F") {
+        try {
+          if (window.Moments && window.Moments.openCustomChoice) {
+            window.Moments.openCustomChoice();
+          }
+        } catch (_) {}
+        return true;
+      }
       return false;
     }
 
     function onEsc() {
       if (!active) return false;
       if (resolving) return true;
+      // Esc out of the prompt bar first: it means "never mind, I'll pick one",
+      // not "run away from the thing in front of me".
+      if (customChoiceOpen()) {
+        try { window.Moments.closeCustomChoice(true); } catch (_) {}
+        return true;
+      }
       const evade = choices.find((c) => c && typeof c === "object" && c.lane === "evade");
       const pickItem = evade || choices[1] || choices[choices.length - 1];
       if (pickItem) {
@@ -22845,12 +23845,23 @@
     const vv = window.visualViewport;
     if (!vv) return;
     const adjust = () => {
+      const keyboard = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      // The encounter's typed action sits in the Moment overlay, not the wheel,
+      // and its bar is low enough that a phone keyboard covers it completely.
+      const slate = document.getElementById("moment-choices");
+      if (slate) {
+        let typing = false;
+        try {
+          typing = !!(window.Moments && window.Moments.customChoiceOpen
+            && window.Moments.customChoiceOpen());
+        } catch (_) {}
+        slate.style.bottom = (typing && keyboard > 80) ? `${keyboard + 8}px` : "";
+      }
       if (!el.actionWheel) return;
       if (!state.freeWillOpen) {
         el.actionWheel.style.bottom = "";
         return;
       }
-      const keyboard = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
       el.actionWheel.style.bottom = keyboard > 80 ? `${keyboard + 8}px` : "";
     };
     vv.addEventListener("resize", adjust);

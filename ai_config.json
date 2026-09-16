@@ -3,56 +3,110 @@
   "text_model": "gemini-3.1-flash-lite",
   "image_provider": "gemini",
   "image_model": "gemini-3.1-flash-lite-image",
-  "last_updated": "2026-07-21T17:56:00.000000+00:00",
+  "image_size": "1K",
+  "last_updated": "2026-09-14T22:32:56.561140+00:00",
+  "model_catalogue": {
+    "image": [
+      {
+        "id": "gemini-3-pro-image",
+        "provider": "gemini",
+        "label": "Gemini Pro",
+        "note": "Slow and expensive, highest fidelity.",
+        "sizes": [
+          "1K",
+          "2K",
+          "4K"
+        ]
+      },
+      {
+        "id": "gemini-3.1-flash-lite-image",
+        "provider": "gemini",
+        "label": "Gemini Fast",
+        "note": "Seconds per frame. The default.",
+        "sizes": [
+          "1K",
+          "2K"
+        ]
+      },
+      {
+        "id": "krea-2/medium",
+        "provider": "krea",
+        "label": "Krea",
+        "note": "~12s. Style transfer holds continuity. Needs KREA_API_KEY.",
+        "sizes": []
+      }
+    ],
+    "text": [
+      {
+        "id": "gemini-3.1-flash-lite",
+        "provider": "gemini",
+        "label": "Gemini Fast",
+        "note": "The default narrator. Fast."
+      },
+      {
+        "id": "claude-sonnet-4-5",
+        "provider": "anthropic",
+        "label": "Claude Sonnet",
+        "note": "Stronger prose. Needs ANTHROPIC_API_KEY."
+      },
+      {
+        "id": "claude-opus-4-5",
+        "provider": "anthropic",
+        "label": "Claude Opus",
+        "note": "Slowest, richest. Needs ANTHROPIC_API_KEY."
+      },
+      {
+        "id": "gpt-4o-mini",
+        "provider": "openai",
+        "label": "GPT-4o mini",
+        "note": "OpenAI narrative. Needs OPENAI_API_KEY."
+      }
+    ]
+  },
   "available_configs": {
     "gemini": {
       "text_provider": "gemini",
       "text_model": "gemini-3.1-flash-lite",
       "image_provider": "gemini",
       "image_model": "gemini-3.1-flash-lite-image",
-      "description": "Gemini (Nano Banana 2 Lite) images — fast ~1K stills, multi-frame continuity. DEFAULT. Requires GEMINI_API_KEY."
+      "image_size": "1K",
+      "description": "Gemini Fast stills \u2014 seconds per frame, multi-frame continuity. DEFAULT."
     },
-    "openai": {
-      "text_provider": "openai",
-      "text_model": "gpt-4o-mini",
-      "image_provider": "openai",
-      "image_model": "gpt-image-1"
-    },
-    "anthropic": {
-      "text_provider": "anthropic",
-      "text_model": "claude-opus-4-5",
-      "image_provider": "gemini",
-      "image_model": "gemini-3.1-flash-lite-image",
-      "description": "Claude Opus for narrative + Gemini for images. Premium storytelling quality."
-    },
-    "veo": {
+    "gemini_pro": {
       "text_provider": "gemini",
       "text_model": "gemini-3.1-flash-lite",
-      "image_provider": "veo",
-      "image_model": "veo-3.1-generate-preview",
-      "description": "Video-based image generation - generates 8s videos, extracts last frame. Natural consistency!"
+      "image_provider": "gemini",
+      "image_model": "gemini-3-pro-image",
+      "image_size": "2K",
+      "description": "Gemini Pro stills at 2K \u2014 slow, highest fidelity. The offline render preset."
     },
     "krea": {
       "text_provider": "gemini",
       "text_model": "gemini-3.1-flash-lite",
       "image_provider": "krea",
       "image_model": "krea-2/medium",
-      "description": "Krea 2 Medium images (~12s, style transfer for continuity) + Gemini narrative. Fast default. Requires KREA_API_KEY."
+      "description": "Krea stills (~12s, style transfer for continuity) + Gemini narrative. Requires KREA_API_KEY."
     },
-    "krea_large": {
-      "text_provider": "gemini",
-      "text_model": "gemini-3.1-flash-lite",
-      "image_provider": "krea",
-      "image_model": "krea-2/large",
-      "description": "Krea 2 Large images (~24s, higher quality) + Gemini narrative. Requires KREA_API_KEY."
-    },
-    "fal": {
-      "text_provider": "gemini",
-      "text_model": "gemini-3.1-flash-lite",
-      "image_provider": "fal",
-      "image_model": "fal-ai/fast-lightning-sdxl",
-      "description": "fal.ai SDXL Lightning images (~1-2s!) + Gemini narrative. SPEED preset - lower fidelity than Krea/Gemini. Requires FAL_API_KEY."
+    "anthropic": {
+      "text_provider": "anthropic",
+      "text_model": "claude-sonnet-4-5",
+      "image_provider": "gemini",
+      "image_model": "gemini-3.1-flash-lite-image",
+      "description": "Claude Sonnet for narrative + Gemini Fast for images."
     }
   },
-  "description": "Using Gemini (Nano Banana) for high-quality, multi-frame-continuity image generation. Switch to krea/krea_large, fal (max speed), or openai/veo via /ai_switch."
+  "description": "Gemini Fast stills \u2014 seconds per frame, multi-frame continuity. DEFAULT.",
+  "aspect_ratio": "16:9",
+  "profiles": {
+    "play_fast": {
+      "label": "Play-fast",
+      "config": "gemini",
+      "note": "Flash-Lite, 1K. SOMEWHERE Play default."
+    },
+    "create_quality": {
+      "label": "Create-quality",
+      "config": "gemini_pro",
+      "note": "Pro stills at 2K. Authoring and first-run quality."
+    }
+  }
 }

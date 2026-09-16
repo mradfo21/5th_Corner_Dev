@@ -493,6 +493,12 @@ _detector = None
 _detector_lock = threading.Lock()
 _load_failed = False
 _load_error = ""
+# The MIN_SCORE the live detector was BUILT with. MediaPipe bakes the confidence
+# floor into the graph at construction, so the module global drifting away from
+# this one is the whole reason the editor's "Min score" slider did nothing: the
+# tunable moved MIN_SCORE, _load_detector saw a cached detector and handed it
+# straight back, and the old threshold stayed in force until a process restart.
+_detector_score = None
 
 
 def _close_detector() -> None:
@@ -505,8 +511,9 @@ def _close_detector() -> None:
     happens early enough to avoid it, and keeps production logs free of a
     scary-looking traceback that means nothing.
     """
-    global _detector
+    global _detector, _detector_score
     detector, _detector = _detector, None
+    _detector_score = None
     if detector is not None:
         try:
             detector.close()
@@ -527,10 +534,24 @@ def _log(message: str) -> None:
 
 
 def _load_detector():
-    """Build the process-wide detector, or record why we can't. Caller holds the lock."""
-    global _detector, _load_failed, _load_error
-    if _detector is not None or _load_failed:
-        return _detector
+    """Build the process-wide detector, or record why we can't. Caller holds the lock.
+
+    Rebuilds when MIN_SCORE has moved since the live detector was made. That is
+    a few hundred milliseconds on the next scan and nothing at all on every scan
+    after it, which is the correct price for a slider that works.
+    """
+    global _detector, _load_failed, _load_error, _detector_score
+    if _detector is not None:
+        if _detector_score == MIN_SCORE:
+            return _detector
+        _log(f"min score {_detector_score} -> {MIN_SCORE}; rebuilding the detector")
+        _close_detector()
+        # A previous build succeeded, so the model is there and loadable; only
+        # the threshold changed. Don't let a stale failure flag block the retry.
+        _load_failed = False
+        _load_error = ""
+    if _load_failed:
+        return None
 
     path = model_path()
     if not path.exists():
@@ -552,6 +573,7 @@ def _load_detector():
             max_results=MAX_RAW_RESULTS,
         )
         _detector = mp_vision.ObjectDetector.create_from_options(options)
+        _detector_score = MIN_SCORE
         _log(f"detector ready ({path.name}, score>={MIN_SCORE})")
     except Exception as e:  # noqa: BLE001 — absence must never break the app
         _load_failed = True
@@ -883,6 +905,15 @@ def _is_operator_foreground(box: Tuple[float, float, float, float]) -> bool:
     hand through: it is only 0.377 tall. Hence a stricter, edge-based rule here.
     """
     _x0, y0, _x1, y1 = box
+    height = y1 - y0
+    # A standing figure in a third-person follow-cam is also clipped by the
+    # bottom of the frame, but it fills half the picture. The operator's
+    # hand/gear is a modest blob (the measured flashlight-hand is 0.377 tall).
+    # Treating every bottom-clipped person as "your own hand" emptied SCAN
+    # on close-ups of the followed character and of NPCs standing in front
+    # of the camera.
+    if height >= 0.50:
+        return False
     return y1 >= 0.96 and (y0 + y1) / 2.0 >= 0.58
 
 

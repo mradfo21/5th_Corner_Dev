@@ -18,7 +18,8 @@
        setPortrait(url) / clearPortrait()
        setScene(url) / clearScene()   // full-bleed establishing shot (optional)
        notify({ text, icon? })
-       setChoices(items) / clearChoices()
+       setChoices(items, onPick, { custom }) / clearChoices()
+       openCustomChoice() / closeCustomChoice(clear) / customChoiceOpen()
    ============================================================ */
 (function () {
   "use strict";
@@ -113,6 +114,8 @@
 
   function playSound(name) {
     try {
+      if (name === "choiceHover" && topType() === "encounter") name = "encounterChoiceHover";
+      if (name === "choiceSelect" && topType() === "encounter") name = "encounterChoiceSelect";
       const S = window.Sound || (window.__SOMEWHERE_SOUND__);
       if (S && typeof S[name] === "function") S[name]();
     } catch (_) {}
@@ -150,17 +153,29 @@
     if (nameplateName()) {
       nameplateName().textContent = type === "camp"
         ? "CAMP"
-        : (subj.label || "—").toString();
+        : type === "encounter"
+          ? (subj.label || "…")
+          : type === "cutscene"
+            ? (subj.label || subj.name || "CUTSCENE")
+            : (subj.label || "—").toString();
     }
-    if (nameplateSub()) nameplateSub().textContent = type === "camp" ? "making camp…" : "establishing…";
+    if (nameplateSub()) {
+      nameplateSub().textContent = type === "camp"
+        ? "making camp…"
+        : type === "encounter"
+          ? "something is here"
+          : type === "cutscene"
+            ? (subj.sub || subj.mood || "montage")
+            : "establishing…";
+    }
     if (nameplate()) {
       nameplate().classList.remove("hidden");
       nameplate().classList.add("moment-nameplate-in");
     }
-    // Conversation Moments use the portrait chrome; camp uses the full-bleed
-    // scene chrome. When nesting conversation ON TOP of camp, leave the scene
-    // in place underneath — the portrait covers it while Talk is open.
-    if (type === "camp") {
+    // Conversation Moments use the portrait chrome; camp and encounter use the
+    // full-bleed scene chrome. When nesting conversation ON TOP of camp, leave
+    // the scene in place underneath — the portrait covers it while Talk is open.
+    if (type === "camp" || type === "encounter" || type === "cutscene") {
       const sc = sceneEl();
       if (sc) {
         sc.classList.remove("hidden", "ready");
@@ -260,10 +275,13 @@
       if (transition === "fade") {
         // Awaited below (after busy is released) so Esc still works mid-fade.
         entry._fadeEnter = true;
+      } else if (transition === "develop") {
+        // Encounter: photo-chemistry reveal, not Talk's VCR glitch.
       } else {
         fireGlitch();
       }
-      playSound("convoEnter");
+      const enterCue = handlers.enterSound || (transition === "develop" ? "encounterEnter" : "convoEnter");
+      playSound(enterCue);
       stack.push(entry);
     } catch (err) {
       console.warn("[moments] push chrome failed:", err);
@@ -310,14 +328,17 @@
     // Signal any in-flight enter() to ignore its late network/image result.
     entry.aborted = true;
     try {
-      playSound("convoExit");
+      const exitCue = (entry.handlers && "exitSound" in entry.handlers)
+        ? entry.handlers.exitSound
+        : ((entry.handlers && entry.handlers.transition) === "develop" ? "encounterExit" : "convoExit");
+      if (exitCue) playSound(exitCue);
       const transition = (entry.handlers && entry.handlers.transition) || "glitch";
       if (transition === "fade") {
         // Release busy before awaiting the fade so nested work can proceed.
         choreographyBusy = false;
         await fadeDown();
         choreographyBusy = true;
-      } else {
+      } else if (transition !== "develop") {
         fireGlitch();
       }
       if (entry.handlers && typeof entry.handlers.exit === "function") {
@@ -420,11 +441,26 @@
   // fills the viewport instead of a framed close-up. Optional onReady fires
   // after the image decodes (or errors) so callers can place hotspots once
   // campSceneAsDataUrl() can actually sample pixels.
+  function holdBlack() {
+    const sc = sceneEl();
+    const img = sceneImg();
+    if (img) {
+      img.onload = null;
+      img.onerror = null;
+      img.removeAttribute("src");
+    }
+    if (sc) {
+      sc.classList.remove("hidden", "ready", "live-world");
+      sc.classList.add("developing");
+      sc.setAttribute("aria-hidden", "false");
+    }
+  }
+
   function setScene(url, onReady) {
     const sc = sceneEl();
     const img = sceneImg();
     if (!sc || !img || !url) return;
-    sc.classList.remove("hidden");
+    sc.classList.remove("hidden", "live-world");
     sc.setAttribute("aria-hidden", "false");
     const done = () => {
       sc.classList.remove("developing");
@@ -499,12 +535,20 @@
     }, dwell);
   }
 
-  function setChoices(items, onPick) {
+  // opts.custom (optional): { label, placeholder, maxLength, onSubmit } — adds
+  // a final row that is not one of the authored choices but a way to write your
+  // own action, and swaps itself for a prompt bar when taken. A Moment that
+  // offers a slate is offering the only things the player may do, and for a
+  // confrontation that is the wrong shape: the interesting move is usually the
+  // one nobody wrote down. onSubmit(text) receives the typed line.
+  function setChoices(items, onPick, opts) {
     const box = choicesEl();
     if (!box) return;
     box.innerHTML = "";
+    customState = null;
     const list = Array.isArray(items) ? items : [];
-    if (!list.length) {
+    const custom = (opts && opts.custom) || null;
+    if (!list.length && !custom) {
       box.classList.add("hidden");
       return;
     }
@@ -515,7 +559,14 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "moment-choice";
-      btn.textContent = label;
+      const num = document.createElement("span");
+      num.className = "moment-choice-num";
+      num.textContent = String(idx + 1);
+      const body = document.createElement("span");
+      body.className = "moment-choice-text";
+      body.textContent = label;
+      btn.appendChild(num);
+      btn.appendChild(body);
       btn.addEventListener("mouseenter", () => playSound("choiceHover"));
       btn.addEventListener("focus", () => playSound("choiceHover"));
       btn.addEventListener("click", () => {
@@ -524,6 +575,96 @@
       });
       box.appendChild(btn);
     });
+    if (custom) buildCustomRow(box, custom);
+  }
+
+  // The typed-action row: a button until it is taken, then an inline prompt bar.
+  // Both live in the choices box so the slate reads as one list.
+  let customState = null;
+
+  function buildCustomRow(box, custom) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "moment-choice moment-choice-custom";
+    const num = document.createElement("span");
+    num.className = "moment-choice-num";
+    num.textContent = custom.key || "";
+    const body = document.createElement("span");
+    body.className = "moment-choice-text";
+    body.textContent = custom.label || "Do something else";
+    row.appendChild(num);
+    row.appendChild(body);
+
+    const form = document.createElement("form");
+    form.className = "moment-custom-form hidden";
+    form.setAttribute("autocomplete", "off");
+    const caret = document.createElement("span");
+    caret.className = "moment-custom-caret";
+    caret.textContent = ">";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "moment-custom-input";
+    input.setAttribute("placeholder", custom.placeholder || "type what you do...");
+    input.setAttribute("maxlength", String(custom.maxLength || 200));
+    const send = document.createElement("button");
+    send.type = "submit";
+    send.className = "moment-custom-send";
+    send.textContent = "DO IT";
+    form.appendChild(caret);
+    form.appendChild(input);
+    form.appendChild(send);
+
+    function open() {
+      if (!customState) return;
+      customState.open = true;
+      row.classList.add("hidden");
+      form.classList.remove("hidden");
+      box.classList.add("has-open-custom");
+      playSound("open");
+      setTimeout(() => { try { input.focus(); } catch (_) {} }, 40);
+    }
+
+    function close(clear) {
+      if (!customState) return;
+      customState.open = false;
+      form.classList.add("hidden");
+      row.classList.remove("hidden");
+      box.classList.remove("has-open-custom");
+      if (clear) input.value = "";
+      try { if (document.activeElement === input) input.blur(); } catch (_) {}
+    }
+
+    row.addEventListener("mouseenter", () => playSound("choiceHover"));
+    row.addEventListener("click", () => { playSound("choiceSelect"); open(); });
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      playSound("choiceSelect");
+      if (typeof custom.onSubmit === "function") custom.onSubmit(text);
+    });
+
+    box.appendChild(row);
+    box.appendChild(form);
+    customState = { open: false, openFn: open, closeFn: close, input };
+  }
+
+  // For key handlers: open / close the typed-action bar from outside, and ask
+  // whether it currently owns the keyboard.
+  function openCustomChoice() {
+    if (!customState || customState.open) return false;
+    customState.openFn();
+    return true;
+  }
+
+  function closeCustomChoice(clear) {
+    if (!customState || !customState.open) return false;
+    customState.closeFn(clear);
+    return true;
+  }
+
+  function customChoiceOpen() {
+    return !!(customState && customState.open);
   }
 
   function clearChoices() {
@@ -531,6 +672,8 @@
     if (!box) return;
     box.innerHTML = "";
     box.classList.add("hidden");
+    box.classList.remove("has-open-custom");
+    customState = null;
   }
 
   function onEscape() {
@@ -569,12 +712,16 @@
     setPortrait,
     clearPortrait,
     setScene,
+    holdBlack,
     clearScene,
     setSceneLive,
     setPortraitStream,
     notify,
     setChoices,
     clearChoices,
+    openCustomChoice,
+    closeCustomChoice,
+    customChoiceOpen,
     onEscape,
     fadeDown,
     fadeUp,

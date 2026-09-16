@@ -17,6 +17,7 @@ Run with:
 """
 
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -61,11 +62,19 @@ class TestStandaloneE2E(unittest.TestCase):
     def setUpClass(cls):
         cls.port = _find_free_port()
         cls.base_url = f"http://127.0.0.1:{cls.port}"
+        # Own the session this run plays in. `sessions/` lives next to the
+        # source, so a dev server (or another test) running from the same
+        # checkout writes the SAME sessions/default/state.json this server
+        # does — its saves land mid-turn here and the choice slate this
+        # suite is waiting on disappears. A port-derived id keeps the two
+        # apart on disk.
+        cls.session_id = f"e2e{cls.port}"
 
         env = os.environ.copy()
         env["GEMINI_API_KEY"] = ""
         env["OPENAI_API_KEY"] = ""
         env["ANTHROPIC_API_KEY"] = ""
+        env["ELEVENLABS_API_KEY"] = ""
 
         # Discard the server's stdout/stderr rather than piping it: the mock
         # server logs verbosely per request, and an unread PIPE fills its OS
@@ -97,18 +106,22 @@ class TestStandaloneE2E(unittest.TestCase):
                 cls.server_proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 cls.server_proc.kill()
+            shutil.rmtree(ROOT / "sessions" / cls.session_id, ignore_errors=True)
 
     def setUp(self):
         self.page = self.browser.new_page()
-        # These tests exercise steady-state GAMEPLAY, not first-run onboarding,
-        # so start as a player who's already past the tutorial. Without this the
-        # first-run "tap to scan" modal appears once the opening scene is ready
-        # and intercepts pointer events, blocking the forward-hub / scene clicks.
         self.page.add_init_script(
-            "try { localStorage.setItem('scan_tutorial_seen_v1', '1'); } catch (e) {}"
+            # /api/status is per-session; a bare fetch would read 'default'
+            # instead of the session this page is bound to.
+            "window._statusTurn = () => fetch("
+            "  '/api/status?session_id=' + encodeURIComponent(window.__SOMEWHERE_SESSION__ || 'default')"
+            ").then(r => r.json()).then(s => s.turn);"
         )
-        # Always start each test from a clean game state.
-        self.page.goto(f"{self.base_url}/standalone")
+        # Always start each test from a clean game state, in this suite's own
+        # session (see setUpClass) — the client threads ?session= through every
+        # /api/* call it makes. ?mode=play skips the start menu so R (reset)
+        # reaches the game instead of being swallowed by the menu takeover.
+        self.page.goto(f"{self.base_url}/standalone?session={self.session_id}&mode=play")
         # The control menu starts collapsed; reset via its keyboard shortcut (R),
         # which works regardless of menu state, instead of the now-hidden button.
         self.page.keyboard.press("r")
@@ -220,13 +233,13 @@ class TestStandaloneE2E(unittest.TestCase):
         # turn to settle back to 0 before asserting the baseline — otherwise a
         # prior test's turn can still be read in and this races to a false fail.
         self.page.wait_for_function(
-            "fetch('/api/status').then(r => r.json()).then(s => s.turn === 0)",
+            "_statusTurn().then(t => t === 0)",
             timeout=10000,
         )
         self._advance_via_forward()
         self.page.wait_for_selector(".choice-btn", state="attached", timeout=20000)
         self.page.wait_for_function(
-            "fetch('/api/status').then(r => r.json()).then(s => s.turn >= 1)",
+            "_statusTurn().then(t => t >= 1)",
             timeout=10000,
         )
 
@@ -240,13 +253,19 @@ class TestStandaloneE2E(unittest.TestCase):
         self.assertTrue(self.page.query_selector("#death-overlay") is not None)
         self.assertTrue(self.page.is_hidden("#death-overlay"))
 
+    def test_scan_tutorial_is_gone(self):
+        # The first-run "How to play" overlay used to intercept clicks on Play.
+        # It is removed entirely (not localStorage-gated), so it must not exist.
+        self.assertIsNone(self.page.query_selector("#scan-tutorial"))
+        self.assertIsNone(self.page.query_selector("#tut-dismiss"))
+
     def test_scene_audio_requested_for_a_scene(self):
         # Scoring a scene must POST its descriptor to /api/scene_audio (the
-        # server-side Lyria bridge). Mock mode disables image generation, so we
-        # drive the exposed SceneAudio module directly — the same code path the
-        # scene_image / onGuideImage handlers use — and assert the request the
-        # client makes. Runs fully offline (no key -> server replies audio_url:
-        # null and the client stays silent).
+        # ElevenLabs music + world-SFX bridge). Mock mode disables image
+        # generation, so we drive the exposed SceneAudio module directly — the
+        # same code path the scene_image / onGuideImage handlers use — and
+        # assert the request the client makes. Runs fully offline (no key ->
+        # server replies audio_url: null and the client stays silent).
         self.page.wait_for_function("() => !!window.SceneAudio", timeout=10000)
         with self.page.expect_request("**/api/scene_audio") as req_info:
             self.page.evaluate(
@@ -257,7 +276,7 @@ class TestStandaloneE2E(unittest.TestCase):
         self.assertIn("abandoned facility", (req.post_data or ""))
 
     def test_scene_audio_endpoint_degrades_without_key(self):
-        # With no GEMINI_API_KEY the endpoint must degrade gracefully to
+        # With no ELEVENLABS_API_KEY the endpoint must degrade gracefully to
         # {"audio_url": null} rather than erroring, so the UI simply stays silent.
         result = self.page.evaluate(
             """async () => {

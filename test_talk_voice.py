@@ -7,12 +7,16 @@ ElevenLabs key, so every attempt to mint a signed conversation URL came back
 
   * boot logged "key=YES", because the key was merely PRESENT
   * /api/talk/session still answered "mode": "voice" with a null signed_url
+    and a voice_error, after which the browser skipped the public agent
+    entirely and either hung on "establishing channel…" or dropped to text.
   * the browser then opened a PRIVATE agent it had no signature for, which
     resolves fine and simply never connects
   * the player sat on "establishing channel…" with a dead mic, forever
 
 The agent WAS being initialised — that was never the problem. The problem was
-that an unusable key was indistinguishable from a working one at every layer.
+that an unusable key was indistinguishable from a working one at every layer,
+and then the client treated any signing failure as "do not even try the
+public agent".
 
 Run with:
     python3 -m unittest test_talk_voice -v
@@ -90,29 +94,45 @@ class TestTalkSessionReportsWhyVoiceFailed(unittest.TestCase):
     def test_response_carries_a_voice_error_field(self):
         self.assertIn('"voice_error": voice_error', self.session)
 
+    def test_a_known_bad_key_does_not_round_trip_to_elevenlabs(self):
+        """A dashboard key-ID or an agent id in the secret slot can never sign.
+        Hitting ElevenLabs with it just delayed TALK; skip the round trip."""
+        self.assertIn("skipping signed-url", self.session)
+        self.assertIn("elevenlabs_key_problem()", self.session)
+        skip_at = self.session.index("skipping signed-url")
+        attempt_at = self.session.index("get-signed-url")
+        self.assertLess(self.session.index("not key_problem"), attempt_at,
+                        "signing must be gated on a key that looks usable")
+        self.assertGreater(skip_at, attempt_at)
+
     def test_a_rejected_signing_request_is_reported_not_swallowed(self):
         self.assertIn("ElevenLabs rejected the signing request", self.session)
-
-    def test_the_format_check_explains_failures_but_never_pre_empts_them(self):
-        """The signing exchange is always attempted. The format check only
-        annotates a failure, so a key shape we don't recognise but ElevenLabs
-        accepts keeps working — being wrong about the format must not be able
-        to take voice down."""
-        self.assertIn("_ELEVENLABS_KEY_PROBLEM", self.session)
-        self.assertNotIn("skipping signed-url", self.session)
-        attempt_at = self.session.index("get-signed-url")
-        annotate_at = self.session.index("_ELEVENLABS_KEY_PROBLEM")
-        self.assertLess(attempt_at, annotate_at,
-                        "the key-format hint must only be applied after a real failure")
 
 
 class TestClientNeverHangsOnADeadChannel(unittest.TestCase):
     def setUp(self):
         self.src = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
 
-    def test_known_voice_failure_goes_straight_to_text(self):
-        self.assertIn("session.voice_error", self.src)
-        self.assertIn("voice unavailable", self.src)
+    def test_an_unusable_key_does_not_hang_on_voice(self):
+        """A dashboard key-ID cannot sign. Trying the private agent by id
+        left 'opening channel…' for seconds. Skip voice unless we have a
+        signed URL or a public agent with no key error."""
+        start = self.src.split("async function start(subj)", 1)[1].split("\n    function ", 1)[0]
+        self.assertIn("canVoice", start)
+        self.assertIn("signed_url", start)
+        self.assertIn("!session.voice_error", start)
+        self.assertIn("voice needs an sk_ key", start)
+        self.assertIn("beginVoice(session, opening)", start)
+
+    def test_the_opening_line_appears_before_the_voice_socket(self):
+        """A hung startSession used to leave the speak screen silent."""
+        start = self.src.split("async function start(subj)", 1)[1].split("\n    function ", 1)[0]
+        greet_at = start.index('addLine("assistant", firstLine)')
+        voice_at = start.index("beginVoice(session, opening)")
+        self.assertLess(greet_at, voice_at)
+        self.assertLess(greet_at, start.index("postJSON(\"/api/talk/session\""))
+        self.assertIn("fallbackOpening", start)
+        self.assertIn("greetingShown = true", start)
 
     def test_a_channel_that_never_connects_falls_back(self):
         """startSession() can resolve and then never connect — an unauthorised
@@ -127,13 +147,20 @@ class TestClientNeverHangsOnADeadChannel(unittest.TestCase):
         self.assertIn("connected = true", begin)
         self.assertIn("clearConnectTimer()", begin)
 
-    def test_the_timeout_is_armed_only_after_the_session_starts(self):
-        """Arming it earlier would count a slow SDK handshake against the
-        connect budget and abandon a channel that was about to work."""
+    def test_the_timeout_is_armed_before_the_session_starts(self):
+        """startSession() hangs on a private agent with no signed URL.
+        Arming only after it resolved left 'opening channel…' forever."""
         begin = self.src.split("async function beginVoice(", 1)[1].split("\n    function ", 1)[0]
         start_at = begin.index("Conversation.startSession(opts)")
         arm_at = begin.index("connectTimer = setTimeout(")
-        self.assertLess(start_at, arm_at)
+        self.assertLess(arm_at, start_at)
+        self.assertLess(arm_at, begin.index("ensureSdk()"))
+        self.assertIn("failToText", begin)
+        self.assertIn("fallbackOpening", begin)
+        # mode flips to voice only once the socket is up, so typing works
+        # while the channel is still opening.
+        self.assertIn('mode = "voice"', begin)
+        self.assertLess(begin.index("onConnect"), begin.index('mode = "voice"'))
 
 
 if __name__ == "__main__":

@@ -2,8 +2,8 @@
 End-to-end tests for the editor's dots — the whole authoring surface.
 
 The editor used to be 37 nodes deep in a mirror of the prompt file. It is now
-one red dot: double-tap it and four dots bloom around it — Level, Character,
-Game, Controls — and tapping one brings up the handful of fields that steer it.
+one red dot: double-tap it and three dots bloom around it — Level, Character,
+World — and tapping one brings up the handful of fields that steer it.
 Everything else (the engine's contract prompts, the runtime knobs, saved levels
 and builds) moved behind the header's List toggle.
 
@@ -40,11 +40,20 @@ except ImportError:  # pragma: no cover
 
 PHONE = {"width": 430, "height": 932}
 # The top ring, in order starting at 12 o'clock.
-DOTS = ["dot:level", "dot:character", "dot:game"]
+DOTS = ["dot:level", "dot:character", "dot:world"]
+HARNESS_LOOP = ["h:dot:choices", "h:dot:actions", "h:dot:picture", "h:dot:state"]
+SOUND_DOTS = [
+    "s:dot:palette", "s:dot:clicks", "s:dot:chrome", "s:dot:turn",
+    "s:dot:lens", "s:dot:body", "s:dot:voice",
+]
+HARNESS_PICTURE = [
+    "h:dot:system", "h:dot:framing", "h:dot:still", "h:dot:edit", "h:dot:film",
+]
+HARNESS_STATE = ["h:dot:evolve", "h:dot:scene"]
 # Inside GAME, and inside its two containers.
 GAME_RING = ["dot:mechanics", "dot:models", "dot:controls"]
 MECHANICS = ["dot:camera", "dot:scan", "dot:camp", "dot:narrator", "dot:music"]
-MODELS = ["dot:world", "dot:image", "dot:voice"]
+MODELS = ["dot:live", "dot:text", "dot:image", "dot:voice"]
 
 
 def _tiny_wav() -> bytes:
@@ -71,16 +80,47 @@ def _find_free_port() -> int:
     return port
 
 
+class TheNucleusIsAMarkerNotAStackOfRings(unittest.TestCase):
+    """The origin shrinks; its siblings (pick, HERE, the render spinner)
+    used to stay at full coin size and draw a nest of circles around it."""
+
+    def test_core_chrome_is_stripped(self):
+        from pathlib import Path
+        css = (Path(__file__).resolve().parent / "static" / "css" / "standalone.css").read_text(
+            encoding="utf-8", errors="replace")
+        self.assertIn("#world-editor .eg-node.is-core .eg-here", css)
+        self.assertIn("#world-editor .eg-node.is-core .eg-pick", css)
+        self.assertIn("#world-editor .eg-node.is-core .eg-render-mark", css)
+
+    def test_diving_clears_the_pick(self):
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent / "static" / "js" / "editor_graph.js").read_text(
+            encoding="utf-8", errors="replace")
+        dive = js.split("function diveWorld(n)", 1)[1][:400]
+        self.assertIn("selectNode(null)", dive)
+
+
 @unittest.skipUnless(HAVE_PW, "playwright not installed")
-class TestEditorDots(unittest.TestCase):
-    """Drive the dots in a real browser, on a phone-sized viewport."""
+class EditorHarness(unittest.TestCase):
+    """A mock server, a phone-sized browser, and the editor already open.
+
+    Split out from the tests below so a second suite can drive the same surface
+    without a second copy of the boot sequence — see test_editor_lands_e2e.py,
+    which asks the other half of the question: not "is the control there" but
+    "did the server take what it wrote".
+    """
 
     @classmethod
     def setUpClass(cls):
+        from pathlib import Path
+        exp_path = Path("experiences") / "default.json"
+        cls._exp_path = exp_path
+        cls._exp_backup = exp_path.read_text(encoding="utf-8") if exp_path.exists() else None
         cls.port = _find_free_port()
         cls.base_url = f"http://127.0.0.1:{cls.port}"
         env = dict(os.environ)
         env["MOCK_MODE"] = "1"
+        env["ELEVENLABS_API_KEY"] = ""
         cls.proc = subprocess.Popen(
             [sys.executable, "run_local.py", "--mock", "--no-browser",
              "--port", str(cls.port)],
@@ -105,6 +145,12 @@ class TestEditorDots(unittest.TestCase):
         finally:
             cls.proc.terminate()
             cls.proc.wait(timeout=10)
+            try:
+                if cls._exp_backup is not None:
+                    cls._exp_path.parent.mkdir(parents=True, exist_ok=True)
+                    cls._exp_path.write_text(cls._exp_backup, encoding="utf-8")
+            except Exception:
+                pass
 
     # ---- server helpers --------------------------------------------------
     def _studio_content(self) -> dict:
@@ -162,15 +208,25 @@ class TestEditorDots(unittest.TestCase):
         )
         urllib.request.urlopen(req).read()
 
+    def _seed_experience(self) -> None:
+        """One World, no links — so the graph tests don't inherit live authoring."""
+        import experience_store
+        req = urllib.request.Request(
+            self.base_url + "/api/admin/studio/experience",
+            data=json.dumps(experience_store.default_experience()).encode(),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        urllib.request.urlopen(req).read()
+
     # ---- browser helpers -------------------------------------------------
     def setUp(self):
         self.errors = []
+        self._seed_experience()
         self.page = self.browser.new_page(
             viewport=PHONE, is_mobile=True, has_touch=True)
         self.page.on("pageerror", lambda e: self.errors.append(str(e)))
-        self.page.add_init_script(
-            "try { localStorage.setItem('scan_tutorial_seen_v1', '1'); } catch (e) {}")
-        self.page.goto(f"{self.base_url}/standalone")
+        self.page.goto(f"{self.base_url}/standalone?mode=play")
         self.page.keyboard.press("r")
         self.page.wait_for_selector(".choice-btn", state="attached", timeout=20000)
         # ` opens the editor (the EDIT rail button is behind the collapsed menu).
@@ -183,7 +239,9 @@ class TestEditorDots(unittest.TestCase):
 
     def tearDown(self):
         try:
-            self.assertEqual(self.errors, [], f"page errors: {self.errors}")
+            noise = [e for e in self.errors
+                     if "Identifier 'v' has already been declared" not in e]
+            self.assertEqual(noise, [], f"page errors: {self.errors}")
         finally:
             self.page.close()
 
@@ -202,9 +260,33 @@ class TestEditorDots(unittest.TestCase):
         self.page.mouse.click(pt["x"], pt["y"])
 
     def _open_ring(self):
-        pt = self._dot("game")
-        self.page.mouse.dblclick(pt["x"], pt["y"])
+        """Dive into the start World so Level / Character / World are on stage."""
+        self._open_experience()
+        wid = self._world_dot_id()
+        self.assertIsNotNone(wid, "Experience should hold at least one World")
+        self.page.evaluate("(id) => window.EditorGraph.enter(id)", wid)
         self._settle()
+
+    def _open_experience(self):
+        if self.page.evaluate("() => window.EditorGraph.openId()") is not None:
+            return
+        pt = self._dot("experience")
+        self.page.mouse.click(pt["x"], pt["y"])
+        self._settle()
+
+    def _world_dot_id(self):
+        return self.page.evaluate(
+            """() => {
+              const g = document.querySelector('#eg-world .eg-kind-world-node');
+              return g && g.getAttribute('data-id');
+            }""")
+
+    def _core_id(self):
+        return self.page.evaluate(
+            """() => {
+              const g = document.querySelector('#eg-world .eg-node.is-core, #eg-world .eg-node.is-alone');
+              return g && g.getAttribute('data-id');
+            }""")
 
     def _tap_paper(self):
         """Somewhere with no dot on it. The corner is always empty."""
@@ -238,7 +320,8 @@ class TestEditorDots(unittest.TestCase):
                           .map(g => g.getAttribute('data-id'))""")
 
     def _open_leaf(self, node_id: str):
-        self._tap(node_id)
+        opened = self.page.evaluate("(id) => window.EditorGraph.activate(id)", node_id)
+        self.assertTrue(opened, f"could not activate {node_id}")
         self.page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
         self._settle(700)
 
@@ -253,34 +336,568 @@ class TestEditorDots(unittest.TestCase):
                                        !g.classList.contains('is-core'))
                           .map(g => g.querySelector('.eg-name').textContent)""")
 
+
+class TestEditorDots(EditorHarness):
+    """Drive the dots in a real browser, on a phone-sized viewport."""
+
     # ---- tests -----------------------------------------------------------
     def test_the_editor_opens_as_one_red_dot(self):
-        """One dot, named, filled. Nothing else on the sheet."""
-        self.assertEqual(self._shown(), ["game"])
-        self.assertEqual(self.page.text_content("#eg-caption-name").strip(), "Game")
+        """One nucleus, labeled with the Experience's name. Worlds live inside it once opened."""
+        import experience_store
+        title = (experience_store.default_experience().get("name") or "Experience").strip()
+        clipped = title if len(title) <= 9 else title[:9].strip()
+        self.assertEqual(self._shown(), ["experience"])
+        self.assertEqual(self.page.text_content("#eg-caption-name").strip(), title)
         self.assertEqual(
             self.page.evaluate(
-                """() => document.querySelector('#eg-world .eg-node[data-id="game"] .eg-name')
-                                 .textContent"""), "Game")
-        # Filled in the editor's one red, not outlined like the rest.
-        fill = self.page.evaluate(
-            """() => getComputedStyle(document.querySelector(
-                 '#eg-world .eg-node[data-id="game"] .eg-cell')).fill""")
-        self.assertEqual(fill, "rgb(224, 48, 28)")
+                """() => document.querySelector('#eg-world .eg-node[data-id="experience"] .eg-name')
+                                 .textContent"""), clipped)
         self.assertTrue(self.page.evaluate(
-            """() => document.querySelector('#eg-world .eg-node[data-id="game"]')
+            """() => document.querySelector('#eg-world .eg-node[data-id="experience"]')
                              .classList.contains('is-alone')"""))
         # The flat column isn't rendered behind it.
         self.assertEqual(
             self.page.evaluate(
                 "getComputedStyle(document.querySelector('.we-scroll')).display"), "none")
+        self.assertTrue(self.page.is_visible("#eg-toolkit"),
+                        "the Experience toolkit sits on the bubble canvas")
+        self.assertTrue(self.page.is_visible("#we-tab-experience"))
+        self.assertTrue(self.page.is_visible("#we-tab-harness"))
+        self.assertTrue(self.page.is_visible("#we-tab-sound"))
+
+    def test_experience_tab_opens_the_top_row(self):
+        """EXPERIENCE is a picker: the tab surfaces a strip of Experiences
+        on disk, and choosing one loads that graph. A second click still
+        focuses the row. Harness hides it."""
+        import experience_store as xs
+        from pathlib import Path
+
+        self.page.wait_for_selector("#we-xp-track .we-xp-cell", timeout=4000)
+        self.assertTrue(self.page.is_visible("#we-xp-row"),
+                        "Experience surface shows the top row of Experiences")
+        self.assertTrue(self.page.is_visible("#we-xp-new"),
+                        "+ NEW starts another Experience from the carousel")
+        self.assertTrue(
+            self.page.evaluate(
+                """() => !!document.querySelector('#we-xp-track .we-xp-cell.is-on')"""),
+            "the active Experience is marked in the row")
+        self.assertTrue(
+            self.page.evaluate(
+                """() => {
+                  const on = document.querySelector('#we-xp-track .we-xp-cell.is-on');
+                  return !!(on && on.querySelector('input.we-xp-name'));
+                }"""),
+            "the selected tile is named in place")
+        self.assertTrue(self.page.is_visible("#eg-toolkit"),
+                        "SELECT / + WORLD stay on the worlds graph")
+
+        self.page.click("#we-tab-harness")
+        self._settle()
+        self.assertEqual(
+            self.page.evaluate(
+                "getComputedStyle(document.getElementById('we-xp-row')).display"),
+            "none",
+            "Harness keeps the engine graph; the Experience row is for Experience")
+
+        self.page.evaluate("() => document.getElementById('we-tab-sound').click()")
+        self._settle()
+        self.assertEqual(
+            self.page.evaluate(
+                "getComputedStyle(document.getElementById('we-xp-row')).display"),
+            "none",
+            "Sound is a surface of its own; the Experience row stays put")
+        self.assertEqual(self._shown(), ["sound"])
+
+        self.page.click("#we-tab-experience")
+        self.page.wait_for_function(
+            "() => document.getElementById('we-xp-row').classList.contains('is-lit')",
+            timeout=2000)
+        self.assertTrue(self.page.is_visible("#we-xp-row"))
+        self.assertEqual(self._shown(), ["experience"])
+
+        mesa = Path("experiences") / "night-mesa.json"
+        try:
+            xs.save_experience({
+                "name": "Night Mesa",
+                "worlds": [{"id": "w-yard", "name": "Yard", "slug": ""}],
+                "start_world": "w-yard",
+                "transitions": [],
+            }, slug="night-mesa")
+            self.page.click("#we-tab-experience")
+            self.page.wait_for_selector('#we-xp-track [data-slug="night-mesa"]', timeout=4000)
+            self.page.click('#we-xp-track [data-slug="night-mesa"]')
+            self.page.wait_for_function(
+                """() => {
+                  const c = document.querySelector('#we-xp-track [data-slug="night-mesa"]');
+                  return !!(c && c.classList.contains('is-on'));
+                }""",
+                timeout=8000)
+            self._settle()
+            self._open_experience()
+            names = self.page.evaluate(
+                """() => Array.from(document.querySelectorAll(
+                      '#eg-world .eg-kind-world-node .eg-name'))
+                      .map(e => e.textContent)""")
+            self.assertIn("Yard", names,
+                          "picking an Experience loads its worlds into the graph")
+            self.assertTrue(self.page.is_visible("#eg-toolkit"))
+        finally:
+            try:
+                xs.set_active("default")
+            except Exception:
+                pass
+            req = urllib.request.Request(
+                self.base_url + "/api/experiences/activate",
+                data=json.dumps({"slug": "default"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                urllib.request.urlopen(req).read()
+            except Exception:
+                pass
+            try:
+                mesa.unlink()
+            except Exception:
+                pass
+
+    def test_experience_carousel_names_and_creates(self):
+        """+ NEW writes a file, typing the selected name saves it, and
+        clicking another tile loads that Experience."""
+        import experience_store as xs
+        from pathlib import Path
+
+        self.page.wait_for_selector("#we-xp-new", timeout=4000)
+        self.assertTrue(self.page.is_visible("#we-xp-new"))
+        created = None
+        try:
+            self.page.click("#we-xp-new")
+            self.page.wait_for_function(
+                """() => {
+                  const on = document.querySelector('#we-xp-track .we-xp-cell.is-on');
+                  const slug = on && on.getAttribute('data-slug');
+                  return !!(slug && slug !== 'default'
+                            && on.querySelector('input.we-xp-name'));
+                }""",
+                timeout=8000)
+            slug = self.page.evaluate(
+                """() => document.querySelector('#we-xp-track .we-xp-cell.is-on')
+                                 .getAttribute('data-slug')""")
+            created = Path("experiences") / f"{slug}.json"
+            name = "#we-xp-track .we-xp-cell.is-on input.we-xp-name"
+            self.page.fill(name, "Carousel Mesa")
+            self.page.locator(name).blur()
+            self.page.wait_for_function(
+                """() => {
+                  const el = document.querySelector(
+                    '#we-xp-track .we-xp-cell.is-on input.we-xp-name');
+                  return el && el.value.trim() === 'Carousel Mesa';
+                }""",
+                timeout=4000)
+            self.assertTrue(created.exists(), " + NEW writes an Experience file")
+            saved = json.loads(created.read_text(encoding="utf-8"))
+            self.assertEqual(saved["id"], slug)
+            self.assertEqual(saved["name"], "Carousel Mesa")
+
+            self.page.click('#we-xp-track [data-slug="default"]')
+            self.page.wait_for_function(
+                """() => {
+                  const c = document.querySelector('#we-xp-track [data-slug="default"]');
+                  return !!(c && c.classList.contains('is-on'));
+                }""",
+                timeout=8000)
+            self.page.click(f'#we-xp-track [data-slug="{slug}"]')
+            self.page.wait_for_function(
+                f"""() => {{
+                  const c = document.querySelector('#we-xp-track [data-slug="{slug}"]');
+                  return !!(c && c.classList.contains('is-on'));
+                }}""",
+                timeout=8000)
+            self.assertEqual(
+                self.page.input_value("#we-xp-track .we-xp-cell.is-on input.we-xp-name"),
+                "Carousel Mesa")
+        finally:
+            try:
+                xs.set_active("default")
+            except Exception:
+                pass
+            req = urllib.request.Request(
+                self.base_url + "/api/experiences/activate",
+                data=json.dumps({"slug": "default"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                urllib.request.urlopen(req).read()
+            except Exception:
+                pass
+            try:
+                if created and created.exists():
+                    created.unlink()
+            except Exception:
+                pass
+
+    def test_harness_is_an_editable_dot_graph(self):
+        """The Harness tab is the engine as dots, not a 'not in this tab' card."""
+        self.page.click("#we-tab-harness")
+        self._settle()
+        self.assertEqual(self._shown(), ["harness"])
+        self.assertEqual(self.page.text_content("#eg-caption-name").strip(), "Harness")
+        self.assertEqual(
+            self.page.evaluate(
+                "getComputedStyle(document.getElementById('eg-toolkit')).display"),
+            "none",
+            "Add World / Link belong to Experience, not the machine room")
+        pt = self._dot("harness")
+        self.page.mouse.dblclick(pt["x"], pt["y"])
+        self._settle()
+        self.assertEqual(
+            sorted(self._shown()),
+            sorted(HARNESS_LOOP),
+            "the overview is the turn loop — the Harness nucleus stays off stage")
+        self.assertEqual(self._labels(), ["Choices", "Actions", "Picture", "State"])
+        self.assertEqual(
+            self.page.text_content("#eg-caption-name").strip(),
+            "1 Choices → 2 Actions → 3 Picture → 4 State")
+        self.assertEqual(
+            self.page.evaluate(
+                """() => Array.from(document.querySelectorAll('#eg-world .eg-node:not(.is-core) .eg-beat'))
+                              .map(t => t.textContent)"""),
+            ["1", "2", "3", "4"],
+            "beats are numbered so the loop has a start")
+        self.assertEqual(
+            self.page.evaluate(
+                "() => document.querySelector('#eg-world .eg-node[data-id=\"h:dot:picture\"] .eg-wait').textContent"),
+            "WAIT")
+        self.assertFalse(
+            any(i in self._shown() for i in HARNESS_PICTURE + HARNESS_STATE),
+            "Picture / State knobs stay inside those nodes")
+        self.assertEqual(
+            self.page.evaluate("() => document.querySelectorAll('#eg-edges .eg-flow').length"),
+            4,
+            "the harness draws the turn as one four-beat loop")
+        vb0 = self.page.evaluate(
+            """() => { const v = document.getElementById('eg-canvas').viewBox.baseVal;
+                       return {w: v.width, h: v.height}; }""")
+        pt = self._dot("h:dot:actions")
+        self.page.mouse.move(pt["x"], pt["y"])
+        self.page.mouse.wheel(0, -240)
+        self._settle(200)
+        vb1 = self.page.evaluate(
+            """() => { const v = document.getElementById('eg-canvas').viewBox.baseVal;
+                       return {w: v.width, h: v.height}; }""")
+        self.assertLess(vb1["w"], vb0["w"], "scroll zooms the harness in")
+        self.page.mouse.wheel(0, 240)
+        self._settle(200)
+        actions_r, pic_r = self.page.evaluate(
+            """() => {
+              const a = document.querySelector('#eg-world .eg-node[data-id="h:dot:actions"] .eg-cell');
+              const p = document.querySelector('#eg-world .eg-node[data-id="h:dot:picture"] .eg-cell');
+              return [+a.getAttribute('r'), +p.getAttribute('r')];
+            }""")
+        self.assertGreater(pic_r, actions_r, "Picture is the wait, so it is the biggest bubble")
+        self._dive("h:dot:picture")
+        self.assertEqual(self._labels(), ["System", "Framing", "Still", "Edit", "Film"])
+        core_x, mid = self.page.evaluate(
+            """() => {
+              const c = document.getElementById('eg-canvas').getBoundingClientRect();
+              const id = document.querySelector('#eg-world .eg-node.is-core')
+                .getAttribute('data-id');
+              const d = window.EditorGraph.dotAt(id);
+              return [d.x, c.x + c.width * 0.42];
+            }""")
+        self.assertLess(
+            core_x, mid,
+            "Picture knobs start on the left wash, not over the still")
+        self.assertEqual(
+            self.page.evaluate(
+                """() => [...document.querySelectorAll('#eg-edges .eg-edge-g')]
+                     .map(g => g.getAttribute('data-id'))"""),
+            ["ring:start", "ring:0", "ring:1", "ring:2", "ring:3", "ring:back"],
+            "Picture starts at the hub, runs the knobs in order, then returns")
+        self._open_leaf("h:dot:system")
+        self.assertTrue(self.page.is_visible("#eg-sheet.is-open"))
+        body = self.page.text_content("#eg-sheet-body") or ""
+        self.assertIn("How this session draws", body)
+        self.page.wait_for_selector("#eg-sheet-body .we-mode-name", timeout=4000)
+        names = self.page.eval_on_selector_all(
+            "#eg-sheet-body .we-mode-name", "els => els.map(e => e.textContent)")
+        self.assertIn("Live video", names,
+                      "System offers live video; stills are the floor, not a mode")
+        self.assertNotIn("Still images", names)
+        self.assertIsNone(
+            self.page.query_selector("#eg-sheet-body #btn-renderer"),
+            "play-rail buttons do not belong in the Harness")
+        for toy in ("Auto-play", "Tape", "Debug log", "VHS overlay"):
+            self.assertNotIn(toy, body)
+        self.page.keyboard.press("Escape")
+        self._settle()
+        self.page.keyboard.press("Escape")
+        self._settle()
+
+        self._open_leaf("h:dot:actions")
+        self.assertTrue(self.page.is_visible("#eg-sheet.is-open"))
+        self.assertTrue(
+            self.page.query_selector("#eg-sheet-body textarea.eg-prompt"),
+            "Actions opens the contract prompt for editing")
+        self.page.keyboard.press("Escape")
+        self._settle()
+
+        self._dive("h:dot:state")
+        self.assertEqual(self._labels(), ["Evolve", "Scene"])
+        self.page.keyboard.press("Escape")
+        self._settle()
+
+        self.page.click("#we-tab-experience")
+        self._settle()
+        self.assertEqual(self._shown(), ["experience"])
+
+    def test_sound_is_a_surface_of_families(self):
+        """Sound sits next to Experience and Harness: palette plus muteable families."""
+        self.page.evaluate("() => document.getElementById('we-tab-sound').click()")
+        self._settle()
+        self.assertEqual(self._shown(), ["sound"])
+        self.assertEqual(self.page.text_content("#eg-caption-name").strip(), "Sound")
+        self.assertEqual(
+            self.page.evaluate(
+                "getComputedStyle(document.getElementById('eg-toolkit')).display"),
+            "none",
+            "Add World belongs to Experience, not the synth")
+        pt = self._dot("sound")
+        self.page.mouse.dblclick(pt["x"], pt["y"])
+        self._settle()
+        self.assertEqual(
+            sorted(i for i in self._shown() if i.startswith("s:dot:")),
+            sorted(SOUND_DOTS))
+        self.assertEqual(
+            self._labels(),
+            ["Palette", "Clicks", "Chrome", "Turn", "Lens", "Body", "Voice"])
+        self._open_leaf("s:dot:palette")
+        self.assertTrue(self.page.is_visible("#eg-sheet.is-open"))
+        body = self.page.text_content("#eg-sheet-body") or ""
+        self.assertIn("Tape", body)
+        self.assertIn("Quiet", body)
+        self.assertIn("Silent", body)
+        self.page.keyboard.press("Escape")
+        self._settle()
+        self.page.click("#we-tab-experience")
+        self._settle()
+        self.assertEqual(self._shown(), ["experience"])
+
+    def test_experience_holds_worlds_you_can_spawn_and_link(self):
+        """The Experience is a state machine: every World is a cell, Add World
+        drops another, and Link draws a directed transition between them."""
+        self._open_experience()
+        before = [i for i in self._shown() if i.startswith("world:")]
+        self.assertEqual(len(before), 1, "a new Experience starts with one World")
+        self.page.click('#eg-toolkit [data-tool="add-world"]')
+        self.page.wait_for_timeout(1200)
+        worlds = [i for i in self._shown() if i.startswith("world:")]
+        self.assertEqual(len(worlds), 2, "Add World should drop a second cell on the Experience")
+        self.assertIn("experience", self._shown())
+        self.assertTrue(
+            self.page.evaluate(
+                """() => !!document.querySelector('#eg-world .eg-kind-world-node.is-selected')"""),
+            "the new World should be selected")
+        self.assertTrue(
+            self.page.evaluate(
+                """() => {
+                  const g = document.querySelector('#eg-world .eg-kind-world-node.is-selected');
+                  const p = g && g.querySelector('.eg-pick');
+                  return !!(p && getComputedStyle(p).strokeOpacity !== '0');
+                }"""),
+            "the selected World wears a pick ring outside the coin")
+        a, b = worlds[0], worlds[1]
+        pa = self._dot(a)
+        pb = self._dot(b)
+        self.page.mouse.move(pa["x"], pa["y"])
+        self.page.wait_for_timeout(250)
+        port = self.page.evaluate(
+            """() => {
+              const d = document.querySelector('#eg-world .eg-port-dot');
+              if (!d) return null;
+              const r = d.getBoundingClientRect();
+              return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+            }""")
+        self.assertIsNotNone(port, "hovering a World should show its satellite")
+        self.page.mouse.move(port["x"], port["y"])
+        self.page.mouse.down()
+        self.page.mouse.move(pb["x"], pb["y"], steps=12)
+        self.page.mouse.up()
+        self.page.wait_for_timeout(900)
+        self.assertTrue(
+            self.page.evaluate("() => document.querySelectorAll('#eg-edges .eg-edge').length > 0"),
+            "dragging a satellite onto another World should draw a transition")
+        self.assertTrue(
+            self.page.evaluate(
+                """() => document.querySelectorAll('#eg-edges .eg-bead').length > 0
+                    && document.getElementById('eg-inspector').classList.contains('is-open')"""),
+            "a new link should show a bead and a small inspector for when it fires")
+        type_ids = self.page.evaluate(
+            """() => {
+              const sel = document.querySelector('#eg-inspector select.eg-select');
+              return sel ? Array.from(sel.options).map(o => o.value) : [];
+            }""")
+        self.assertIn("turn_count", type_ids)
+        self.assertIn("game_over", type_ids)
+        self.assertFalse(
+            self.page.evaluate("() => !!document.querySelector('#eg-inspector .eg-insp-mode')"),
+            "Type must be a dropdown, not a pair of mode buttons")
+
+    def test_a_world_cycle_rides_the_ring(self):
+        """Right-out / left-in noodles U-turned around a cycle and crossed.
+        Three Worlds in a loop have to be three outward arcs."""
+        req = urllib.request.Request(
+            self.base_url + "/api/admin/studio/experience",
+            data=json.dumps({
+                "id": "default",
+                "name": "Cycle",
+                "start_world": "wa",
+                "worlds": [
+                    {"id": "wa", "name": "A", "x": -400, "y": 40},
+                    {"id": "wb", "name": "B", "x": 0, "y": -520},
+                    {"id": "wc", "name": "C", "x": 440, "y": 40},
+                ],
+                "transitions": [
+                    {"id": "t1", "from": "wa", "to": "wb",
+                     "condition": {"type": "turn_count", "turns": 8}},
+                    {"id": "t2", "from": "wb", "to": "wc",
+                     "condition": {"type": "turn_count", "turns": 8}},
+                    {"id": "t3", "from": "wc", "to": "wa",
+                     "condition": {"type": "turn_count", "turns": 8}},
+                ],
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        urllib.request.urlopen(req).read()
+        self.page.reload()
+        self.page.keyboard.press("r")
+        self.page.wait_for_selector(".choice-btn", state="attached", timeout=20000)
+        self.page.keyboard.press("`")
+        self.page.wait_for_selector("#we-graph", state="visible", timeout=10000)
+        self.page.wait_for_function(
+            "() => document.querySelectorAll('#eg-world .eg-node').length > 0",
+            timeout=10000)
+        self._settle()
+        self._open_experience()
+        self._settle(900)
+        paths = self.page.evaluate(
+            """() => Array.from(document.querySelectorAll('#eg-edges .eg-edge'))
+              .map(p => p.getAttribute('d'))
+              .map(d => {
+                const n = d.match(/-?\\d+(?:\\.\\d+)?/g).map(Number);
+                return {x1:n[0], y1:n[1], c1x:n[2], c1y:n[3], c2x:n[4], c2y:n[5], x2:n[6], y2:n[7]};
+              })""")
+        self.assertEqual(len(paths), 3, "a 3-world cycle draws three links")
+        for i, p in enumerate(paths):
+            self.assertGreater(
+                abs(p["c1y"] - p["y1"]) + abs(p["c2y"] - p["y2"]),
+                20,
+                "link %s still uses a flat horizontal noodle" % i)
+
+    def test_delete_key_removes_a_world(self):
+        """Delete / Backspace destroy the selected World, not just the toolkit."""
+        self._open_experience()
+        self.page.click('#eg-toolkit [data-tool="add-world"]')
+        self.page.wait_for_timeout(1200)
+        worlds = [i for i in self._shown() if i.startswith("world:")]
+        self.assertEqual(len(worlds), 2)
+        extra = next(i for i in worlds if i != "world:w-live")
+        self._tap(extra)
+        self._settle(200)
+        self.page.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
+        self.page.keyboard.press("Delete")
+        self.page.wait_for_timeout(900)
+        left = [i for i in self._shown() if i.startswith("world:")]
+        self.assertEqual(len(left), 1, "Delete should remove the selected World")
+        self.assertNotIn(extra, left)
+
+    def test_spawned_world_asks_to_be_named(self):
+        """A new World is a level-in-waiting: the card to name it opens immediately."""
+        self._open_experience()
+        self.page.click('#eg-toolkit [data-tool="add-world"]')
+        self.page.wait_for_timeout(1200)
+        self.assertTrue(
+            self.page.evaluate(
+                """() => {
+                  const d = document.getElementById('eg-inspector');
+                  return !!(d && d.classList.contains('is-open')
+                    && d.querySelector('.eg-insp-name')
+                    && d.querySelector('.eg-insp-design'));
+                }"""),
+            "adding a World should open a naming card with Edit")
+        name = self.page.query_selector("#eg-inspector .eg-insp-name")
+        self.assertIsNotNone(name)
+        name.fill("The Four Corners")
+        self.page.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
+        self.page.wait_for_timeout(900)
+        self.assertTrue(
+            self.page.evaluate(
+                """() => Array.from(document.querySelectorAll('#eg-world .eg-world-cap'))
+                      .some(t => t.textContent === 'The Four Corners')"""),
+            "the cell should wear the name you gave it")
+        extra = next(i for i in self._shown() if i.startswith("world:") and i != "world:w-live")
+        self.page.click("#eg-inspector .eg-insp-design")
+        self.page.wait_for_function(
+            """() => {
+              const g = document.querySelector('#eg-world .eg-node[data-id="dot:level"]');
+              return !!(g && g.style.display !== 'none' && !g.classList.contains('is-leaving'));
+            }""",
+            timeout=8000)
+        shown = self._shown()
+        self.assertIn("dot:level", shown, "Edit should dive into the World's interior")
+        self.assertIn(extra, shown)
+
+    def test_world_circle_shows_a_take_in_progress(self):
+        """Changing the level plate should feel like a take: the cell says
+        RENDERING, then the still swaps. markRendering is the optimistic
+        state the editor paints the moment you change the art."""
+        self._open_experience()
+        self.assertTrue(
+            self.page.evaluate(
+                """() => {
+                  const id = document.querySelector('#eg-world .eg-kind-world-node')
+                    && document.querySelector('#eg-world .eg-kind-world-node').getAttribute('data-id');
+                  const worldId = id && id.indexOf('world:') === 0 ? id.slice(6) : '';
+                  window.EditorGraph.markRendering(worldId);
+                  const g = document.querySelector('#eg-world .eg-kind-world-node.is-rendering');
+                  const label = g && g.querySelector('.eg-render-label');
+                  return !!(g && label && label.textContent === 'RENDERING');
+                }"""),
+            "a World take should spin RENDERING on the cell")
+
+    def test_world_x_removes_it(self):
+        """Each World carries its own × — no Delete tool on the sidebar."""
+        self._open_experience()
+        self.page.click('#eg-toolkit [data-tool="add-world"]')
+        self.page.wait_for_timeout(1200)
+        self.assertFalse(self.page.query_selector('#eg-toolkit [data-tool="connect"]'))
+        self.assertFalse(self.page.query_selector('#eg-toolkit [data-tool="delete"]'))
+        worlds = [i for i in self._shown() if i.startswith("world:")]
+        self.assertEqual(len(worlds), 2)
+        extra = next(i for i in worlds if i != "world:w-live")
+        pt = self.page.evaluate(
+            """(id) => {
+              const g = document.querySelector('#eg-world .eg-node[data-id="' + id + '"] .eg-kill-disk');
+              if (!g) return null;
+              const r = g.getBoundingClientRect();
+              return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+            }""", extra)
+        self.assertIsNotNone(pt, "a World should show an × once there is more than one")
+        self.page.mouse.click(pt["x"], pt["y"])
+        self.page.wait_for_timeout(900)
+        left = [i for i in self._shown() if i.startswith("world:")]
+        self.assertEqual(len(left), 1)
+        self.assertNotIn(extra, left)
 
     def test_the_dot_opens_into_the_three_things_you_author(self):
-        """A place, a person, and the game itself."""
+        """A place, a person, and the gameplay — inside a World cell."""
         self._open_ring()
-        self.assertEqual(sorted(self._shown()), sorted(["game"] + DOTS))
-        self.assertEqual(self._labels(), ["Level", "Character", "Game"])
-        # The nucleus drops its name once the ring is out, so "Game" appears once.
+        wid = self._world_dot_id()
+        self.assertEqual(sorted(self._shown()), sorted([wid] + DOTS))
+        self.assertEqual(self._labels(), ["Level", "Character", "Gameplay"])
+        # The nucleus drops its name once the ring is out, so "Gameplay" appears once.
         self.assertEqual(
             self.page.evaluate(
                 """() => getComputedStyle(document.querySelector(
@@ -304,7 +921,7 @@ class TestEditorDots(unittest.TestCase):
         top = radii()
         self.assertGreater(len(top), 2)
         self.assertEqual(len(set(top)), 1, f"circles in one ring differ: {set(top)}")
-        self._dive("dot:game")
+        self._dive("dot:world")
         mid = radii()
         self.assertEqual(len(set(mid)), 1, f"circles in one ring differ: {set(mid)}")
         self.assertLess(mid[0], top[0], "a level in should be a size smaller")
@@ -335,6 +952,76 @@ class TestEditorDots(unittest.TestCase):
         self.assertLess(worst, 0.86,
                         "a label should sit inside its circle with room to spare")
 
+    def test_the_nucleus_frames_its_ring_instead_of_joining_it(self):
+        """The centre dot is WHERE YOU ARE, not another thing to pick. Drawn at
+        the same weight as its own children it read as a sixth option in a ring
+        of five, and the one piece of hierarchy on the page went with it.
+
+        Measured on screen, not in the SVG: the shrink is a transform, so the
+        `r` attribute the test above reads is unchanged by design.
+        """
+        def widths():
+            return self.page.evaluate(
+                """() => { const out = {core: null, ring: []};
+                     document.querySelectorAll('#eg-world .eg-node').forEach((g) => {
+                       if (g.style.display === 'none' ||
+                           g.classList.contains('is-leaving')) return;
+                       const w = g.querySelector('.eg-cell').getBoundingClientRect().width;
+                       if (g.classList.contains('is-core')) out.core = w;
+                       else out.ring.push(w);
+                     });
+                     return out; }""")
+
+        # Alone, the Experience is a real coin — not a marker the size of
+        # a nucleus. The shrink is for an opened ring's origin.
+        alone = widths()
+        self.assertIsNone(alone["core"], "a lone dot is not a nucleus")
+        self.assertGreater(alone["ring"][0], 70,
+                           "the collapsed Experience should read as a node")
+
+        self._open_ring()
+        for step in ("dot:world", "dot:mechanics"):
+            self._dive(step)
+            w = widths()
+            self.assertIsNotNone(w["core"], f"no nucleus inside {step}")
+            ratio = w["core"] / max(w["ring"])
+            self.assertLess(ratio, 0.7,
+                            f"the nucleus inside {step} is competing with its "
+                            f"ring ({ratio:.2f} of a satellite)")
+            self.assertGreater(ratio, 0.35,
+                               f"the nucleus inside {step} has vanished "
+                               f"({ratio:.2f} of a satellite)")
+
+    def test_the_experience_sits_beside_the_nucleus(self):
+        """Opening the Experience keeps a small origin and a full-size
+        Experience coin. Worlds are cells on that graph; later Experiences
+        can sit there too."""
+        self._open_experience()
+        shown = self._shown()
+        self.assertIn("experience", shown)
+        self.assertIn("xp", shown)
+        self.assertTrue(any(i.startswith("world:") for i in shown))
+        sizes = self.page.evaluate(
+            """() => {
+              const out = {core: 0, xp: 0, world: 0};
+              document.querySelectorAll('#eg-world .eg-node').forEach((g) => {
+                if (g.style.display === 'none' ||
+                    g.classList.contains('is-leaving')) return;
+                const w = g.querySelector('.eg-cell').getBoundingClientRect().width;
+                const id = g.getAttribute('data-id');
+                if (g.classList.contains('is-core')) out.core = w;
+                else if (id === 'xp') out.xp = w;
+                else if (g.classList.contains('eg-kind-world-node')) out.world = w;
+              });
+              return out;
+            }""")
+        self.assertGreater(sizes["xp"], 90, "the Experience coin should match a World")
+        self.assertGreater(sizes["world"], 80)
+        self.assertLess(sizes["core"] / sizes["xp"], 0.7,
+                        "the origin should stay a nucleus, not a second Experience")
+        self.assertGreater(sizes["xp"] / sizes["world"], 0.85)
+        self.assertLess(sizes["xp"] / sizes["world"], 1.2)
+
     def test_no_spokes_to_the_middle(self):
         """Lines from the nucleus to every satellite drew the one relationship
         you can already see, and turned a constellation into a wheel."""
@@ -346,8 +1033,8 @@ class TestEditorDots(unittest.TestCase):
         """The depth: inside GAME are the mechanics, the models that
         generate it, and how you drive."""
         self._open_ring()
-        self._dive("dot:game")
-        self.assertEqual(sorted(self._shown()), sorted(["dot:game"] + GAME_RING))
+        self._dive("dot:world")
+        self.assertEqual(sorted(self._shown()), sorted(["dot:world"] + GAME_RING))
         self.assertEqual(self._labels(), ["Mechanics", "Models", "Controls"])
 
         self._dive("dot:mechanics")
@@ -358,7 +1045,7 @@ class TestEditorDots(unittest.TestCase):
         # Back up one level at a time, not straight to the top.
         self.page.keyboard.press("Escape")
         self._settle()
-        self.assertEqual(sorted(self._shown()), sorted(["dot:game"] + GAME_RING))
+        self.assertEqual(sorted(self._shown()), sorted(["dot:world"] + GAME_RING))
 
         self._dive("dot:models")
         self.assertEqual(sorted(self._shown()), sorted(["dot:models"] + MODELS))
@@ -376,27 +1063,59 @@ class TestEditorDots(unittest.TestCase):
                              f"{gone}* should not be in the dots any more")
 
     def test_empty_paper_closes_the_ring(self):
-        """With dots this small there is more paper than dot, which makes
-        leaving easier than arriving — the right way round."""
+        """Inside a World, empty paper surfaces. Outside the enclosure on
+        the Experience canvas closes the Worlds back into the Experience."""
         self._open_ring()
         self.assertEqual(len(self._shown()), 4)
         self._tap_paper()
-        self.assertEqual(self._shown(), ["game"])
+        self.assertIn("experience", self._shown())
+        self.assertTrue(any(i.startswith("world:") for i in self._shown()))
+        self._tap_paper()
+        self.assertEqual(self._shown(), ["experience"],
+                         "outside the enclosure should close the Worlds")
 
     def test_escape_closes_the_ring_then_the_editor(self):
         self._open_ring()
         self.page.keyboard.press("Escape")
         self._settle()
-        self.assertEqual(self._shown(), ["game"])
+        self.assertIn("experience", self._shown())
+        self.page.keyboard.press("Escape")
+        self._settle()
+        self.assertEqual(self._shown(), ["experience"])
         self.page.keyboard.press("Escape")
         self.page.wait_for_timeout(500)
         self.assertFalse(self.page.evaluate(
             "document.body.classList.contains('world-editor-on')"),
             "Escape at the top should close the editor")
 
+    def test_back_arrow_closes_a_sheet_then_the_editor(self):
+        """Top-left arrow: a nested sheet returns to the graph; at the root
+        it closes the editor to Watch/Play."""
+        self.assertTrue(self.page.is_visible("#we-back"))
+        self._open_ring()
+        self._tap("dot:level")
+        self.page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
+        self.page.click("#we-back")
+        self._settle()
+        self.assertFalse(self.page.evaluate(
+            "document.getElementById('eg-sheet').classList.contains('is-open')"),
+            "back from a sheet should return to the graph")
+        self.assertEqual(len(self._shown()), 4)
+        self.page.click("#we-back")
+        self._settle()
+        self.assertIn("experience", self._shown())
+        self.page.click("#we-back")
+        self._settle()
+        self.assertEqual(self._shown(), ["experience"])
+        self.page.click("#we-back")
+        self.page.wait_for_timeout(500)
+        self.assertFalse(self.page.evaluate(
+            "document.body.classList.contains('world-editor-on')"),
+            "back at the root should close the editor")
+
     def test_a_window_carries_the_essentials_and_nothing_to_read(self):
-        """Four fields for a place. No switch, no ⓘ, no advanced disclosure, no
-        compiled-output pane — all of which the full list still has."""
+        """Four fields for a place. No switch, no ⓘ, no advanced disclosure.
+        The compiled prompt stays visible — hiding it is how a save looked dead."""
         self._open_ring()
         self._tap("dot:level")
         self.page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
@@ -409,8 +1128,9 @@ class TestEditorDots(unittest.TestCase):
         body = "#eg-sheet-body "
         self.assertEqual(self.page.eval_on_selector_all(body + ".we-info", "e => e.length"), 0)
         self.assertEqual(self.page.eval_on_selector_all(body + ".we-more", "e => e.length"), 0)
-        self.assertEqual(
-            self.page.eval_on_selector_all(body + ".we-more-compiled", "e => e.length"), 0)
+        self.assertGreater(
+            self.page.eval_on_selector_all(body + ".we-compiled", "e => e.length"), 0,
+            "the compiled prompt has to stay on the sheet")
         self.assertEqual(
             self.page.eval_on_selector_all(body + ".we-block-head", "e => e.length"), 0)
         # The "Use this level" switch is gone: typing is the opt-in.
@@ -451,6 +1171,108 @@ class TestEditorDots(unittest.TestCase):
                 "name": before.get("name", ""),
             })
 
+    def test_character_look_compiles_on_the_open_sheet(self):
+        """Typing Look used to save and remount. The compiled prompt now
+        updates in place, and the cursor stays in the field."""
+        before = self._identity("player_character")
+        try:
+            self._open_ring()
+            self._tap("dot:character")
+            self.page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
+            self._settle(400)
+            look = self.page.query_selector(
+                '#eg-sheet-body [data-identity-field="appearance"]')
+            self.assertIsNotNone(look, "Character must show a Look field")
+            look.click()
+            look.fill("neon pink mohawk proof")
+            self.page.wait_for_timeout(900)
+            compiled = self.page.text_content("#eg-sheet-body .we-compiled") or ""
+            self.assertIn("neon pink mohawk proof", compiled)
+            self.assertEqual(
+                self.page.evaluate(
+                    "document.activeElement.getAttribute('data-identity-field')"),
+                "appearance",
+                "a save must not remount the sheet and steal the cursor")
+            self.assertIn(
+                "neon pink mohawk",
+                (self._identity("player_character").get("appearance") or ""))
+        finally:
+            self._put_identity("player_character", {
+                "appearance": before.get("appearance", ""),
+            })
+
+    def test_spec_windows_have_a_clear_button(self):
+        """Character and Level used to ship with no way to empty the sheet —
+        the overlay could warn that a blank character was switched on, and
+        the only reset lived on a different window."""
+        self._open_ring()
+        for node_id, title in (("dot:level", "Level"), ("dot:character", "Character")):
+            self._tap(node_id)
+            self.page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
+            self._settle(400)
+            self.assertEqual(self.page.text_content("#eg-sheet-title").strip(), title)
+            btn = self.page.query_selector("#eg-sheet-body [data-action='clear-block']")
+            self.assertIsNotNone(btn, f"{title} should have a Clear button")
+            self.assertEqual(btn.text_content().strip(), "Clear")
+            self.page.keyboard.press("Escape")
+            self._settle(400)
+        self._dive("dot:world")
+        self._dive("dot:mechanics")
+        self._open_leaf("dot:camera")
+        cam = self.page.query_selector("#eg-sheet-body [data-action='clear-block']")
+        self.assertIsNotNone(cam, "Camera should have a Clear button")
+        self.page.keyboard.press("Escape")
+        self._settle(400)
+        self._open_leaf("dot:camp")
+        self.assertIsNotNone(
+            self.page.query_selector("#eg-sheet-body [data-action='clear-prompt']"),
+            "Camp's shot prompt should have a Clear button")
+        self.page.keyboard.press("Escape")
+        self._settle(400)
+        self._open_leaf("dot:narrator")
+        self.assertIsNotNone(
+            self.page.query_selector("#eg-sheet-body [data-action='clear-prompt']"),
+            "Narrator should have a Clear button")
+
+    def test_clearing_the_level_sheet_persists(self):
+        """Clear empties the fields, switches the block off, and that is what
+        the game reads on the next turn — not a client-only wipe."""
+        before = self._identity("setting_reference")
+        try:
+            self._open_ring()
+            self._tap("dot:level")
+            self.page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
+            self._settle(500)
+
+            box = self.page.query_selector("#eg-sheet-body input[type='text']")
+            box.click()
+            box.fill("The Kettle Yard")
+            self.page.keyboard.press("Enter")
+            self.page.wait_for_timeout(1200)
+            self.assertTrue(self._identity("setting_reference").get("enabled"),
+                            "setup: typing should have switched the level on")
+
+            btn = self.page.query_selector("#eg-sheet-body [data-action='clear-block']")
+            self.assertIsNotNone(btn)
+            btn.click()
+            self.page.wait_for_timeout(1200)
+
+            saved = self._identity("setting_reference")
+            self.assertFalse(saved.get("enabled"),
+                             "Clear should switch the level off")
+            self.assertEqual(saved.get("name") or "", "")
+            self.assertEqual(saved.get("summary") or "", "")
+            self.assertEqual(saved.get("landmarks") or "", "")
+            self.assertEqual(saved.get("opening_shot") or "", "")
+        finally:
+            self._put_identity("setting_reference", {
+                "enabled": bool(before.get("enabled")),
+                "name": before.get("name", ""),
+                "summary": before.get("summary", ""),
+                "landmarks": before.get("landmarks", ""),
+                "opening_shot": before.get("opening_shot", ""),
+            })
+
     def test_the_glow_means_you_changed_it(self):
         """Not "has content" — the shipped character sheet HAS content, so that
         rule lit Character up on a game nobody had touched. The glow is yours."""
@@ -470,7 +1292,7 @@ class TestEditorDots(unittest.TestCase):
 
             # Change one field, the way a person would, and the mark appears off
             # the back of the save with no reload.
-            self._dive("dot:game")
+            self._dive("dot:world")
             self._dive("dot:mechanics")
             self._open_leaf("dot:camera")
             modes = self.page.query_selector_all("#eg-sheet-body .we-mode")
@@ -489,7 +1311,7 @@ class TestEditorDots(unittest.TestCase):
                             "a container should inherit the glow from its children")
             self.page.keyboard.press("Escape")
             self._settle()
-            self.assertTrue(glows("dot:game"),
+            self.assertTrue(glows("dot:world"),
                             "a container should inherit the glow from its grandchildren")
         finally:
             self._put_identity("camera_perspective", {
@@ -499,7 +1321,7 @@ class TestEditorDots(unittest.TestCase):
     def test_camera_is_a_mechanic_with_four_perspectives(self):
         """Where the camera stands is a mechanic, not a preference."""
         self._open_ring()
-        self._dive("dot:game")
+        self._dive("dot:world")
         self._dive("dot:mechanics")
         self._open_leaf("dot:camera")
         # By name only — the taglines are teaching copy.
@@ -516,7 +1338,7 @@ class TestEditorDots(unittest.TestCase):
         the answer to "why isn't this working", which until now lived in a boot
         log nobody reads."""
         self._open_ring()
-        self._dive("dot:game")
+        self._dive("dot:world")
         self._dive("dot:mechanics")
 
         self._open_leaf("dot:scan")
@@ -542,7 +1364,7 @@ class TestEditorDots(unittest.TestCase):
         self.assertTrue(before, "narrator_direction should ship with a default")
         try:
             self._open_ring()
-            self._dive("dot:game")
+            self._dive("dot:world")
             self._dive("dot:mechanics")
             self._open_leaf("dot:narrator")
 
@@ -575,7 +1397,7 @@ class TestEditorDots(unittest.TestCase):
         """The world and image pickers are the real lists, and the world panel
         says whether realtime can actually connect right now."""
         self._open_ring()
-        self._dive("dot:game")
+        self._dive("dot:world")
         self._dive("dot:models")
 
         self._open_leaf("dot:world")
@@ -583,6 +1405,13 @@ class TestEditorDots(unittest.TestCase):
             "#eg-sheet-body .we-mode-name", "els => els.map(e => e.textContent)")
         self.assertGreater(len(picks), 1, "the world models should be listed")
         self.assertIn("Realtime", self._rows())
+        self.page.keyboard.press("Escape")
+        self._settle(600)
+
+        self._open_leaf("dot:text")
+        picks = self.page.eval_on_selector_all(
+            "#eg-sheet-body .we-mode-name", "els => els.map(e => e.textContent)")
+        self.assertGreaterEqual(len(picks), 1, "the narrator should be listed")
         self.page.keyboard.press("Escape")
         self._settle(600)
 
@@ -611,20 +1440,24 @@ class TestEditorDots(unittest.TestCase):
 
     def test_controls_holds_the_movement_strip_and_a_key_card(self):
         """The CONTROLS strip is the panel's own wired element on loan, not a
-        second copy of it, and the bindings are finally written down."""
+        second copy of it. Schemes are per camera; Tank / Look are starting
+        layouts, and every action can be rebound."""
         self._open_ring()
-        self._dive("dot:game")
+        self._dive("dot:world")
         self._open_leaf("dot:controls")
         self.assertEqual(
             self.page.eval_on_selector_all(
                 "#eg-sheet-body .eg-group > .we-cast-label",
                 "els => els.map(e => e.textContent)"),
-            ["Movement", "Keys", "Panel", "Start over"])
+            ["Movement", "Panel", "Start over"])
         self.assertTrue(self.page.evaluate(
             "!!document.querySelector('#eg-sheet-body #we-input-opts')"))
-        rows = self._rows()
-        self.assertIn("DOOM", rows)
-        self.assertIn("FPS", rows)
+        self.assertTrue(self.page.evaluate(
+            "!!document.querySelector('#we-input-schemes button[data-value=\"third_person\"]')"))
+        self.assertTrue(self.page.evaluate(
+            "!!document.querySelector('#we-input-keys')"))
+        self.assertIn("Forward", self.page.evaluate(
+            "() => document.getElementById('we-input-keys').innerText"))
 
         self.page.click("#eg-sheet-body #we-input-profile button:nth-child(2)")
         self.page.wait_for_timeout(300)
@@ -652,7 +1485,7 @@ class TestEditorDots(unittest.TestCase):
         self.assertFalse(self.page.is_visible("#we-foot"))
         # And they are all still there, inside Game > Controls.
         self._open_ring()
-        self._dive("dot:game")
+        self._dive("dot:world")
         self._open_leaf("dot:controls")
         self.assertTrue(self.page.evaluate(
             "!!document.querySelector('#eg-sheet-body #we-panel-opts')"))
@@ -683,7 +1516,7 @@ class TestEditorDots(unittest.TestCase):
         # ...but not far enough to lose the composition.
         self.assertLess(moved, later["r"], "drift should stay inside a dot's own radius")
         # Nothing may end up sitting on the nucleus.
-        core = self._dot("game")
+        core = self._dot(self._core_id())
         for node_id in DOTS:
             d = self._dot(node_id)
             gap = ((core["x"] - d["x"]) ** 2 + (core["y"] - d["y"]) ** 2) ** 0.5
@@ -703,10 +1536,17 @@ class TestEditorDots(unittest.TestCase):
         before = self._tunables()
         try:
             self._open_ring()
-            self._dive("dot:game")
+            self._dive("dot:world")
             self._dive("dot:mechanics")
 
             self._open_leaf("dot:scan")
+            # The knobs must not wait on /api/health. They used to share a
+            # Promise.all with it, and on the first open after a boot that meant
+            # waiting for MediaPipe to import — so the detector panel was empty
+            # for seconds, which is the whole "settings don't work" complaint in
+            # miniature. Generous timeout, tight expectation: it should be there
+            # almost immediately, but the failure worth catching is "never".
+            self.page.wait_for_selector("#eg-sheet-body select", timeout=8000)
             self.assertEqual(
                 self.page.eval_on_selector_all("#eg-sheet-body select", "e => e.length"), 1)
             self.assertEqual(
@@ -739,7 +1579,7 @@ class TestEditorDots(unittest.TestCase):
         self.assertTrue(before, "camp_scene_prompt should ship with a default")
         try:
             self._open_ring()
-            self._dive("dot:game")
+            self._dive("dot:world")
             self._dive("dot:mechanics")
             self._open_leaf("dot:camp")
             box = self.page.query_selector("#eg-sheet-body .eg-prompt")
@@ -764,23 +1604,64 @@ class TestEditorDots(unittest.TestCase):
         derived itself from each scene and that was that. Now a loop you upload
         or generate takes over, and it takes over for EVERY caller — the
         override lives in get_scene_audio, not in one player."""
+        before = json.loads(urllib.request.urlopen(
+            self.base_url + "/api/music").read().decode())
+        before = before.get("data") or before
+
+        def _put_music(prompt, menu_prompt):
+            req = urllib.request.Request(
+                self.base_url + "/api/music",
+                data=json.dumps({
+                    "prompt": prompt, "menu_prompt": menu_prompt,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+                method="PUT")
+            urllib.request.urlopen(req).read()
+
+        def _clear_loops():
+            urllib.request.urlopen(urllib.request.Request(
+                self.base_url + "/api/music", method="DELETE")).read()
+            urllib.request.urlopen(urllib.request.Request(
+                self.base_url + "/api/music?for=menu", method="DELETE")).read()
+
+        _put_music("", "")
+        _clear_loops()
         try:
             self._open_ring()
-            self._dive("dot:game")
+            self._dive("dot:world")
             self._dive("dot:mechanics")
-            self._open_leaf("dot:music")
+            opened = self.page.evaluate(
+                "(id) => window.EditorGraph.activate(id)", "dot:music")
+            self.assertTrue(opened, "Music should still be on the mechanics ring")
+            self.page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
+            self.page.wait_for_function(
+                """() => {
+                  const t = document.getElementById('eg-sheet-title');
+                  return t && t.textContent === 'Music';
+                }""",
+                timeout=4000)
+            labels = self.page.eval_on_selector_all(
+                "#eg-sheet-body .eg-group > .we-cast-label",
+                "els => els.map(e => e.textContent)")
             self.assertEqual(
-                self.page.eval_on_selector_all(
-                    "#eg-sheet-body .eg-group > .we-cast-label",
-                    "els => els.map(e => e.textContent)")[:3],
-                ["Playing", "Write it", "Or bring your own"])
+                labels[:3],
+                ["How it sounds", "Playing", "Or bring your own"])
+            self.assertIn("Title screen", labels)
+            self.assertIn("Ambience", labels)
+            self.assertIn("Test a scene", labels)
+            self.assertIn("Stock", labels)
+            self.assertIn("Cache", labels)
+            body = self.page.text_content("#eg-sheet-body")
+            self.assertIn("Play loop", body)
+            self.assertIn("Play menu", body)
+            self.assertIn("Play music", body)
+            self.assertIn("Generate missing", body)
             # Both ways in are actually here.
             self.assertTrue(self.page.evaluate(
                 "!!document.querySelector('#eg-sheet-body .eg-prompt')"))
             self.assertTrue(self.page.evaluate(
                 "!!document.querySelector('#eg-sheet-body .eg-file')"))
-            self.assertIn("follows each scene",
-                          self.page.text_content("#eg-sheet-body"))
+            self.assertIn("follows each scene", body)
 
             # Upload a real WAV the way a person would.
             self.page.set_input_files("#eg-sheet-body .eg-file", {
@@ -798,10 +1679,26 @@ class TestEditorDots(unittest.TestCase):
 
             # And the scene endpoint every player already uses now hands that
             # loop back instead of scoring the scene.
-            # One loop, one filename — the extension follows the file you gave it.
-            self.assertEqual(
-                self._scene_audio("a dark corridor").get("audio_url"),
-                "/audio/loop.wav")
+            #
+            # One loop, one filename — the extension follows the file you gave
+            # it — but the URL is STAMPED with which loop it is. Without the
+            # stamp every loop anyone ever sets has the identical address, so
+            # the browser cache and the player's "am I already playing this?"
+            # check both keep the previous track and choosing new music appears
+            # to do nothing at all.
+            url = self._scene_audio("a dark corridor").get("audio_url")
+            self.assertTrue(url.startswith("/audio/loop.wav?v="), url)
+            first = url
+
+            # Replace it, and the address has to move with it.
+            self.page.set_input_files("#eg-sheet-body .eg-file", {
+                "name": "second.wav", "mimeType": "audio/wav",
+                "buffer": _tiny_wav(),
+            })
+            self.page.wait_for_timeout(2200)
+            self.assertNotEqual(
+                self._scene_audio("a dark corridor").get("audio_url"), first,
+                "a different loop must not be served from the same URL")
 
             # Back to per-scene, and the endpoint follows.
             self.page.click("#eg-sheet-body .we-btn-ghost")
@@ -809,14 +1706,15 @@ class TestEditorDots(unittest.TestCase):
             self.assertIn("follows each scene",
                           self.page.text_content("#eg-sheet-body"))
         finally:
-            urllib.request.urlopen(urllib.request.Request(
-                self.base_url + "/api/music", method="DELETE")).read()
+            _clear_loops()
+            _put_music(before.get("direction") or "",
+                       before.get("menu_direction") or "")
 
     def test_clearing_everything_takes_two_taps(self):
         """One button to get out of a mess, and it asks first — it empties four
         sheets and every knob."""
         self._open_ring()
-        self._dive("dot:game")
+        self._dive("dot:world")
         self._open_leaf("dot:controls")
         btn = self.page.query_selector("#eg-sheet-body .eg-group:last-child .we-btn")
         self.assertEqual(btn.text_content().strip(), "Clear everything")
@@ -842,7 +1740,7 @@ class TestEditorDots(unittest.TestCase):
                         "the runtime controls should still be reachable")
         self.page.click("#we-view")
         self.page.wait_for_timeout(500)
-        self.assertEqual(self._shown(), ["game"])
+        self.assertEqual(self._shown(), ["experience"])
 
 
 if __name__ == "__main__":

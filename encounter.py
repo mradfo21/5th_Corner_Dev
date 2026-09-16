@@ -23,7 +23,10 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 ENCOUNTER_STANCES = ("hostile", "desperate", "opportunistic")
-ENCOUNTER_KINDS = ("person", "creature", "character")
+# Anything outside this list was silently rewritten to "person", so a model that
+# did answer "anomaly" or "group" had its answer thrown away before any prompt
+# saw it — one more reason every encounter ended up being a man.
+ENCOUNTER_KINDS = ("person", "group", "creature", "anomaly", "character")
 # Three different ANSWERS to a confrontation, not three fighting moves. The
 # third lane used to be "use" — turn their grip or their weapon against them —
 # which is just a second way to hit someone, so every slate came out as three
@@ -95,9 +98,16 @@ _CLOTHING_CLAUSE_RE = re.compile(
     r"^(wearing|dressed|clad in|sporting|in a tattered|in an?\s)",
     re.I,
 )
+# Every "is this describing a body?" check in the module runs off this list, and
+# a noun missing from it means the description gets thrown away as camera talk.
+# It held eleven words, all of them a lone civilian human, so a soldier, a pack
+# animal or a standing shape was unreadable to the whole module — which mattered
+# the moment the roster stopped producing only men in work shirts.
 _PERSON_NOUNS = (
-    "woman", "man", "worker", "miner", "guard", "figure", "stranger",
-    "person", "someone", "creature", "presence",
+    "woman", "man", "men", "women", "people", "worker", "miner", "guard",
+    "figure", "stranger", "person", "someone", "creature", "presence",
+    "soldier", "trooper", "officer", "scavenger", "animal", "beast", "dog",
+    "thing", "shape", "silhouette", "body", "child", "crew", "team",
 )
 
 # A vision description narrates a PHOTOGRAPH, so it opens by naming the shot
@@ -282,19 +292,21 @@ DEFAULT_BRIEF_INSTRUCTIONS = (
     "motive. The best encounters are ones where the player realises the "
     "other person knows something.\n"
     "\n"
-    "label is a grounded reading of who they are, tied to the world — their "
-    "job, allegiance, or condition (a Horizon site foreman, a quarantine "
-    "sentry, a scavenger who got too close). Not a comic title or rank. No "
-    "Sentinel, Warden, Knight, or robot. This world is 1993 industrial "
-    "horror: people and flesh, never machines or energy weapons.\n"
-    "look is the visible body: hair, clothes, wound, what they hold.\n"
+    "label is a grounded reading of what this is, tied to the world — its job, "
+    "allegiance, or condition (a Horizon site foreman, a quarantine sentry, a "
+    "scavenger who got too close, whatever came up out of Shaft 6). The test "
+    "is not the noun, it is the camera: 1993, available light, practical "
+    "effects. Anything a 35mm frame could physically catch is fair — people, "
+    "raid teams, animals, the changed, an anomaly that has a shape. Nothing "
+    "that needs CGI, a glow, an energy weapon, or a comic-book costume.\n"
+    "look is the visible body: hair, clothes, hide, wound, what it holds.\n"
     "\n"
     "DANGER is what makes this the wrong moment to be standing here, and it "
-    "is happening NOW. Usually that is what this figure is doing with their "
-    "body or with something they carry. It may also be what their arrival "
-    "means — who is behind them, what they are about to do, what they will "
-    "take. Do not invent a collapse, fire, grate, or sealed exit that the "
-    "photograph does not already show.\n"
+    "is happening NOW. Usually that is what this thing is doing with what it "
+    "has — its body, its hands, what it carries, what it arrived in. It may "
+    "also be what its arrival means: who is behind it, what it is about to "
+    "do, what it will take. Do not invent a collapse, fire, grate, or sealed "
+    "exit that the photograph does not already show.\n"
     "\n"
     "If the image is outdoors, stay outdoors. Do not invent an interior.\n"
     "If the image is indoors, stay in that same room.\n"
@@ -303,7 +315,7 @@ DEFAULT_BRIEF_INSTRUCTIONS = (
     "not only losing blood. place_hold is 1-2 visual locks from the image so "
     "a restage cannot teleport (ground, sky, walls, a landmark).\n"
     "stance must be one of: hostile, desperate, opportunistic.\n"
-    "kind must be one of: person, creature, character."
+    "kind must be one of: person, group, creature, anomaly, character."
 )
 
 ENCOUNTER_CHOICE_SCHEMA = {
@@ -315,6 +327,71 @@ ENCOUNTER_CHOICE_SCHEMA = {
     },
     "required": ["confront", "evade", "parley"],
 }
+
+# ── What can walk up on you in this world ────────────────────────────────────
+# The brief asks a model, cold, to "invent ONE new encounter", and a model asked
+# the same question every time answers with its most probable answer every time.
+# In a world of raid teams, changed miners and anomalies, that answer was one
+# more rough man in a work shirt, turn after turn. Temperature does not move it:
+# the modal answer stays modal, and the two examples the instructions happened
+# to give ("a wounded worker, a man in coveralls") were the whole ballgame.
+#
+# So the KIND is rolled in code before the model is asked anything, and the
+# model only dresses the roll into the photograph. The list rolled from is read
+# out of the run's own lore instead of being a table shipped in this file: a
+# table here goes stale the moment somebody rewrites the bible, and the point is
+# that changing the lore changes what hunts you.
+ENCOUNTER_ROSTER_SIZE = 12
+
+# How many rolls a kind sits out before it can come back. A world's signature
+# threat should still recur inside a long run; what it must not do is arrive
+# twice running, which is the thing that reads as staleness.
+ENCOUNTER_ROSTER_COOLDOWN = 5
+
+ENCOUNTER_LANE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "lane": {"type": "string", "enum": list(ENCOUNTER_LANES)},
+    },
+    "required": ["lane"],
+}
+
+ENCOUNTER_ROSTER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "kinds": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["kinds"],
+}
+
+DEFAULT_ROSTER_INSTRUCTIONS = (
+    "Read this world bible and answer one question: what could walk up on a "
+    f"lone photojournalist here? List exactly {ENCOUNTER_ROSTER_SIZE} "
+    "DIFFERENT answers.\n"
+    "\n"
+    "Each answer is a short noun phrase, at most 12 words, naming WHAT arrives "
+    "— and where the bible gives you one, the faction, operation or event it "
+    "belongs to.\n"
+    "\n"
+    "SPREAD THEM. Twelve variations on one idea is a failed list. Across the "
+    "twelve, cover: an organised armed group; a lone human with a job and an "
+    "allegiance; someone this place has already changed or infected; an animal "
+    "or a creature; a paranormal anomaly; and a rival who wants the story "
+    "rather than the player's blood.\n"
+    "\n"
+    "Everything must come out of THIS bible — its factions, its accident, its "
+    "industry, what it says has been happening here. Generic is the failure "
+    "mode: 'a hostile stranger', 'an angry local', 'a mysterious figure' are "
+    "the answers to delete.\n"
+    "\n"
+    "1993, practical effects, available light: whatever you name has to be "
+    "something a camera could physically catch. No energy weapons, no CGI, no "
+    "comic-book costumes.\n"
+    "Each one must be able to arrive on open ground, on foot, without needing "
+    "an interior or a prop that may not be in the frame.\n"
+    "\n"
+    "Return JSON only: {\"kinds\": [\"...\", \"...\"]}"
+)
 
 # Landscape / travel verbs that made encounter slates read as explore turns.
 _PLACE_ONLY_MARKERS = (
@@ -387,9 +464,25 @@ def resolve_plate_caption(label: str, verb: str, lane: str, outcome: str,
     ))[:80]
 
 
-def encounter_turn_skip_image(outcome: str) -> bool:
-    """Escape needs a new world frame. Other outcomes keep the verb still."""
-    return str(outcome or "").strip().lower() != "escape"
+def encounter_turn_skip_image(outcome: str, record: Optional[dict] = None) -> bool:
+    """Whether the aftermath turn reuses the verb still instead of drawing.
+
+    A fight that is still on keeps the verb still: the player is mid-exchange
+    and a fresh world frame there would throw away the blow they just landed.
+
+    A fight that is OVER needs a new frame, and winning one is over. Only
+    escape used to qualify, so putting the other body down left the game
+    resuming on the standoff plate — the picture of the fight you had already
+    finished, held there while normal play carried on around it. Any release
+    now draws the place a moment later, with the fight's result in it.
+
+    Death is the exception in the other direction: the killing frame IS the
+    last thing the run has to show, so nothing is drawn over it.
+    """
+    out = str(outcome or "").strip().lower()
+    if out == "die":
+        return True
+    return not encounter_releases(out, record)
 
 
 def stakes_after_verb(brief: dict, verb: str, lane: str, outcome: str) -> str:
@@ -655,7 +748,10 @@ def look_clones_player(text: str) -> bool:
         if "vest" in owned or "press" in owned or not owned:
             return True
     words = {w for w in re.split(r"[^a-z0-9]+", raw) if w}
-    if words & owned & {"press", "gaiter", "respirator", "camcorder"}:
+    # "camcorder" stays for worlds that still author one, but it is no longer
+    # the shipped protagonist's gear — the shipped sheet now carries a 35mm
+    # stills camera, so "35mm" is the token that identifies them on sight.
+    if words & owned & {"press", "gaiter", "respirator", "camcorder", "35mm"}:
         return True
     if "vest" in words and ("press" in owned or "vest" in owned):
         return True
@@ -673,20 +769,30 @@ def look_clones_player(text: str) -> bool:
     return len(_player_token_hits(raw)) >= 2
 
 
-def distinct_enemy_look(look: str) -> str:
+def distinct_enemy_look(look: str, seed: str = "", kind: str = "") -> str:
     """Keep a stranger look that cannot be read as the player's vest.
 
     Also the last gate before a look reaches the image prompt, so it is where
     camera narration has to die: the plate prompt drops this string in as the
     other person's appearance, and a look that still says "a first-person
     perspective shows…" re-aims the whole frame instead of dressing anybody.
+
+    ``seed`` / ``kind`` only matter when we fall through to a fallback — see
+    default_stranger_look. Callers holding a brief should pass the label and
+    the kind so the same encounter keeps meeting the same thing.
     """
     if look_is_camera_language(look):
-        return _DEFAULT_STRANGER_LOOK
+        return default_stranger_look(seed or look, kind)
     raw = _clip(strip_camera_language(look), "", 160)
     if raw and not look_clones_player(raw):
-        return raw
-    return _DEFAULT_STRANGER_LOOK
+        # "A first-person view shows a man" survives the camera-language check
+        # and then strips down to "a man", which dresses nobody: no garment,
+        # no distinguishing word. Handed to the image model that is a blank
+        # cheque, and what comes back is the generic rugged stranger. A look
+        # that describes nothing is worth less than a fallback that does.
+        if wardrobe_tokens_from_text(raw) or _look_words(raw):
+            return raw
+    return default_stranger_look(seed or look, kind)
 
 
 def names_unseen_hazard(text: str, plate_seen: str = "") -> bool:
@@ -724,9 +830,15 @@ def _brief_cast_rule() -> str:
     bits = [
         "The new character is someone the player has never met. "
         "Do not dress them in the player's clothes.\n"
-        "danger is what THIS FIGURE is doing to the player with their BODY. "
-        "Do not invent sludge, fire, collapse, oil, or a prop the attached "
-        "photograph does not already show.\n",
+        # "With their BODY" was written to stop the brief inventing a burst pipe
+        # or a fire the frame never had. It also quietly disarmed everything that
+        # is not a pair of fists: a raid team's rifles, a creature's teeth, what
+        # an anomaly does to the air. What they BROUGHT is theirs; what the place
+        # would have to supply is not.
+        "danger is what THIS THING is doing to the player right now, with its "
+        "body or with what it brought with it. Do not invent sludge, fire, "
+        "collapse, oil, or a prop the attached photograph does not already "
+        "show and it did not carry in.\n",
     ]
     if wardrobe:
         bits.append(
@@ -741,7 +853,11 @@ def separate_cast(brief: dict) -> dict:
     """Stop the stranger from wearing the player's PRESS / high-vis vest."""
     brief = normalize_encounter_brief(brief)
     char = brief.setdefault("character", {})
-    look = distinct_enemy_look(char.get("look") or "")
+    look = distinct_enemy_look(
+        char.get("look") or "",
+        seed=char.get("label") or "",
+        kind=char.get("kind") or "",
+    )
     char["look"] = look
     if look_clones_player(char.get("label") or ""):
         char["label"] = _grounded_label_from_look(look)
@@ -761,8 +877,19 @@ def _looks_like_sheet(seen: str, wardrobe: str) -> bool:
     return bool(a) and a.issubset(b)
 
 
-def player_cast_lock() -> str:
-    """Hard identity sentence so img2img cannot recast the protagonist."""
+def player_cast_lock(trust_reference: bool = False) -> str:
+    """Hard identity sentence so img2img cannot recast the protagonist.
+
+    ``trust_reference`` is for the one caller whose attached frame is known to
+    be the player's own scene: the standoff plate. It already says CARRY THE
+    PLAYER OVER — copy the face and clothes out of that photograph — and this
+    lock's closing sentence said the opposite ("a previous frame that shows
+    someone else is WRONG — ignore that person"). Two hard rules about the same
+    body, so the model was free to pick, and what came back was the sheet
+    loosely re-imagined: right man, wrong coat. That sentence exists for a
+    RECAST (the leftover Jason still on disk after the author drew a woman),
+    which is not the situation when the reference is this run's own last frame.
+    """
     try:
         import game_identity
         who = game_identity.protagonist_line()
@@ -792,11 +919,18 @@ def player_cast_lock() -> str:
                 f" In the reference photograph {name} is wearing {seen}; "
                 f"that stays on {name} and goes on nobody else."
             )
+        prior = (
+            f" The person already in the reference photograph IS {name}: keep "
+            "that face and that outfit."
+            if trust_reference else
+            " A previous frame that shows someone else is WRONG — ignore that "
+            "person."
+        )
         return (
             f"CAST LOCK — HARD. The player is {who} "
             f"Draw {name} as that exact person: same gender, face, hair, "
-            "build, and clothes. Do not recast them as a different sex or face. "
-            "A previous frame that shows someone else is WRONG — ignore that person."
+            "build, and clothes. Do not recast them as a different sex or face."
+            f"{prior}"
             f"{exclusive}"
         )
     except Exception:
@@ -916,7 +1050,31 @@ def normalize_encounter_brief(raw: Any, place_hold: str = "") -> dict:
     if kind not in ENCOUNTER_KINDS:
         kind = "person"
     label = _clip(char_in.get("label") or data.get("label"), "A stranger", 40)
-    look = _clip(char_in.get("look") or char_in.get("appearance") or "", "a wary human figure", 160)
+    # A brief that came back without a look used to become "a wary human
+    # figure", which is the blandest possible answer to a world that offers
+    # Horizon security, cryptids and anomalies.
+    #
+    # The label comes first, though, because the model often puts the whole
+    # description THERE and leaves look empty — and a fallback is only an
+    # improvement when there is nothing to contradict. Measured in a run: a
+    # brief labelled "A panicked facility whistleblower", whose danger line is
+    # about them shoving a briefcase at you, drew "a Horizon Industries
+    # perimeter guard in a mustard hazard suit" for its look. Vivid, and about
+    # a different person than the rest of the brief.
+    #
+    # The pool pick is random rather than seeded: the brief is persisted right
+    # after this, so the encounter keeps whatever it drew, and a seeded pick
+    # would hand every look-less brief the same creature — they all arrive
+    # with the same fallback label.
+    generic_label = label.strip().lower() in (
+        "a stranger", "a presence", "a creature", "a figure", "a group",
+        "someone", "something",
+    )
+    look = _clip(
+        char_in.get("look") or char_in.get("appearance")
+        or ("" if generic_label else label),
+        default_stranger_look(kind=kind), 160,
+    )
     if _is_clothing_clause_label(label):
         label = _grounded_label_from_look(look, data.get("plate_seen") or "")
     danger = _clip(data.get("danger"), "something in this place can hurt you now", 140)
@@ -985,7 +1143,99 @@ _WARDROBE_STOP = frozenset((
     "intense", "gaze", "hanging", "tactical", "white", "shirt", "dark",
     "brown", "hair", "adult", "short", "face", "work", "pants", "boots",
 ))
-_DEFAULT_STRANGER_LOOK = "a weathered stranger in a torn work coat and knit cap"
+# The fallback stranger: who shows up when neither the brief nor the plate
+# gave a look worth keeping. This was ONE constant — "a weathered stranger in
+# a torn work coat and knit cap" — so every encounter that fell back here met
+# the same man in the same coat, and the fallback fires more often than it
+# looks like it should (a camera-language look, a look that clones the player,
+# a plate that described nobody). The world advertises Horizon security, body
+# horror, cryptids, anomalies and military raids; the fallback should be the
+# most interesting thing in the frame rather than the least.
+#
+# Keyed by ENCOUNTER_KINDS so a creature does not fall back to a man in a
+# coat. `normalize_encounter_brief` already pins kind before the look is
+# needed, and the lane odds read kind too (a creature confront is the lethal
+# one), so a look that disagrees with its kind is a fight that reads wrong.
+DEFAULT_STRANGER_LOOKS: Dict[str, tuple] = {
+    "person": (
+        "a Horizon Industries perimeter guard in a mustard hazard suit, face "
+        "lost behind a fogged gas mask",
+        "a shaft miner lacquered in red dust, helmet lamp still burning, eyes "
+        "filmed over white",
+        "a quarantine sentry in unmarked desert fatigues, respirator strapped "
+        "tight, no insignia anywhere on them",
+        "a woman in a bleached Horizon lab coat, both hands bandaged to the "
+        "elbow, the sleeves stiff with something dried",
+        "a drifter wrapped in stitched tarpaulin and copper wire, mouth hidden "
+        "under a rag mask",
+    ),
+    "group": (
+        "three Blackwood contractors in rusted riot gear, moving as one body, "
+        "every visor turned the same way",
+        "a survey crew in matching yellow slickers, standing far closer "
+        "together than the space needs",
+        "a knot of masked scavengers strung together at the wrist by a length "
+        "of mine cable",
+    ),
+    "creature": (
+        "an amorphous wolf-shaped thing, fur slicked into wet spines, walking "
+        "on too many joints",
+        "a cryptid of fused flesh and mine cable, more shoulders than a body "
+        "should carry, no face to find on it",
+        "a pack animal skinned back to the muscle, breathing through slits "
+        "along its flank",
+        "something tall and pale that has grown into a survey tripod, limb and "
+        "steel no longer separable",
+    ),
+    "anomaly": (
+        "a shape of heat and red dust that keeps almost resolving into a man "
+        "and then losing it",
+        "a hazard suit standing upright with nobody inside it, the visor full "
+        "of slow moving dark",
+        "a silhouette that copies your own posture a half-second late",
+        "a seam of air under the mesa where the light bends wrong and the far "
+        "fence repeats itself",
+    ),
+}
+# A named character from this world is still a person as far as a look goes.
+DEFAULT_STRANGER_LOOKS["character"] = DEFAULT_STRANGER_LOOKS["person"]
+
+
+def default_stranger_look(seed: str = "", kind: str = "") -> str:
+    """One of the fallback strangers, stable for a given seed.
+
+    The pick has to be stable per encounter. This is the last gate before a
+    look reaches an image prompt and it runs again for the standoff, for every
+    play-out and for the choice slate, so a fresh random pick per call would
+    recast the thing halfway through the fight. Seeded on something that does
+    not change during an encounter (the label) it lands on the same one every
+    time, and `random.Random` takes a string seed deterministically across
+    processes, so the look survives a restart mid-run.
+    """
+    pool = DEFAULT_STRANGER_LOOKS.get(str(kind or "").strip().lower() or "person")
+    if not pool:
+        pool = tuple(l for looks in DEFAULT_STRANGER_LOOKS.values() for l in looks)
+    key = " ".join(str(seed or "").lower().split())
+    if key:
+        return random.Random(key).choice(pool)
+    return random.choice(pool)
+
+
+def is_default_stranger_look(look: str) -> bool:
+    """True when a look is one of the fallbacks rather than something seen.
+
+    The caller that needs this is deciding whether the plate showed a usable
+    stranger at all, so it has to recognise every fallback, not just the one
+    constant this used to be.
+    """
+    raw = " ".join(str(look or "").lower().split())
+    if not raw:
+        return False
+    return any(
+        raw == " ".join(known.lower().split())
+        for looks in DEFAULT_STRANGER_LOOKS.values()
+        for known in looks
+    )
 
 # Where one person's description ends and the NEXT PERSON begins.
 #
@@ -1091,6 +1341,18 @@ def plate_stranger_look(plate_seen: str, fallback: str = "") -> str:
                  - 3 * len(worn & owned) - 2 * len(words & owned))
         if re.search(r"\b(?:wearing|dressed|in|with)\b", c, re.I):
             score += 1
+        # Garments this clause wears that the invented stranger was never
+        # described in. Rewarding matches alone TIED "a green quilted vest and
+        # a dark baseball cap" with "an older man in a plaid shirt" whenever
+        # the brief happened to mention a cap too — and a tie keeps the earlier
+        # clause, which in a two-shot is the player. That is the whole bug this
+        # function exists to prevent, arriving through the back door.
+        #
+        # Bounded by the credit the clause earned so it can only erode a match,
+        # never push a richly-described stranger below a clause that matched
+        # nothing at all: the plate always describes people in more detail than
+        # the brief invented them in.
+        score -= min(len(worn - wanted), 2 * len(worn & wanted))
         # Ties keep the earlier clause, which is the old behaviour.
         candidates.append((score, -len(candidates), c))
     if not candidates:
@@ -1103,11 +1365,15 @@ def adopt_plate_look(brief: dict, plate_seen: str) -> dict:
     """Repoint the brief's character at the rendered plate, then relabel."""
     char = brief.setdefault("character", {})
     look = plate_stranger_look(plate_seen, fallback=char.get("look") or "")
-    if not look or look == _DEFAULT_STRANGER_LOOK:
+    if not look or is_default_stranger_look(look):
         # The plate never showed a usable stranger. Keep the invented look
         # rather than locking onto the default nobody.
         if not char.get("locked_look") or look_clones_player(char.get("locked_look") or ""):
-            char["locked_look"] = distinct_enemy_look(char.get("look") or "")
+            char["locked_look"] = distinct_enemy_look(
+                char.get("look") or "",
+                seed=char.get("label") or "",
+                kind=char.get("kind") or "",
+            )
         return brief
     char["look"] = look
     char["locked_look"] = look
@@ -1213,8 +1479,14 @@ def is_outdoor(setting: str = "", text: str = "") -> bool:
     ))
 
 
-def brief_from_vision(vision: Optional[dict], place_hold: str = "") -> dict:
-    """Synthesize a brief from what the frame actually shows — never a canned pipe."""
+def brief_from_vision(vision: Optional[dict], place_hold: str = "",
+                      rolled: str = "") -> dict:
+    """Synthesize a brief from what the frame actually shows — never a canned pipe.
+
+    ``rolled`` is this turn's roll off the run's roster, when there is one. The
+    model call is what failed here, not the dice, so the fallback still gets to
+    say what arrived instead of falling back to "A stranger" for the tenth time.
+    """
     vis = vision if isinstance(vision, dict) else {}
     desc = str(vis.get("description") or "")
     setting = str(vis.get("setting") or vis.get("setting_type") or "")
@@ -1241,7 +1513,7 @@ def brief_from_vision(vision: Optional[dict], place_hold: str = "") -> dict:
     elif any(w in low for w in figure):
         kind = "person"
         label = "A stranger"
-        look = plate_stranger_look(body, fallback="a wary human figure already in this place")
+        look = plate_stranger_look(body, fallback=default_stranger_look(body, kind))
         danger = "they are already close enough to hurt you"
     else:
         kind = "person"
@@ -1250,6 +1522,8 @@ def brief_from_vision(vision: Optional[dict], place_hold: str = "") -> dict:
         danger = ("they have already closed the distance across this ground"
                   if outdoor else
                   "they are already between you and the way you came")
+    if rolled:
+        label = _clip(rolled, label, 40)
     return {
         "character": {
             "label": label,
@@ -1264,14 +1538,18 @@ def brief_from_vision(vision: Optional[dict], place_hold: str = "") -> dict:
 
 
 def fallback_encounter_brief(place_hold: str = "", seed: str = "",
-                             vision: Optional[dict] = None) -> dict:
+                             vision: Optional[dict] = None,
+                             rolled: str = "") -> dict:
     vis = vision if isinstance(vision, dict) else {}
     if vis.get("description") or vis.get("setting") or vis.get("spatial"):
-        return brief_from_vision(vis, place_hold)
+        return brief_from_vision(vis, place_hold, rolled=rolled)
     idx = 0
     if seed:
         idx = sum(ord(c) for c in seed) % len(_FALLBACK_BRIEFS)
     brief = json.loads(json.dumps(_FALLBACK_BRIEFS[idx]))
+    if rolled:
+        brief["character"]["label"] = _clip(
+            rolled, brief["character"]["label"], 40)
     if place_hold:
         brief["place_hold"] = _clip(place_hold, "", 160)
     return brief
@@ -1343,6 +1621,147 @@ def encounter_lore_context(session_id: str, cap: int = 1500) -> str:
     return "\n\n".join(bits)
 
 
+def _clean_roster(raw: Any) -> list:
+    """Pull a usable list of kinds out of whatever the model returned."""
+    data = raw
+    if isinstance(raw, str):
+        blob = raw.strip()
+        if blob.startswith("```"):
+            blob = re.sub(r"^```[a-z]*\s*|\s*```$", "", blob).strip()
+        try:
+            data = json.loads(blob)
+        except Exception:
+            # No JSON: treat it as the plain list a model often answers with.
+            data = {"kinds": [ln for ln in blob.splitlines() if ln.strip()]}
+    if isinstance(data, dict):
+        items = data.get("kinds") or data.get("roster") or data.get("items") or []
+    elif isinstance(data, (list, tuple)):
+        items = list(data)
+    else:
+        items = []
+
+    out: list = []
+    seen: set = set()
+    for item in items:
+        text = str(item or "").strip()
+        # Numbering and bullets survive a schema'd answer more often than not.
+        text = re.sub(r"^\s*(?:[-*\u2022]|\d+[.)])\s*", "", text).strip(" .")
+        if len(text) < 4:
+            continue
+        text = _clip(text, "", 90)
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= ENCOUNTER_ROSTER_SIZE:
+            break
+    return out
+
+
+def build_encounter_roster(session_id: str = "default") -> list:
+    """Ask this run's lore what lives here. One cheap text call, once per run."""
+    import engine
+    lore = ""
+    try:
+        import experience_store
+        lore = str(experience_store.lore_brief() or "").strip()
+    except Exception:
+        lore = ""
+    if not lore:
+        # No Experience bible: the run's own world document is the next best
+        # description of the place, and it is what the old brief read anyway.
+        try:
+            st = engine._load_state(session_id) or {}
+            lore = str(st.get("world_prompt") or "").strip()
+        except Exception:
+            lore = ""
+    if not lore:
+        return []
+    try:
+        raw = engine._ask(
+            DEFAULT_ROSTER_INSTRUCTIONS + "\n\nWORLD BIBLE:\n" + lore[:4000],
+            model="gemini",
+            # High, deliberately. This call is the only randomness in what a
+            # run can meet, so two runs of the same bible should not agree.
+            temp=1.0,
+            tokens=400,
+            use_lore=False,
+            response_schema=ENCOUNTER_ROSTER_SCHEMA,
+        )
+    except Exception as err:
+        try:
+            engine.log_error(f"[ENCOUNTER] roster ask failed: {err}")
+        except Exception:
+            pass
+        return []
+    roster = _clean_roster(raw)
+    print(f"[ENCOUNTER] roster for this run ({len(roster)}): "
+          f"{' | '.join(roster)}", flush=True)
+    return roster
+
+
+def encounter_roster(session_id: str = "default") -> list:
+    """This run's roster, built on first use and kept in the session state.
+
+    Built lazily rather than at reset so that nothing about starting a run waits
+    on it. A run's state file is deleted on reset, so the roster is per-run for
+    free: a new game reads the lore again and gets a different list.
+    """
+    import engine
+    try:
+        st = engine._load_state(session_id) or {}
+    except Exception:
+        st = {}
+    cached = st.get("encounter_roster")
+    if isinstance(cached, (list, tuple)):
+        kinds = [str(k) for k in cached if str(k or "").strip()]
+        if kinds:
+            return kinds
+
+    roster = build_encounter_roster(session_id)
+    if not roster:
+        return []
+    try:
+        st = engine._load_state(session_id) or {}
+        st["encounter_roster"] = roster
+        engine._save_state(st, session_id)
+    except Exception as err:
+        try:
+            engine.log_error(f"[ENCOUNTER] roster save failed: {err}")
+        except Exception:
+            pass
+    return roster
+
+
+def roll_encounter_kind(session_id: str = "default") -> str:
+    """Draw what arrives this time, avoiding what arrived recently.
+
+    Returns "" when there is no roster to draw from (lore disabled, or the ask
+    failed), and the brief then works exactly as it did before.
+    """
+    roster = encounter_roster(session_id)
+    if not roster:
+        return ""
+    import engine
+    try:
+        st = engine._load_state(session_id) or {}
+    except Exception:
+        st = {}
+    used = [str(k) for k in (st.get("encounter_kinds_used") or []) if str(k or "")]
+    recent = set(used[-ENCOUNTER_ROSTER_COOLDOWN:])
+    pool = [k for k in roster if k not in recent] or list(roster)
+    pick = random.choice(pool)
+    try:
+        st = engine._load_state(session_id) or {}
+        st["encounter_kinds_used"] = (used + [pick])[-ENCOUNTER_ROSTER_COOLDOWN * 2:]
+        engine._save_state(st, session_id)
+    except Exception:
+        pass
+    print(f"[ENCOUNTER] rolled kind: {pick}", flush=True)
+    return pick
+
+
 def read_place_lock(session_id: str, image_path: Optional[str] = None) -> dict:
     """Lock the restage to the current frame: setting, spatial, description."""
     setting = ""
@@ -1354,8 +1773,14 @@ def read_place_lock(session_id: str, image_path: Optional[str] = None) -> dict:
         last = hist[-1] if hist else {}
         if isinstance(last, dict):
             setting = str(last.get("setting_type") or last.get("setting") or "")
-            desc = str(last.get("description") or last.get("vision_description")
-                       or last.get("caption") or "")
+            # `vision_analysis` is the key a turn actually writes for "what the
+            # rendered frame shows". This asked for `description` /
+            # `vision_description` / `caption`, none of which any history entry
+            # has ever carried, so the description half of the place lock was
+            # empty on EVERY encounter — the brief was briefed on "VISIBLE: "
+            # and invented a location, and the plate restaged the frame into it.
+            desc = str(last.get("vision_analysis") or last.get("description")
+                       or last.get("vision_description") or last.get("caption") or "")
             spatial = str(last.get("spatial") or last.get("spatial_compass") or "")
     except Exception:
         pass
@@ -1417,6 +1842,36 @@ def encounter_releases(outcome: str, record: Optional[dict] = None) -> bool:
     return False
 
 
+def release_verdict(outcome: str, record: Optional[dict] = None,
+                    brief: Optional[dict] = None) -> dict:
+    """The card and the one line under it for a fight that just ended.
+
+    Winning was the quietest thing that could happen in this game. The resolve
+    response carries no dispatch — the aftermath turn writes that later, on
+    another thread — so the verdict card came up reading SURVIVED over the
+    STAKES line, which is a sentence about what happens if the player hesitates.
+    Nothing anywhere said the fight was over, or that they had won it.
+    """
+    out = str(outcome or "").strip().lower()
+    state = str((record or {}).get("enemy_state") or "").strip().lower()
+    label = str(((brief or {}).get("character") or {}).get("label") or "").strip()
+    who = label or "They"
+    if out == "die":
+        return {"word": "DEAD", "line": ""}
+    if state == "down":
+        return {"word": "DOWN",
+                "line": f"{who} is down. You are still standing."}
+    if state == "standing_down":
+        return {"word": "SETTLED",
+                "line": f"{who} backs off. There is nothing left here to answer."}
+    if out == "escape":
+        return {"word": "CLEAR",
+                "line": "You broke contact. Whatever that was, it is behind you."}
+    if out == "wounded":
+        return {"word": "HURT", "line": ""}
+    return {"word": "", "line": ""}
+
+
 def encounter_choice_overlay(brief: dict, continued: bool = False) -> str:
     brief = brief or {}
     char = (brief.get("character") or {}) if isinstance(brief.get("character"), dict) else {}
@@ -1434,6 +1889,37 @@ def encounter_choice_overlay(brief: dict, continued: bool = False) -> str:
             "One of the three options MUST be getting clear of THIS FIGURE — "
             "that is the only way the player walks away from this interrupt.\n"
         )
+        # The three lanes are fixed, so a continued round used to come back as
+        # the opening slate reworded — "smash their skull with pipe" became
+        # "crush his windpipe with force" — and the fight read as the same
+        # decision every round. Tell it where the fight has got to, and what it
+        # has already said, so the lanes have to escalate inside themselves.
+        try:
+            round_no = int(brief.get("round_no") or 0)
+        except (TypeError, ValueError):
+            round_no = 0
+        if round_no > 1:
+            extra += f"This is round {round_no} of this fight. "
+        enemy = _clip(brief.get("enemy_state"), "", 40)
+        if enemy:
+            extra += f"They are now {enemy}. "
+        extra += (
+            "Each option must be an act that only makes sense AFTER that last "
+            "beat: press the advantage you just won, recover from what just "
+            "went wrong, or use what just changed in the frame. Escalate the "
+            "fight — do not reset it.\n"
+        )
+        already = []
+        for item in (brief.get("choices") or []):
+            text = item.get("text") if isinstance(item, dict) else item
+            text = str(text or "").strip()
+            if text:
+                already.append(text)
+        if already:
+            extra += (
+                "ALREADY OFFERED — do not offer these again and do not reword "
+                "them into the same act: " + "; ".join(already[:6]) + "\n"
+            )
     seen = _clip(brief.get("plate_seen"), "", 220)
     seen_line = f"\nTHE IMAGE SHOWS: {seen}\n" if seen else ""
     last = _clip(brief.get("last_dispatch"), "", 280)
@@ -1523,6 +2009,25 @@ def encounter_action_for_turn(choice: str, brief: dict,
                 " The player has left the confrontation. visual_scene is the "
                 "place AFTER they got clear — not the punch, not the standoff."
             )
+        # Winning is also an ending, and it was the one ending with no frame of
+        # its own: the run resumed on the standoff plate, so the fight the
+        # player had just finished stayed on screen as the world.
+        state_l = str(brief.get("enemy_state") or "").strip().lower()
+        if out_l != "escape" and state_l in ENCOUNTER_ENEMY_SETTLED:
+            settled = (
+                "the body on the ground where it fell and the player still on "
+                "their feet over it"
+                if state_l == "down" else
+                "the other one giving it up — backing off, hands where they can "
+                "be seen, no longer squared up"
+            )
+            decided += (
+                " The confrontation is OVER and the player came out of it "
+                f"standing. visual_scene is THIS SAME PLACE moments later: "
+                f"{settled}, and the camera back on the world the player was "
+                "walking through. Not the standoff, not the blow landing, and "
+                "not the empty frame from before any of this arrived."
+            )
     return (
         f"[ENCOUNTER] {label} ({stance}) is in this place. {look} "
         f"Danger: {danger} {stakes} "
@@ -1546,6 +2051,10 @@ _LANE_KEYWORDS = {
         "dive", "dodge", "duck", "flee", "run", "slip", "cover", "evade",
         "retreat", "back away", "roll", "sidestep", "break away", "get clear",
         "bolt", "sprint", "vault", "get out", "leave", "walk away",
+        # Typed actions reach these keywords too, and breaking contact by not
+        # being found is the obvious thing a player writes that no verb here
+        # covered — it was landing in confront by default.
+        "hide", "sneak", "crawl",
     ),
     "parley": (
         "talk", "speak", "answer", "offer", "tell them", "say", "name",
@@ -1557,13 +2066,21 @@ _LANE_KEYWORDS = {
 }
 
 
+def lane_keyword_hits(text: str) -> list:
+    """Which lanes this wording touches, in lane order. Free, no model.
+
+    Split out of classify_encounter_lane because a TYPED action needs to tell
+    "this matched nothing" apart from "this matched confront" — the old return
+    value conflated them, and confront is the lane with the worst odds.
+    """
+    blob = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    return [lane for lane, words in _LANE_KEYWORDS.items()
+            if any(w in blob for w in words)]
+
+
 def classify_encounter_lane(text: str, index: Optional[int] = None) -> str:
     """Keyword first (in case the model reordered), then the 1/2/3 fan."""
-    blob = re.sub(r"\s+", " ", str(text or "")).strip().lower()
-    hits = []
-    for lane, words in _LANE_KEYWORDS.items():
-        if any(w in blob for w in words):
-            hits.append(lane)
+    hits = lane_keyword_hits(text)
     if len(hits) == 1:
         return hits[0]
     if index is not None:
@@ -1576,6 +2093,79 @@ def classify_encounter_lane(text: str, index: Optional[int] = None) -> str:
     if hits:
         return hits[0]
     return "confront"
+
+
+def classify_custom_lane(text: str, brief: Optional[dict] = None) -> str:
+    """Which lane a player's TYPED action belongs to.
+
+    The lane is not a label — it picks the outcome weights, so it is the
+    difference between walking out of this and dying in it. A written action
+    gets read by the model when the keyword list cannot honestly answer,
+    because the keywords were built to sanity-check three model-authored verbs,
+    not to interpret whatever a player decides to do. Keywords stay in front of
+    the call: they are free, and they are right about "run" and "hand it over".
+
+    Anything that is neither force nor flight resolves to parley. It is the
+    lane for dealing with the thing in front of you by means other than
+    violence, which is what most improvised actions are, and the old default of
+    confront quietly charged the player combat odds for talking.
+    """
+    hits = lane_keyword_hits(text)
+    if len(hits) == 1:
+        return hits[0]
+    asked = _ask_custom_lane(text, brief)
+    if asked in ENCOUNTER_LANES:
+        return asked
+    return hits[0] if hits else "parley"
+
+
+def _ask_custom_lane(text: str, brief: Optional[dict] = None) -> str:
+    """One short call: read the action, name the lane. "" on any failure."""
+    action = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not action:
+        return ""
+    import engine
+    char = ((brief or {}).get("character") or {})
+    who = str(char.get("label") or "the other one").strip()
+    danger = str((brief or {}).get("danger") or "").strip()
+    facing = f"They are {danger}." if danger else ""
+    try:
+        raw = engine._ask(
+            "A player is in a confrontation and has written what they do next. "
+            "Decide which of three things that action IS.\n"
+            "\n"
+            "confront — they use force on it: strike, tackle, grab, throw "
+            "something at it, put it down.\n"
+            "evade — they break contact: run, hide, dodge past, get out, "
+            "refuse to be where it is.\n"
+            "parley — anything else: talk, offer, hand something over, "
+            "comply, bluff, threaten with words, stall, show it something.\n"
+            "\n"
+            f"Facing them: {who}. {facing}\n"
+            f"They wrote: {action[:300]}\n"
+            "\n"
+            "Answer with the lane the action IS, not the one that would be "
+            "wise. Return JSON only: {\"lane\": \"confront|evade|parley\"}",
+            model="gemini",
+            temp=0.0,
+            tokens=40,
+            use_lore=False,
+            response_schema=ENCOUNTER_LANE_SCHEMA,
+        )
+    except Exception as err:
+        try:
+            engine.log_error(f"[ENCOUNTER] lane ask failed: {err}")
+        except Exception:
+            pass
+        return ""
+    if isinstance(raw, dict):
+        lane = str(raw.get("lane") or "").strip().lower()
+    else:
+        lane = str(raw or "").strip().lower()
+    for candidate in ENCOUNTER_LANES:
+        if candidate in lane:
+            return candidate
+    return ""
 
 
 def structure_encounter_choices(options: Any) -> list:
@@ -1627,8 +2217,17 @@ def fallback_encounter_choices(brief: dict) -> list:
 
 
 def match_encounter_choice(posted_text: str, posted_lane: str,
-                           stored: Any) -> tuple[str, str]:
-    """Trust the stored slate over the client. Fall back to posted text."""
+                           stored: Any, *, custom: bool = False,
+                           brief: Optional[dict] = None) -> tuple[str, str]:
+    """Trust the stored slate over the client. Fall back to posted text.
+
+    ``custom`` marks text the player TYPED rather than picked. Off-slate text
+    was already kept verbatim as the verb — it reaches the resolve prompt, the
+    stakes and the aftermath turn — but its lane fell out of
+    ``classify_encounter_lane(verb, 0)``, and that index-0 fallback means
+    confront. Every written action the keywords did not recognise was silently
+    charged the odds of throwing the first punch. Typed text gets read instead.
+    """
     verb = (posted_text or "").strip() or "Hold your ground"
     slate = structure_encounter_choices(stored)
     want = verb.casefold()
@@ -1637,7 +2236,10 @@ def match_encounter_choice(posted_text: str, posted_lane: str,
             return item["text"], item["lane"]
     lane = str(posted_lane or "").strip().lower()
     if lane not in ENCOUNTER_LANES:
-        lane = classify_encounter_lane(verb, None if not slate else 0)
+        if custom:
+            lane = classify_custom_lane(verb, brief)
+        else:
+            lane = classify_encounter_lane(verb, None if not slate else 0)
     return verb, lane
 
 
@@ -1924,17 +2526,28 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
         import game_identity
         anchor = game_identity.world_anchor(
             ENCOUNTER_PLATE_STYLE_ANCHOR,
-            include_character=True,
+            # The sheet arrives below as the CAST LOCK, in stronger words and
+            # right next to the rule about who may wear that outfit. A third
+            # copy of it here only spends payload.
+            include_character=False,
             # The encounter is still the player's game, shot on the camera
             # they set up in the editor. Dropping the vantage here threw away
             # the follow-cam rig, the lens and the camera notes, so walking
             # into a fight cut from their third-person world to an anonymous
-            # two-shot — the single biggest reason a plate did not look like
-            # it belonged to the scene before it.
+            # two-shot.
             include_vantage=True,
         )
         if anchor:
             bits.append(anchor.rstrip(". ") + ".")
+        # A vantage clause is one sentence. Every OTHER frame in the game also
+        # gets the camera BLOCK — the rig, the lens, the shot size, "never turn
+        # them to face the lens", the cut-to-cut continuity rules — and the
+        # plate was the one render that did not, so it was free to answer the
+        # standoff with whatever framing it liked while still technically
+        # honouring the vantage.
+        directive = game_identity.camera_directive()
+        if directive:
+            bits.append(directive.strip())
     except Exception:
         bits.append(ENCOUNTER_PLATE_STYLE_ANCHOR + ".")
 
@@ -1987,9 +2600,12 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
                 "newcomer, and do not give the frame to the newcomer alone. "
                 "Add EXACTLY ONE new person to the photograph."
             )
-    look = distinct_enemy_look(char.get("locked_look") or char.get("look") or "")
+    look = distinct_enemy_look(
+        char.get("locked_look") or char.get("look") or "",
+        seed=char.get("label") or "", kind=char.get("kind") or "",
+    )
     if _camera_shows_player():
-        cast = player_cast_lock()
+        cast = player_cast_lock(trust_reference=img2img)
         if cast:
             bits.append(cast)
         bits.append(
@@ -2041,20 +2657,26 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
         )
     if brief.get("place_hold"):
         bits.append(f"Hold these place locks: {brief['place_hold']}.")
+    # "Hold the established camera" used to be one sentence followed by four
+    # that restage the shot — put them on the thirds, run them diagonally, make
+    # them different sizes, one nearer the lens. That is a recompose, and it
+    # outvoted both the camera block above and the reference underneath. When
+    # there IS a reference, the composition is already decided: it is the frame
+    # the player is standing in. Only a text-to-image plate has an empty frame
+    # to stage, so only it gets staging direction.
     if _camera_shows_player():
         bits.append(
-            # Naming a shot size here overrode the vantage the player set up
-            # in the editor, which is half of why the plate never looked like
-            # the scene it interrupted. Ask for readability, let the world's
-            # own camera decide the framing.
-            "Hold the established camera. " + cinematic_composition() +
+            ("Place the newcomer into the composition that already exists "
+             "rather than rebuilding it around them."
+             if img2img else
+             "Hold the established camera. " + cinematic_composition()) +
             " Both bodies readable, empty hands, no HUD, no game UI, "
             "no captions, no letterbox. A finished 1993 photograph."
         )
     else:
         bits.append(
-            "Point-of-view framing, one figure close to the lens. " +
-            cinematic_composition() +
+            "Point-of-view framing, one figure close to the lens." +
+            ("" if img2img else " " + cinematic_composition()) +
             " No HUD, no game UI, no captions, no letterbox. "
             "A finished 1993 photograph."
         )
@@ -2112,7 +2734,10 @@ def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
         )
     if brief.get("place_hold"):
         bits.append(f"Hold these place locks: {brief['place_hold']}.")
-    locked = distinct_enemy_look(char.get("locked_look") or char.get("look") or "")
+    locked = distinct_enemy_look(
+        char.get("locked_look") or char.get("look") or "",
+        seed=char.get("label") or "", kind=char.get("kind") or "",
+    )
     player_name = "the player"
     player_clothes = player_wardrobe_text()
     try:
@@ -2268,14 +2893,41 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
     # 400 characters of world prompt was the entire briefing, which is why
     # every encounter was a man in coveralls with no reason to be there.
     lore = encounter_lore_context(session_id)
+    # The dice have already decided WHAT arrives (see roll_encounter_kind). The
+    # model's job is to dress that into this photograph and give it a reason to
+    # be here — not to choose the thing, because asked to choose it always chose
+    # the same thing.
+    rolled = roll_encounter_kind(session_id)
+    roll_line = (
+        f"THIS ENCOUNTER IS: {rolled}\n"
+        "That is the roll for this turn, not a suggestion and not a menu: what "
+        "arrives IS that. Everything else you write serves it — the label names "
+        "this thing, the look is this thing's body, the motive is what THIS "
+        "thing wants from the player. Do not substitute a person for it because "
+        "a person is easier to photograph.\n\n"
+        if rolled else ""
+    )
     prompt = (
-        f"{instructions}\n\n{lore or ('WORLD (trim): ' + world)}\n\n"
-        f"SETTING: {setting or 'unknown'}\n"
-        f"VISIBLE: {visible[:400]}\n"
+        f"{instructions}\n\n{roll_line}{lore or ('WORLD (trim): ' + world)}\n\n"
+        f"SETTING: {setting or 'read it off the attached photograph'}\n"
+        f"VISIBLE: {visible[:400] or 'the attached photograph — that place, nothing else'}\n"
         "The character and danger MUST fit THIS setting. "
         "If outdoor, do not invent an interior. If indoor, do not go outside.\n"
-        "label names the body you can photograph — clothes, wound, job. "
-        "Do not invent a rank or sci-fi class this 1993 world cannot show.\n"
+        # "SETTING: unknown / VISIBLE:" is not a blank to be filled in from the
+        # world bible — and the bible is 6000 characters of corridors, labs and
+        # concrete floors, so that is exactly what came back for a run standing
+        # in open desert. The photograph is attached; say so.
+        "Nothing here overrides the photograph: if the frame is open ground at "
+        "dusk, the encounter happens on open ground at dusk, however much of "
+        "this world happens indoors.\n"
+        # This used to end "do not invent a rank or sci-fi class this 1993 world
+        # cannot show", which reads as a ban on soldiers in a world whose bible
+        # opens with military raids. The real constraint was never the noun, it
+        # is whether a 1993 camera could catch the thing: a raid team, a changed
+        # miner and a standing column of dust all pass that test.
+        "label names what a photograph of this would be captioned — the thing, "
+        "and whose it is. Anything the available light and a 35mm lens could "
+        "actually catch in 1993 is fair; nothing that needs CGI or a glow.\n"
         f"{_brief_cast_rule()}"
         "Return one JSON object with character, motive, danger, stakes, "
         "place_hold."
@@ -2298,12 +2950,12 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
             engine.log_error(f"[ENCOUNTER] brief ask failed: {err}")
         except Exception:
             pass
-        return fallback_encounter_brief(hold, seed=seed, vision=vis)
+        return fallback_encounter_brief(hold, seed=seed, vision=vis, rolled=rolled)
     brief = normalize_encounter_brief(raw, place_hold=hold)
     # If the model returned the disabled-LLM placeholder prose, fall back.
     label = (brief.get("character") or {}).get("label") or ""
     if label.lower() in ("you are still",) or "signal interrupted" in str(raw).lower():
-        return fallback_encounter_brief(hold, seed=seed, vision=vis)
+        return fallback_encounter_brief(hold, seed=seed, vision=vis, rolled=rolled)
     if hold and not brief.get("place_hold"):
         brief["place_hold"] = _clip(hold, "", 160)
     return separate_cast(brief)
@@ -2331,7 +2983,8 @@ def plate_shows_confrontation(vision: Optional[dict], brief: Optional[dict] = No
         return True
     figures = 0
     for w in ("person", "people", "figure", "woman", "stranger", "hooded",
-              "goggles", "creature", "being", "scavenger"):
+              "goggles", "creature", "being", "scavenger", "soldier",
+              "trooper", "animal", "beast", "shape", "silhouette", "mass"):
         if re.search(r"\b" + w + r"\b", desc):
             figures += 1
     if re.search(r"\bman\b", desc) or re.search(r"\bmen\b", desc):
@@ -2342,6 +2995,35 @@ def plate_shows_confrontation(vision: Optional[dict], brief: Optional[dict] = No
                                "facing the", "in the doorway", "in front of")):
         return True
     return False
+
+
+def plate_needs_a_retry(vision: Optional[dict], brief: Optional[dict] = None) -> bool:
+    """True only when vision LOOKED at a plate and did not find the other body.
+
+    ``plate_shows_confrontation`` answers "is a second presence visible", and
+    no description at all is a No — so a vision hiccup, a disabled vision pass
+    or a provider timeout made EVERY beat of a fight generate its plate twice,
+    at full price, on no evidence. Absence of evidence is not evidence that the
+    plate is wrong, and the duplicate render is also where a custom action's
+    framing drifts: the retry prompt appends its own staging instructions.
+    """
+    vis = vision if isinstance(vision, dict) else {}
+    if not str(vis.get("description") or "").strip():
+        return False
+    return not plate_shows_confrontation(vis, brief)
+
+
+def _safe_vision_analyze(image_path: Optional[str]) -> dict:
+    """``engine._vision_analyze_all``, but never raises. Grounding checks
+    that fire off it (plate_shows_confrontation) should degrade to "no
+    evidence either way" on a vision hiccup, not take the request down."""
+    if not image_path:
+        return {}
+    import engine
+    try:
+        return engine._vision_analyze_all(image_path) or {}
+    except Exception:
+        return {}
 
 
 def _parse_choice_payload(raw: Any) -> list:
@@ -2603,6 +3285,87 @@ def _pin_encounter_resolve(session_id: str, image_path: Optional[str],
             pass
 
 
+def _plate_sequence(session_id: str, prompt: str, ref_path: Optional[str],
+                    caption: str = "") -> Optional[dict]:
+    """This plate as flipbook frames, or None to stay a still.
+
+    Every stage of a confrontation should move the way the ordinary view does —
+    the standoff and each play-out — instead of being the one part of the game
+    that freezes. The already-generated plate is the reference, so the motion
+    starts from the picture the player is looking at and the last frame is where
+    it holds.
+
+    Never fatal: a flipbook that doesn't come back leaves the still in place, so
+    a failure costs motion, not the encounter.
+    """
+    import engine
+
+    try:
+        st = engine._load_state(session_id) or {}
+        if not engine.flipbook_active(st):
+            print(f"[ENCOUNTER] flipbook off for this plate "
+                  f"(settings={engine.flipbook_settings(st)}, "
+                  f"session_mode={st.get('flipbook_mode')!r})", flush=True)
+            return None
+        # Only hand over a reference that is actually on disk. A path that has
+        # been cleaned up (a temp img2img file, a plate from a previous session)
+        # makes the whole grid fail, and then the fight silently loses its
+        # animation over a file that was never there.
+        use_ref = ""
+        if ref_path and Path(str(ref_path)).exists():
+            use_ref = str(ref_path)
+        elif ref_path:
+            print(f"[ENCOUNTER] flipbook plate: reference is gone "
+                  f"({os.path.basename(str(ref_path))}) - generating without it",
+                  flush=True)
+
+        def _grid(refs):
+            return engine._flipbook_generate(
+                prompt_str=prompt,
+                caption=caption,
+                choice=caption,
+                dispatch="",
+                world_prompt=str(st.get("world_prompt") or ""),
+                time_of_day=str(st.get("time_of_day") or ""),
+                img_dir=engine._get_image_dir(session_id),
+                session_id=session_id,
+                st=st,
+                refs=refs,
+                ref_is_anchor=True,
+            )
+
+        seq = _grid([use_ref] if use_ref else None)
+        if not seq and use_ref:
+            # Losing the reference costs identity lock; losing the grid costs the
+            # animation entirely. Prefer the cheaper failure.
+            print("[ENCOUNTER] flipbook plate: grid failed with the plate "
+                  "reference - retrying from the prompt alone", flush=True)
+            seq = _grid(None)
+        if not seq:
+            print("[ENCOUNTER] flipbook plate: no grid came back - staying a still",
+                  flush=True)
+            return None
+        # The last panel is the plate (see flipbook.sequence_from_grid), so the
+        # caller needs both: frames for the client, that panel for everything
+        # downstream that only understands one image. The key is `still_path`
+        # — reading a `still` that sequence_from_grid has never emitted meant
+        # every successful encounter grid was thrown away as a failure.
+        payload = engine.flipbook_web_payload(seq, session_id)
+        still = str(seq.get("still_path") or "")
+        if not payload or not still:
+            print(f"[ENCOUNTER] flipbook plate: the grid split into "
+                  f"{seq.get('frame_count')} panel(s) but is not playable "
+                  f"(still={bool(still)}) - staying a still", flush=True)
+            return None
+        return {"payload": payload, "still": still}
+    except Exception as err:  # noqa: BLE001
+        try:
+            engine.log_error(f"[ENCOUNTER] flipbook plate failed: {err}")
+        except Exception:
+            pass
+        return None
+
+
 def _continue_encounter(session_id: str, brief: dict, image_path: Optional[str],
                         web_url: Optional[str], record: dict) -> list:
     """Stay locked. The reaction still is the new plate; new bars; no walk."""
@@ -2687,7 +3450,22 @@ def api_begin():
     web = None
     gen_mode = "none"
     t0 = time.time()
-    if getattr(engine, "IMAGE_ENABLED", True):
+
+    # A flipbook standoff is drawn ONCE, as frames — the captured frame is this
+    # pass's img2img init, exactly as the still path used it, so the encounter
+    # still opens in the place the player was walking through. The last panel is
+    # the plate, so the choice slate, object permanence and the resolve's own
+    # reference all still get one true image, and the confrontation arrives
+    # breathing instead of frozen. Falls through to the still below if flipbook
+    # is off or the grid doesn't come back.
+    _fb = _plate_sequence(session_id, prompt, ref_path,
+                          caption=f"encounter_{brief['character']['label']}")
+    if _fb and _fb.get("still"):
+        image_path = _fb["still"]
+        brief["_sequence"] = _fb.get("payload")
+        gen_mode = "flipbook"
+
+    if image_path is None and getattr(engine, "IMAGE_ENABLED", True):
         try:
             tod = str(st.get("time_of_day") or "")
             img_dir = engine._get_image_dir(session_id)
@@ -2723,7 +3501,7 @@ def api_begin():
                         # drew, not the one the brief invented before it.
                         adopt_plate_look(brief, seen)
                         label = brief["character"]["label"]
-                    if not plate_shows_confrontation(plate_vis, brief):
+                    if plate_needs_a_retry(plate_vis, brief):
                         try:
                             engine.log_error(
                                 "[ENCOUNTER] plate missing the new character — retrying"
@@ -2784,7 +3562,7 @@ def api_begin():
                     if seen:
                         brief["plate_seen"] = seen
                         adopt_plate_look(brief, seen)
-                    if not plate_shows_confrontation(plate_vis, brief):
+                    if plate_needs_a_retry(plate_vis, brief):
                         try:
                             engine.log_error(
                                 "[ENCOUNTER] text2img plate missing the new "
@@ -2844,6 +3622,15 @@ def api_begin():
         except Exception:
             pass
 
+    # A flipbook standoff sets image_path WITHOUT entering the still branch
+    # above, and the web URL was computed inside that branch — so the moment
+    # the flipbook plate started working, every encounter came back with
+    # `plate_url: null`. The frames existed on disk and in the payload; the one
+    # image the Moment paints did not have an address. That is the black
+    # confrontation.
+    if image_path and not web:
+        web = engine._to_web_image_url(image_path, session_id)
+
     # The plate is canon. If the brief invented a rank or weapon the still
     # did not draw, the nameplate and slate follow the photograph.
     if brief.get("plate_seen"):
@@ -2895,6 +3682,10 @@ def api_begin():
             "place_hold": hold,
         },
         "plate_url": web,
+        # The standoff breathes instead of freezing, and holds on its last frame
+        # while the player reads the slate. `enter_sequence` was produced by the
+        # plate pass, not a second generation.
+        "sequence": brief.get("_sequence"),
         "choices": choices,
         "mode": gen_mode,
         "prompt": realtime,
@@ -2920,6 +3711,22 @@ def _generate_resolve_plate(session_id: str, brief: dict, prompt: str,
     label = ((brief or {}).get("character") or {}).get("label") or "encounter"
     place_ctx = (brief or {}).get("place_hold") or ""
     caption = resolve_plate_caption(label, verb, lane, outcome)
+
+    # Flipbook fights go STRAIGHT to frames — ONE generation, not a still and
+    # then a flipbook of it, which put two renders on every beat of a fight.
+    #
+    # The standoff plate still goes in as the reference. That is not an extra
+    # pass, it is this pass's img2img init, and it is load-bearing: generated
+    # from text alone the punch came back with new faces, new clothes and an
+    # indoor shed where the standoff had been an outdoor yard. The last panel IS
+    # the plate, so pinning, SCAN, the vision pass and the next img2img
+    # reference all still get one true image (sequence_from_grid guarantees it).
+    fb = _plate_sequence(session_id, prompt, ref_path, caption=caption)
+    if fb and fb.get("still"):
+        if isinstance(brief, dict):
+            brief["_sequence"] = fb.get("payload")
+        return fb["still"], "flipbook"
+
     t0 = time.time()
     image_path = None
     gen_mode = "none"
@@ -2979,6 +3786,54 @@ def _generate_resolve_plate(session_id: str, brief: dict, prompt: str,
             pass
         return None, "failed"
 
+    # Found by playtest.py's forced-encounter probe: a "die" outcome's own
+    # "death still" came back as a calm, empty establishing shot — no
+    # antagonist, no violence, nothing that reads as the ending it names.
+    # api_begin already has this exact check for the STANDOFF plate
+    # (plate_shows_confrontation, with a retry) — it was never applied to
+    # the RESOLVE plate, so a fight could win/lose/die on a frame that
+    # never actually showed the fight. One retry, same shape as the begin
+    # path's, with the same "the other person is here, in frame" push.
+    if image_path and plate_needs_a_retry(
+        _safe_vision_analyze(image_path), brief
+    ):
+        try:
+            engine.log_error(
+                "[ENCOUNTER] resolve plate missing the other body — retrying"
+            )
+        except Exception:
+            pass
+        retry_prompt = prompt + (
+            " The other person in this fight is here, in frame, close to the "
+            "lens, still part of this moment — not an empty place, not a shot "
+            "of the player alone. This is the result of what just happened "
+            "between the two of them."
+        )
+        try:
+            if gen_mode.startswith("hard_cut_plate") or gen_mode == "hard_cut_identity":
+                retry_path = generate_gemini_img2img(
+                    prompt=retry_prompt, caption=caption + "_retry",
+                    reference_image_path=refs, strength=ENCOUNTER_RESOLVE_STRENGTH,
+                    world_prompt=place_ctx[:200] if place_ctx else None,
+                    time_of_day=tod, hd_mode=False, output_dir=Path(img_dir),
+                    include_people=True, hold_cast=True, style_only_swatch=False,
+                    identity_paths=identity or None, identity_seed=bool(identity),
+                )
+            else:
+                retry_path = generate_with_gemini(
+                    prompt=retry_prompt, caption=caption + "_retry",
+                    world_prompt=place_ctx[:200] if place_ctx else None,
+                    time_of_day=tod, hd_mode=False, output_dir=Path(img_dir),
+                )
+            if retry_path:
+                image_path = retry_path
+                gen_mode = gen_mode + "_retry"
+        except Exception as retry_err:
+            try:
+                engine.log_error(f"[ENCOUNTER] resolve retry failed: {retry_err}")
+            except Exception:
+                pass
+
     web_ok = bool(image_path)
     try:
         engine.cost_tracker.record_usage(
@@ -2996,7 +3851,10 @@ def _generate_resolve_plate(session_id: str, brief: dict, prompt: str,
 def api_resolve():
     """POST /api/encounter/resolve — play out the verb, then the real turn.
 
-    Body: ``{choice, lane}``. Returns a hard-cut resolve still. The world
+    Body: ``{choice, lane, custom?}``. ``custom`` says the player typed the
+    action instead of picking one off the slate, which changes only how the
+    lane is decided (see match_encounter_choice) — the text itself has always
+    been used as the verb from here on. Returns a hard-cut resolve still. The world
     then evolves through ``_process_turn_background``. Survive / wounded /
     die keep that still (``skip_image=True``). Escape generates a new
     world frame so the punch does not become the walkable yard.
@@ -3041,8 +3899,14 @@ def api_resolve():
     if not posted_text:
         return jsonify({"error": "missing_choice"}), 400
 
-    verb, lane = match_encounter_choice(posted_text, posted_lane, enc.get("choices"))
     brief = normalize_encounter_brief(enc)
+    # Ordered before the match so a typed action can be read against WHAT the
+    # player is facing: "show them the badge" is a different act depending on
+    # whether that is a checkpoint guard or a dog.
+    verb, lane = match_encounter_choice(
+        posted_text, posted_lane, enc.get("choices"),
+        custom=bool(data.get("custom")), brief=brief,
+    )
     brief["choices"] = structure_encounter_choices(
         enc.get("choices") or fallback_encounter_choices(brief)
     )
@@ -3162,7 +4026,7 @@ def api_resolve():
         "source": "encounter",
         "session_id": session_id,
         "subject": None if released else engine._permanence_subject(subject),
-        "skip_image": encounter_turn_skip_image(rolled["outcome"]),
+        "skip_image": encounter_turn_skip_image(rolled["outcome"], record),
     }
     if released:
         try:
@@ -3204,7 +4068,11 @@ def api_resolve():
         if result.get("stakes"):
             brief["stakes"] = result.get("stakes")
 
+    verdict = release_verdict(rolled["outcome"], record, brief)
+    # Frames come from the plate generation itself (one pass, not two) — see
+    # _generate_resolve_plate. None means this beat stayed a still.
     return jsonify({
+        "sequence": brief.get("_sequence"),
         "resolve_url": web,
         "prompt": realtime,
         "outcome": rolled["outcome"],
@@ -3213,6 +4081,13 @@ def api_resolve():
         "alive": rolled["alive"],
         "condition": rolled["condition"],
         "released": released,
+        # What the fight DID, so the client can put a word on the card and a
+        # sentence under it. `enemy_state` is the difference between getting
+        # away from something and putting it down, and the client had no way
+        # to tell those apart.
+        "enemy_state": rolled["enemy_state"],
+        "verdict_word": verdict["word"],
+        "closing": verdict["line"],
         "choices": next_choices,
         "dispatch": dispatch,
         "danger": brief.get("danger") or "",

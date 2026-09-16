@@ -26,6 +26,7 @@ import prompts_store
 
 ROOT = Path(__file__).parent.resolve()
 WORLDS_DIR = ROOT / "worlds"
+HARNESS_PATH = ROOT / "prompts" / "harness.generic.json"
 
 
 def _slug(name: str) -> str:
@@ -51,6 +52,9 @@ def list_worlds() -> List[Dict[str, Any]]:
     _ensure_dir()
     out: List[Dict[str, Any]] = []
     for p in WORLDS_DIR.glob("*.json"):
+        # Sidecars from world_frames (world-3.frame.json) are not worlds.
+        if p.name.endswith(".frame.json"):
+            continue
         try:
             with p.open("r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -68,13 +72,18 @@ def list_worlds() -> List[Dict[str, Any]]:
     return out
 
 
-def save_world(name: str, note: str = "") -> Dict[str, Any]:
+def save_world(name: str, note: str = "", slug: str = "") -> Dict[str, Any]:
     """Snapshot the current live prompts as a named world (overwrites a world
-    of the same slug, preserving its original created-at)."""
+    of the same slug, preserving its original created-at).
+
+    ``slug`` keeps the write on the file this World already owns. Deriving
+    it from the display name is how a rename forked a second file and left
+    REDRAW reading the old one.
+    """
     if not (name or "").strip():
         raise ValueError("A world name is required.")
     _ensure_dir()
-    slug = _slug(name)
+    slug = _slug(slug) if str(slug or "").strip() else _slug(name)
     path = WORLDS_DIR / f"{slug}.json"
     now = time.time()
     created = now
@@ -130,3 +139,93 @@ def delete_world(slug: str) -> bool:
         path.unlink()
         return True
     return False
+
+
+def _blank_prompts() -> Dict[str, Any]:
+    """Mechanical loop + empty place. Never the live Play file."""
+    if HARNESS_PATH.is_file():
+        try:
+            data = json.loads(HARNESS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("world_initial_state"):
+                return {k: v for k, v in data.items() if k in prompts_store.editable_keys(data) or k in data}
+        except Exception:
+            pass
+    prompts = _editable_snapshot()
+    prompts["world_initial_state"] = (
+        "A playable place in third person. The camera follows a person through space. "
+        "Each action moves the body or changes the room."
+    )
+    prompts["player_character"] = {
+        "enabled": True,
+        "name": "the traveler",
+        "pronouns": "they/them",
+        "role": "someone arriving",
+        "appearance": "adult, short dark hair, unremarkable face",
+        "wardrobe": "dark jacket, trousers, boots, a rust-red bandana at the throat",
+        "signature_gear": "a scuffed 35mm stills camera on a frayed strap",
+        "demeanor": "",
+        "backstory": "",
+        "reference_images": [],
+    }
+    prompts["setting_reference"] = {
+        "enabled": True,
+        "name": "an open place",
+        "summary": "A navigable space you can walk through.",
+        "era": "",
+        "palette": "",
+        "landmarks": "",
+        "opening_shot": "A person stands in an open place. The camera sees their whole body.",
+        "reference_images": [],
+    }
+    prompts["camera_perspective"] = {
+        "mode": "third_person",
+        "show_hands": False,
+        "lens": "",
+        "notes": "",
+    }
+    return prompts
+
+
+def create_blank_world(name: str, note: str = "") -> Dict[str, Any]:
+    """A new World from the generic harness. Does not snapshot Play."""
+    if not (name or "").strip():
+        raise ValueError("A world name is required.")
+    _ensure_dir()
+    slug = _slug(name)
+    path = WORLDS_DIR / f"{slug}.json"
+    now = time.time()
+    payload = {
+        "name": name.strip(),
+        "note": (note or "").strip() or "Blank third-person harness",
+        "created": now,
+        "updated": now,
+        "prompts": _blank_prompts(),
+    }
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    return {"slug": slug, "name": payload["name"]}
+
+
+def clone_world(source_slug: str, new_name: str) -> Dict[str, Any]:
+    """Copy an existing world's prompt snapshot under a new name.
+
+    Does not touch the live prompt file — the Experience graph forks identities
+    without loading them into the editor.
+    """
+    if not (new_name or "").strip():
+        raise ValueError("A world name is required.")
+    data = _read_world(source_slug)
+    _ensure_dir()
+    slug = _slug(new_name)
+    path = WORLDS_DIR / f"{slug}.json"
+    now = time.time()
+    payload = {
+        "name": new_name.strip(),
+        "note": data.get("note", ""),
+        "created": now,
+        "updated": now,
+        "prompts": dict(data.get("prompts") or {}),
+    }
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    return {"slug": slug, "name": payload["name"]}

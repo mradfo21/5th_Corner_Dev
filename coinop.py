@@ -1,19 +1,17 @@
 """
-coinop.py — SOMEWHERE monetization MVP.
+coinop.py — SOMEWHERE coin-op cabinet.
 
-The 80s-arcade "insert coin to continue" feature. When a player dies, they can
-pay a small amount via Stripe Checkout to get one revive on the current run.
+They feed the machine. We take Stripe once per drop. Credits spend 1:1
+with turns. Death continue is the same slot, not a second product.
 
-Design goals (MVP):
-  * Simplest possible integration with Stripe: hosted Checkout, no embedded
-    Payment Element, no saved cards, no credit packs. One button → one charge
-    → one revive.
-  * Zero impact on the game when disabled. If FEATURE_COINOP is not set or if
-    Stripe keys are missing, /api/coinop/config returns {"enabled": false} and
-    the client never renders the button.
-  * Webhook is nice-to-have, not required. Redemption re-fetches the Checkout
-    Session from the Stripe API and trusts payment_status='paid' as the source
-    of truth. Webhook, if configured, adds belt-and-suspenders coverage.
+Design goals:
+  * Hosted Stripe Checkout — one tap, they leave, they come back, PCI stays
+    on Stripe. Packs (COIN / ROLL / BUCKET) beat a $0.99 single charge.
+  * Zero impact when dark. If FEATURE_COINOP is unset or Stripe keys are
+    missing, /api/coinop/config returns {"enabled": false} and the cabinet
+    stays unlit.
+  * Webhook is nice-to-have. Redeem re-fetches the Checkout Session and
+    trusts payment_status='paid'.
 
 Environment variables:
   FEATURE_COINOP                  "1" to enable (default off)
@@ -39,21 +37,15 @@ Free-play (dev / QA / influencer):
                                   the normal paid flow.
 
 Arcade credit economy (the "insert coin to keep playing" loop):
-  COINOP_CREDIT_GATING            "1" turns on the meter: every /api/choose
-                                  turn spends 1 credit, and when the balance
-                                  hits zero the server blocks the next turn
-                                  (HTTP 402) so the client can pop the
-                                  "OUT OF COINS" pause overlay. Off by default
-                                  so the paid death-continue flow can ship
-                                  independently of the meter.
+  COINOP_CREDIT_GATING            "0" turns the meter OFF. Default is ON
+                                  whenever the machine is live: every turn
+                                  spends 1 credit; at zero the world pauses
+                                  until they drop another pack in.
   COINOP_FREE_STARTING_CREDITS    credits granted on the first look at a
-                                  brand new session (default: 10). Enough to
-                                  let a first-time visitor fall in love with
-                                  the world before the first insert-coin prompt.
-  COINOP_CREDITS_PER_COIN         credits granted per successful $0.99 (or
-                                  whatever price_cents is) Stripe checkout
-                                  (default: 20). Also the pack size a comp /
-                                  test-mode redemption grants.
+                                  brand new session (default: 10).
+  COINOP_CREDITS_PER_COIN         fallback credits if a checkout has no pack
+                                  (default: 20). Packs themselves are listed
+                                  in PACKS — that's the business model.
 """
 
 from __future__ import annotations
@@ -102,10 +94,75 @@ def _cfg() -> Dict[str, Any]:
         "test_mode": os.environ.get("COINOP_TEST_MODE", "").strip() in ("1", "true", "on", "yes"),
         "free_play_codes": _parse_codes(os.environ.get("COINOP_FREE_PLAY_CODES", "")),
         "free_play_cap": _int_env("COINOP_FREE_PLAY_CAP", 100),
-        "credit_gating": os.environ.get("COINOP_CREDIT_GATING", "").strip() in ("1", "true", "on", "yes"),
+        # Default ON: the machine is how they keep playing. Set 0 to sell
+        # only death-continues without metering turns.
+        "credit_gating": os.environ.get("COINOP_CREDIT_GATING", "1").strip().lower()
+            not in ("0", "false", "off", "no"),
         "free_starting_credits": max(0, _int_env("COINOP_FREE_STARTING_CREDITS", 10)),
         "credits_per_coin": max(1, _int_env("COINOP_CREDITS_PER_COIN", 20)),
     }
+
+
+# The cabinet. One Stripe fee per drop; credits spend 1:1 with turns.
+# Prices sit above Stripe's $0.50 floor so we keep most of the dollar.
+def _turn_cost_cents() -> int:
+    """Provider image + a little text, times hosted markup. Floor 8¢."""
+    try:
+        import pricing as _pricing
+        rate = float((_pricing.get_rate("gemini", "gemini-3.1-flash-image") or {}).get("per_unit") or 0.039)
+    except Exception:
+        rate = 0.039
+    try:
+        markup = float(os.environ.get("BILLING_MARKUP", "2.0") or 2.0)
+    except (TypeError, ValueError):
+        markup = 2.0
+    usd = (rate * max(1.0, markup)) + 0.02
+    return max(8, int(round(usd * 100)))
+
+
+def _pack(id_: str, label: str, credits: int, *, usual: bool = False) -> Dict[str, Any]:
+    cents = max(99, credits * _turn_cost_cents())
+    row = {
+        "id": id_,
+        "label": label,
+        "credits": credits,
+        "price_cents": cents,
+        "blurb": f"{credits} turns at measured model cost.",
+    }
+    if usual:
+        row["usual"] = True
+        row["blurb"] = "The usual drop, priced from the image model."
+    return row
+
+
+PACKS = (
+    _pack("coin", "COIN", 20),
+    _pack("roll", "ROLL", 80, usual=True),
+    _pack("bucket", "BUCKET", 200),
+)
+DEFAULT_PACK = "roll"
+
+
+def pack_by_id(pack_id: Optional[str]) -> Dict[str, Any]:
+    """Resolve a pack id, falling back to the usual drop."""
+    want = (pack_id or "").strip().lower()
+    for p in PACKS:
+        if p["id"] == want:
+            return dict(p)
+    for p in PACKS:
+        if p.get("usual"):
+            return dict(p)
+    return dict(PACKS[0])
+
+
+def credits_for_pack(pack_id: Optional[str], explicit: Any = None) -> int:
+    try:
+        n = int(explicit)
+        if n > 0:
+            return n
+    except (TypeError, ValueError):
+        pass
+    return int(pack_by_id(pack_id)["credits"])
 
 
 def _parse_codes(raw: str) -> set:
@@ -127,6 +184,16 @@ def is_enabled() -> bool:
     c = _cfg()
     if not c["feature_flag"]:
         return False
+    # Hosted Play uses the billing wallet. The cabinet stays a cabinet:
+    # only light it on SaaS when an operator explicitly opts in.
+    hosted = os.environ.get("FEATURE_BILLING", "").strip().lower() in (
+        "1", "true", "on", "yes",
+    )
+    cabinet_on_hosted = os.environ.get("COINOP_ON_HOSTED", "").strip().lower() in (
+        "1", "true", "on", "yes",
+    )
+    if hosted and not cabinet_on_hosted:
+        return False
     if stripe is None:
         log.warning("coinop: stripe python package is not importable; feature disabled")
         return False
@@ -146,7 +213,7 @@ def is_credit_gating_enabled() -> bool:
     """
     if not is_enabled():
         return False
-    return _cfg()["credit_gating"]
+    return bool(_cfg()["credit_gating"])
 
 
 def public_config(comp: Optional[str] = None) -> Dict[str, Any]:
@@ -159,7 +226,14 @@ def public_config(comp: Optional[str] = None) -> Dict[str, Any]:
     """
     c = _cfg()
     if not is_enabled():
-        return {"enabled": False}
+        needs = []
+        if not c["feature_flag"]:
+            needs.append("FEATURE_COINOP")
+        if stripe is None:
+            needs.append("stripe")
+        if not c["secret_key"] or not c["publishable_key"]:
+            needs.append("STRIPE_KEYS")
+        return {"enabled": False, "dark": True, "needs": needs}
     out: Dict[str, Any] = {
         "enabled": True,
         "publishable_key": c["publishable_key"],
@@ -169,9 +243,18 @@ def public_config(comp: Optional[str] = None) -> Dict[str, Any]:
         "display_price": _display_price(c["price_cents"], c["currency"]),
         # Arcade credit economy (may be inactive; the client just needs
         # the numbers to render the HUD chip and the pause overlay copy).
-        "credit_gating": _cfg()["credit_gating"] and is_enabled(),
+        "credit_gating": bool(c["credit_gating"]),
         "credits_per_coin": c["credits_per_coin"],
         "free_starting_credits": c["free_starting_credits"],
+        "default_pack": DEFAULT_PACK,
+        "packs": [
+            {
+                **{k: p[k] for k in ("id", "label", "credits", "price_cents", "blurb") if k in p},
+                "usual": bool(p.get("usual")),
+                "display_price": _display_price(p["price_cents"], c["currency"]),
+            }
+            for p in PACKS
+        ],
     }
     # Test-mode: everything is free on this deploy, no code required.
     if c["test_mode"]:
@@ -287,18 +370,22 @@ def _save_grants(session_id: str, data: Dict[str, Any]) -> None:
     tmp.replace(p)
 
 
-def _mark_seen_paid(session_id: str, checkout_session_id: str, amount_cents: int, currency: str) -> None:
+def _mark_seen_paid(session_id: str, checkout_session_id: str, amount_cents: int,
+                    currency: str, pack: Optional[str] = None) -> None:
     with _GRANT_LOCK:
         g = _load_grants(session_id)
         for row in g.get("seen_paid", []):
             if row.get("cs") == checkout_session_id:
                 return
-        g.setdefault("seen_paid", []).append({
+        row = {
             "cs": checkout_session_id,
             "amount_cents": amount_cents,
             "currency": currency,
             "ts": int(time.time()),
-        })
+        }
+        if pack:
+            row["pack"] = pack
+        g.setdefault("seen_paid", []).append(row)
         _save_grants(session_id, g)
 
 
@@ -406,7 +493,11 @@ def get_balance(session_id: str) -> Dict[str, Any]:
         # comps and the free starter aren't counted). Powers the "SPENT
         # $X.XX" subtitle in the HUD chip so the player always knows how
         # much this run has cost them.
-        "spent_cents": int(g.get("credits_purchased", 0)) // max(1, c["credits_per_coin"]) * c["price_cents"],
+        "spent_cents": sum(
+            int(row.get("amount_cents") or 0)
+            for row in (g.get("seen_paid") or [])
+            if (row.get("currency") or "") not in ("", "comp")
+        ),
     }
 
 
@@ -563,40 +654,31 @@ def _resolve_return_base(request) -> str:
     return request.host_url.rstrip("/")
 
 
-def create_checkout(session_id: str, request, comp_code: Optional[str] = None) -> Dict[str, Any]:
-    """Create a Stripe Checkout Session for a single 'continue' purchase,
-    OR — if COINOP_TEST_MODE is on, or a valid comp code was supplied —
-    mint a comp voucher instead and return it directly.
+def create_checkout(session_id: str, request, comp_code: Optional[str] = None,
+                    pack_id: Optional[str] = None, return_to: Optional[str] = None) -> Dict[str, Any]:
+    """Create a Stripe Checkout Session for one pack drop, or mint a comp.
 
     Return shape:
-      * paid path:  {'url': <stripe url>, 'checkout_session_id': 'cs_...',  'comp': False}
-      * comp path:  {'url': null,          'checkout_session_id': 'comp_...', 'comp': True,
-                     'comp_reason': 'test_mode' | 'code',
-                     'comp_code': <lowercased code or null>}
-
-    Client behavior differs only in whether to redirect to Stripe (paid) or
-    directly call /api/coinop/redeem with the comp id (comp). Server-side,
-    verify_and_redeem handles the two id prefixes ("cs_" vs "comp_")
-    interchangeably.
+      * paid path:  {'url': <stripe url>, 'checkout_session_id': 'cs_...',  'comp': False, 'pack': ...}
+      * comp path:  {'url': null,          'checkout_session_id': 'comp_...', 'comp': True, ...}
     """
     if not is_enabled():
         raise RuntimeError("coinop feature is not enabled")
+
+    pack = pack_by_id(pack_id)
+    dest = "machine" if (return_to or "").strip().lower() == "machine" else "play"
 
     # Free-play short-circuit. Everything from here to the Stripe call is
     # skipped when a comp applies — no Stripe API call, no network hop.
     avail = _comp_available(comp_code)
     if avail["ok"]:
         comp_id = _mint_comp_id()
-        # Global counter bumped now so a burst of clicks can't over-grant
-        # against a code's cap. verify_and_redeem later just checks that
-        # the id was minted (via the per-session seen_paid record we add
-        # here) — it does NOT re-check the cap, so no race.
         if avail["code"]:
             _bump_comp_counter(avail["code"])
-        _mark_seen_paid(session_id, comp_id, 0, "comp")
+        _mark_seen_paid(session_id, comp_id, 0, "comp", pack=pack["id"])
         log.info(
-            "coinop: minted COMP id=%s for session=%s reason=%s code=%s",
-            comp_id, session_id, avail["reason"], avail["code"],
+            "coinop: minted COMP id=%s for session=%s reason=%s code=%s pack=%s",
+            comp_id, session_id, avail["reason"], avail["code"], pack["id"],
         )
         return {
             "url": None,
@@ -604,21 +686,24 @@ def create_checkout(session_id: str, request, comp_code: Optional[str] = None) -
             "comp": True,
             "comp_reason": avail["reason"],
             "comp_code": avail["code"],
+            "pack": pack["id"],
+            "credits": pack["credits"],
         }
 
     c = _cfg()
     s = _stripe_client()
 
     base = _resolve_return_base(request)
-    # We include {CHECKOUT_SESSION_ID} as a Stripe template variable so the
-    # return URL contains the id we need to redeem server-side without a
-    # webhook. The literal braces are required — Stripe substitutes on redirect.
+    extra = "&machine=1" if dest == "machine" else ""
     success_url = (
-        f"{base}/play?session={session_id}"
-        f"&coinop=success&cs={{CHECKOUT_SESSION_ID}}"
+        f"{base}/standalone?session={session_id}"
+        f"&coinop=success&cs={{CHECKOUT_SESSION_ID}}{extra}"
     )
-    cancel_url = f"{base}/play?session={session_id}&coinop=cancel"
+    cancel_url = (
+        f"{base}/standalone?session={session_id}&coinop=cancel{extra}"
+    )
 
+    product = f"SOMEWHERE — {pack['label']} (+{pack['credits']} credits)"
     checkout = s.checkout.Session.create(
         mode="payment",
         payment_method_types=["card"],
@@ -626,32 +711,37 @@ def create_checkout(session_id: str, request, comp_code: Optional[str] = None) -
             "quantity": 1,
             "price_data": {
                 "currency": c["currency"],
-                "unit_amount": c["price_cents"],
-                "product_data": {"name": c["product_name"]},
+                "unit_amount": pack["price_cents"],
+                "product_data": {"name": product},
             },
         }],
-        # Metadata is how we correlate a payment back to the game session.
-        # The redeem endpoint refuses to grant a revive to any session_id
-        # that doesn't match this value — so replaying someone else's success
-        # URL against your own session does nothing.
         metadata={
             "game_session_id": session_id,
-            "purpose": "continue",
+            "purpose": "coin",
+            "pack": pack["id"],
+            "credits": str(pack["credits"]),
         },
         payment_intent_data={
             "metadata": {
                 "game_session_id": session_id,
-                "purpose": "continue",
+                "purpose": "coin",
+                "pack": pack["id"],
+                "credits": str(pack["credits"]),
             },
-            "description": f"SOMEWHERE continue for session {session_id}",
+            "description": f"SOMEWHERE {pack['label']} for session {session_id}",
         },
         success_url=success_url,
         cancel_url=cancel_url,
-        # Short expiry keeps stale unfinished checkouts from lingering.
         expires_at=int(time.time()) + 30 * 60,
     )
-    log.info("coinop: created checkout session %s for game session %s", checkout.id, session_id)
-    return {"url": checkout.url, "checkout_session_id": checkout.id, "comp": False}
+    log.info("coinop: created checkout %s pack=%s session=%s", checkout.id, pack["id"], session_id)
+    return {
+        "url": checkout.url,
+        "checkout_session_id": checkout.id,
+        "comp": False,
+        "pack": pack["id"],
+        "credits": pack["credits"],
+    }
 
 
 def _fetch_checkout(checkout_session_id: str):
@@ -695,8 +785,13 @@ def verify_and_redeem(session_id: str, checkout_session_id: str) -> Dict[str, An
         # (seen_paid rows for comp ids record currency='comp'; if we ever
         # care about which code was used, verify_and_redeem's grants entry
         # captures it via the source/code fields.)
+        pending = None
+        for row in g.get("seen_paid", []):
+            if row.get("cs") == checkout_session_id:
+                pending = row.get("pack")
+                break
+        credits_added = credits_for_pack(pending)
         _mark_redeemed(session_id, checkout_session_id, source="comp", code=None)
-        credits_added = _cfg()["credits_per_coin"]
         grant_credits(session_id, credits_added, source="comp",
                       checkout_session_id=checkout_session_id)
         log.info("coinop: redeemed COMP %s for game session %s (+%d credits)",
@@ -727,14 +822,20 @@ def verify_and_redeem(session_id: str, checkout_session_id: str) -> Dict[str, An
                     checkout_session_id, cs_game_sid, session_id)
         return {"ok": False, "reason": "session_mismatch"}
 
+    pack_id = None
+    credits_hint = None
+    if hasattr(md, "get"):
+        pack_id = md.get("pack")
+        credits_hint = md.get("credits")
     _mark_seen_paid(
         session_id,
         checkout_session_id,
         int(getattr(cs, "amount_total", 0) or 0),
         (getattr(cs, "currency", "") or "").lower(),
+        pack=pack_id,
     )
+    credits_added = credits_for_pack(pack_id, credits_hint)
     _mark_redeemed(session_id, checkout_session_id, source="stripe")
-    credits_added = _cfg()["credits_per_coin"]
     grant_credits(session_id, credits_added, source="stripe",
                   checkout_session_id=checkout_session_id)
     log.info("coinop: redeemed checkout %s for game session %s (+%d credits)",
@@ -769,13 +870,30 @@ def handle_webhook(payload: bytes, signature: str) -> Dict[str, Any]:
         return {"ok": False, "reason": "bad_signature"}
 
     etype = event.get("type") if hasattr(event, "get") else getattr(event, "type", None)
+    data = event["data"]["object"] if hasattr(event, "__getitem__") else event.data.object  # type: ignore
+    if etype == "invoice.paid":
+        try:
+            import billing
+            return {"ok": True, "billing": billing.apply_invoice_paid(data)}
+        except Exception as e:  # noqa: BLE001
+            log.warning("coinop: invoice.paid failed: %s", e)
+            return {"ok": False, "reason": "billing_invoice_failed"}
     if etype != "checkout.session.completed":
         return {"ok": True, "ignored": etype}
 
-    data = event["data"]["object"] if hasattr(event, "__getitem__") else event.data.object  # type: ignore
     md = data.get("metadata", {}) or {}
-    session_id = md.get("game_session_id")
     checkout_session_id = data.get("id")
+    purpose = (md.get("purpose") or "").strip().lower()
+    if purpose in ("pack", "play", "usage"):
+        if not checkout_session_id:
+            return {"ok": False, "reason": "missing_metadata"}
+        try:
+            import billing
+            return {"ok": True, "billing": billing.handle_paid_checkout(checkout_session_id, md)}
+        except Exception as e:  # noqa: BLE001
+            log.warning("coinop: billing webhook failed: %s", e)
+            return {"ok": False, "reason": "billing_redeem_failed"}
+    session_id = md.get("game_session_id")
     if not session_id or not checkout_session_id:
         return {"ok": False, "reason": "missing_metadata"}
     if (data.get("payment_status") or "").lower() != "paid":
@@ -786,6 +904,7 @@ def handle_webhook(payload: bytes, signature: str) -> Dict[str, Any]:
         checkout_session_id,
         int(data.get("amount_total") or 0),
         (data.get("currency") or "").lower(),
+        pack=md.get("pack"),
     )
     return {"ok": True, "recorded": checkout_session_id}
 

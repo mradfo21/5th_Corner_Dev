@@ -7,14 +7,13 @@
 <link rel="icon" href="{{ url_for('static', filename='Logo.jpg') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<!-- Load fonts without blocking first paint / the load event: fetch as a
-     non-blocking stylesheet, then promote to a real stylesheet on load. The
-     monospace fallback in CSS renders immediately if fonts are slow/unavailable. -->
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" media="print" onload="this.media='all'">
-<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap"></noscript>
+<!-- Bebas Neue (SIL OFL, Google Fonts) for titles / labels. Instrument Sans
+     for readable body copy. Share Tech Mono stays for in-game HUD only. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Instrument+Sans:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Instrument+Sans:wght@400;500;600;700&family=Share+Tech+Mono&display=swap"></noscript>
 <link rel="stylesheet" href="{{ url_for('static', filename='css/standalone.css') }}?v={{ asset_version }}">
 </head>
-<body class="awaiting-first-scene">
+<body class="start-menu-on awaiting-first-scene">
 
   <!-- Full-bleed scene crossfade layers. The image IS the game.
        No hardcoded seed art here (it 404'd); the pre-game backdrop is the
@@ -82,9 +81,17 @@
        by a CSS class on <body> so it can react without touching the video
        element. Purely cosmetic — the picture underneath is untouched. -->
   <div id="danger-chroma" class="danger-chroma" aria-hidden="true"></div>
-  <div id="danger-health" class="danger-health hidden" aria-hidden="true">
-    <div class="danger-health-row">
-      <span class="danger-health-label">VITAL</span>
+  <div id="danger-health" class="danger-health hidden" aria-live="polite">
+    <!-- The VITAL row belongs to the client-side DangerSystem, which is off by
+         default. The server has no hit-point pool to report any more, so the
+         server-driven path (renderCondition) keeps this row hidden and shows
+         only the detection chip; DangerSystem un-hides it if it is ever
+         switched back on. -->
+    <div id="danger-health-row" class="danger-health-row hidden">
+      <div class="danger-health-meta">
+        <span class="danger-health-label">VITAL</span>
+        <span id="danger-health-num" class="danger-health-num">100</span>
+      </div>
       <div class="danger-health-track">
         <div id="danger-health-fill" class="danger-health-fill"></div>
         <div class="danger-health-segments" aria-hidden="true">
@@ -93,7 +100,12 @@
         </div>
         <div id="danger-health-shimmer" class="danger-health-shimmer" aria-hidden="true"></div>
       </div>
-      <span id="danger-health-num" class="danger-health-num">100</span>
+    </div>
+    <!-- How much the world knows about you. The colour carries the level so it
+         reads without being read. -->
+    <div id="condition-detect" class="condition-detect" data-level="hidden">
+      <span class="condition-detect-dot" aria-hidden="true"></span>
+      <span id="condition-detect-text" class="condition-detect-text">HIDDEN</span>
     </div>
   </div>
   <div id="scene-flash"></div>
@@ -135,40 +147,431 @@
     <span class="credit-meter-spent" id="credit-meter-spent">$0.00</span>
   </button>
 
-  <!-- Menu toggle: a single always-visible button in the very top-right corner.
-       The control menu starts COLLAPSED so the scene stays unobstructed; this
-       button opens/closes it (toggles body.menu-open). Also reachable with Tab. -->
+  <!-- Menu toggle: a single always-visible button in the top-left, next to
+       EDITOR, matching Watch ← MENU. The control menu starts COLLAPSED so the
+       scene stays unobstructed; this opens/closes it (body.menu-open). -->
   <button id="menu-toggle" class="menu-toggle" type="button" aria-expanded="false"
-          aria-controls="control-rail" title="Menu" aria-label="Menu">
+          aria-controls="control-rail" title="Pause" aria-label="Pause">
     <span class="menu-toggle-ico" aria-hidden="true">
       <span class="menu-bar"></span><span class="menu-bar"></span><span class="menu-bar"></span>
     </span>
   </button>
 
-  <!-- Control rail: session controls stacked in a vertical bar in the top-right.
-       Collapsed by default — revealed by #menu-toggle. Icon + micro-label for
-       clarity on PC/mobile.
-       Kept lean on purpose: only the things you touch mid-scene (the story
-       chronicle, the case, the editor, restarting) live here. Everything else
-       — renderer, model switchers, autoplay, tape, narrator, debug log, VHS,
-       sound — is "how does this machine run" territory, so it now lives
-       inside the World Editor's ENGINE layer (see #we-sys-src below +
-       WorldEditor.makeEngineControls in standalone.js) instead of stacking a
-       dozen icon buttons over the scene. -->
-  <nav id="control-rail" aria-label="Controls" aria-hidden="true">
-    <button id="btn-story" class="rail-btn" type="button" title="Story log — the detailed run chronicle (J)">
-      <span class="rail-ico">&#8803;</span><span class="rail-lbl">STORY</span>
-    </button>
-    <button id="btn-objectives" class="rail-btn" type="button" title="The case — what you're looking for (O)">
-      <span class="rail-ico">◈</span><span class="rail-lbl">CASE</span>
-    </button>
-    <button id="btn-editor" class="rail-btn" type="button" title="World Editor — tweak the prompts that drive the sim, live (` backtick)">
-      <span class="rail-ico">✎</span><span class="rail-lbl">EDIT</span>
-    </button>
-    <button id="btn-reset" class="rail-btn rail-btn-danger" type="button" title="Restart (R)">
-      <span class="rail-ico">⟲</span><span class="rail-lbl">NEW</span>
-    </button>
+  <!-- Start menu: PLAY opens the Experience picker. ACCOUNT holds keys
+       and usage (Cursor-style spend, not arcade coins). Watch lives
+       under the big PLAY on that picker, not as its own start tile.
+       Skip the menu with ?mode=play or ?mode=watch. -->
+  <div id="start-menu" class="start-menu" aria-label="Start" aria-busy="true">
+    <div id="start-signal" class="start-signal" aria-hidden="true">
+      <video id="start-signal-video" class="start-signal-video"
+             muted loop playsinline preload="none"></video>
+      <canvas id="start-signal-canvas" class="start-signal-canvas"></canvas>
+      <div id="start-signal-img" class="start-signal-img"></div>
+      <div id="start-signal-img-b" class="start-signal-img"></div>
+    </div>
+    <div id="start-splash" class="start-splash" aria-hidden="true">
+      <div class="start-splash-bar" aria-hidden="true"><i></i></div>
+    </div>
+    <button id="start-exit" class="start-exit" type="button"
+            title="Exit — close the app and stop the server">EXIT</button>
+    <div class="start-menu-inner">
+      <div class="start-brand" id="start-brand">
+        <span class="start-brand-type">SOMEWHERE</span>
+      </div>
+      <div class="start-tiles">
+        <button id="start-play" class="start-tile" type="button"
+                title="Choose an Experience and play it live.">
+          <span class="start-tile-ico" aria-hidden="true">&#9654;</span>
+          <span class="start-tile-name">PLAY</span>
+        </button>
+        <button id="start-create" class="start-tile" type="button"
+                title="Open the studio — Worlds, Experiences, playtest.">
+          <span class="start-tile-ico" aria-hidden="true">&#9998;</span>
+          <span class="start-tile-name">CREATE</span>
+        </button>
+        <button id="start-account" class="start-tile" type="button"
+                title="Keys, usage, and billing — account, plan, and spend.">
+          <span class="start-tile-ico" aria-hidden="true">&#9670;</span>
+          <span class="start-tile-name">ACCOUNT</span>
+        </button>
+      </div>
+    </div>
+    <div id="xp-picker" class="xp-picker" hidden>
+      <div class="xp-nav">
+        <button id="xp-back" class="keys-back" type="button">BACK</button>
+        <button id="xp-edit" class="keys-back" type="button"
+                title="Open the editor for this Experience">EDITOR</button>
+        <button id="xp-exit" class="start-exit xp-exit" type="button"
+                title="Exit — close the app and stop the server">EXIT</button>
+      </div>
+      <div id="xp-stage" class="xp-stage" aria-hidden="true">
+        <div id="xp-stage-img" class="xp-stage-img"></div>
+        <div id="xp-stage-img-b" class="xp-stage-img"></div>
+      </div>
+      <div id="xp-hero" class="xp-hero">
+        <button id="xp-play" class="xp-play" type="button" hidden>
+          <span>PLAY</span>
+        </button>
+        <button id="xp-watch" class="xp-watch" type="button" hidden
+                title="Watch this Experience">
+          watch
+        </button>
+      </div>
+      <div class="xp-dock">
+        <div class="xp-glow" aria-hidden="true"></div>
+        <div class="xp-fade xp-fade-left" aria-hidden="true"></div>
+        <div class="xp-fade xp-fade-right" aria-hidden="true"></div>
+        <div id="xp-track" class="xp-track" role="listbox" aria-label="Experiences"></div>
+      </div>
+    </div>
+    <!-- Account pane: keys (BYOK) and usage (spend this month, optional cap).
+         Hosted servers report read-only status; only the desktop / run_local
+         app can write. -->
+    <div id="keys-panel" class="keys-panel hidden" hidden>
+      <button id="keys-back" class="keys-back" type="button">BACK</button>
+      <div class="keys-panel-inner">
+        <div class="keys-title">ACCOUNT</div>
+        <div class="account-tabs" role="tablist" aria-label="Account">
+          <button id="account-tab-keys" class="account-tab is-on" type="button" role="tab" aria-selected="true">KEYS</button>
+          <button id="account-tab-usage" class="account-tab" type="button" role="tab" aria-selected="false">USAGE</button>
+        </div>
+        <div id="account-pane-keys" class="account-pane bill-pane">
+          <h2 class="bill-title">Keys</h2>
+          <p id="keys-lead" class="bill-note">Your keys stay on this machine.</p>
+          <div id="keys-list" class="keys-list"></div>
+          <p id="keys-msg" class="keys-msg hidden" hidden></p>
+        </div>
+        <div id="account-pane-usage" class="account-pane bill-pane hidden" hidden>
+          <section class="bill-card bill-id-card">
+            <div id="usage-account" class="bill-id"></div>
+          </section>
+          <h2 class="bill-title">Plan &amp; Usage</h2>
+          <section class="bill-card">
+            <div class="bill-kicker">Current plan</div>
+            <div class="bill-plan-head">
+              <div>
+                <div id="usage-plan-name" class="bill-plan-name">Free</div>
+                <p id="usage-plan-note" class="bill-note"></p>
+              </div>
+              <button id="usage-plan-adjust" class="bill-btn" type="button">Adjust plan</button>
+            </div>
+            <div id="usage-funds" class="bill-funds" hidden></div>
+          </section>
+          <section class="bill-card">
+            <div id="usage-included-kicker" class="bill-kicker">Included</div>
+            <div class="bill-meter">
+              <div class="bill-meter-top">
+                <span id="usage-included-label">This month</span>
+                <span id="usage-included-amt">$0.00</span>
+              </div>
+              <div class="bill-bar" aria-hidden="true"><i id="usage-included-bar"></i></div>
+              <p id="usage-included-hint" class="bill-note"></p>
+            </div>
+          </section>
+          <section class="bill-card">
+            <div class="bill-kicker">On-demand usage</div>
+            <div class="bill-meter">
+              <div class="bill-meter-top">
+                <span>On-demand</span>
+                <span id="usage-ondemand-amt">$0.00</span>
+              </div>
+              <div class="bill-bar" aria-hidden="true"><i id="usage-ondemand-bar"></i></div>
+              <p class="bill-note">Past included, spend comes from the wallet. Empty wallet pauses generation.</p>
+            </div>
+            <div class="bill-limit">
+              <div>
+                <div class="bill-limit-name">Monthly limit</div>
+                <p class="bill-note">Fixed amount or unlimited.</p>
+              </div>
+              <div class="bill-limit-row">
+                <select id="usage-cap-mode" class="bill-select" aria-label="Limit type">
+                  <option value="unlimited">Unlimited</option>
+                  <option value="fixed">Fixed</option>
+                </select>
+                <input id="usage-cap-input" class="bill-input" type="number" min="1" step="1" placeholder="0">
+                <button id="usage-cap-save" class="bill-btn" type="button">Save</button>
+              </div>
+            </div>
+          </section>
+          <p id="usage-msg" class="keys-msg hidden" hidden></p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shared cover for Play / Watch / Account hops. Growing, drifting
+       mint-black gradients hide the swap so the cut never reads as a snap. -->
+  <div id="buck-veil" class="buck-veil" aria-hidden="true">
+    <span class="buck-wash"></span>
+    <span class="buck-bloom buck-bloom-a"></span>
+    <span class="buck-bloom buck-bloom-b"></span>
+    <span class="buck-bloom buck-bloom-c"></span>
+  </div>
+
+  <!-- Always-on EDITOR handle: opens a session over the live first-turn
+       viewport. Closing it returns to Play or Watch, whichever you came
+       from. Backtick still toggles it. -->
+  <button id="edit-tab" class="edit-tab ui-btn" type="button"
+          title="Open the world editor (` backtick)">
+    <span class="edit-tab-ico" aria-hidden="true">&#9998;</span>
+    <span class="edit-tab-lbl">EDITOR</span>
+  </button>
+
+  <!-- Pause: hamburger opens a 60% black fade and a text list, like a
+       traditional game. LEAVE returns to the start menu. QUIT still
+       closes the desktop app (two presses) so paid renders stop. -->
+  <nav id="control-rail" aria-label="Paused" aria-hidden="true">
+    <button id="pause-scrim" class="pause-scrim" type="button" tabindex="-1" aria-label="Resume"></button>
+    <div class="pause-sheet">
+      <div class="pause-kicker">PAUSED</div>
+      <button id="btn-resume" class="pause-item" type="button">RESUME</button>
+      <button id="btn-story" class="pause-item" type="button" title="Story log (J)">STORY</button>
+      <button id="btn-objectives" class="pause-item" type="button" title="The case (O)">CASE</button>
+      <button id="btn-reset" class="pause-item" type="button" title="Restart this run (R)">NEW</button>
+      <button id="btn-leave" class="pause-item" type="button" title="Leave this experience and return to the start menu">LEAVE</button>
+      <button id="btn-exit" class="pause-item pause-item-quit" type="button" title="Close the app and stop the server">QUIT</button>
+    </div>
   </nav>
+
+  <!-- Render panel: start an OFFLINE run. The server plays itself for N turns
+       on whichever models you pick — the point is the ceiling, not the loop, so
+       this is where the slow expensive image model earns its keep. It drives the
+       same endpoints the browser does against a fresh session, so it inherits
+       whatever the editor currently says. See render_jobs.py. -->
+  <aside id="render-panel" class="render-panel" aria-label="Render a run">
+    <div class="render-head">
+      <span class="render-title">RENDER</span>
+      <button id="render-hide" class="render-hide" type="button" title="Hide (K)">&#10005;</button>
+    </div>
+    <div class="render-body">
+      <p class="render-hint">Plays a full run against this server on the models you
+        pick, using the level, character and prompts the editor has right now.
+        Live play goes back to its own models when the render finishes.</p>
+
+      <div id="render-form" class="render-form">
+        <label class="render-field">
+          <span class="render-lbl">TURNS</span>
+          <input id="render-turns" class="render-num" type="number" min="1" max="1000" value="40">
+        </label>
+
+        <div class="render-field">
+          <span class="render-lbl">PLAYS AS</span>
+          <div id="render-mode" class="render-seg" role="group" aria-label="How the run plays itself"></div>
+        </div>
+
+        <label class="render-field">
+          <span class="render-lbl">IMAGE</span>
+          <select id="render-image-model" class="render-select"></select>
+        </label>
+        <p id="render-image-note" class="render-note"></p>
+
+        <div class="render-field">
+          <span class="render-lbl">SIZE</span>
+          <div id="render-size" class="render-seg" role="group" aria-label="Output resolution"></div>
+        </div>
+
+        <div class="render-field">
+          <span class="render-lbl">FRAME</span>
+          <div id="render-aspect" class="render-seg" role="group" aria-label="Aspect ratio"></div>
+        </div>
+
+        <div class="render-field">
+          <span class="render-lbl">PICTURE</span>
+          <div id="render-picture" class="render-seg" role="group" aria-label="Live world film or stills"></div>
+        </div>
+
+        <label class="render-field">
+          <span class="render-lbl">WORDS</span>
+          <select id="render-text-model" class="render-select"></select>
+        </label>
+        <p id="render-text-note" class="render-note"></p>
+
+        <button id="render-start" class="render-go" type="button">START</button>
+        <p id="render-error" class="render-error hidden"></p>
+      </div>
+
+      <div id="render-progress" class="render-progress hidden">
+        <p id="render-using" class="render-note"></p>
+        <div class="render-stage">
+          <button id="render-prev" class="render-nav render-nav-prev" type="button" title="Previous captured frame (←)">‹</button>
+          <img id="render-frame" class="render-frame hidden" alt="Rendered frame">
+          <div id="render-scan-overlay" class="render-scan-overlay" aria-hidden="true"></div>
+          <div id="render-frame-empty" class="render-frame-empty">waiting for the first frame&#8230;</div>
+          <button id="render-next" class="render-nav render-nav-next" type="button" title="Next frame / jump to live (→)">›</button>
+          <span id="render-live-badge" class="render-live-badge">&#9679; LIVE</span>
+        </div>
+        <div class="render-timeline">
+          <span id="render-state" class="render-timeline-turn">turn 0 / 0</span>
+          <span id="render-now" class="render-now">waiting for the first beat&#8230;</span>
+          <span id="render-clock" class="render-timeline-clock">0s</span>
+        </div>
+        <!-- Growing rail of dots: one per turn (and the in-flight one).
+             Click a dot to expand its scan / choice / story. The stage
+             above stays the picture; this is the map of what happened. -->
+        <div class="render-rail-wrap">
+          <div id="render-rail" class="render-rail" role="list" aria-label="Turn timeline"></div>
+        </div>
+        <div id="render-dot-card" class="render-dot-card hidden"></div>
+        <button id="render-cancel" class="render-stop" type="button">&#9632; STOP &amp; SAVE</button>
+      </div>
+
+      <div id="render-done" class="render-done hidden">
+        <div id="render-ceremony" class="render-ceremony">
+          <img id="render-ceremony-still" class="render-ceremony-still hidden" alt="Last frame">
+          <video id="render-ceremony-video" class="render-ceremony-video hidden" autoplay muted loop playsinline controls></video>
+          <div id="render-ceremony-empty" class="render-ceremony-empty">Saving the reel&#8230;</div>
+        </div>
+        <p id="render-verdict" class="render-verdict"></p>
+        <div id="render-strip" class="render-strip"></div>
+        <div class="render-done-actions">
+          <button id="render-play-video" class="render-go hidden" type="button">REPLAY</button>
+          <button id="render-open" class="render-go render-go-ghost" type="button">STILLS</button>
+          <button id="render-resume" class="render-go render-go-ghost hidden" type="button">RESUME &#8212; <span id="render-resume-count">0</span> MORE</button>
+          <button id="render-again" class="render-go render-go-ghost" type="button">ANOTHER</button>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Playtest library: every render still on disk, newest first. A run's
+       output is a folder that outlives the job, the process and the reboot,
+       so this is read straight off disk. Re-parented into #watch-reel (a
+       bottom filmstrip carousel) when Watch mode mounts. -->
+  <div id="render-past" class="render-past">
+    <div class="render-past-head">
+      <span class="render-lbl">PREVIOUS</span>
+      <button id="render-refresh" class="render-mini" type="button" title="Rescan the library">↻</button>
+    </div>
+    <div id="render-history" class="render-history"></div>
+  </div>
+
+  <!-- Render reviewer. Judging pictures in a 320px sidebar defeats the point of
+       having rendered them large, so review takes the whole screen: one frame at
+       a time, big, with the action and the narrative that produced it. -->
+  <div id="render-review" class="render-review hidden" aria-label="Review a render">
+    <div class="rv-head">
+      <span id="rv-title" class="rv-title">RENDER</span>
+      <span id="rv-models" class="rv-models"></span>
+      <div class="rv-head-tools">
+        <a id="rv-download" class="rv-btn rv-btn-key" href="#" download>EXPORT ZIP</a>
+        <button id="rv-close" class="rv-btn" type="button" title="Close (Esc)">✕ CLOSE</button>
+      </div>
+    </div>
+
+    <div class="rv-body">
+      <div class="rv-stage">
+        <img id="rv-image" class="rv-image" alt="Rendered frame">
+        <div id="rv-empty" class="rv-empty hidden">No frames in this render.</div>
+        <button id="rv-prev" class="rv-nav rv-nav-prev" type="button" title="Previous turn (←)">‹</button>
+        <button id="rv-next" class="rv-nav rv-nav-next" type="button" title="Next turn (→)">›</button>
+      </div>
+
+      <aside class="rv-side">
+        <div class="rv-row">
+          <span id="rv-counter" class="rv-counter">TURN 0 / 0</span>
+          <div id="rv-variant" class="render-seg rv-variant" role="group" aria-label="Which frame"></div>
+        </div>
+        <details class="rv-fold" data-fold="turn" open>
+          <summary>This turn</summary>
+          <div class="rv-fold-body">
+            <p id="rv-action" class="rv-action"></p>
+            <p id="rv-narrative" class="rv-narrative"></p>
+          </div>
+        </details>
+        <details class="rv-fold" data-fold="state">
+          <summary>State</summary>
+          <div id="rv-dials" class="rv-dials"></div>
+        </details>
+        <details class="rv-fold" data-fold="files">
+          <summary>Files</summary>
+          <div id="rv-links" class="render-links rv-links"></div>
+        </details>
+      </aside>
+    </div>
+
+    <div class="rv-strip-wrap">
+      <div id="rv-strip" class="rv-strip"></div>
+    </div>
+  </div>
+
+  <!-- Watch mode: a cinema for the current Experience. Same picture Play
+       uses. WATCH starts a generated run; RUNS plays previous films.
+       The old playtest strip stays in the DOM but is not the landing. -->
+  <div id="watch-mode" class="watch-mode" aria-label="Watch this Experience">
+    <div id="watch-handles" class="watch-handles">
+      <button id="watch-library-toggle" class="watch-desk-toggle" type="button"
+              title="Setup — turns, models, start a run" aria-expanded="false" aria-controls="watch-desk">
+        <span class="watch-desk-toggle-lbl">SETUP</span>
+      </button>
+      <button id="watch-runs-toggle" class="watch-desk-toggle" type="button"
+              title="Previous runs" aria-expanded="false" aria-controls="watch-reel">
+        <span class="watch-desk-toggle-lbl">RUNS</span>
+      </button>
+    </div>
+    <div class="watch-head">
+      <button id="watch-menu" class="watch-back" type="button"
+              title="Back to Play" aria-label="Back to Play">
+        <span class="watch-back-ico" aria-hidden="true">&#8592;</span>
+        <span class="watch-back-lbl">PLAY</span>
+      </button>
+      <span class="watch-title">WATCH</span>
+      <span id="watch-sub" class="watch-sub"></span>
+    </div>
+    <div class="watch-body">
+      <div class="watch-tv" id="watch-tv">
+        <div id="watch-tv-idle" class="watch-tv-idle" aria-hidden="false">
+          <div id="watch-tv-ghost" class="watch-tv-ghost" aria-hidden="true"></div>
+          <span class="watch-tv-word">SOMEWHERE</span>
+          <button id="watch-tv-play" class="watch-tv-play" type="button" hidden>WATCH</button>
+        </div>
+        <div id="watch-generate-mount" class="watch-generate-mount"></div>
+        <div id="watch-review" class="watch-review" hidden>
+          <div id="watch-review-cuts" class="watch-review-cuts" role="tablist" aria-label="Review cuts"></div>
+        </div>
+      </div>
+    </div>
+    <aside id="watch-desk" class="watch-desk" aria-label="Watch setup" inert></aside>
+    <aside id="watch-reel" class="watch-reel" aria-label="Previous runs" inert></aside>
+  </div>
+
+  <!-- Watch player: the film. Custom transport, chrome that gets out of
+       the way. Cuts and stills live in one menu — not a lab toolbar. -->
+  <div id="watch-player" class="watch-player hidden wp-chrome-on" aria-label="Play a run">
+    <div class="wp-stage">
+      <video id="wp-video" class="wp-video" playsinline preload="metadata"></video>
+      <div id="wp-overlay" class="watch-overlay" aria-hidden="true"></div>
+      <div id="wp-empty" class="wp-empty hidden">No video for this run.</div>
+      <div class="wp-chrome" aria-hidden="false">
+        <div class="wp-top">
+          <span id="wp-title" class="wp-title">WATCH</span>
+          <div id="wp-cuts" class="wp-cuts" role="tablist" aria-label="Which cut"></div>
+          <div class="wp-top-tools">
+            <button id="wp-review" class="wp-cut" type="button" title="Frame by frame">STILLS</button>
+            <div class="wp-menu-wrap">
+              <button id="wp-more" class="wp-icon" type="button" title="More"
+                      aria-expanded="false" aria-haspopup="true" aria-controls="wp-menu">&#8943;</button>
+              <div id="wp-menu" class="wp-popover hidden" role="menu">
+                <span class="wp-menu-kicker">CUT</span>
+                <div id="wp-variant" class="wp-menu-list" role="group" aria-label="Which cut"></div>
+                <span id="wp-models" class="wp-menu-meta"></span>
+              </div>
+            </div>
+            <button id="wp-close" class="wp-icon" type="button" title="Close (Esc)">&#10005;</button>
+          </div>
+        </div>
+        <div class="wp-bottom">
+          <input id="wp-seek" class="wp-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
+          <div class="wp-transport">
+            <button id="wp-play" class="wp-play" type="button" title="Play (Space)" aria-label="Play">&#9654;</button>
+            <span id="wp-time" class="wp-time">0:00 / 0:00</span>
+            <span class="wp-transport-gap"></span>
+            <button id="wp-mute" class="wp-icon" type="button" title="Mute (M)" aria-label="Mute">&#9835;</button>
+            <button id="wp-fs" class="wp-icon" type="button" title="Full screen (F)" aria-label="Full screen">&#9974;</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- Tape playback overlay: plays this run's frames back in sequence -->
   <div id="tape-overlay" class="hidden">
@@ -341,6 +744,7 @@
          opposed to ACT/choices which resolve a turn and change the scene. -->
     <button id="realtime-btn" type="button" title="Camera — center a NEW subject in focus and tap to document it (each counts once). Click again, Esc, or right-click to exit (H)">
       <span class="rt-icon">📷</span><span class="rt-label">PHOTO</span>
+      <span class="rt-back" aria-hidden="true">←</span>
     </button>
     <!-- SCAN tool: a single, on-demand recognition pass. Tapping it fires ONE
          image pass at the current scene and surfaces the interaction hotspots
@@ -393,6 +797,24 @@
        level (not a Moment) — see #leave-camp-btn + Renderer.applyScene.
        The live world underneath is paused (not destroyed) so ending a Moment
        restores it instantly. Driven by static/js/moments.js. -->
+  <!-- Encounter hitch: stepped freezes over the live world BEFORE the
+       letterbox slams. Distinct from Talk's VCR glitch. -->
+  <div id="encounter-hitch" class="hidden" aria-hidden="true"></div>
+  <!-- Full-screen ENCOUNTER flare — glow, title, fade — then letterbox. -->
+  <div id="encounter-ceremony" class="hidden" aria-hidden="true">
+    <div class="encounter-ceremony-flare" aria-hidden="true"></div>
+    <div class="encounter-ceremony-word">ENCOUNTER</div>
+  </div>
+  <!-- Outcome flare over the action plate: SURVIVED / HURT / CLEAR / DEAD. -->
+  <div id="encounter-verdict" class="hidden" aria-hidden="true">
+    <div class="encounter-verdict-flare" aria-hidden="true"></div>
+    <div class="encounter-verdict-word">SURVIVED</div>
+    <div class="encounter-verdict-sub"></div>
+  </div>
+  <!-- TEMP debug: force an Encounter Moment. Remove once the travel clock is tuned. -->
+  <button id="encounter-debug-btn" type="button" title="Debug — fire an encounter now (Shift+N)">
+    ENCOUNTER
+  </button>
   <div id="moment-overlay" class="hidden" aria-hidden="true">
     <div class="moment-letterbox moment-letterbox-top" aria-hidden="true"></div>
     <div class="moment-letterbox moment-letterbox-bottom" aria-hidden="true"></div>
@@ -513,7 +935,8 @@
     <div id="touch-zoom" class="touch-zoom" aria-hidden="true">1.0&times;</div>
     <!-- Lock-on badge: names the subject you've currently framed as worthy. -->
     <div id="touch-lock" class="touch-lock" aria-hidden="true"></div>
-    <div id="touch-hint" class="touch-hint">move to aim &middot; frame a NEW subject &amp; click / tap to shoot &middot; each counts once &middot; scroll / pinch to zoom &middot; PHOTO to exit</div>
+    <div id="touch-focusing" class="touch-focusing" aria-hidden="true">raising camera</div>
+    <div id="touch-hint" class="touch-hint">move to aim &middot; frame a NEW subject &amp; click / tap to shoot &middot; one shot per raise &mdash; make it count &middot; scroll / pinch to zoom &middot; PHOTO to exit</div>
   </div>
 
   <!-- Capture "cinema": the instant a shot is taken, the photo fills the screen
@@ -579,22 +1002,6 @@
     <div id="investigations-strip"></div>
   </aside>
 
-  <!-- First-run tutorial: the one thing a new player must know to start
-       playing — TAP THE SCENE TO SCAN. Shown once (localStorage-gated) the
-       first time a scene is readable; dismiss with the button, a tap, or Esc. -->
-  <div id="scan-tutorial" class="hidden" role="dialog" aria-modal="true" aria-label="How to play">
-    <div class="tut-card">
-      <div class="tut-kicker">YOU'RE HERE TO TAKE PICTURES</div>
-      <div class="tut-body">
-        <p class="tut-lead"><b>Tap the scene</b> to see what's worth shooting.</p>
-        <p class="tut-sub">Then raise your <b>camera</b> and take the picture.
-           <b><span id="tut-target">8</span> good photographs</b> closes the case.</p>
-      </div>
-      <button id="tut-dismiss" type="button">GOT IT</button>
-      <div class="tut-hint">tap anywhere to begin</div>
-    </div>
-  </div>
-
   <!-- ═══════════════════════════════════════════════════════════════════
        WORLD EDITOR — an in-runtime prompt editor. Slides in over the live
        game so you can tweak the prompts that drive the simulation and watch
@@ -606,9 +1013,25 @@
        ═══════════════════════════════════════════════════════════════════ -->
   <aside id="world-editor" class="hidden" aria-label="World Editor" aria-hidden="true">
     <header class="we-head">
+      <button id="we-back" class="we-back" type="button" title="Back" aria-label="Back">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path d="M6 14l6-6 6 6" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
       <div class="we-title">
         <span class="we-mark" aria-hidden="true">✎</span>
         <span>WORLD EDITOR</span>
+        <div class="we-mode-tabs" role="tablist" aria-label="Editor surface">
+          <button id="we-tab-experience" class="we-mode-tab is-on" type="button"
+                  role="tab" aria-selected="true" aria-controls="we-xp-row"
+                  title="Experiences — pick which one to edit">Experience</button>
+          <button id="we-tab-harness" class="we-mode-tab" type="button"
+                  role="tab" aria-selected="false">Harness</button>
+          <button id="we-tab-sound" class="we-mode-tab" type="button"
+                  role="tab" aria-selected="false"
+                  title="UI sounds — the machine's voice">Sound</button>
+        </div>
         <span id="we-dirty" class="we-dirty hidden" title="Unsaved edits">● unsaved</span>
       </div>
       <!-- Everything except the exit lives inside the Controls dot now: text
@@ -633,6 +1056,30 @@
       </div>
     </header>
 
+    <!-- Carousel of Experiences on disk. + NEW is the first slot; click
+         a cell to load it, type the selected name to save it. Harness
+         hides this row. -->
+    <nav id="we-xp-row" class="we-xp-row" aria-label="Experiences">
+      <button id="we-xp-new" class="we-xp-new" type="button"
+              title="New Experience">+ NEW</button>
+      <div id="we-xp-track" class="we-xp-track" role="listbox"
+           aria-label="Saved experiences"></div>
+    </nav>
+
+    <!-- Graph cards, names, and prompt windows already write themselves.
+         SAVE flushes leftover prompt edits and refreshes a dirty frame;
+         REDRAW forces a new still; RESET puts the sheets back to what
+         the app shipped. -->
+    <div id="we-picture-bar" class="we-picture-bar">
+      <span id="we-save-status" class="we-save-status" aria-live="polite"></span>
+      <button id="we-reset" class="we-reset" type="button"
+              title="Force a new opening still of this World, even if the design did not change">REDRAW</button>
+      <button id="we-save" class="we-save" type="button"
+              title="Write leftover prompt edits and refresh the opening still. Graph changes already save on their own.">SAVE</button>
+      <button id="we-defaults" class="we-defaults" type="button"
+              title="Roll character, level, camera, and prompts back to what the app shipped">RESET</button>
+    </div>
+
     <nav class="we-tabs" id="we-tabs" role="tablist"></nav>
 
     <!-- System controls, re-homed here from the old top-right icon rail: the
@@ -647,21 +1094,18 @@
         <span class="rail-ico">◉</span>
         <span class="we-sys-text">
           <span class="rail-lbl">Live renderer</span>
-          <span class="we-sys-desc">Realtime video world model instead of still frames</span>
         </span>
       </button>
       <button id="btn-model" class="rail-btn we-sys-btn" type="button" title="World model logs &amp; selector (L)">
         <span class="rail-ico">◍</span>
         <span class="we-sys-text">
           <span class="rail-lbl">World model</span>
-          <span class="we-sys-desc">Live model log and switcher</span>
         </span>
       </button>
       <button id="btn-imgmodel" class="rail-btn we-sys-btn" type="button" title="Image generator — switch the model that draws the world (I)">
         <span class="rail-ico">▦</span>
         <span class="we-sys-text">
           <span class="rail-lbl">Image model</span>
-          <span class="we-sys-desc">Choose the model that draws each frame</span>
         </span>
       </button>
       <button id="autoplay-btn" class="rail-btn we-sys-btn" type="button" title="Auto-play — advance on its own (P)">
@@ -670,28 +1114,24 @@
         <span class="rail-ico">&#9655;</span>
         <span class="we-sys-text">
           <span class="rail-lbl" id="autoplay-label">Auto-play</span>
-          <span class="we-sys-desc">Advance the story on its own</span>
         </span>
       </button>
       <button id="tape-btn" class="rail-btn we-sys-btn" type="button" title="Play back the tape (T)">
         <span class="rail-ico">▤</span>
         <span class="we-sys-text">
           <span class="rail-lbl">Tape</span>
-          <span class="we-sys-desc">Play back this run's captured frames</span>
         </span>
       </button>
       <button id="narrator-btn" class="rail-btn we-sys-btn" type="button" title="Narrator — a voice frames the world (N)">
         <span class="rail-ico">❋</span>
         <span class="we-sys-text">
           <span class="rail-lbl">Narrator</span>
-          <span class="we-sys-desc">A voice frames the world</span>
         </span>
       </button>
       <button id="agent-debug-btn" class="rail-btn we-sys-btn" type="button" title="Voice-agent debug log (D)">
         <span class="rail-ico">⌗</span>
         <span class="we-sys-text">
           <span class="rail-lbl">Debug log</span>
-          <span class="we-sys-desc">Voice-agent connection and transcript log</span>
         </span>
       </button>
       <!-- Starts marked on, because it is: #vhs-overlay ships with .vhs-on and
@@ -700,48 +1140,69 @@
         <span class="rail-ico">▣</span>
         <span class="we-sys-text">
           <span class="rail-lbl">VHS overlay</span>
-          <span class="we-sys-desc">Grain, scanlines and tracking glitch</span>
         </span>
       </button>
       <button id="btn-snd" class="rail-btn we-sys-btn" type="button" title="Sound (M)">
         <span class="rail-ico">♪</span>
         <span class="we-sys-text">
           <span class="rail-lbl">Sound</span>
-          <span class="we-sys-desc">Mute or unmute audio</span>
         </span>
       </button>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         THE ORGANISM — the whole editor is one red dot. Double-tap it and
-         four dots bloom around it: Level, Character, Game, Controls. Tap one
-         and #eg-sheet comes up with the few fields that steer it. Tapping the
-         empty paper collapses back to the dot.
-
-         The engine's contract prompts, the runtime knobs and the saved
-         levels/builds are NOT here — they're in the flat list behind the
-         header's List toggle, which is the same state seen another way.
-
-         Built + driven by static/js/editor_graph.js through WorldEditor's
-         bridge. See EDITOR_SIMPLIFICATION_PLAN.md for why this shrank. -->
-    <div id="we-graph" class="we-graph" aria-label="Game dots">
+         EXPERIENCE — a state machine of Worlds around an origin nucleus.
+         The Experience itself is a placeable coin on that graph. The top
+         row picks which Experience; this graph is the worlds beside it.
+         Open a World and you can place, link, and double-tap into
+         (Level · Character · Gameplay). Drag a satellite to draw a transition;
+         the × on a cell removes it. Harness and Sound are the other tabs
+         on this same canvas. Built + driven by static/js/editor_graph.js through
+         WorldEditor's bridge. -->
+    <div id="we-graph" class="we-graph" aria-label="World dots">
+      <nav id="eg-toolkit" class="eg-toolkit" aria-label="Experience tools">
+        <button type="button" class="eg-tool is-on" data-tool="select"
+                title="Select" aria-label="Select">
+          <span aria-hidden="true">●</span>
+          <span class="eg-tool-lbl">Select</span>
+        </button>
+        <button type="button" class="eg-tool" data-tool="add-world"
+                title="Add a World — drag onto the graph, drop where you want it" aria-label="Add World">
+          <span aria-hidden="true">＋</span>
+          <span class="eg-tool-lbl">World</span>
+        </button>
+        <button type="button" class="eg-tool" data-tool="add-cutscene"
+                title="Add a Cutscene — a 4-shot montage between Worlds" aria-label="Add Cutscene">
+          <span aria-hidden="true">▣</span>
+          <span class="eg-tool-lbl">Cut</span>
+        </button>
+      </nav>
       <div class="eg-hud">
         <div class="eg-caption">
           <span id="eg-caption-name" class="eg-caption-name"></span>
-          <span id="eg-caption-sub" class="eg-caption-sub"></span>
         </div>
+      </div>
+      <!-- Empty paper goes up a layer. The header chevron is easy to miss;
+           this one sits on the sheet, outside the ring, only while that
+           click actually surfaces. -->
+      <div id="eg-up" class="eg-up" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="32" height="32">
+          <path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
       </div>
 
       <!-- One <svg>; opening the ring is a viewBox animation. Every dot is
            drawn at the origin and positioned by a transform, so the wobble
            costs one attribute per dot per frame. -->
-      <svg id="eg-canvas" class="eg-canvas" viewBox="-1200 -1200 2400 2400"
+      <svg id="eg-canvas" class="eg-canvas" viewBox="-648 -1200 2400 2400"
            preserveAspectRatio="xMidYMid meet" role="application"
-           aria-label="Double-tap the dot to open it, tap a dot to direct it">
+           aria-label="World dots">
+        <g id="eg-hulls" class="eg-hulls"></g>
+        <g id="eg-edges" class="eg-edges"></g>
         <g id="eg-world" class="eg-world"></g>
+        <g id="eg-fx" class="eg-fx"></g>
       </svg>
-
-      <div id="eg-hint" class="eg-hint" aria-live="polite"></div>
 
       <!-- The window that animates up at a dot. -->
       <div id="eg-scrim" class="eg-scrim" aria-hidden="true"></div>
@@ -778,25 +1239,32 @@
           <input id="we-world-name" type="text" placeholder="Name this world…" maxlength="64" />
           <button id="we-world-save" type="button" class="we-btn we-btn-primary">SAVE WORLD</button>
         </div>
-        <div class="we-worlds-hint">A build snapshots everything: engine, game, level and cast.</div>
         <ul id="we-worlds-list" class="we-worlds-list" aria-live="polite"></ul>
       </div>
     </div>
 
-    <!-- CONTROLS — how you DRIVE the live world (DOOM turn vs FPS strafe + mouse
-         look), not what the game is. Deliberately the last thing in the panel:
-         it used to sit above the layer stack, where the first thing you saw on
-         opening a level editor was a mouse-sensitivity slider. -->
+    <!-- CONTROLS — one scheme per camera. Loaned into the Controls window. -->
     <div id="we-input-opts" class="we-input-opts">
-      <span class="we-input-label">CONTROLS</span>
-      <div id="we-input-profile" class="rt-ho-seg" role="group" aria-label="Movement control mode"></div>
+      <div id="we-input-schemes" class="we-input-schemes" role="tablist" aria-label="Camera to bind"></div>
+      <p id="we-input-scheme-lead" class="we-input-lead"></p>
+      <div class="we-input-row">
+        <span class="we-input-label">Layout</span>
+        <div id="we-input-profile" class="rt-ho-seg" role="group" aria-label="How you move">
+        </div>
+      </div>
+      <p class="we-input-hint">Look is WASD + mouse. Third person orbits left and right only — no look up or down, so a click can still hit what's on screen. Tank is A/D turn, Q/E strafe. Click a row, then press a key. Mouse is a bind — click to toggle.</p>
+      <label class="we-cast-toggle" id="we-input-invert-wrap">
+        <input id="we-input-invert" type="checkbox">
+        <span class="we-cast-toggle-label">Invert look Y</span>
+      </label>
       <span class="we-input-sens" id="we-input-sens-wrap">
         <label class="we-input-label" for="we-input-sens">LOOK</label>
         <input id="we-input-sens" type="range" min="1" max="30" step="0.5"
                aria-label="Mouse look sensitivity" />
         <output id="we-input-sens-val" class="we-input-sens-val" for="we-input-sens"></output>
       </span>
-      <span id="we-input-hint" class="we-input-hint"></span>
+      <div id="we-input-keys" class="we-input-keys" role="list" aria-label="Key bindings"></div>
+      <button id="we-input-reset" class="we-btn we-btn-ghost" type="button">Reset this camera</button>
     </div>
 
     <footer class="we-foot" id="we-foot">
@@ -860,6 +1328,7 @@
       </div>
 
       <footer class="wem-foot">
+        <button id="wem-clear" class="wem-btn" type="button" title="Empty this prompt and save">Clear</button>
         <button id="wem-reset" class="wem-btn wem-btn-danger" type="button" title="Restore this prompt's factory default">&#8635; Reset to default</button>
         <div class="wem-warn hidden" id="wem-warn"></div>
         <span class="wem-keys">Esc cancel &middot; Ctrl/&#8984;+S save</span>
@@ -871,16 +1340,15 @@
     </div>
   </div>
 
-  <!-- (Session controls now live in #control-rail, top-right.) -->
+  <!-- (Session controls now live in the pause list, #control-rail.) -->
 
-  <!-- Processing veil shown while waiting on the backend. Hosts the gamified
-       "ceremony" step tracker (the pipeline the world runs each turn) and a
-       simple spinner fallback for boot/reset. -->
+  <!-- Processing HUD. A single top-right loading circle — each turn phase
+       replaces the last — so the frame stays playable. Boot/reset uses the
+       same corner with a simple spinner. -->
   <div id="processing-veil" class="hidden">
     <div class="veil-inner">
-      <!-- Ceremony: the turn pipeline lights up step by step so the player
-           feels the world working. Steps are built by standalone.js. -->
       <div id="ceremony" class="ceremony hidden" aria-live="polite">
+        <span class="cere-orb" aria-hidden="true"></span>
         <ol id="ceremony-steps" class="ceremony-steps"></ol>
         <div id="ceremony-note" class="ceremony-note"></div>
       </div>
@@ -935,6 +1403,7 @@
           <span class="coinop-title">CONTINUE?</span>
           <span id="coinop-countdown" class="coinop-countdown" aria-live="polite">10</span>
         </div>
+        <div id="death-packs" class="coin-packs coin-packs-inline" role="group" aria-label="How much to drop in"></div>
         <button id="death-continue" type="button" data-price="" data-currency="">
           <span class="coin-slot" aria-hidden="true">◉</span>
           <span class="continue-label">Insert Coin — Continue</span>
@@ -990,6 +1459,7 @@
           <span class="coinop-title">CONTINUE?</span>
           <span id="pause-countdown" class="coinop-countdown" aria-live="polite">10</span>
         </div>
+        <div id="pause-packs" class="coin-packs coin-packs-inline" role="group" aria-label="How much to drop in"></div>
         <button id="pause-continue" type="button" data-price="" data-currency="">
           <span class="coin-slot" aria-hidden="true">◉</span>
           <span class="continue-label">Insert Coin — Add Credits</span>
@@ -1013,6 +1483,18 @@
 
   <!-- Backend / connectivity tag -->
   <div id="backend-tag">backend: <span id="backend-name">—</span></div>
+
+  <!-- Shown while the app shuts itself down. In the native window this is on
+       screen for about a second before the window goes; in a browser tab the
+       window can't be closed for us, so this is the last thing there is and it
+       has to say so rather than leaving a dead page behind. -->
+  <div id="exit-veil" class="exit-veil hidden" aria-hidden="true">
+    <div class="exit-card">
+      <div class="exit-title">SOMEWHERE</div>
+      <div id="exit-state" class="exit-state" aria-live="polite">closing down</div>
+      <div id="exit-note" class="exit-note"></div>
+    </div>
+  </div>
 
   {% if forced_renderer %}<script>window.__FORCED_RENDERER__ = "{{ forced_renderer }}";</script>{% endif %}
   <script src="{{ url_for('static', filename='js/reactor_renderer.js') }}?v={{ asset_version }}"></script>

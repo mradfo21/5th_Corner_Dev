@@ -141,7 +141,7 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
         "shows_body": False,
         "hands_default": True,
         "camera_header": "FIRST-PERSON CAMERA VIEW",
-        "rig": "a camcorder held at eye level by the player",
+        "rig": "a camera held at eye level by the player",
         "vantage": "first-person eye-level walking vantage, the camera is the player's own eyes",
         "image_rules": [
             "The camera IS the player's eyes — everything in frame is what they are looking at right now.",
@@ -312,8 +312,8 @@ CHARACTER_DEFAULTS: Dict[str, Any] = {
     "reference_images": [],
 }
 
-# The shipped world brief already assumes this person (Jason, photojournalist,
-# 1993 camcorder). It is NOT extra prompt law — it is the CAST the compiler
+# The shipped world brief already assumes this person (Jason, photojournalist).
+# It is NOT extra prompt law — it is the CAST the compiler
 # below already knows how to emit, filled only when the camera can see a body
 # and the player never authored one. Leaving that slot empty while third-person
 # is on is how every hard-cut frame invented a new stranger (man one shot,
@@ -325,7 +325,11 @@ SHIPPED_PROTAGONIST: Dict[str, str] = {
     "role": "investigative photojournalist",
     "appearance": "adult man, short dark hair, weathered face, stubble",
     "wardrobe": "olive field jacket, dark work pants, boots",
-    "signature_gear": "1993 VHS camcorder",
+    # Not a camcorder. Naming a VHS camcorder as carried gear put "VHS" and
+    # "camcorder" into a payload that asks for a photograph, and the image model
+    # answered with the furniture that comes with them: tape timestamps, REC
+    # dots, viewfinder brackets burned into the frame.
+    "signature_gear": "a battered 35mm stills camera on a neck strap",
 }
 
 # SOMEWHERE's Level card. Same leftover problem as Jason's wardrobe: a recast
@@ -1157,6 +1161,20 @@ def is_shipped_cast(spec: Optional[Dict[str, Any]] = None) -> bool:
     return True
 
 
+# Values SHIPPED_PROTAGONIST used to hold. A sheet saved before the default
+# changed still carries the old string, and the leftover-drop below matches by
+# value — so retiring a default without listing it here silently promotes every
+# stale copy of it to author intent.
+_RETIRED_SHIPPED_FIELDS: Dict[str, Tuple[str, ...]] = {
+    "signature_gear": ("1993 VHS camcorder",),
+}
+
+
+def _shipped_field_values(field: str) -> Tuple[str, ...]:
+    current = SHIPPED_PROTAGONIST.get(field, "")
+    return (current,) + _RETIRED_SHIPPED_FIELDS.get(field, ())
+
+
 def authored_character(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """CAST fields that should actually reach the image and story prompts.
 
@@ -1171,7 +1189,8 @@ def authored_character(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if is_shipped_cast(spec):
         return char
     for field in ("pronouns", "wardrobe", "signature_gear"):
-        if _norm_field(char.get(field)) == _norm_field(SHIPPED_PROTAGONIST.get(field, "")):
+        current = _norm_field(char.get(field))
+        if any(current == _norm_field(v) for v in _shipped_field_values(field)):
             char[field] = ""
     # A plate with leftover Jason Name / Role / Look is the same hole as
     # leftover jacket. The Experience editor used to skip fill when those
@@ -1297,16 +1316,36 @@ def camera_directive(spec: Optional[Dict[str, Any]] = None) -> str:
     )
 
 
-def character_visual_sheet(spec: Optional[Dict[str, Any]] = None) -> str:
+def character_visual_sheet(
+    spec: Optional[Dict[str, Any]] = None,
+    hands_only: bool = False,
+) -> str:
     """The CAST block — what the protagonist physically looks like.
 
     Only meaningful to the image model when the body (or hands) can be seen, so
     callers should gate on :func:`shows_character` / :func:`hands_visible`.
+
+    ``hands_only`` is the first-person case, where a forearm is the single part
+    of the player that can enter frame. The full sheet used to ship there too,
+    so the payload named a face, a hairline and a carried-gear list, demanded
+    "the SAME person in every single frame", and told the model not to spin them
+    to face the lens — while the same payload's tail said "No person in frame:
+    no head, shoulders, back, hands, or silhouette". Three positions on one
+    question, and the render split the difference from frame to frame.
     """
     spec = spec or get_spec()
     char = authored_character(spec)
     if not any(char.get(f) for f in ("name", "role", "appearance", "wardrobe", "signature_gear")):
         return ""
+
+    if hands_only:
+        if not char.get("wardrobe"):
+            return ""
+        return (
+            "🧍 THE PLAYER'S OWN HANDS\n"
+            "If a hand or forearm enters the bottom of frame it is the player's, "
+            f"dressed in: {char['wardrobe'].rstrip('.')}. Nothing above the wrists."
+        )
 
     lines: List[str] = []
     header = display_name(spec)
@@ -1373,10 +1412,14 @@ def image_directive(spec: Optional[Dict[str, Any]] = None) -> str:
     """Camera + cast + location, assembled for an image prompt."""
     spec = spec or get_spec()
     blocks = [camera_directive(spec)]
-    if shows_character(spec) or hands_visible(spec):
+    if shows_character(spec):
         sheet = character_visual_sheet(spec)
-        if sheet:
-            blocks.append(sheet)
+    elif hands_visible(spec):
+        sheet = character_visual_sheet(spec, hands_only=True)
+    else:
+        sheet = ""
+    if sheet:
+        blocks.append(sheet)
     # A viewfinder restage copies THIS frame. The authored level plate
     # describes the opening location and fights the live grab.
     if not is_viewfinder_spec(spec):
@@ -1545,6 +1588,48 @@ _SHIPPED_PLACE_MARKERS = (
     "horizon research",
 )
 
+# An ALL-CAPS section label in the art-direction block ("LOOK", "WORLD & ERA").
+_HEADING_RE = re.compile(r"^[A-Z0-9][A-Z0-9 &/'\-]{0,38}$")
+
+
+def _is_art_heading(line: str) -> bool:
+    return bool(_HEADING_RE.match(line.strip()))
+
+
+def strip_shipped_place(raw: str) -> str:
+    """Drop shipped-biome SENTENCES, then any heading left with no body.
+
+    This used to drop whole LINES, and the shipped art direction puts the year,
+    the period-technology list and the touchstones on the same line as "American
+    Southwest". A recast Level therefore deleted its own medium anchor and kept
+    the label, so the image model received a bare "WORLD & ERA" followed by "A
+    photoreal still from that year" — with no year left anywhere in the payload
+    for "that year" to refer to. Nothing then stated the medium at all, and the
+    register drifted between a photograph and a game render frame to frame.
+    """
+    kept: List[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or _is_art_heading(stripped):
+            kept.append(line)
+            continue
+        survivors = [
+            s for s in re.split(r"(?<=[.!?])\s+", stripped)
+            if not any(m in s.lower() for m in _SHIPPED_PLACE_MARKERS)
+        ]
+        if survivors:
+            kept.append(" ".join(survivors))
+    # A heading whose body was just deleted is worse than no heading: it names a
+    # concern the payload then says nothing about.
+    out: List[str] = []
+    for i, line in enumerate(kept):
+        if _is_art_heading(line.strip()):
+            nxt = next((l.strip() for l in kept[i + 1:] if l.strip()), "")
+            if not nxt or _is_art_heading(nxt):
+                continue
+        out.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
 
 def authored_art_direction(spec: Optional[Dict[str, Any]] = None) -> str:
     """GAME look, minus leftover shipped biome when the Level is a recast.
@@ -1557,20 +1642,15 @@ def authored_art_direction(spec: Optional[Dict[str, Any]] = None) -> str:
     raw = str(PROMPTS.get("image_art_direction") or "").strip()
     if is_shipped_setting(spec):
         return raw
-    kept: List[str] = []
-    for line in raw.splitlines():
-        if any(m in line.lower() for m in _SHIPPED_PLACE_MARKERS):
-            continue
-        kept.append(line)
-    look = "\n".join(kept).strip()
+    look = strip_shipped_place(raw)
     setting = spec[SETTING_KEY]
     lead: List[str] = []
     place = place_summary(spec)
     if place:
-        lead.append(
-            f"WORLD & PLACE\nThis run is at {place} "
-            "Not the shipped Horizon desert fence."
-        )
+        # No "not the shipped Horizon desert fence" here. Naming the thing to
+        # avoid puts it in the payload, and a diffusion model reads the noun
+        # long before it reads the negation attached to it.
+        lead.append(f"WORLD & PLACE\nThis run is at {place}")
     if setting.get("era"):
         lead.append(f"ERA: {setting['era']}")
     if setting.get("palette"):
@@ -1601,10 +1681,7 @@ def look_line(spec: Optional[Dict[str, Any]] = None) -> str:
     spec = spec or get_spec()
     raw = str(PROMPTS.get("image_art_direction") or "").strip()
     if raw and not is_shipped_setting(spec):
-        raw = "\n".join(
-            line for line in raw.splitlines()
-            if not any(m in line.lower() for m in _SHIPPED_PLACE_MARKERS)
-        )
+        raw = strip_shipped_place(raw)
     if not raw:
         return ""
     lines: List[str] = []
@@ -2252,7 +2329,19 @@ def reconcile(text: str, spec: Optional[Dict[str, Any]] = None) -> str:
     ]
     if not any(ln.strip() for ln in kept):
         return text
-    return "\n".join(kept)
+    # Deleting a body line can leave its ALL-CAPS section label standing alone.
+    # `image_camera_rules`' CONTINUITY paragraph is one line and mentions "the
+    # subject's POV", so third person used to receive a bare "CONTINUITY" with
+    # nothing under it — a heading that names a concern the payload then says
+    # nothing about, in a payload whose whole problem is too many headings.
+    out: List[str] = []
+    for i, line in enumerate(kept):
+        if _is_art_heading(line.strip()):
+            nxt = next((l.strip() for l in kept[i + 1:] if l.strip()), "")
+            if not nxt or _is_art_heading(nxt):
+                continue
+        out.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2346,7 +2435,11 @@ def block_preview(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, 
     spec = spec or get_spec()
     return {
         CHARACTER_KEY: {
-            "image": character_visual_sheet(spec) if (shows_character(spec) or hands_visible(spec)) else "",
+            "image": (
+                character_visual_sheet(spec) if shows_character(spec)
+                else character_visual_sheet(spec, hands_only=True) if hands_visible(spec)
+                else ""
+            ),
             "narrative": narrative_directive(spec),
         },
         SETTING_KEY: {

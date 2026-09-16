@@ -111,10 +111,59 @@ class TestDirective(unittest.TestCase):
         self.assertIn("CHANGED BY", d)
         self.assertNotIn("CLOSER", d)
 
-    def test_move_demands_the_object_closer(self):
+    def test_move_demands_the_object_be_in_place_not_centered(self):
         d = engine._permanence_directive("steel door", is_move=True)
-        self.assertIn("CLOSER", d)
+        self.assertIn("steel door", d)
         self.assertNotIn("CHANGED BY", d)
+        # A model told to put the object "central"/"CLOSER" satisfies that
+        # with a centered hero shot of the object alone — which reads as the
+        # OBJECT moving to the middle of frame, not the PLAYER walking up to
+        # it. Both words are banned so that reading can't come back.
+        self.assertNotIn("CLOSER", d)
+        self.assertNotIn("central", d.lower())
+
+
+class TestActionDirectiveRelocation(unittest.TestCase):
+    """TRAVERSAL guidance used to only reach a SCAN "Move to X" tap
+    (is_interaction=True). A curated/typed choice earning the identical hard
+    cut through the egress backstop or the text classifier got nothing —
+    no "this is locomotion, not confrontation" steering, no "keep the
+    camera's existing relationship to the player" instruction — which is
+    exactly the seam a real run's camera flip fell through. `also_relocating`
+    is how a non-SCAN action opts into the same text."""
+
+    def test_plain_choice_with_no_relocation_gets_nothing(self):
+        self.assertEqual(engine._action_directive(False, False, ""), "")
+
+    def test_scan_interact_is_unaffected_by_the_new_parameter(self):
+        # A SCAN "interact" (is_interaction=True, is_move=False) must keep
+        # getting the OBJECT INTERACTION text, not TRAVERSAL — also_relocating
+        # only matters for non-SCAN actions.
+        d = engine._action_directive(True, False, "steel door")
+        self.assertIn("OBJECT INTERACTION", d)
+        self.assertNotIn("TRAVERSAL", d)
+
+    def test_scan_move_is_unaffected_by_the_new_parameter(self):
+        d = engine._action_directive(True, True, "steel door")
+        self.assertIn("TRAVERSAL", d)
+
+    def test_non_scan_relocation_now_gets_traversal_text(self):
+        # The whole point of also_relocating: a curated/typed choice that is
+        # about to get a hard cut for a non-SCAN reason (egress, or the text
+        # classifier) earns the identical TRAVERSAL guidance a SCAN MOVE gets.
+        d = engine._action_directive(False, False, "", also_relocating=True)
+        self.assertIn("TRAVERSAL", d)
+        self.assertNotIn("OBJECT INTERACTION", d)
+
+    def test_non_scan_relocation_tells_the_model_to_hold_the_camera(self):
+        d = engine._action_directive(False, False, "", also_relocating=True)
+        self.assertIn("stays BEHIND them", d)
+
+    def test_non_scan_relocation_with_no_subject_adds_no_permanence_claim(self):
+        # There is no detected object to protect when nothing was tapped —
+        # OBJECT PERMANENCE must not appear just because also_relocating did.
+        d = engine._action_directive(False, False, "", also_relocating=True)
+        self.assertNotIn("OBJECT PERMANENCE", d)
 
 
 class TestRecord(unittest.TestCase):
@@ -187,8 +236,13 @@ class TestWiring(unittest.TestCase):
         cls.client_src = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
 
     def test_the_consequence_prompt_carries_the_requirement(self):
-        self.assertIn("interaction_directive += _permanence_directive(subject, is_move)",
+        # The permanence clause rides on the back of whichever object directive
+        # the turn earned, and that directive is what the prompt interpolates.
+        self.assertIn("return directive + _permanence_directive(subject, relocating)",
                       self.engine_src)
+        self.assertIn("interaction_directive = _action_directive(",
+                      self.engine_src)
+        self.assertIn("also_relocating=non_scan_relocation", self.engine_src)
 
     def test_the_claim_is_written_on_every_turn(self):
         # Unconditional: a turn with no subject writes None, which is what stops

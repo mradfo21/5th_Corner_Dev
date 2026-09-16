@@ -106,18 +106,23 @@
   // character and walking around as a pair of eyes.
   //
   // Resolution order, most explicit first:
+  //   the VIEW switch flipped THIS session (rstate.hoPerspective)
   //   ?perspective= / window global — a deliberate override for this page load
-  //   the VIEW switch in the WORLD MODEL panel (this browser, remembered)
   //   the authored camera from the cast sheet (/api/camera) — the game's answer
+  //   leftover localStorage from an earlier session
   //   first person
   //
-  // The authored camera used to be absent from that list entirely: the cast
-  // sheet compiled third-person prompts and third-person stills while the world
-  // itself was still built first person, so the character the player wrote was
-  // never in the live frame and nothing on screen explained why.
+  // A leftover localStorage "first_person" used to beat the editor, so every
+  // instance built as a pair of eyes no matter what the cast sheet said.
   function happyOysterPerspective() {
-    const explicit = readOpt("perspective", "happy_oyster_perspective", "__HAPPY_OYSTER_PERSPECTIVE__");
-    const v = rstate.hoPerspective || explicit || rstate.authoredPerspective || "first_person";
+    let page = null;
+    try { page = new URLSearchParams(location.search).get("perspective"); } catch (_) {}
+    if (!page && typeof window !== "undefined" && window.__HAPPY_OYSTER_PERSPECTIVE__) {
+      page = window.__HAPPY_OYSTER_PERSPECTIVE__;
+    }
+    let stored = null;
+    try { stored = localStorage.getItem("happy_oyster_perspective"); } catch (_) {}
+    const v = rstate.hoPerspective || page || rstate.authoredPerspective || stored || "first_person";
     return normPerspective(v);
   }
   // Director-experience create_world knobs (Directing worlds only). Overridable
@@ -252,6 +257,7 @@
     // so the switch never exposes black or the underlying still.
     freeze: null,
     freezeActive: false,   // freeze canvas is currently covering the video
+    freezePainted: false,  // real pixels have been drawn onto it at least once
     freezeArmed: false,    // waiting for the first NEW frame to fade it out
     freezeArmTs: 0,
     freezeFallbackTimer: null,
@@ -265,6 +271,7 @@
     fadeSafetyTimer: null, // failsafe: lift the veil even if no reveal fires
     fadeHardDeadline: 0,   // absolute ceiling for holding the veil (ms since epoch) — a re-arm CANNOT shorten it, so a pre-fade's long window survives the re-anchor's default one
     awaitingReanchor: false, // caller promised a re-anchor is coming; hold the veil (up to fadeHardDeadline) until the apply actually happens even if nothing is currently in-flight
+    fadeHeld: false,         // PHOTO (and similar): veil stays down until the owner releases it. Reactor reveals must not lift.
     seedToken: 0,          // bumps every reveal/reset so a slow seed decode that
                            // lands AFTER the stream revealed can't re-cover it
     // Blackout state: the live stream is rendering solid black (model refused
@@ -299,25 +306,50 @@
     // an unconfigured server, a blocked SDK, a rejected key — showed the same
     // "realtime unavailable" with nothing actionable in it. These are the
     // causes worth telling apart, because the fix for each is different.
+    // An empty balance is the one failure that CANNOT self-heal while the
+    // player sits there, and it is the one the retry ladder handled worst:
+    // Reactor answers `402 {"error":"credits_depleted"}`, which matched none
+    // of the patterns below, so it fell through to "unknown" — a retryable
+    // class. The session then spent roughly four minutes and eleven doomed
+    // requests saying "reconnecting" before settling, and never once said
+    // the word credits. Terminal failures fall back to stills immediately
+    // and stay there for this session; buying credits and reloading (or
+    // saving a key in ACCOUNT) starts a fresh upgrade.
+    const depleted = /\b402\b/.test(message) ||
+      /credits?[_\s-]?depleted|insufficient (credits?|funds|balance|quota)/i.test(message) ||
+      /out of credits|no credits|payment required|quota exceeded/i.test(message);
     let reason = "unknown";
     let hint = "Realtime unavailable \u2014 showing stills";
-    if (capacity) {
+    let terminal = false;
+    if (depleted) {
+      reason = "out_of_credits";
+      terminal = true;
+      hint = "Reactor credits are gone \u2014 playing on stills";
+    } else if (capacity) {
       reason = "capacity";
       hint = "Reactor is full right now \u2014 showing stills (retrying quietly)";
     } else if (/not configured|REACTOR_API_KEY|\b503\b/i.test(message)) {
+      // Also terminal: no amount of waiting configures a server, and the fix
+      // (saving a key in ACCOUNT) calls upgradeToLive directly rather than
+      // waiting on the background retry.
       reason = "not_configured";
+      terminal = true;
       hint = "Realtime isn't configured on this server \u2014 showing stills";
     } else if (/\b401\b|\b403\b|unauthor|forbidden/i.test(message)) {
       reason = "bad_key";
+      terminal = true;
       hint = "Realtime rejected this server's key \u2014 showing stills";
     } else if (/import|module|failed to fetch|network|load/i.test(message)) {
+      // Genuinely transient: a blocked CDN or a dropped network can come
+      // back on its own, so these keep the retry ladder.
       reason = "sdk_blocked";
       hint = "Couldn't load the realtime SDK \u2014 showing stills";
     } else if (/token/i.test(message)) {
       reason = "token_exchange_failed";
       hint = "Realtime sign-in failed \u2014 showing stills";
     }
-    return { message: message, capacity: capacity, reason: reason, hint: hint };
+    return { message: message, capacity: capacity, reason: reason, hint: hint,
+             terminal: terminal };
   }
 
   function setStatus(s) {
@@ -419,6 +451,22 @@
   // reveal the freeze back-buffer's static still while the new video is still
   // warming up. Only give up (and lift) if the resample keeps failing past the
   // SCENE_FADE_HARD_CAP_MS ceiling, or the stream was never started at all.
+  // PHOTO owns the veil from raise until the in-camera feed is ready.
+  // Intermediate seed paints, leftover 3P frames, and Helios blend-reveals
+  // must not lift it — that is the "opening still fades in, then fades out"
+  // stutter on camera enter.
+  function holdSceneFade(on) {
+    rstate.fadeHeld = !!on;
+    if (on) {
+      rstate.freezeArmed = false;
+      if (rstate.freezeFallbackTimer) {
+        clearTimeout(rstate.freezeFallbackTimer);
+        rstate.freezeFallbackTimer = null;
+      }
+      if (rstate.fadeUpTimer) { clearTimeout(rstate.fadeUpTimer); rstate.fadeUpTimer = null; }
+    }
+  }
+
   function beginSceneFade(opts) {
     const f = getFadeEl();
     if (!f) return;
@@ -432,19 +480,31 @@
     // new scene_image. Sticky through re-arms (only cleared on genuine reveal
     // / teardown / cap).
     if (opts && opts.awaitReanchor) rstate.awaitingReanchor = true;
+    const alreadyDown = !!(rstate.fadeDownActive && f.classList.contains("down"));
     rstate.fadeDownActive = true;
-    rstate.fadeDownTs = Date.now();
+    // Already black (MOVE TO pre-fade): stay black. Re-adding `.down` after
+    // a lift, or resetting fadeDownTs, is how the leaving world flashed
+    // between two fades.
+    if (!alreadyDown) rstate.fadeDownTs = Date.now();
     // The absolute deadline never moves once set for a fade — a subsequent
     // beginSceneFade() call (e.g. the re-anchor re-arming) MUST NOT reset the
     // ceiling back down, or a pre-fade with a long safety would collapse to
     // the default 9 s the instant the guide image arrives.
+    const from = alreadyDown ? (rstate.fadeDownTs || Date.now()) : rstate.fadeDownTs;
     rstate.fadeHardDeadline = Math.max(
       rstate.fadeHardDeadline || 0,
-      rstate.fadeDownTs + Math.max(safetyMs, SCENE_FADE_HARD_CAP_MS)
+      from + Math.max(safetyMs, SCENE_FADE_HARD_CAP_MS)
     );
     if (rstate.fadeUpTimer) { clearTimeout(rstate.fadeUpTimer); rstate.fadeUpTimer = null; }
-    f.classList.add("down");
+    if (!alreadyDown) f.classList.add("down");
     scheduleFadeSafetyTick(safetyMs);
+  }
+
+  // During a MOVE TO pre-fade the veil is already down. Freezing the leaving
+  // world underneath would flash it if anything lifted the fade early.
+  function freezeLeavingWorld() {
+    if (rstate.awaitingReanchor) return;
+    captureVideoToFreeze();
   }
 
   // The video-aware failsafe: sample the stream state after `ms`, and either
@@ -487,6 +547,7 @@
   // if we haven't been dark long enough, defer BOTH the lift and the callback
   // to the remainder. If no veil is down, the callback runs immediately.
   function endSceneFade(onLifted) {
+    if (rstate.fadeHeld) return;
     if (!rstate.fadeDownActive) { if (onLifted) onLifted(); return; }
     const f = getFadeEl();
     if (!f) { rstate.fadeDownActive = false; if (onLifted) onLifted(); return; }
@@ -513,6 +574,7 @@
   // Schedule the reveal after `ms` — used by blend-family models (Helios) that
   // stream continuously and have no discrete "new frame" boundary to reveal on.
   function scheduleSceneReveal(ms) {
+    if (rstate.fadeHeld) return;
     if (!rstate.fadeDownActive) return;
     // Handoff: the scheduled reveal is the blend-family equivalent of an armed
     // freeze reveal — the pre-fade's awaitReanchor promise is fulfilled here.
@@ -532,7 +594,9 @@
 
   // Drop the fade veil immediately (no min-hold, no reveal event) — used on
   // teardown / reset / disable so a mid-transition fade never sticks on screen.
-  function clearSceneFade() {
+  function clearSceneFade(force) {
+    if (rstate.fadeHeld && !force) return;
+    rstate.fadeHeld = false;
     rstate.fadeDownActive = false;
     rstate.fadeHardDeadline = 0;
     rstate.awaitingReanchor = false;
@@ -552,6 +616,7 @@
       f.width = v.videoWidth;
       f.height = v.videoHeight;
       f.getContext("2d").drawImage(v, 0, 0, f.width, f.height);
+      rstate.freezePainted = true;
       showFreeze(true);
       return true;
     } catch (e) { log("freeze capture failed", e); return false; }
@@ -563,6 +628,7 @@
   // snapped on: the seed is a deliberate "here's the destination" beat, so a
   // hard pop before the (later) video reveal reads as a glitch.
   function paintSeedToFreeze(imageUrl) {
+    if (rstate.fadeHeld) return;
     const f = getFreeze();
     if (!f || !imageUrl) return;
     // Capture the staging token now. If a reveal fires (or a new stage begins)
@@ -577,6 +643,7 @@
         f.width = img.naturalWidth || 1280;
         f.height = img.naturalHeight || 720;
         f.getContext("2d").drawImage(img, 0, 0, f.width, f.height);
+        rstate.freezePainted = true;
         showFreeze(false); // fade in — no instant snap
       } catch (e) { log("seed paint failed", e); }
     };
@@ -619,12 +686,46 @@
     const before = happyOysterPerspective();
     rstate.camera = camera;
     rstate.authoredPerspective = normPerspective(camera.perspective);
+    // CONTROLS follows the authored camera. loadConfig used to set the
+    // visual contract and leave InputBindings on first_person until a later
+    // Camera.load — every instance then drove like a pair of eyes.
+    try {
+      if (window.__InputBindings && typeof window.__InputBindings.followCamera === "function") {
+        window.__InputBindings.followCamera(camera);
+      }
+    } catch (_) {}
     return happyOysterPerspective() !== before;
+  }
+
+  // LingBot / Helios have no create_world perspective knob. The camera has
+  // to live in the prompt or the model invents a first-person walk.
+  function decoratePrompt(prompt) {
+    const cam = rstate.camera;
+    const text = String(prompt || "");
+    if (!text) return prompt;
+    let out = text;
+    if (cam) {
+      const prefix = String(cam.prefix || cam.vantage || cam.scene_floor || "").trim();
+      const marker = prefix ? prefix.slice(0, 22).toLowerCase() : "";
+      if (prefix && !(marker && text.toLowerCase().indexOf(marker) >= 0)) {
+        const cap = prefix.charAt(0).toUpperCase() + prefix.slice(1);
+        out = /[.!?]$/.test(cap) ? (cap + " " + text) : (cap + ". " + text);
+      }
+    }
+    // A MOVE TO still is often a follow-cam plate. Without this, both
+    // LingBot (seed-locked) and Happy Oyster treat look as a truck —
+    // mouse left/right starts sliding like A/D instead of yawing in place.
+    const yaw = "Looking left or right yaws the camera in place; it does not truck, strafe, or slide the viewpoint.";
+    if (out.toLowerCase().indexOf("yaws the camera") < 0) {
+      out = out.replace(/\s+$/, "");
+      out = /[.!?]$/.test(out) ? (out + " " + yaw) : (out + ". " + yaw);
+    }
+    return out;
   }
 
   async function loadConfig() {
     try {
-      const r = await fetch("/api/reactor/config");
+      const r = await fetch("/api/reactor/config", { cache: "no-store" });
       if (r.ok) {
         rstate.cfg = await r.json();
         if (typeof rstate.cfg.allow_custom_models === "boolean") rstate.allowCustom = rstate.cfg.allow_custom_models;
@@ -644,6 +745,22 @@
         }
       }
     } catch (err) { log("config fetch failed, using defaults", err); }
+    // ACCOUNT can show the Reactor lamp green while a cached or early
+    // /api/reactor/config still says enabled:false. The keys endpoint is
+    // the same source as that lamp — believe it.
+    if (!rstate.cfg.enabled) {
+      try {
+        const k = await fetch("/api/keys", { cache: "no-store" });
+        if (k.ok) {
+          const data = await k.json();
+          const row = ((data && data.providers) || []).find((p) => p.id === "reactor");
+          if (row && row.set) {
+            log("ACCOUNT has a Reactor key — treating realtime as enabled");
+            rstate.cfg.enabled = true;
+          }
+        }
+      } catch (_) {}
+    }
     return rstate.cfg;
   }
 
@@ -688,9 +805,9 @@
     }
     return m;
   }
-  // Resolve the active world model: ?model= > localStorage > server default >
-  // fallback. Custom ids (not advertised) are accepted + registered when the
-  // server permits, so ?model=<anything-new> just works.
+  // Resolve the active world model: this-session id > ?model= > server
+  // default > leftover localStorage > fallback. A leftover LS pick used to
+  // beat the authored default, same as the first-person camera override.
   function resolveModelId() {
     if (rstate.modelId && canUseModel(rstate.modelId)) return rstate.modelId;
     let q = null, stored = null;
@@ -702,7 +819,10 @@
       if (rstate.allowCustom) { ensureModel(id); return id; }
       return null;
     };
-    rstate.modelId = pick(q) || pick(stored) || pick(rstate.cfg.world_model) || FALLBACK_MODEL_ID;
+    // Server default beats a leftover localStorage pick — same class of bug
+    // as happy_oyster_perspective beating the authored camera. This session
+    // (rstate.modelId) and ?model= still win.
+    rstate.modelId = pick(q) || pick(rstate.cfg.world_model) || pick(stored) || FALLBACK_MODEL_ID;
     return rstate.modelId;
   }
 
@@ -867,6 +987,8 @@
       // recover on late frames or the next guide image — we don't permanently
       // disable it on a single stall.
       emitEvent("video_stalled", { afterMs: REVEAL_WATCHDOG_MS });
+      // Reveal the still floor so play isn't a black <video> over the guide.
+      if (v && !rstate.freezeActive) v.classList.add("hidden");
     }, REVEAL_WATCHDOG_MS);
   }
 
@@ -1204,8 +1326,12 @@
       // the scene down for the deliberate "moment of pause" beat, then freeze
       // the last live frame beneath it as the safety floor (revealed only if the
       // fresh stream never comes). The freeze reveal lifts the fade.
-      beginSceneFade();
-      captureVideoToFreeze();
+      if (!s.silent) beginSceneFade();
+      freezeLeavingWorld();
+      // Don't carry look/strafe from the world we're leaving — that's how
+      // MOVE TO landed with the mouse sliding A/D on the fresh stage.
+      resetMoveState();
+      emitEvent("generation_reset", {});
       try { await cmd("reset", {}); } catch (err) { log("reset failed", err); }
       rstate.started = false;
       rstate.lastPrompt = null;
@@ -1267,7 +1393,7 @@
       // Fade the scene down for the "moment of pause" beat before the new guide
       // image blends in — blend models stream continuously (no reset), so the
       // fade is what gives advancing time the same deliberate feel stills have.
-      beginSceneFade();
+      if (!s.silent) beginSceneFade();
       // Swap the guide image in-stream as a FileRef (same path as establish), at
       // full conditioning strength, so the live video re-anchors on the new still
       // instead of drifting. Blend keeps continuity; a hard transition cuts.
@@ -1283,7 +1409,10 @@
     rstate.lastPrompt = s.prompt;
     // If we faded down for a re-anchor, hold the dark beat, then reveal the
     // blended-in scene (blend models have no freeze reveal to lift the fade).
-    if (reanchor && rstate.fadeDownActive) scheduleSceneReveal(SCENE_FADE_BLEND_REVEAL_MS);
+    if (reanchor && rstate.fadeDownActive && !s.silent
+        && (s.hardTransition || !rstate.awaitingReanchor)) {
+      scheduleSceneReveal(SCENE_FADE_BLEND_REVEAL_MS);
+    }
     log("helios/blend: re-steered", reanchor ? "(image re-anchored)" : "");
     return true;
   }
@@ -1373,7 +1502,7 @@
       // Mirror applyRunningHappyOyster's rebuild teardown before attaching.
       if (rstate.started || rstate.hoTraveling) {
         beginSceneFade();
-        captureVideoToFreeze();
+        freezeLeavingWorld();
         try { await cmd("stop", {}); } catch (_) {}
         rstate.hoSentMove = null;
         rstate.hoSentLook = null;
@@ -1422,8 +1551,12 @@
     // release held controls, and rebuild.
     const rebuild = ctx.newGuideImage || s.hardTransition || (s.prompt !== rstate.lastPrompt);
     if (!rebuild) return true; // nothing materially changed — keep travelling
-    beginSceneFade();
-    captureVideoToFreeze();
+    if (!s.silent) beginSceneFade();
+    freezeLeavingWorld();
+    // Same contract as LingBot's MOVE TO restage: do not carry look/strafe
+    // into the next world (mouse sliding like A/D after a hard cut).
+    resetMoveState();
+    emitEvent("generation_reset", {});
     try { await cmd("stop", {}); } catch (_) {}
     rstate.hoSentMove = null;
     rstate.hoSentLook = null;
@@ -1536,7 +1669,17 @@
   }
 
   function applyScene(scene) {
-    if (!scene || !scene.prompt) return;
+    if (!scene) return;
+    // A seed image alone is not a world. Every family (Oyster / LingBot /
+    // Helios) needs the text that generated that still so it has something
+    // to animate. Fall back to the last known scene bible when a caller
+    // enables realtime with only an imageUrl.
+    const prompt = scene.prompt
+      || (rstate.lastSceneApplied && rstate.lastSceneApplied.prompt)
+      || rstate.lastPrompt
+      || "";
+    if (!prompt) return;
+    scene = Object.assign({}, scene, { prompt: prompt });
     const imageUrl = scene.imageUrl || null;
     const hard = !!scene.hardTransition;
     // DEDUPE redundant re-applies. The standalone layer re-applies the CURRENT
@@ -1550,16 +1693,29 @@
     // re-establishes the world.
     const v = rstate.video || document.getElementById("reactor-video");
     const showing = !!(v && v.videoWidth > 0 && !rstate.freezeActive && !rstate.blackout);
-    if (!hard && rstate.started && showing &&
-        rstate._appliedPrompt === scene.prompt && rstate._appliedImageUrl === imageUrl) {
+    const sameGuide = (a, b) => {
+      const strip = (u) => {
+        u = String(u || "");
+        const i = u.indexOf("?");
+        return i >= 0 ? u.slice(0, i) : u;
+      };
+      return strip(a) === strip(b);
+    };
+    // Dedupe during warmup too. Gating this on isShowing() let the editor
+    // poll re-stage LingBot while the freeze still covered the video, which
+    // pinned the cached still on top of a stream that never got to reveal.
+    const decorated = decoratePrompt(scene.prompt);
+    if (!hard && (rstate.started || rstate.applying || showing) &&
+        rstate._appliedPrompt === decorated && sameGuide(rstate._appliedImageUrl, imageUrl)) {
       return;
     }
-    rstate._appliedPrompt = scene.prompt;
+    rstate._appliedPrompt = decorated;
     rstate._appliedImageUrl = imageUrl;
     rstate.pending = {
-      prompt: scene.prompt,
+      prompt: decorated,
       imageUrl: imageUrl,
       hardTransition: hard,
+      silent: !!scene.silent,
     };
     // Remember the latest complete scene so a mid-game model swap can re-apply it
     // on the new model without waiting for the next turn.
@@ -1652,13 +1808,37 @@
     emitEvent(t, d);
   }
 
-  async function enable() {
+  async function enable(opts) {
     if (rstate.active || rstate.connecting) return true;
+    // Asking again cannot fix an empty balance, a missing key or a rejected
+    // one. Guarded here rather than in the Renderer facade because three
+    // call sites reach past it and call enable() directly — the editor's
+    // keepLiveExperience, the Watch film, and the retry ladder — so a
+    // depleted account kept opening fresh doomed sessions from paths the
+    // facade never saw. `force` is how the deliberate retries (G, ACCOUNT,
+    // setMode) say the cause may have just been fixed.
+    if (opts && opts.force) rstate.lastError = null;
+    else if (rstate.lastError && rstate.lastError.terminal) {
+      log("not connecting:", rstate.lastError.reason, "— stills are the floor");
+      return false;
+    }
     rstate.connecting = true;
     setStatus("connecting");
     try {
       await loadConfig();
-      if (!rstate.cfg.enabled) { log("disabled: no REACTOR_API_KEY on server"); rstate.connecting = false; setStatus("error"); return false; }
+      if (!rstate.cfg.enabled) {
+        log("disabled: no REACTOR_API_KEY on server");
+        rstate.connecting = false;
+        rstate.lastError = {
+          reason: "no_api_key",
+          // Nothing to wait for: the key arrives through ACCOUNT, which
+          // upgrades the session on the spot.
+          terminal: true,
+          hint: "Live video needs a Reactor key (ACCOUNT on the start screen).",
+        };
+        setStatus("error");
+        return false;
+      }
       let sdk;
       try { sdk = await import(/* @vite-ignore */ SDK_URL); }
       catch (err) { log("SDK import failed", err); rstate.connecting = false; setStatus("error"); return false; }
@@ -1839,7 +2019,7 @@
     // Drop the freeze cover so the still fallback (image mode) shows cleanly.
     const f = getFreeze();
     if (f) { rstate.freezeActive = false; f.classList.remove("show"); }
-    clearSceneFade(); // don't leave a fade veil over the still fallback
+    clearSceneFade(true); // don't leave a fade veil over the still fallback
     const r = rstate.reactor;
     rstate.reactor = null;
     rstate.active = false;
@@ -1872,7 +2052,7 @@
     // its seed onto the freeze and reveals its own video when it establishes.
     const f = getFreeze();
     if (f) { rstate.freezeActive = false; f.classList.remove("show"); }
-    clearSceneFade(); // a fresh run wipes clean — no lingering fade veil
+    clearSceneFade(true); // a fresh run wipes clean — no lingering fade veil
     const v = getVideo();
     if (v) v.classList.add("hidden");
     rstate.hoTraveling = false;
@@ -1898,24 +2078,46 @@
     try { await cmd("resume", {}); } catch (err) { log("resume failed", err); }
   }
 
+  // The pixels currently on screen: live video when it's revealed, otherwise
+  // the freeze canvas (the last live frame, which is what the player sees).
+  // Blackout still returns null — that frame is solid black.
+  function captureSource() {
+    if (rstate.blackout) return null;
+    const v = rstate.video || document.getElementById("reactor-video");
+    const f = rstate.freeze || document.getElementById("reactor-freeze");
+    if (!rstate.freezeActive && v && v.videoWidth) {
+      return { el: v, w: v.videoWidth, h: v.videoHeight };
+    }
+    // A freeze canvas nobody has painted still reports a width (the 300x150
+    // canvas default), so `f.width` alone accepted a fully transparent buffer
+    // and handed callers a black JPEG that looks like a valid frame. Every
+    // consumer then believed it: SCAN sent the black rectangle to the detector
+    // and got an honest zero objects back, which surfaced as "nothing worth
+    // investigating here" on a screen full of things.
+    if (f && f.width && rstate.freezePainted) {
+      return { el: f, w: f.width, h: f.height };
+    }
+    if (v && v.videoWidth) {
+      return { el: v, w: v.videoWidth, h: v.videoHeight };
+    }
+    return null;
+  }
+
   // Grab the current on-screen video frame as a JPEG data URL (downscaled to
   // keep the payload small). Used to feed the world simulator what the player
-  // actually sees. Returns null if the video isn't showing real frames.
+  // actually sees. Returns null if neither the live video nor the freeze
+  // buffer has real pixels.
   function captureFrame(maxW) {
-    const v = rstate.video || document.getElementById("reactor-video");
-    // Only read the LIVE video — not while the freeze buffer is covering it
-    // (that frame isn't the current scene the model is actually rendering), and
-    // not during a blackout (the frame is solid black; feeding it to the sim
-    // would derail the story with a "you see nothing" grounding).
-    if (!v || !v.videoWidth || rstate.freezeActive || rstate.blackout) return null;
+    const src = captureSource();
+    if (!src) return null;
     const cap = maxW || 512;
-    const scale = Math.min(1, cap / v.videoWidth);
-    const w = Math.max(1, Math.round(v.videoWidth * scale));
-    const h = Math.max(1, Math.round(v.videoHeight * scale));
+    const scale = Math.min(1, cap / src.w);
+    const w = Math.max(1, Math.round(src.w * scale));
+    const h = Math.max(1, Math.round(src.h * scale));
     try {
       const c = document.createElement("canvas");
       c.width = w; c.height = h;
-      c.getContext("2d").drawImage(v, 0, 0, w, h);
+      c.getContext("2d").drawImage(src.el, 0, 0, w, h);
       return c.toDataURL("image/jpeg", 0.72);
     } catch (err) {
       log("captureFrame failed", err);
@@ -1923,13 +2125,15 @@
     }
   }
 
-  // Crop a NORMALIZED sub-rect {x,y,w,h} (0..1) of the current live video frame
-  // to a square JPEG data URL — the "investigation texture" the TOUCH tool grabs
-  // from around/under the reticle. Returns null unless real frames are showing.
+  // Crop a NORMALIZED sub-rect {x,y,w,h} (0..1) of the current on-screen frame
+  // to a JPEG data URL — the "investigation texture" the TOUCH tool grabs
+  // from around/under the reticle, and the TALK portrait's object crop.
+  // Reads the freeze canvas when it is covering the video (that's the frame
+  // the player is looking at). Returns null unless real pixels are showing.
   function captureRegion(box, outSize) {
-    const v = rstate.video || document.getElementById("reactor-video");
-    if (!v || !v.videoWidth || rstate.freezeActive || rstate.blackout || !box) return null;
-    const vw = v.videoWidth, vh = v.videoHeight;
+    const src = captureSource();
+    if (!src || !box) return null;
+    const vw = src.w, vh = src.h;
     let sx = Math.max(0, Math.min(1, box.x || 0)) * vw;
     let sy = Math.max(0, Math.min(1, box.y || 0)) * vh;
     let sw = Math.max(1, Math.min(1, box.w || 0) * vw);
@@ -1946,7 +2150,7 @@
     try {
       const c = document.createElement("canvas");
       c.width = ow; c.height = oh;
-      c.getContext("2d").drawImage(v, sx, sy, sw, sh, 0, 0, ow, oh);
+      c.getContext("2d").drawImage(src.el, sx, sy, sw, sh, 0, 0, ow, oh);
       return c.toDataURL("image/jpeg", 0.82);
     } catch (e) { log("captureRegion failed", e); return null; }
   }
@@ -1972,6 +2176,18 @@
     lookH:        { cmd: "set_look_horizontal",   param: "look_horizontal" },
     lookV:        { cmd: "set_look_vertical",     param: "look_vertical" },
   };
+
+  // Movement keeps abstract left/right. LingBot World 2's lateral enum is
+  // strafe_left / strafe_right — sending "left" is a silent no-op, which is
+  // why A/D and Q/E never strafed on that model.
+  function wireAxisValue(axis, value) {
+    value = value || "idle";
+    if (axis === "lateral") {
+      if (value === "left") return "strafe_left";
+      if (value === "right") return "strafe_right";
+    }
+    return value;
+  }
 
   // Map the abstract axis values the standalone layer sends onto Happy Oyster's
   // held move / look directions. Only one move and one look direction can be
@@ -2050,11 +2266,12 @@
     }
     const m = rstate.move;
     if (typeof m.rotationDeg === "number") cmd("set_rotation_speed_deg", { rotation_speed_deg: m.rotationDeg });
+    // Send every axis, including idle. A restage (MOVE TO) used to re-assert
+    // only held directions, so a leftover lateral on the fresh LingBot stage
+    // made the mouse look like A/D strafe.
     Object.keys(AXIS_CMD).forEach((k) => {
-      if (m[k] && m[k] !== "idle") {
-        const a = AXIS_CMD[k]; const d = {}; d[a.param] = m[k];
-        cmd(a.cmd, d);
-      }
+      const a = AXIS_CMD[k]; const d = {}; d[a.param] = wireAxisValue(k, m[k] || "idle");
+      cmd(a.cmd, d);
     });
   }
 
@@ -2070,7 +2287,7 @@
     rstate.move[axis] = value;
     if (isHappyOyster()) { pushHappyOysterMotion(); return true; }
     if (!rstate.reactor || !rstate.ready || !rstate.started) return false;
-    const d = {}; d[a.param] = value;
+    const d = {}; d[a.param] = wireAxisValue(axis, value);
     cmd(a.cmd, d);
     return true;
   }
@@ -2120,6 +2337,7 @@
     setAxis("lateral", "idle");
     setAxis("lookH", "idle");
     setAxis("lookV", "idle");
+    setRotationSpeed(0);
   }
 
   // Perform a MOMENTARY interaction verb (Happy Oyster) — e.g. Jump, Attack, or a
@@ -2204,7 +2422,7 @@
     // fresh scene lands, and armFreezeReveal / scheduleSceneReveal lift the
     // veil once the new frame is on screen — so all we need to expose is the
     // early "start the fade now" hook.
-    beginSceneFade, endSceneFade,
+    beginSceneFade, endSceneFade, holdSceneFade,
     // Live camera drive (see above): the navigable-video control surface.
     motionSupported, setAxis, setAxes, setRotationSpeed, stopMotion,
     // Happy Oyster can only HOLD ONE look direction at a time (its look is a
@@ -2233,17 +2451,34 @@
     // Reopen a previously-built world by id (skips the build). Returns a promise.
     attachWorld: (id, scene) => attachHappyOysterWorld(id, scene || rstate.lastSceneApplied || null),
     getWorldId: () => rstate.hoWorldId || null,
-    // Force the current Happy Oyster world to rebuild — used after changing a
-    // session-fixed knob (perspective / experience) so the new setting takes
-    // effect. Drops the revisit cache for this scene so it genuinely regenerates.
+    // Restage the running world after a camera / VIEW change. Happy Oyster
+    // rebuilds via create_world (perspective is fixed at birth). LingBot and
+    // Helios have no such knob — they have to be hard-re-established with the
+    // current prompt so the new camera language actually lands. Used to be
+    // Happy-Oyster-only, which is why every LingBot instance stayed first person
+    // after a controls override.
     rebuildWorld: () => {
-      if (!isHappyOyster() || !rstate.started) return false;
       const s = rstate.lastSceneApplied;
       if (!s || !s.prompt) return false;
-      if (s.imageUrl && rstate.hoWorldsByImage[s.imageUrl]) delete rstate.hoWorldsByImage[s.imageUrl];
-      rstate.lastImageUrl = null; // force a new-guide-image rebuild via applyRunning
-      rstate.pending = { prompt: s.prompt, imageUrl: s.imageUrl || null, hardTransition: true };
-      flush();
+      if (isHappyOyster()) {
+        if (!rstate.started) return false;
+        if (s.imageUrl && rstate.hoWorldsByImage[s.imageUrl]) delete rstate.hoWorldsByImage[s.imageUrl];
+        rstate.lastImageUrl = null;
+        rstate.pending = { prompt: s.prompt, imageUrl: s.imageUrl || null, hardTransition: true };
+        flush();
+        return true;
+      }
+      rstate._appliedPrompt = null;
+      rstate.lastImageUrl = null;
+      rstate.started = false;
+      rstate.pending = {
+        prompt: decoratePrompt(s.prompt),
+        imageUrl: s.imageUrl || null,
+        hardTransition: true,
+      };
+      rstate.lastSceneApplied = rstate.pending;
+      if (rstate.active && rstate.ready) flush();
+      else enable().then(() => flush());
       return true;
     },
     // Happy Oyster session shape (experience + perspective). Setting persists to
@@ -2289,6 +2524,8 @@
     // Whether the server permits connecting to unadvertised model names.
     allowsCustom: () => !!rstate.allowCustom,
     getStatus: () => rstate.status,
+    reloadConfig: loadConfig,
+    isConfigured: () => !!(rstate.cfg && rstate.cfg.enabled),
     // The reason the last connect attempt failed (see classifyConnectError),
     // or null if the last attempt succeeded / none has happened yet. Lets the
     // UI distinguish a transient upstream capacity shortage (Reactor has no
@@ -2345,6 +2582,12 @@
         !rstate.fadeDownActive && !rstate.freezeArmed
       );
     },
+    // Frames are decoding. Ignores the fade veil — PHOTO waits on this, then
+    // lifts the hold. isShowing() stays false while the veil is down.
+    hasLiveFrames: () => {
+      const v = rstate.video || document.getElementById("reactor-video");
+      return !!(v && v.videoWidth > 0 && rstate.started && !rstate.blackout);
+    },
     // Intrinsic size of the live video track, so callers can map normalized
     // frame coordinates (e.g. object-detection boxes) onto the object-fit:cover
     // display rect. Returns null when no real frames are flowing yet.
@@ -2370,4 +2613,9 @@
     // so the game can save it and reopen the world later with attachWorld.
     onWorldId: null,
   };
+
+  // Know whether a key is present before the first enable() so the editor
+  // picture sheet and the boot upgrade don't treat a green ACCOUNT lamp as
+  // "no key" for the first second of the page.
+  loadConfig();
 })();

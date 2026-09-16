@@ -275,10 +275,13 @@ class TestAShotDescriptionIsNotAPerson(unittest.TestCase):
                          encounter.distinct_enemy_look(self.CAMERA_TALK).lower())
 
     def test_a_shot_with_no_person_in_it_falls_back_to_a_stranger(self):
-        self.assertEqual(encounter._DEFAULT_STRANGER_LOOK,
-                         encounter.distinct_enemy_look(self.CAMERA_TALK))
-        self.assertEqual(encounter._DEFAULT_STRANGER_LOOK,
-                         encounter.distinct_enemy_look("POV of a hand gripping a wrench"))
+        # The fallback is a pool now (DEFAULT_STRANGER_LOOKS) rather than the
+        # one weathered man in a work coat, so what matters is that we landed
+        # on one of them instead of on a description of the photograph.
+        for shot in (self.CAMERA_TALK, "POV of a hand gripping a wrench"):
+            with self.subTest(shot=shot):
+                got = encounter.distinct_enemy_look(shot)
+                self.assertTrue(encounter.is_default_stranger_look(got), got)
 
     def test_the_person_survives_when_the_framing_is_stripped_off(self):
         for narrated, person in (
@@ -469,11 +472,16 @@ class TestThePlateLocksOntoTheStrangerNotThePlayer(unittest.TestCase):
         # split at the comma, and the stub "The man has long" still held a
         # person noun — so the enemy was locked to the phrase "The man has
         # long" and every later frame was prompted with it.
+        # The guard was written as `assertNotIn("the man has long,", got + ",")`
+        # to catch a value that STOPS at "long". The comma it appends is also
+        # the comma inside the intact sentence, so it fired on the correct
+        # output and could never pass alongside the "flannel" assertion above.
         got = self._locked(
             "The man has long, matted hair and a torn flannel shirt.",
             "a dishevelled man in a torn flannel shirt")
         self.assertIn("flannel", got)
-        self.assertNotIn("the man has long,", got + ",")
+        self.assertIn("matted hair", got)
+        self.assertFalse(got.rstrip(" .,").endswith("the man has long"), got)
 
 
 class TestTheObservedLookComesFromTheImageNotTheSheet(unittest.TestCase):
@@ -537,8 +545,19 @@ class TestNoFrameMeansNoGuessing(unittest.TestCase):
                 self.assertFalse(encounter.look_clones_player(look))
 
     def test_the_sheet_is_still_enforced(self):
-        self.assertTrue(encounter.look_clones_player(
-            "a man in an olive field jacket carrying a camcorder"))
+        # This asserted against "an olive field jacket carrying a camcorder",
+        # which was the SHIPPED protagonist when it was written. The shipped
+        # sheet is now the traveler, so the test was measuring a retired
+        # character and failing on a guard that was working. Bring the sheet
+        # with us: what matters is that a distinctive authored item is
+        # enforced, whoever happens to ship.
+        import game_identity
+        sheet = {"name": "Wren Ashlock", "wardrobe": "an olive field jacket",
+                 "signature_gear": "a camcorder", "appearance": "adult"}
+        with mock.patch.object(game_identity, "authored_character",
+                               return_value=sheet):
+            self.assertTrue(encounter.look_clones_player(
+                "a man in an olive field jacket carrying a camcorder"))
 
 
 class TestTheEncounterIsTheNextShotNotANewProduction(unittest.TestCase):
@@ -924,6 +943,98 @@ class TestChoiceTextIsNotTruncatedMidPhrase(unittest.TestCase):
                 re.search(r"\s(and|or|with|in|on|a|an|the|of|at|to|from|for)$", got, re.I),
                 f"{raw!r} clipped to a dangling word: {got!r}",
             )
+
+
+class TestThePlateIsShotOnTheGamesCamera(unittest.TestCase):
+    """The plate carried a one-line vantage and nothing else, while every
+    other frame in the game is handed the whole camera block. So the one
+    render that most needed to match the shot before it was the only one that
+    never heard the rig, the shot size, or "never turn them to face the lens"
+    — and it staged the standoff however it liked."""
+
+    def _plate(self, img2img=True):
+        with mock.patch("game_identity.shows_character", return_value=True):
+            return encounter.build_encounter_plate_prompt(
+                _brief(), img2img=img2img, setting="outdoor")
+
+    def test_the_camera_block_reaches_the_plate(self):
+        directive = game_identity.camera_directive()
+        prompt = self._plate()
+        for line in directive.splitlines():
+            line = line.strip("• ").strip()
+            if len(line) > 20:
+                self.assertIn(line, prompt)
+
+    def test_a_held_reference_is_not_recomposed(self):
+        # "Hold the established camera" followed by four sentences of
+        # restaging (thirds, diagonals, different sizes, get close and
+        # off-axis) is a recompose, and it outvoted both the camera block and
+        # the reference frame underneath.
+        held = self._plate(img2img=True)
+        self.assertNotIn("COMPOSITION", held)
+        self.assertNotIn("on the thirds", held)
+        self.assertIn("composition that already exists", held)
+
+    def test_an_empty_frame_still_gets_staged(self):
+        # Text-to-image has no reference to hold, so the film-still staging
+        # is the only thing standing between it and two people centred and
+        # squared up.
+        self.assertIn("COMPOSITION", self._plate(img2img=False))
+
+
+class TestTheCastLockDoesNotFightTheReference(unittest.TestCase):
+    """CARRY THE PLAYER OVER says to copy the player's face and clothes out
+    of the attached frame. The cast lock's closing sentence said a previous
+    frame showing someone else is wrong and to ignore that person. Both are
+    hard rules about the same body, so the model was free to pick — and what
+    came back was the sheet loosely re-imagined: right man, wrong coat."""
+
+    def _plate(self, img2img):
+        with mock.patch("game_identity.shows_character", return_value=True):
+            return encounter.build_encounter_plate_prompt(
+                _brief(), img2img=img2img, setting="outdoor")
+
+    def test_the_attached_frame_is_trusted_to_be_the_player(self):
+        prompt = self._plate(True)
+        self.assertIn("CARRY THE PLAYER OVER", prompt)
+        self.assertNotIn("ignore that person", prompt)
+
+    def test_a_recast_is_still_ignored_when_there_is_no_reference(self):
+        # Without a frame to carry anyone over from, the leftover still on
+        # disk may well be the protagonist the author just replaced.
+        self.assertIn("ignore that person", self._plate(False))
+        self.assertIn("ignore that person", encounter.player_cast_lock())
+
+
+class TestThePlaceLockReadsWhatTheTurnActuallyWrote(unittest.TestCase):
+    """``read_place_lock`` asked history for `description` / `caption`, and no
+    turn has ever written either — the key is `vision_analysis`. So the
+    description half of the lock was empty on every encounter ever rolled:
+    the brief was briefed on "VISIBLE: ", invented a location out of the world
+    bible (all corridors and concrete floors), and the plate restaged an open
+    desert into it."""
+
+    FRAME = ("A man in an olive field jacket stands facing away beside a "
+             "chain-link fence, a pickup truck on cracked desert earth.")
+
+    def _lock(self, entry):
+        with mock.patch("engine._load_history", return_value=[entry]):
+            return encounter.read_place_lock("place-lock-test")
+
+    def test_the_frame_description_reaches_the_lock(self):
+        lock = self._lock({"vision_analysis": self.FRAME,
+                           "setting_type": "outdoor-desert",
+                           "spatial_compass": "Ahead: open terrain"})
+        self.assertEqual(self.FRAME, lock["description"])
+        self.assertTrue(lock["outdoor"])
+        self.assertIn("outdoor-desert", lock["place_hold"])
+
+    def test_an_unseen_frame_does_not_claim_to_be_indoors(self):
+        # Nothing looked at it yet. `outdoor` False here is honest; the plate
+        # must not then assert an interior on the strength of it.
+        lock = self._lock({"choice": "Initialize Simulation"})
+        self.assertEqual("", lock["description"])
+        self.assertEqual("", lock["place_hold"])
 
 
 if __name__ == "__main__":

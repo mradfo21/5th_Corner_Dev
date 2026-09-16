@@ -22,7 +22,7 @@ SAMPLE_PROMPTS = {
     "_comment_story_setup": "═══",
     "world_initial_state": "A quiet desert town at dusk.",
     "action_consequence_instructions": "Describe consequences using {dispatch} only if used via f-string, not format().",
-    "player_choice_generation_instructions": "Choices for {dispatch} and {seen_elements} and {recent_choices} and {caption} and {image_description} and {time_of_day} and {beat_nudge} and {situation_summary} and {injury_state}.",
+    "player_choice_generation_instructions": "Choices for {dispatch} and {seen_elements} and {recent_choices} and {caption} and {image_description} and {time_of_day} and {beat_nudge} and {situation_summary}.",
     "image_art_direction": "LOOK: 1993 VHS, muted palette.",
     "image_camera_rules": "CAMERA: eye level, first-person, no text overlays.",
     "gemini_text_to_image_instructions": "SCENE:\n{prompt}\n\n{art_direction}\n\n{camera_rules}",
@@ -269,7 +269,7 @@ class PromptsStoreTestCase(unittest.TestCase):
         ok, warnings = ps.validate_prompt_value(
             "player_choice_generation_instructions",
             "{dispatch} {seen_elements} {recent_choices} {caption} {image_description} "
-            "{time_of_day} {beat_nudge} {situation_summary} {injury_state} { stray",
+            "{time_of_day} {beat_nudge} {situation_summary} { stray",
         )
         self.assertFalse(ok)
 

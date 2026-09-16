@@ -56,9 +56,12 @@ class _IdentityFixture(unittest.TestCase):
         self._orig_prompts_path = ps.PROMPTS_PATH
         self._orig_defaults_path = ps.DEFAULTS_PATH
         self._orig_refs_dir = gi.REFERENCES_DIR
+        self._orig_sessions_dir = gi.SESSIONS_DIR
         ps.PROMPTS_PATH = tmp / "simulation_prompts.json"
         ps.DEFAULTS_PATH = tmp / "simulation_prompts.defaults.json"
         gi.REFERENCES_DIR = tmp / "references"
+        gi.SESSIONS_DIR = tmp / "sessions"
+        gi.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
         payload = dict(SAMPLE_PROMPTS)
         payload.update(gi.default_spec())
@@ -72,6 +75,7 @@ class _IdentityFixture(unittest.TestCase):
         ps.PROMPTS_PATH = self._orig_prompts_path
         ps.DEFAULTS_PATH = self._orig_defaults_path
         gi.REFERENCES_DIR = self._orig_refs_dir
+        gi.SESSIONS_DIR = self._orig_sessions_dir
         self._reload()
         self._tmpdir.cleanup()
 
@@ -100,27 +104,41 @@ class _IdentityFixture(unittest.TestCase):
 class GameIdentityTestCase(_IdentityFixture):
     """The spec, the compiler, and the four-stage prompt pipeline."""
 
-    # ── defaults are a genuine no-op ────────────────────────────────
+    # ── defaults are third person: body on screen, pipeline on ──────
 
-    def test_defaults_are_inert(self):
-        self.assertFalse(gi.is_active())
-        self.assertTrue(gi.is_first_person())
-        self.assertFalse(gi.shows_character())
+    def test_defaults_are_third_person(self):
+        self.assertEqual(gi.camera_mode(), "third_person")
+        self.assertFalse(gi.is_first_person())
+        self.assertTrue(gi.shows_character())
+        self.assertTrue(gi.uses_shipped_protagonist())
         self.assertFalse(gi.character_enabled())
         self.assertFalse(gi.setting_enabled())
         self.assertIsNone(gi.opening_shot())
         self.assertIsNone(gi.opening_narration())
 
-    def test_apply_returns_text_unchanged_at_defaults(self):
+    def test_apply_rewrites_first_person_language_at_defaults(self):
         text = "CRITICAL POV RULE: This is FIRST-PERSON perspective. Jason acts."
-        self.assertEqual(gi.apply(text, "image"), text)
-        self.assertEqual(gi.apply(text, "narrative"), text)
+        out = gi.apply(text, "image")
+        self.assertIn("THIRD-PERSON", out)
+        self.assertIn("Jason Fleece", out)
 
-    def test_world_brief_unchanged_at_defaults(self):
+    def test_first_person_mode_does_not_put_a_body_in_frame(self):
+        self._set_mode("first_person")
+        gi.save_spec({gi.CAMERA_KEY: {"show_hands": True}})
+        out = gi.apply("A fence in the desert.", "image")
+        self.assertNotIn("fully visible", out.lower())
+        self.assertFalse(gi.shows_character())
+
+    def test_world_brief_names_the_camera_at_defaults(self):
         base = ps.PROMPTS["world_initial_state"]
-        self.assertEqual(gi.world_brief(base), base)
+        brief = gi.world_brief(base)
+        self.assertIn(base, brief)
+        self.assertIn("DIRECTOR'S SHEET", brief)
+        self.assertIn("Jason Fleece", brief)
 
     def test_first_person_negative_prompt_still_bans_third_person(self):
+        self._set_mode("first_person")
+        gi.save_spec({gi.CAMERA_KEY: {"show_hands": True}})
         self.assertIn("third person perspective", gi.negative_prompt().lower())
 
     # ── normalization ───────────────────────────────────────────────
@@ -163,6 +181,103 @@ class GameIdentityTestCase(_IdentityFixture):
         directive = gi.camera_directive()
         self.assertIn("OVER-THE-SHOULDER", directive)
         self.assertNotIn("FIRST-PERSON", directive)
+
+    def test_visual_scene_guidance_names_the_body_in_third_person(self):
+        self._set_character()
+        self._set_mode("third_person")
+        guide = gi.visual_scene_guidance()
+        self.assertIn("Wren Alvarez", guide)
+        self.assertIn("exterior observation", guide)
+        self.assertNotIn("through the player's eyes", guide)
+
+    def test_visual_scene_guidance_is_eye_level_in_first_person(self):
+        self._set_mode("first_person")
+        guide = gi.visual_scene_guidance()
+        self.assertIn("through the player's eyes", guide)
+        self.assertNotIn("exterior observation", guide)
+
+    def test_third_person_image_rules_lock_follow_continuity(self):
+        self._set_mode("third_person")
+        directive = gi.camera_directive()
+        self.assertIn("screen direction", directive)
+        self.assertIn("face-on", directive)
+
+    def test_third_person_locks_action_game_follow_from_behind(self):
+        """New scenes were rendering the character walking toward the lens —
+        a cinematic arrival, not the 3rd-person action follow cam. The
+        compiled camera, the live prefix, and visual_scene guidance all
+        have to name that grammar or the image model invents a hero shot."""
+        self._set_mode("third_person")
+        directive = gi.camera_directive().lower()
+        self.assertIn("behind the character", directive)
+        self.assertIn("into the space ahead", directive)
+        self.assertIn("walking-toward-camera", directive)
+        self.assertEqual(gi.reconcile(directive), directive)
+        bans = " ".join(gi.mode_config()["negative_add"]).lower()
+        self.assertIn("character facing the camera", bans)
+        self.assertIn("walking toward camera", bans)
+        prefix = gi.live_prefix().lower()
+        self.assertIn("behind the character", prefix)
+        self.assertIn("into the space ahead", prefix)
+        guide = gi.visual_scene_guidance().lower()
+        self.assertIn("into the space ahead", guide)
+        self.assertIn("walking-toward-camera", guide)
+
+    def test_viewfinder_spec_is_first_person_without_saving(self):
+        self._set_character()
+        self._set_mode("third_person")
+        vf = gi.viewfinder_spec()
+        self.assertEqual(gi.camera_mode(), "third_person")
+        self.assertTrue(gi.shows_character())
+        self.assertEqual(gi.camera_mode(vf), "first_person")
+        self.assertFalse(gi.shows_character(vf))
+        self.assertFalse(gi.hands_visible(vf))
+        self.assertTrue(gi.is_viewfinder_spec(vf))
+        self.assertFalse(gi.is_viewfinder_spec())
+        self.assertIn("camcorder", vf[gi.CAMERA_KEY]["notes"])
+        ban = gi.viewfinder_hero_ban()
+        self.assertIn("EMPTY FOREGROUND", ban)
+        self.assertNotIn("Wren Alvarez", ban)
+        self.assertNotIn("Jason Fleece", ban)
+        prefix = gi.live_prefix(vf)
+        self.assertIn("EMPTY FOREGROUND", prefix)
+        self.assertNotIn("Wren Alvarez", prefix)
+        self.assertNotIn("stays in frame", prefix.lower())
+        cam = gi.live_camera_contract(vf)
+        self.assertEqual(cam.get("look") or "", "")
+        self.assertEqual(cam.get("perspective"), "first_person")
+
+    def test_viewfinder_prompt_has_no_character_sheet_or_keep_in_frame(self):
+        self._set_character()
+        self._set_mode("third_person")
+        vf = gi.viewfinder_spec()
+        text = gi.apply("Red desert and a rusted tower ahead.", "image", vf)
+        self.assertIn("FIRST-PERSON", text)
+        self.assertNotIn("PLAYER CHARACTER — WHO IS ON SCREEN", text)
+        self.assertNotIn("KEEP Wren", text)
+        plates = gi.identity_reference_paths(
+            include_character=gi.shows_character(vf) or gi.hands_visible(vf),
+            spec=vf,
+        )
+        self.assertEqual(plates, gi.setting_reference_paths(vf))
+
+    def test_strip_follow_cam_prose_drops_the_name_and_follow_verbs(self):
+        self._set_character()
+        out = gi.strip_follow_cam_prose(
+            "Wren Alvarez stands before the rusted tower, seen by the camera"
+        )
+        self.assertNotIn("Wren", out)
+        self.assertNotIn("Alvarez", out)
+        self.assertNotIn("stands before", out.lower())
+        self.assertIn("tower", out.lower())
+
+    def test_viewfinder_place_lock_label_names_the_operator(self):
+        self._set_character()
+        vf = gi.viewfinder_spec()
+        label = gi.reference_part_label("sessions/default/images/gameplay.png", vf)
+        self.assertIn("CAMERA OPERATOR", label)
+        self.assertIn("ERASE the person", label)
+        self.assertIn("Do not draw them", label)
 
     def test_character_sheet_only_appears_once_the_body_can_be_seen(self):
         self._set_character()
@@ -223,6 +338,208 @@ class GameIdentityTestCase(_IdentityFixture):
         self.assertIn("You are Wren Alvarez", narration)
         self.assertIn("sister", narration)
 
+    def test_third_person_with_empty_cast_emits_the_shipped_protagonist(self):
+        """Third person + blank CAST used to say 'the player character' with
+        no face, clothes, or gender — every hard cut invented a new stranger.
+        The shipped Jason identity is the CAST compiler firing, not a new
+        'must be the same gender' rule stacked on top."""
+        self._set_mode("third_person")
+        self.assertTrue(gi.uses_shipped_protagonist())
+        self.assertEqual(gi.display_name(), "Jason Fleece")
+        sheet = gi.character_visual_sheet()
+        self.assertIn("Jason Fleece", sheet)
+        self.assertIn("he/him", sheet)
+        self.assertIn("adult man", sheet)
+        self.assertIn("olive field jacket", sheet)
+        self.assertIn("Jason Fleece", gi.image_directive())
+        self.assertIn("THE PLAYER IS: Jason Fleece", gi.narrative_directive())
+
+    def test_authored_character_wins_over_the_shipped_fallback(self):
+        self._set_character()
+        self._set_mode("third_person")
+        self.assertFalse(gi.uses_shipped_protagonist())
+        self.assertEqual(gi.display_name(), "Wren Alvarez")
+        self.assertNotIn("Jason Fleece", gi.character_visual_sheet())
+        self.assertIn("Wren Alvarez", gi.character_visual_sheet())
+
+    def test_recast_look_does_not_emit_jason_wardrobe(self):
+        """The Experience editor only shows Name / Role / Look. Jason's
+        pronouns, jacket, and camcorder stay in the hidden fields after a
+        recast; those leftovers must not reach the image model."""
+        self._set_mode("third_person")
+        gi.save_spec({gi.CHARACTER_KEY: {
+            "enabled": True,
+            "name": "maria fleece",
+            "role": "investigative photojournalist",
+            "appearance": "adult woman, short dark hair, weathered face",
+            "pronouns": "he/him",
+            "wardrobe": "olive field jacket, dark work pants, boots",
+            "signature_gear": "1993 VHS camcorder",
+        }})
+        sheet = gi.character_visual_sheet()
+        self.assertIn("maria fleece", sheet)
+        self.assertIn("adult woman", sheet)
+        self.assertNotIn("he/him", sheet)
+        self.assertNotIn("olive field jacket", sheet)
+        self.assertNotIn("1993 VHS camcorder", sheet)
+        self.assertNotIn("he/him", gi.protagonist_line())
+
+    def test_a_plate_does_not_compile_leftover_jason_name_or_look(self):
+        """Upload used to skip fill when Jason's Name/Look were already set.
+        The plate is who this is; leftover shipped copy must not reach MOVE TO."""
+        self._set_mode("third_person")
+        gi.save_spec({gi.CHARACTER_KEY: {
+            "enabled": True,
+            "name": "Jason Fleece",
+            "role": "investigative photojournalist",
+            "appearance": "adult man, short dark hair, weathered face, stubble",
+            "reference_images": ["character_a37a470f299d"],
+        }})
+        sheet = gi.character_visual_sheet()
+        self.assertNotIn("Jason Fleece", sheet)
+        self.assertNotIn("adult man", sheet)
+        self.assertNotIn("Jason Fleece", gi.display_name())
+        self.assertNotIn("Jason Fleece", gi.protagonist_line())
+
+    def test_a_plate_does_not_compile_leftover_somewhere_name_or_summary(self):
+        """Upload used to skip fill when SOMEWHERE / the fence were already set.
+        The plate is where this is; leftover shipped copy must not reach MOVE TO."""
+        gi.save_spec({gi.SETTING_KEY: {
+            "enabled": True,
+            "name": "SOMEWHERE",
+            "summary": "1993. The fence. Four Corners. The shipped demo.",
+            "reference_images": ["setting_a37a470f299d"],
+        }})
+        plate = gi.setting_plate()
+        self.assertNotIn("SOMEWHERE", plate)
+        self.assertNotIn("The fence", plate)
+        self.assertNotIn("SOMEWHERE", gi.place_line())
+        self.assertNotIn("The fence", gi.place_line())
+        narration = gi.opening_narration() or ""
+        self.assertNotIn("SOMEWHERE", narration)
+        self.assertNotIn("The fence", narration)
+        seed = gi.intro_place_state()
+        self.assertNotEqual(seed["location"], "desert_edge")
+        self.assertNotEqual(seed["environment_type"], "desert")
+
+    def test_opening_shot_leads_with_who_not_the_shipped_place(self):
+        self._set_character()
+        self._set_mode("third_person")
+        gi.save_spec({gi.SETTING_KEY: {
+            "enabled": True,
+            "name": "SOMEWHERE",
+            "summary": "1993. The fence. Four Corners. The shipped demo.",
+        }})
+        vision = gi.opening_shot()["vision"]
+        self.assertLess(vision.index("Wren Alvarez"), vision.index("The fence"))
+
+    def test_keep_character_prefers_the_sheet_over_a_previous_frame(self):
+        self._set_character()
+        text = gi.keep_character_instruction(has_character_plate=True)
+        self.assertIn("CHARACTER SHEET", text)
+        self.assertIn("NOT from any previous", text)
+        self.assertIn("Wren Alvarez", text)
+        extras = gi.keep_character_instruction(
+            has_character_plate=True, extras_are_strangers=True,
+        )
+        self.assertIn("stranger", extras.lower())
+        self.assertIn("clone", extras.lower())
+
+    def test_identity_seed_does_not_call_plates_a_previous_frame(self):
+        self._set_character()
+        text = gi.identity_seed_instruction()
+        self.assertIn("NOT a previous", text)
+        self.assertIn("Wren Alvarez", text)
+        self.assertIn("default photojournalist", text)
+
+    def test_world_brief_leads_with_the_level_plate_after_recast(self):
+        gi.save_spec({gi.SETTING_KEY: {
+            "enabled": True,
+            "name": "The Kettle Yard",
+            "summary": "A flooded shipbreaking yard",
+        }})
+        brief = gi.world_brief("The year is 1993. Horizon. Four Corners.")
+        self.assertTrue(brief.startswith("🗺️ LEVEL PLATE"))
+        self.assertLess(brief.index("The Kettle Yard"), brief.index("Four Corners"))
+        self.assertIn("background lore, not the", brief)
+
+    def test_shipped_level_does_not_reorder_the_world_brief(self):
+        gi.save_spec({gi.SETTING_KEY: {
+            "enabled": True,
+            "name": "SOMEWHERE",
+            "summary": "1993. The fence. Four Corners. The shipped demo.",
+        }})
+        brief = gi.world_brief("BASE WORLD")
+        self.assertTrue(brief.startswith("BASE WORLD"))
+
+    def test_keep_place_prefers_the_plate_over_a_previous_frame(self):
+        gi.save_spec({gi.SETTING_KEY: {
+            "enabled": True,
+            "name": "The Kettle Yard",
+            "summary": "A flooded shipbreaking yard",
+        }})
+        text = gi.keep_place_instruction(has_setting_plate=True)
+        self.assertIn("LOCATION PLATE", text)
+        self.assertIn("NOT from any previous", text)
+        self.assertIn("The Kettle Yard", text)
+
+    def test_identity_seed_names_the_place_and_not_just_the_person(self):
+        gi.save_spec({gi.SETTING_KEY: {
+            "enabled": True,
+            "name": "The Kettle Yard",
+            "summary": "A flooded shipbreaking yard",
+        }})
+        text = gi.identity_seed_instruction()
+        self.assertIn("The Kettle Yard", text)
+        self.assertIn("Horizon desert fence", text)
+
+    def test_intro_place_is_not_the_desert_after_a_level_recast(self):
+        gi.save_spec({gi.SETTING_KEY: {
+            "enabled": True,
+            "name": "The Kettle Yard",
+            "opening_shot": "Low tide at dawn.",
+        }})
+        seed = gi.intro_place_state()
+        self.assertIn("Kettle Yard", seed["situation"])
+        self.assertEqual(seed["location"], "The Kettle Yard")
+        self.assertNotEqual(seed["location"], "desert_edge")
+        self.assertNotEqual(seed["environment_type"], "desert")
+
+    def test_intro_place_stays_shipped_at_the_somewhere_plate(self):
+        gi.save_spec({gi.SETTING_KEY: {
+            "enabled": True,
+            "name": "SOMEWHERE",
+            "summary": "1993. The fence. Four Corners. The shipped demo.",
+        }})
+        seed = gi.intro_place_state()
+        self.assertEqual(seed["location"], "desert_edge")
+        self.assertEqual(seed["environment_type"], "desert")
+
+    def test_authored_art_direction_drops_southwest_after_recast(self):
+        ps.save_prompt_field(
+            "image_art_direction",
+            "WORLD & ERA\n1993 American Southwest industrial horror. chain-link.\n\nLOOK\nPhotoreal still.",
+        )
+        gi.save_spec({gi.SETTING_KEY: {
+            "enabled": True,
+            "name": "The Kettle Yard",
+            "summary": "A flooded shipbreaking yard",
+            "era": "1993, analog only",
+            "palette": "rust orange, sodium haze",
+        }})
+        look = gi.authored_art_direction()
+        self.assertIn("The Kettle Yard", look)
+        self.assertIn("sodium haze", look)
+        self.assertNotIn("American Southwest", look)
+        self.assertIn("Photoreal still", look)
+
+    def test_first_person_empty_cast_still_emits_no_sheet(self):
+        self._set_mode("first_person")
+        gi.save_spec({gi.CAMERA_KEY: {"show_hands": True}})
+        self.assertFalse(gi.uses_shipped_protagonist())
+        self.assertEqual(gi.character_visual_sheet(), "")
+        self.assertEqual(gi.protagonist_line(), "")
+
     # ── stage 2: retune ─────────────────────────────────────────────
 
     def test_retune_rewrites_perspective_nouns_case_preserving(self):
@@ -238,6 +555,7 @@ class GameIdentityTestCase(_IdentityFixture):
         self.assertIn("OVER-THE-SHOULDER CHASE CAM", gi.retune("POV RULES apply"))
 
     def test_retune_is_a_noop_in_first_person(self):
+        self._set_mode("first_person")
         text = "This is FIRST-PERSON perspective with POV rules."
         self.assertEqual(gi.retune(text), text)
 
@@ -250,6 +568,27 @@ class GameIdentityTestCase(_IdentityFixture):
     def test_recast_leaves_prompts_alone_without_a_named_character(self):
         text = "Jason Fleece raises the camera."
         self.assertEqual(gi.recast(text), text)
+
+    def test_naming_a_character_rewrites_the_world_bible(self):
+        self.assertIn("Jason Fleece", ps.PROMPTS["world_initial_state"])
+        self._set_character()
+        self.assertNotIn("Jason", ps.PROMPTS["world_initial_state"])
+        self.assertIn("Wren Alvarez", ps.PROMPTS["world_initial_state"])
+        self.assertIn("Wren Alvarez", ps.PROMPTS["gemini_text_to_image_instructions"])
+
+    def test_look_only_edit_does_not_rewrite_the_bible(self):
+        self._set_character()
+        before = ps.PROMPTS["world_initial_state"]
+        gi.save_spec({gi.CHARACTER_KEY: {"appearance": "silver hair, scar"}})
+        self.assertEqual(ps.PROMPTS["world_initial_state"], before)
+
+    def test_opening_shot_from_character_when_level_is_off(self):
+        self._set_character()
+        self._set_mode("third_person")
+        shot = gi.opening_shot()
+        self.assertIsNotNone(shot)
+        self.assertIn("Wren Alvarez", shot["prologue"])
+        self.assertIn("Wren Alvarez is in frame", shot["vision"])
 
     # ── stage 3: reconcile ──────────────────────────────────────────
 
@@ -268,8 +607,47 @@ class GameIdentityTestCase(_IdentityFixture):
             self.assertNotIn(gone, out)
 
     def test_reconcile_is_a_noop_in_first_person(self):
+        self._set_mode("first_person")
         text = "ABSOLUTELY NO PERSON VISIBLE — pure environmental shot."
         self.assertEqual(gi.reconcile(text), text)
+
+    def test_retune_does_not_hand_reconcile_a_reason_to_delete_a_good_rule(self):
+        """The two stages can sabotage each other, and did.
+
+        `reconcile` deletes a line when it pairs a prohibition with a
+        third-person framing term — the signature of "a rule forbidding what the
+        active mode requires". But `retune` runs FIRST and rewrites
+        "first-person" to "third-person" in place. So an unrelated rule that
+        merely mentioned a first-person vantage while forbidding something else
+        entirely got "third-person" written into it by stage 2, and was then
+        deleted whole by stage 3 for containing the word stage 2 had just added.
+
+        This is how the LEAVE CAMP constraint lost its entire no-vehicle-cabin
+        rule ("Do NOT show a vehicle interior, dashboard, steering wheel...")
+        in exactly the mode where LEAVE CAMP puts a character on screen — the
+        one place a driving-cab render is most obvious. Silent, mode-dependent,
+        and invisible in first person, which is the shipped default.
+        """
+        self._set_mode("third_person")
+        rule = ("SOMETHING ELSE: first-person eye-level vantage outdoors. "
+                "Do NOT show a vehicle interior, dashboard, or steering wheel.")
+        survived = gi.apply(rule + "\nAnother line.", "raw")
+        self.assertIn("dashboard", survived)
+        self.assertIn("steering wheel", survived)
+        # Retune still did its job on the line it spared.
+        self.assertIn("third-person eye-level vantage", survived)
+        self.assertNotIn("first-person", survived)
+
+    def test_the_camp_leave_rule_survives_the_pipeline_in_every_mode(self):
+        """The concrete regression, asserted against the real constant."""
+        import engine
+        for mode in ("first_person", "third_person", "over_shoulder"):
+            with self.subTest(mode):
+                self._set_mode(mode)
+                out = gi.apply(
+                    "Scene text.\n\n" + engine._CAMP_LEAVE_ON_FOOT_CONSTRAINT, "image")
+                self.assertIn("dashboard", out)
+                self.assertIn("steering wheel", out)
 
     def test_full_pipeline_leaves_no_surviving_contradiction(self):
         self._set_character()
@@ -277,7 +655,13 @@ class GameIdentityTestCase(_IdentityFixture):
         wrapped = ps.PROMPTS["gemini_text_to_image_instructions"].format(prompt="A muddy yard")
         out = gi.apply(wrapped, "image")
         # The directive leads.
-        self.assertTrue(out.startswith("🎥 CAMERA DIRECTIVE"))
+        self.assertTrue(out.startswith("🎥 CAMERA:"))
+        # ...and does NOT claim precedence over the rest of the payload. It used
+        # to open "THIS OVERRIDES ANY CONFLICTING CAMERA LANGUAGE BELOW", which
+        # was true of a payload whose shared blocks bypassed this pipeline. Now
+        # that nothing below contradicts it, announcing a conflict only invites
+        # the model to treat this block as contested rather than as the answer.
+        self.assertNotIn("OVERRIDES", out)
         # The scene survives.
         self.assertIn("A muddy yard", out)
         # Nothing left arguing for an empty frame or a hidden protagonist.
@@ -349,6 +733,8 @@ class GameIdentityTestCase(_IdentityFixture):
     # ── accessors ───────────────────────────────────────────────────
 
     def test_hands_toggle_only_applies_to_first_person(self):
+        self._set_mode("first_person")
+        gi.save_spec({gi.CAMERA_KEY: {"show_hands": True}})
         self.assertTrue(gi.hands_visible())
         gi.save_spec({gi.CAMERA_KEY: {"show_hands": False}})
         self.assertFalse(gi.hands_visible())
@@ -372,10 +758,49 @@ class GameIdentityTestCase(_IdentityFixture):
 
     def test_reset_clears_everything(self):
         self._set_character()
-        self._set_mode("third_person")
+        self._set_mode("first_person")
         gi.reset_spec()
-        self.assertFalse(gi.is_active())
         self.assertEqual(gi.camera_mode(), gi.DEFAULT_MODE)
+        self.assertTrue(gi.shows_character())
+        self.assertFalse(gi.character_enabled())
+
+    def test_clear_block_empties_character_and_switches_it_off(self):
+        self._set_character()
+        spec = gi.clear_block(gi.CHARACTER_KEY)
+        char = spec[gi.CHARACTER_KEY]
+        self.assertFalse(char["enabled"])
+        self.assertEqual(char["name"], "")
+        self.assertEqual(char["role"], "")
+        self.assertEqual(char["appearance"], "")
+        self.assertEqual(char["reference_images"], [])
+        self.assertFalse(gi.character_enabled())
+        self.assertNotIn(
+            "switched on but every field is blank",
+            " ".join(gi.wiring_notes()[gi.CHARACTER_KEY]),
+        )
+
+    def test_clear_block_empties_level_and_leaves_character(self):
+        self._set_character()
+        gi.save_spec({gi.SETTING_KEY: {
+            "enabled": True,
+            "name": "The Kettle Yard",
+            "summary": "A flooded shipbreaking yard",
+            "landmarks": "the listing tanker",
+            "opening_shot": "Low tide at dawn",
+        }})
+        spec = gi.clear_block(gi.SETTING_KEY)
+        setting = spec[gi.SETTING_KEY]
+        self.assertFalse(setting["enabled"])
+        self.assertEqual(setting["name"], "")
+        self.assertEqual(setting["summary"], "")
+        self.assertEqual(setting["landmarks"], "")
+        self.assertEqual(setting["opening_shot"], "")
+        self.assertFalse(gi.setting_enabled())
+        self.assertEqual(spec[gi.CHARACTER_KEY]["name"], "Wren Alvarez")
+
+    def test_clear_block_rejects_unknown_keys(self):
+        with self.assertRaises(KeyError):
+            gi.clear_block("not_a_sheet")
 
     def test_ensure_spec_keys_backfills_an_older_prompt_file(self):
         stripped = {k: v for k, v in dict(ps.PROMPTS).items() if k not in gi.SPEC_KEYS}
@@ -385,7 +810,8 @@ class GameIdentityTestCase(_IdentityFixture):
         self.assertIsNone(ps.PROMPTS.get(gi.CHARACTER_KEY))
         gi.ensure_spec_keys()
         self.assertIsNotNone(ps.PROMPTS.get(gi.CHARACTER_KEY))
-        self.assertFalse(gi.is_active())
+        self.assertEqual(gi.camera_mode(), gi.DEFAULT_MODE)
+        self.assertTrue(gi.shows_character())
 
     def test_spec_keys_are_editable_so_worlds_snapshot_them(self):
         # worlds_store snapshots prompts_store.editable_keys(), so the cast
@@ -468,6 +894,19 @@ class ReferenceImageTestCase(_IdentityFixture):
         self.assertEqual(len(paths), 2)
         self.assertEqual(paths[0], str(gi.reference_path(setting["id"])))
 
+    def test_leftover_somewhere_copy_does_not_beat_a_level_plate(self):
+        setting = gi.save_reference(self.PNG, "setting")
+        gi.save_spec({gi.SETTING_KEY: {
+            "enabled": True,
+            "name": "SOMEWHERE",
+            "summary": "1993. The fence. Four Corners. The shipped demo.",
+            "reference_images": [setting["id"]],
+        }})
+        brief = gi.world_brief("The year is 1993. Horizon. Four Corners.")
+        self.assertTrue(brief.startswith("🗺️ LEVEL PLATE"))
+        self.assertNotIn("LOCATION: SOMEWHERE", brief)
+        self.assertNotIn("The fence", gi.setting_plate())
+
     def test_annotation_explains_what_each_plate_is(self):
         char = gi.save_reference(self.PNG, "character")
         setting = gi.save_reference(self.PNG, "setting")
@@ -488,6 +927,135 @@ class ReferenceImageTestCase(_IdentityFixture):
         gi.save_spec({gi.CHARACTER_KEY: {"reference_images": ids}})
         stored = gi.get_spec()[gi.CHARACTER_KEY]["reference_images"]
         self.assertEqual(len(stored), gi.MAX_REFERENCES_PER_SLOT)
+
+
+class ImageFillTestCase(_IdentityFixture):
+    """Empty sheets draft themselves from a reference plate; authored text stays."""
+
+    PNG = ReferenceImageTestCase.PNG
+
+    def setUp(self):
+        super().setUp()
+        import ai_provider_manager as apm
+        self._apm = apm
+        apm.set_backend_override("mock")
+
+    def tearDown(self):
+        self._apm.set_backend_override(None)
+        super().tearDown()
+
+    def _attach(self, kind="character"):
+        meta = gi.save_reference(self.PNG, kind, "plate.png")
+        key = gi.CHARACTER_KEY if kind == "character" else gi.SETTING_KEY
+        gi.save_spec({key: {"reference_images": [meta["id"]]}})
+        return meta, key
+
+    def test_fillable_blocks_are_character_and_level(self):
+        self.assertEqual(
+            set(gi.image_fillable_blocks()),
+            {gi.CHARACTER_KEY, gi.SETTING_KEY},
+        )
+        self.assertIsNone(gi.block_for_image_kind("camera"))
+        self.assertEqual(gi.block_for_image_kind("level"), gi.SETTING_KEY)
+
+    def test_empty_character_fields_fill_from_image(self):
+        meta, key = self._attach("character")
+        result = gi.apply_image_fill(key, ref_id=meta["id"])
+        self.assertFalse(result["skipped"])
+        self.assertEqual(result["backend"], "mock")
+        self.assertIn("name", result["filled"])
+        spec = gi.get_spec()[key]
+        self.assertEqual(spec["name"], "Mock Wren")
+        self.assertEqual(spec["role"], "field researcher")
+        self.assertTrue(spec["appearance"])
+        self.assertTrue(spec["enabled"])
+
+    def test_empty_level_fields_fill_from_image(self):
+        meta, key = self._attach("setting")
+        result = gi.apply_image_fill(key, ref_id=meta["id"])
+        self.assertIn("name", result["filled"])
+        spec = gi.get_spec()[key]
+        self.assertEqual(spec["name"], "The Open Ground")
+        self.assertTrue(spec["summary"])
+        self.assertTrue(spec["landmarks"])
+        self.assertTrue(spec["opening_shot"])
+        self.assertTrue(spec["enabled"])
+
+    def test_existing_text_is_not_overwritten(self):
+        meta, key = self._attach("character")
+        gi.save_spec({key: {"name": "Wren Alvarez", "role": "salvage diver"}})
+        result = gi.apply_image_fill(key, ref_id=meta["id"])
+        spec = gi.get_spec()[key]
+        self.assertEqual(spec["name"], "Wren Alvarez")
+        self.assertEqual(spec["role"], "salvage diver")
+        self.assertNotIn("name", result["filled"])
+        self.assertNotIn("role", result["filled"])
+        self.assertIn("appearance", result["filled"])
+        self.assertTrue(spec["appearance"])
+
+    def test_skips_vision_when_every_text_field_is_filled(self):
+        meta, key = self._attach("character")
+        patch = {f["id"]: "kept" for f in gi.fillable_text_fields(key)}
+        gi.save_spec({key: patch})
+        result = gi.apply_image_fill(key, ref_id=meta["id"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "all_filled")
+        self.assertEqual(gi.get_spec()[key]["name"], "kept")
+
+    def test_overwrite_replaces_leftover_jason_from_the_plate(self):
+        meta, key = self._attach("character")
+        gi.save_spec({key: {
+            "name": "Jason Fleece",
+            "role": "investigative photojournalist",
+            "appearance": "adult man, short dark hair, weathered face, stubble",
+        }})
+        result = gi.apply_image_fill(key, ref_id=meta["id"], overwrite=True)
+        spec = gi.get_spec()[key]
+        self.assertFalse(result["skipped"])
+        self.assertEqual(spec["name"], "Mock Wren")
+        self.assertEqual(spec["role"], "field researcher")
+        self.assertNotIn("Jason", spec["name"])
+        self.assertNotIn("adult man", spec["appearance"])
+
+    def test_attach_and_fill_is_one_write_after_the_draft(self):
+        """The editor must not see a plate-only snapshot of leftover CAST."""
+        gi.save_spec({gi.CHARACTER_KEY: {
+            "enabled": True,
+            "name": "Jason Fleece",
+            "role": "investigative photojournalist",
+            "appearance": "adult man, stubble",
+            "reference_images": [],
+        }})
+        meta = gi.save_reference(self.PNG, "character", "plate.png")
+        before_refs = list(gi.get_spec()[gi.CHARACTER_KEY].get("reference_images") or [])
+        self.assertEqual(before_refs, [])
+        result = gi.attach_reference_and_fill(gi.CHARACTER_KEY, meta["id"])
+        spec = gi.get_spec()[gi.CHARACTER_KEY]
+        self.assertEqual(spec["name"], "Mock Wren")
+        self.assertEqual(spec["reference_images"], [meta["id"]])
+        self.assertTrue(spec["enabled"])
+        self.assertIn("name", result["fields"])
+        self.assertEqual(result["attached"], meta["id"])
+
+    def test_parse_fill_json_accepts_markdown_fences(self):
+        parsed = gi._parse_fill_json("```json\n{\"name\": \"Ivy\", \"role\": \"scout\"}\n```")
+        self.assertEqual(parsed["name"], "Ivy")
+        self.assertEqual(parsed["role"], "scout")
+
+    def test_mock_path_never_needs_a_network(self):
+        import os
+        old_gemini = os.environ.pop("GEMINI_API_KEY", None)
+        old_openai = os.environ.pop("OPENAI_API_KEY", None)
+        try:
+            meta, key = self._attach("character")
+            result = gi.apply_image_fill(key, ref_id=meta["id"])
+            self.assertEqual(result["backend"], "mock")
+            self.assertTrue(result["filled"])
+        finally:
+            if old_gemini is not None:
+                os.environ["GEMINI_API_KEY"] = old_gemini
+            if old_openai is not None:
+                os.environ["OPENAI_API_KEY"] = old_openai
 
 
 if __name__ == "__main__":

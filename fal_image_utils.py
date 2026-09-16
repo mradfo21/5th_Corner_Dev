@@ -129,7 +129,7 @@ _SDXL_BASE_STYLE_TAGS = (
 _SDXL_CAMERA_TAGS = {
     "first_person": "first-person head-mounted camera POV, environment only",
     "over_shoulder": "third-person over-the-shoulder view, character seen from behind in foreground",
-    "third_person": "third-person full-body follow cam, character centered in frame",
+    "third_person": "third-person action-game follow cam from behind, character facing into the scene, back of head toward camera",
     "fixed_cinematic": "fixed wide cinematic angle, character small within the environment",
 }
 

@@ -158,6 +158,14 @@ class TestMockVision(unittest.TestCase):
         result = apm.vision(image_path=None, image_data_b64=None, prompt="Describe")
         self.assertIsInstance(result, str)
 
+    def test_mock_vision_identity_draft_returns_json(self):
+        raw = apm.vision(prompt=apm.IDENTITY_DRAFT_MARKER + "\nblock=player_character")
+        data = __import__("json").loads(raw)
+        self.assertEqual(data["name"], "Mock Wren")
+        raw_level = apm.vision(prompt=apm.IDENTITY_DRAFT_MARKER + "\nblock=setting_reference")
+        level = __import__("json").loads(raw_level)
+        self.assertEqual(level["name"], "The Open Ground")
+
 
 class TestMockImage(unittest.TestCase):
     def setUp(self):

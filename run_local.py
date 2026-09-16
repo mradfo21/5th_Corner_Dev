@@ -52,6 +52,10 @@ def _load_env_file(path: Path) -> None:
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
+        elif key == "ELEVENLABS_API_KEY" and value.startswith("sk_"):
+            current = (os.environ.get(key) or "").strip()
+            if current and not current.startswith("sk_"):
+                os.environ[key] = value
     print(f"[run_local] Loaded env vars from {path}")
 
 
@@ -128,6 +132,19 @@ def main(argv=None) -> int:
     if args.config:
         _load_env_file(Path(args.config))
 
+    import keys_store
+    mockish = bool(args.mock or args.backend == "mock"
+                   or os.environ.get("MOCK_MODE", "").strip() in ("1", "true", "yes"))
+    if mockish:
+        keys_store.mark_explicit_mock()
+        # e2e suites spawn this with --mock and a cleared environment. Do not
+        # overlay the operator's APPDATA keys.env or those tests stop being
+        # keyless. An explicit SOMEWHERE_KEYS_PATH still loads (unit tests).
+        if os.environ.get("SOMEWHERE_KEYS_PATH"):
+            keys_store.load_into_environ()
+    else:
+        keys_store.load_into_environ()
+
     os.environ.setdefault("FLASK_DEBUG", "0")
     os.environ.setdefault("PORT", str(args.port))
 
@@ -136,6 +153,8 @@ def main(argv=None) -> int:
     # Import AFTER backend configuration so any module-level init in
     # engine.py / api.py observes the right environment.
     from api import app  # noqa: E402  (intentional late import)
+    import api as _api
+    _api.enable_local_keys()
 
     standalone_url = f"http://localhost:{args.port}/standalone"
 

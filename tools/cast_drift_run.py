@@ -56,9 +56,16 @@ def report(tag):
     collide = E.look_clones_player(locked) if locked else False
     print(f"\n--- {tag} ---")
     print(f"  player observed : {outfit or '(none yet)'}")
-    print(f"  player frame    : {seen[:100]}")
     print(f"  enemy label     : {label}")
     print(f"  enemy locked    : {locked}")
+    if isinstance(enc, dict):
+        print(f"  motive          : {enc.get('motive') or '(none)'}")
+        print(f"  danger          : {enc.get('danger') or ''}")
+        print(f"  stakes          : {enc.get('stakes') or ''}")
+        opts = [c.get("text") if isinstance(c, dict) else str(c)
+                for c in (enc.get("choices") or [])]
+        for o in opts:
+            print(f"  choice          : {o}")
     print(f"  COLLISION       : {'YES — enemy wears the player' if collide else 'no'}")
     return collide
 

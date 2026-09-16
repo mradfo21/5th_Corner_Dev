@@ -89,8 +89,11 @@ class _AuthoredWorldFixture(unittest.TestCase):
 
         self._orig_prompts_path = ps.PROMPTS_PATH
         self._orig_defaults_path = ps.DEFAULTS_PATH
+        self._orig_sessions_dir = gi.SESSIONS_DIR
         ps.PROMPTS_PATH = tmp / "simulation_prompts.json"
         ps.DEFAULTS_PATH = tmp / "simulation_prompts.defaults.json"
+        gi.SESSIONS_DIR = tmp / "sessions"
+        gi.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
         payload = dict(SAMPLE_PROMPTS)
         payload.update(gi.default_spec())
@@ -102,6 +105,7 @@ class _AuthoredWorldFixture(unittest.TestCase):
     def tearDown(self):
         ps.PROMPTS_PATH = self._orig_prompts_path
         ps.DEFAULTS_PATH = self._orig_defaults_path
+        gi.SESSIONS_DIR = self._orig_sessions_dir
         self._reload()
         self._tmpdir.cleanup()
 
@@ -114,7 +118,7 @@ class _AuthoredWorldFixture(unittest.TestCase):
         gi.save_spec({
             gi.CHARACTER_KEY: dict(CHARACTER),
             gi.SETTING_KEY: dict(SETTING),
-            gi.CAMERA_KEY: {"mode": mode},
+            gi.CAMERA_KEY: {"mode": mode, "show_hands": True},
         })
 
 
@@ -122,19 +126,22 @@ class CompactHelpersTestCase(_AuthoredWorldFixture):
     """The one-line versions of the cast sheet, for prompts too small to take
     the full directive."""
 
-    def test_helpers_are_empty_at_defaults(self):
+    def test_helpers_name_jason_at_defaults(self):
         self.assertEqual(gi.place_line(), "")
         self.assertEqual(gi.place_summary(), "")
-        self.assertEqual(gi.protagonist_line(), "")
-        self.assertEqual(gi.scene_grounding(), "")
-        self.assertEqual(
-            gi.structure_lines(),
-            {"who": "", "where": "", "environment": "", "tone": ""},
-        )
+        self.assertIn("Jason Fleece", gi.protagonist_line())
+        self.assertIn("Jason Fleece", gi.scene_grounding())
 
     def test_world_anchor_is_the_shipped_anchor_at_defaults(self):
         shipped = engine.REALTIME_STYLE_ANCHOR
-        self.assertEqual(gi.world_anchor(shipped), shipped)
+        out = gi.world_anchor(shipped)
+        self.assertIn(shipped.rstrip(". "), out)
+        # Art direction is GAME, not identity — it still reaches live.
+        self.assertIn("1993 analog VHS", out)
+
+    def test_look_line_compresses_art_direction_for_live_video(self):
+        self.assertIn("1993 analog VHS", gi.look_line())
+        self.assertLessEqual(len(gi.look_line()), 200)
 
     def test_place_line_carries_name_palette_and_landmarks(self):
         self._author_world()
@@ -212,6 +219,7 @@ class RealtimeWorldModelTestCase(_AuthoredWorldFixture):
         self.assertNotIn("the view shifts as you", beat)
 
     def test_action_beat_is_unchanged_in_first_person(self):
+        gi.save_spec({gi.CAMERA_KEY: {"mode": "first_person", "show_hands": True}})
         self.assertEqual(
             engine.realtime_action_beat("Vault the railing"),
             "Motion: the view shifts as you vault the railing.",
@@ -229,14 +237,47 @@ class LiveCameraContractTestCase(_AuthoredWorldFixture):
     player's next step. These are the strings that stop that happening.
     """
 
-    def test_contract_is_first_person_at_defaults(self):
+    def test_contract_is_third_person_at_defaults(self):
         c = gi.live_camera_contract()
-        self.assertEqual(c["perspective"], "first_person")
-        self.assertFalse(c["shows_character"])
-        self.assertEqual(c["subject"], "")
-        self.assertEqual(c["motion_clause"], "the view shifts as you")
-        self.assertIn("first-person", c["movement_clause"])
-        self.assertEqual(c["scene_floor"], "First-person cinematic view of the current scene.")
+        self.assertEqual(c["perspective"], "third_person")
+        self.assertTrue(c["shows_character"])
+        self.assertEqual(c["subject"], "Jason Fleece")
+        self.assertIn("follows", c["motion_clause"])
+        self.assertIn("third-person", c["movement_clause"])
+        self.assertEqual(c["schemes"], {})
+
+    def test_camera_schemes_round_trip_on_the_world(self):
+        """How you drive each camera is authored on the camera block, not a
+        browser-local Doom/FPS switch. Junk keys and unknown views drop."""
+        gi.save_spec({gi.CAMERA_KEY: {"schemes": {
+            "third_person": {
+                "mouseLook": True,
+                "invertY": True,
+                "keys": {"i": "fwd", "k": "back", "space": "jump", "w": "nope"},
+            },
+            "not_a_camera": {"mouseLook": True, "keys": {"w": "fwd"}},
+        }}})
+        schemes = gi.get_spec()[gi.CAMERA_KEY]["schemes"]
+        self.assertNotIn("not_a_camera", schemes)
+        self.assertEqual(schemes["third_person"]["mouseLook"], True)
+        self.assertEqual(schemes["third_person"]["invertY"], True)
+        self.assertEqual(schemes["third_person"]["keys"], {
+            "i": "fwd", "k": "back", "mouse": "look",
+        })
+        self.assertEqual(gi.live_camera_contract()["schemes"]["third_person"]["keys"]["i"], "fwd")
+
+    def test_camera_schemes_accept_mouse_as_a_bind(self):
+        """The mouse is the same map as the keys — `mouse: look` steers.
+        A sibling mouseLook bool is the older form and still loads."""
+        gi.save_spec({gi.CAMERA_KEY: {"schemes": {
+            "first_person": {"keys": {"mouse": "look", "w": "fwd"}},
+            "third_person": {"mouseLook": False, "keys": {"mouse": "nope", "s": "back"}},
+        }}})
+        schemes = gi.get_spec()[gi.CAMERA_KEY]["schemes"]
+        self.assertEqual(schemes["first_person"]["mouseLook"], True)
+        self.assertEqual(schemes["first_person"]["keys"]["mouse"], "look")
+        self.assertEqual(schemes["third_person"]["mouseLook"], False)
+        self.assertNotIn("mouse", schemes["third_person"]["keys"])
 
     def test_contract_carries_the_camera_and_the_subject(self):
         self._author_world(mode="third_person")
@@ -247,6 +288,89 @@ class LiveCameraContractTestCase(_AuthoredWorldFixture):
         for clause in (c["motion_clause"], c["movement_clause"], c["scene_floor"]):
             self.assertIn("Wren Alvarez", clause)
             self.assertNotIn("first-person", clause.lower())
+
+    def test_contract_carries_the_level_and_cast_for_live_video(self):
+        """Stills already compiled the full sheet. The live instance only
+        heard the camera, so authoring Wren and the Kettle Yard changed
+        every still and none of the video."""
+        self.assertEqual(gi.live_camera_contract()["prefix"], gi.live_prefix())
+        self.assertEqual(gi.live_camera_contract()["place_line"], "")
+        self._author_world(mode="third_person")
+        c = gi.live_camera_contract()
+        self.assertIn("The Kettle Yard", c["place_line"])
+        self.assertIn("Wren Alvarez", c["protagonist_line"])
+        self.assertIn("The Kettle Yard", c["prefix"])
+        self.assertIn("Wren Alvarez", c["prefix"])
+        self.assertIn("stays in frame", c["prefix"])
+        self.assertIn("1993 analog VHS", c["look"])
+        self.assertIn("1993 analog VHS", c["prefix"])
+        self.assertIn("Low tide at dawn", c["prefix"])
+
+    def test_live_prefix_hears_opening_shot_when_the_level_toggle_is_off(self):
+        """The Level sheet is the scene. A leftover off-switch must not
+        swallow the paragraph the author just wrote."""
+        gi.save_spec({gi.SETTING_KEY: {
+            "enabled": False,
+            "opening_shot": "Night. Police cars, red and blue lights on wet asphalt.",
+        }})
+        self.assertIn("Police cars", gi.live_prefix())
+        shot = gi.opening_shot()
+        self.assertIsNotNone(shot)
+        self.assertIn("Police cars", shot["vision"])
+
+    def test_level_landmarks_compile_when_the_toggle_is_off(self):
+        """Typing landmarks used to save and then vanish: place_line and the
+        Level plate both required the switch, so the editor looked dead."""
+        gi.save_spec({gi.SETTING_KEY: {
+            "enabled": False,
+            "landmarks": "a chain-link quarantine fence, rusted Horizon tanks",
+            "palette": "golden hour, red dust",
+        }})
+        self.assertTrue(gi.setting_authored())
+        self.assertIn("chain-link", gi.place_line())
+        self.assertIn("golden hour", gi.setting_plate())
+        self.assertIn("chain-link", gi.live_prefix())
+        shot = gi.opening_shot()
+        self.assertIsNotNone(shot)
+        self.assertIn("chain-link", shot["vision"])
+
+    def test_character_look_reaches_the_live_prefix(self):
+        """Appearance-only edits must restage. Recast of the bible is name-only;
+        the live prefix is what the video hears."""
+        gi.save_spec({
+            gi.CAMERA_KEY: {"mode": "third_person"},
+            gi.CHARACTER_KEY: {
+                "enabled": True,
+                "name": "Jason Fleece",
+                "appearance": "neon pink mohawk, chrome cheek scar",
+            },
+        })
+        self.assertIn("neon pink mohawk", gi.protagonist_line())
+        self.assertIn("neon pink mohawk", gi.live_prefix())
+        self.assertIn("APPEARANCE: neon pink mohawk", gi.character_visual_sheet())
+        preview = gi.preview()
+        self.assertIn("neon pink mohawk", preview["camera"]["prefix"])
+        self.assertIn("neon pink mohawk", preview["blocks"][gi.CHARACTER_KEY]["image"])
+
+    def test_character_look_reaches_the_opening_when_level_is_on(self):
+        """A filled Level sheet used to drop Look from the first frame, so
+        Play reset showed the place and forgot the person."""
+        gi.save_spec({
+            gi.CAMERA_KEY: {"mode": "third_person"},
+            gi.CHARACTER_KEY: {
+                "enabled": True,
+                "name": "Jason Fleece",
+                "appearance": "neon pink mohawk, chrome cheek scar",
+            },
+            gi.SETTING_KEY: {
+                "enabled": True,
+                "name": "The Yard",
+                "summary": "1993. The fence. Four Corners.",
+            },
+        })
+        shot = gi.opening_shot()
+        self.assertIsNotNone(shot)
+        self.assertIn("neon pink mohawk", shot["vision"])
 
     def test_every_mode_that_shows_a_body_builds_a_third_person_world(self):
         """The world model has one first/third switch and no vocabulary for
@@ -278,7 +402,7 @@ class LiveCameraContractTestCase(_AuthoredWorldFixture):
 
 class StillImagePromptTestCase(_AuthoredWorldFixture):
     """The full still-image prompt, composed the way a turn composes it:
-    build_image_prompt() then the VHS wrapper."""
+    build_image_prompt() then the shared image template."""
 
     def _full_prompt(self):
         scene = engine.build_image_prompt(
@@ -288,13 +412,37 @@ class StillImagePromptTestCase(_AuthoredWorldFixture):
         )
         return engine._build_vhs_prompt(scene, use_img2img=False)
 
+    def test_build_image_prompt_uses_the_passed_spec_not_the_live_file(self):
+        """World-frame regen compiles the World's sheet, not whoever is live."""
+        self._author_world()
+        other = gi.spec_from_prompts({
+            **dict(ps.PROMPTS),
+            gi.CHARACTER_KEY: {
+                "enabled": True,
+                "name": "maria fleece",
+                "role": "investigative photojournalist",
+                "appearance": "adult woman, short dark hair",
+                "pronouns": "she/her",
+                "wardrobe": "",
+            },
+            gi.CAMERA_KEY: {"mode": "third_person", "show_hands": False},
+        })
+        prompt = engine.build_image_prompt(
+            dispatch="At the fence.",
+            player_choice="Intro",
+            spec=other,
+        )
+        self.assertIn("maria fleece", prompt)
+        self.assertIn("adult woman", prompt)
+        self.assertNotIn("Wren Alvarez", prompt)
+
     def test_authored_world_leads_the_prompt(self):
         self._author_world()
         prompt = self._full_prompt()
         # The directive leads, where image models weight hardest — ahead of the
         # scene description and ahead of the shared art direction.
-        self.assertLess(prompt.index("CAMERA DIRECTIVE"), 40)
-        self.assertLess(prompt.index("CAMERA DIRECTIVE"), prompt.index("1993 analog VHS"))
+        self.assertLess(prompt.index("🎥 CAMERA:"), 40)
+        self.assertLess(prompt.index("🎥 CAMERA:"), prompt.index("1993 analog VHS"))
         self.assertIn("OVER-THE-SHOULDER THIRD-PERSON VIEW", prompt)
         self.assertIn("Wren Alvarez", prompt)
         self.assertIn("patched orange dive suit", prompt)
@@ -314,22 +462,21 @@ class StillImagePromptTestCase(_AuthoredWorldFixture):
         # …while unrelated bans survive the strip.
         self.assertIn("borders", negative)
 
-    def test_prompt_is_first_person_at_defaults(self):
+    def test_prompt_is_third_person_at_defaults(self):
         prompt = self._full_prompt()
-        self.assertNotIn("CAMERA DIRECTIVE", prompt)
-        self.assertIn("ABSOLUTELY NO PERSON/PLAYER VISIBLE", prompt)
-        self.assertIn("FIRST-PERSON perspective", prompt)
-        self.assertIn("third person perspective", prompt.split("NEGATIVE PROMPT")[-1].lower())
+        self.assertIn("Jason Fleece", prompt)
+        self.assertIn("THIRD-PERSON", prompt)
+        self.assertNotIn("No person in frame", prompt)
 
 
 class FlipbookTestCase(_AuthoredWorldFixture):
     """A 16-panel grid is ONE image, so its wrapper blocks are inherited by
     every panel."""
 
-    def test_camera_block_is_first_person_at_defaults(self):
+    def test_camera_block_is_third_person_at_defaults(self):
         block = engine._flipbook_camera_block()
-        self.assertIn("First-person POV, camera strapped to player's chest/head", block)
-        self.assertIn("Camera following a character", block)
+        self.assertIn("THIRD-PERSON", block)
+        self.assertIn("Jason Fleece", block)
 
     def test_camera_block_stops_forbidding_the_requested_shot(self):
         self._author_world()
@@ -342,10 +489,11 @@ class FlipbookTestCase(_AuthoredWorldFixture):
         gi.save_spec({gi.CAMERA_KEY: {"mode": "first_person", "show_hands": False}})
         self.assertNotIn("Hands may appear", engine._flipbook_camera_block())
 
-    def test_action_block_is_byte_identical_at_defaults(self):
+    def test_action_block_puts_jason_on_screen_at_defaults(self):
         block = engine._flipbook_action_block("Kick the door", "The door gives", True)
-        self.assertIn("FIRST-PERSON ONLY - NO 3RD PERSON ALLOWED", block)
+        self.assertIn("Jason Fleece", block)
         self.assertIn("YOU MUST OBEY THIS COMMAND AT ALL COSTS", block)
+        self.assertNotIn("NO 3RD PERSON ALLOWED", block)
 
     def test_action_block_puts_the_character_on_screen(self):
         self._author_world()
@@ -355,7 +503,7 @@ class FlipbookTestCase(_AuthoredWorldFixture):
         self.assertIn("YOU MUST OBEY THIS COMMAND AT ALL COSTS", block)
 
     def test_shot_block_follows_the_camera(self):
-        self.assertIn("ONE CONTINUOUS FIRST-PERSON SHOT", engine._flipbook_shot_block(False))
+        self.assertIn("THIRD-PERSON", engine._flipbook_shot_block(False))
         self._author_world()
         self.assertNotIn("FIRST-PERSON", engine._flipbook_shot_block(False))
 
@@ -364,9 +512,10 @@ class VeoVideoTestCase(_AuthoredWorldFixture):
     """Veo takes one text prompt and no negative prompt, so a hardcoded
     'NEVER show the player character' was unarguable."""
 
-    def test_first_person_doctrine_is_intact_at_defaults(self):
+    def test_third_person_doctrine_is_the_default(self):
         prompt = veo_video_utils._build_veo_cinematic_prompt("A flooded hold", "wade in")
-        self.assertIn("NEVER show the player character", prompt)
+        self.assertNotIn("NEVER show the player character", prompt)
+        self.assertIn("Jason Fleece", prompt)
 
     def test_third_person_keeps_the_character_on_screen(self):
         self._author_world()
@@ -380,13 +529,21 @@ class VisionLoopTestCase(_AuthoredWorldFixture):
     frame is the player."""
 
     def test_scan_ignores_the_players_hands_in_first_person(self):
+        gi.save_spec({gi.CAMERA_KEY: {"mode": "first_person", "show_hands": True}})
         self.assertIn("viewer's own hands", engine._detect_self_rule())
 
     def test_scan_ignores_the_player_character_in_third_person(self):
         self._author_world()
         rule = engine._detect_self_rule()
         self.assertIn("Wren Alvarez", rule)
-        self.assertIn("do NOT tag them", rule)
+        self.assertIn("Do NOT tag Wren Alvarez", rule)
+        self.assertNotIn("tag them anyway", rule)
+
+    def test_viewfinder_detect_ignores_hands_not_the_authored_body(self):
+        self._author_world()
+        rule = engine._detect_self_rule(viewfinder=True)
+        self.assertIn("viewer's own hands", rule)
+        self.assertNotIn("Wren Alvarez", rule)
 
 
 class CampAndPortraitTestCase(_AuthoredWorldFixture):
@@ -423,10 +580,17 @@ class WorldSeedTestCase(_AuthoredWorldFixture):
         self.assertIn("DIRECTOR'S SHEET", seed)          # cast sheet was folded in
         self.assertIn("OPENING SHOT:", seed)
 
-    def test_intro_seed_is_just_the_world_state_at_defaults(self):
+    def test_intro_seed_includes_the_director_sheet_at_defaults(self):
         seed = engine._intro_world_seed("You survey the Horizon facility.")
         self.assertTrue(seed.startswith(ps.PROMPTS["world_initial_state"]))
-        self.assertNotIn("DIRECTOR'S SHEET", seed)
+        self.assertIn("DIRECTOR'S SHEET", seed)
+        self.assertIn("Jason Fleece", seed)
+
+    def test_intro_seed_leads_with_the_level_plate_after_recast(self):
+        self._author_world()
+        seed = engine._intro_world_seed("You arrive at The Kettle Yard.")
+        self.assertTrue(seed.startswith("🗺️ LEVEL PLATE"))
+        self.assertLess(seed.index("The Kettle Yard"), seed.index("The year is 1993"))
 
 
 class EditorPreviewTestCase(_AuthoredWorldFixture):
@@ -474,7 +638,8 @@ class EditorPreviewTestCase(_AuthoredWorldFixture):
         self._author_world()
         gi.save_spec({gi.SETTING_KEY: {"enabled": False}})
         notes = gi.wiring_notes()[gi.SETTING_KEY]
-        self.assertTrue(any("Switched off" in n for n in notes))
+        self.assertTrue(any("still compiled" in n for n in notes))
+        self.assertIn("The Kettle Yard", gi.setting_plate())
 
     def test_preview_exposes_the_compact_forms(self):
         self._author_world()
@@ -508,6 +673,18 @@ class EnableOnIntentTestCase(_AuthoredWorldFixture):
         # …and stays off while you keep editing in the same request.
         gi.save_spec({gi.CHARACTER_KEY: {"enabled": False, "role": "diver"}})
         self.assertFalse(gi.character_enabled())
+
+    def test_clearing_the_character_stops_it_reaching_the_model(self):
+        self._author_world()
+        self.assertTrue(gi.character_enabled())
+        self.assertIn("Wren Alvarez", gi.protagonist_line())
+        gi.clear_block(gi.CHARACTER_KEY)
+        self.assertFalse(gi.character_enabled())
+        # Authored fields are gone. Third-person still falls back to the
+        # shipped protagonist so a hard cut has someone to draw — but it
+        # is no longer Wren.
+        self.assertNotIn("Wren Alvarez", gi.protagonist_line())
+        self.assertNotIn("Wren Alvarez", gi.scene_grounding())
 
     def test_deleting_a_reference_plate_never_enables_anything(self):
         gi.save_spec({gi.CHARACTER_KEY: {"reference_images": []}})
@@ -608,7 +785,7 @@ class ReferencePlateDeliveryTestCase(_AuthoredWorldFixture):
     def _author_with_plate(self, mode="third_person"):
         gi.save_spec({
             gi.CHARACTER_KEY: dict(CHARACTER, reference_images=[self.plate["id"]]),
-            gi.CAMERA_KEY: {"mode": mode},
+            gi.CAMERA_KEY: {"mode": mode, "show_hands": True},
         })
 
     def _use_provider(self, name):
@@ -693,6 +870,36 @@ class ReferencePlateDeliveryTestCase(_AuthoredWorldFixture):
         label, refs = self.calls[0]
         self.assertEqual(label, "krea_img2img")
         self.assertIn(self.plate_path, refs)
+        self.assertEqual(refs[0], self.plate_path)
+
+    def test_gemini_move_to_seeds_from_the_plate_not_the_previous_guy(self):
+        import gemini_image_utils as giu
+        seen = {}
+        def stub(*args, **kwargs):
+            seen["refs"] = kwargs.get("reference_image_path")
+            seen["identity_seed"] = kwargs.get("identity_seed")
+            seen["identity_paths"] = list(kwargs.get("identity_paths") or [])
+            return "/tmp/frame.png"
+        self._author_with_plate()
+        self._use_provider("gemini")
+        self._patch(giu,
+                    generate_gemini_img2img=stub,
+                    generate_with_gemini=self._record("t2i"))
+        history = [{"choice": "Intro", "vision_dispatch": "A flooded yard.",
+                    "image": self.plate_path, "image_url": self.plate_path}]
+        engine._gen_image_impl(
+            caption="You reach the gantry.",
+            mode="camcorder",
+            choice="MOVE TO the gantry",
+            frame_idx=2,
+            dispatch="You close the distance.",
+            world_prompt="",
+            session_id="test_plates",
+            history_ref=history,
+            hard_transition=True,
+        )
+        self.assertTrue(seen.get("identity_seed"))
+        self.assertIn(self.plate_path, seen.get("identity_paths") or [])
 
     def test_fal_spends_its_single_slot_on_the_plate_when_nothing_to_continue(self):
         import fal_image_utils as fiu

@@ -405,6 +405,13 @@ class TestObserveRegroundIsWiredUp(unittest.TestCase):
         worker = src.split("def _spawn_observe_reground(", 1)[1].split("\ndef ", 1)[0]
         self.assertIn("could not spawn reground worker", worker)
 
+    def test_reground_attaches_the_live_frame_not_the_web_url(self):
+        src = (ROOT / "engine.py").read_text(encoding="utf-8")
+        worker = src.split("def _spawn_observe_reground(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("image_url=fpath", worker)
+        self.assertNotIn("image_url=web", worker)
+        self.assertIn("last_dispatch=vision", worker)
+
 
 class TestDriftSingleFlightIsAtomic(unittest.TestCase):
     """Two sessions polling /api/world_tick must not both spawn an LLM worker —
@@ -470,6 +477,11 @@ class TestClientWiring(unittest.TestCase):
     def test_drift_asks_only_while_a_steerable_world_is_on_screen(self):
         self.assertIn("supportsLiveSteer", self.standalone)
         self.assertIn("supportsLiveSteer", self.reactor)
+        # SHAPE / turn-steer / fallback movement must refuse the same way
+        # drift does, or they rebuild an Adventure world on a keystroke.
+        steer = self.standalone.split("steerRealtime(text, where)", 1)[1]
+        steer = steer.split("applyDrift(meta)", 1)[0]
+        self.assertIn("supportsLiveSteer", steer)
         self.assertIn("/api/world_tick", self.standalone)
         # A Happy Oyster adventure world is fixed once built, so a prompt change
         # rebuilds it — never acceptable on a timer.
@@ -481,6 +493,116 @@ class TestClientWiring(unittest.TestCase):
         self.assertIn("state.processing", idle)
         self.assertIn("isShowing", idle)
         self.assertIn("ambientContextAllowed()", idle)
+
+
+class TestChoicesAreGroundedOnTheRenderedFrame(unittest.TestCase):
+    """The slate drifted off the picture because every text-grounding step in
+    the pipeline compared choices against the render REQUEST — the caption the
+    image model was asked to draw — and nothing ever looked at what came back.
+    A frame of barrels was therefore offered a crate to kick open."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = (ROOT / "engine.py").read_text(encoding="utf-8")
+        cls.choices_src = (ROOT / "choices.py").read_text(encoding="utf-8")
+
+    def _phase2(self):
+        return self.src.split("def _advance_turn_choices_deferred_impl(", 1)[1] \
+                       .split("\ndef ", 1)[0]
+
+    def test_the_turn_looks_at_the_frame_it_just_rendered(self):
+        # The inverted guard (`not analysis_img_url`) meant vision ran ONLY when
+        # there was no picture — exactly backwards.
+        phase2 = self._phase2()
+        self.assertIn("if analysis_img_url and VISION_ENABLED:", phase2)
+        self.assertNotIn("if (not analysis_img_url) and VISION_ENABLED:", phase2)
+
+    def test_a_failed_vision_read_keeps_the_render_caption(self):
+        # Blanking it left the slate with no scene text at all, which is worse
+        # than grounding on the request.
+        phase2 = self._phase2()
+        self.assertNotIn('vision_analysis_text  = ""', phase2)
+        self.assertIn("if _rendered_desc:", phase2)
+
+    def test_the_rendered_description_reaches_the_next_turn(self):
+        phase2 = self._phase2()
+        self.assertIn('"vision_analysis":   vision_analysis_text', phase2)
+        self.assertIn('"spatial_compass":   _spatial_compass_turn', phase2)
+
+    def test_the_opening_slate_is_generated_from_the_opening_frame(self):
+        intro = self.src.split("def generate_intro_turn_feed_items(", 1)[1] \
+                        .split("\ndef ", 1)[0]
+        self.assertIn("frame_path", intro)
+        self.assertIn("image_url=frame_path or None", intro)
+        self.assertIn("intro_frame_vision or intro_image_description", intro)
+
+    def test_reset_resolves_the_opening_frame_before_building_the_slate(self):
+        reset = self.src.split("def _perform_game_reset(", 1)[1] \
+                        .split("\ndef api_reset", 1)[0]
+        resolve_at = reset.index("_cached_opening_frame(new_state)")
+        intro_at = reset.index("initial_items, intro_image_kwargs = generate_intro_turn_feed_items(")
+        self.assertLess(resolve_at, intro_at,
+                        "the opening still must be resolved before the intro slate")
+        self.assertIn("frame_path=opening_rec.get(\"path\")", reset)
+
+    def test_a_cold_start_regrounds_the_slate_once_the_render_lands(self):
+        # With no cached still there is nothing to look at, so the opening slate
+        # comes from the shot description. It must not stay that way.
+        reset = self.src.split("def _perform_game_reset(", 1)[1] \
+                        .split("\ndef api_reset", 1)[0]
+        self.assertIn("_spawn_scene_choices_reground(", reset)
+        spawn_at = reset.index("_spawn_scene_image_async(**intro_image_kwargs)")
+        reground_at = reset.index("_spawn_scene_choices_reground(")
+        self.assertLess(spawn_at, reground_at)
+
+    def test_text_gates_are_skipped_when_the_model_saw_the_frame(self):
+        gen = self.choices_src.split("def generate_choices(", 1)[1] \
+                              .split("\ndef ", 1)[0]
+        self.assertIn("frame_attached = True", gen)
+        self.assertIn("if not frame_attached:\n        opts = filter_choices(", gen)
+        self.assertIn("frame_attached=frame_attached", gen)
+
+    def test_the_critic_is_shown_the_frame_it_is_judging(self):
+        critic = self.choices_src.split("def choice_critic(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("image_path=frame_path", critic)
+        self.assertIn("if not frame_attached:", critic)
+
+
+class TestChoiceCriticKeepsWhatIsOnScreen(unittest.TestCase):
+    """The critic's noun-overlap gate is the step that actually deleted
+    image-grounded options: it kept only choices whose nouns appeared in the
+    dispatch, so the one choice matching the render request survived and the
+    rest were replaced with more of the same."""
+
+    def setUp(self):
+        import choices
+        self.choices = choices
+        # The critic's own LLM pass is not under test here; returning nothing
+        # makes it fall through to the filtered list, which is what we assert on.
+        self._real_ask = engine._ask
+        engine._ask = lambda *a, **k: ""
+
+    def tearDown(self):
+        engine._ask = self._real_ask
+
+    # A canyon of barrels, described by a dispatch that promised a crate.
+    DISPATCH = "You drop into the canyon. The rusted crate sits where the slope ends."
+    SLATE = ["Kick the rusted crate open",   # matches the text
+             "Shoulder the oil barrel over",  # matches the FRAME only
+             "Squeeze past the boulder"]      # matches the FRAME only
+
+    def test_frame_grounded_choices_survive_when_the_frame_was_attached(self):
+        out = self.choices.choice_critic(
+            self.DISPATCH, "", list(self.SLATE), "", frame_attached=True)
+        self.assertIn("Shoulder the oil barrel over", out)
+        self.assertIn("Squeeze past the boulder", out)
+
+    def test_without_a_frame_the_noun_gate_still_applies(self):
+        # Text-only turns have nothing better to check against, so the old
+        # behaviour must remain: only the text-matching option survives.
+        out = self.choices.choice_critic(
+            self.DISPATCH, "", list(self.SLATE), "", frame_attached=False)
+        self.assertEqual(["Kick the rusted crate open"], out)
 
 
 if __name__ == "__main__":

@@ -1,26 +1,19 @@
 /* ============================================================
-   SOMEWHERE // Lobby — main menu controller
+   SOMEWHERE // Lobby — web start screen
 
-   Deliberately modeled on a familiar game main-menu flow (Minecraft's
-   Singleplayer world list, a JRPG save screen): two buttons up front
-   ("New Game" / "Continue"), each expanding an inline panel with exactly
-   what's needed next. Nothing else to configure before you're playing.
+   Same first beat as the desktop Play / Watch menu: SOMEWHERE, then
+   PLAY / CREATE / CONTINUE / ACCOUNT. PLAY mints a session and enters
+   the game; CREATE opens the studio; CONTINUE lists saved runs.
 
    Responsibilities:
-     - Ambient header clock
-     - Accordion: only one of the New Game / Continue panels open at a time
-     - "New Game": POST /api/lobby/create, remember the id locally, then
-       hand the browser off to /play?session=<id>.
-     - "Continue": list recent sessions (server-known + browser-known) as
-       save-slot rows; also accepts a pasted code to jump straight in.
+     - Ambient clock
+     - PLAY: POST /api/lobby/create, then /play?session=<id>&mode=play
+     - WATCH: /standalone?mode=watch
+     - CONTINUE: saved-run list + join-by-code
    ============================================================ */
 
 (function () {
   "use strict";
-
-  // Mark JS as available so the stylesheet can hide .reveal elements only
-  // when we can actually animate them in (no-JS visitors see everything).
-  document.documentElement.classList.add("js");
 
   var LS_RECENT_KEY = "somewhere.lobby.recent";
   var LS_LAST_KEY = "somewhere.lobby.last_session";
@@ -157,13 +150,21 @@
   // to the browser. Idempotent: if the URL already has comp we leave it
   // alone. Used by New Game, resume cards, and join-by-code so ALL exits
   // from the lobby preserve the token.
-  function withComp(url) {
-    if (!COMP_CODE || !url) return url;
+  function withQuery(url, key, value) {
+    if (!url || !key || !value) return url;
     try {
+      if (url.indexOf(key + "=") !== -1) return url;
       var joiner = url.indexOf("?") === -1 ? "?" : "&";
-      if (url.indexOf("comp=") !== -1) return url;
-      return url + joiner + "comp=" + encodeURIComponent(COMP_CODE);
+      return url + joiner + encodeURIComponent(key) + "=" + encodeURIComponent(value);
     } catch (_) { return url; }
+  }
+
+  function withComp(url) {
+    return withQuery(url, "comp", COMP_CODE);
+  }
+
+  function playUrl(url) {
+    return withComp(withQuery(url, "mode", "play"));
   }
 
   function showCompBadge() {
@@ -221,6 +222,8 @@
     closeAllPanels(btnId);
     btn.setAttribute("aria-expanded", "true");
     panel.hidden = false;
+    var hint = el("continue-hint");
+    if (hint && btnId === "cta-continue") hint.hidden = !hint.textContent;
     // Focus the first meaningful field so keyboard/quick players can go
     // straight into typing without an extra click — mirrors how console
     // menus auto-focus the first list item on expand.
@@ -232,9 +235,19 @@
 
   var startBtn = el("cta-start");
   var continueBtn = el("cta-continue");
-  // NEW GAME = instant start. No name, no panel, no second tap — just mint a
-  // session and go. Naming is available in the optional disclosure below.
+  var createBtn = el("start-create");
+  var accountBtn = el("start-account");
   if (startBtn) startBtn.addEventListener("click", function () { bootInstance({}); });
+  if (createBtn) {
+    createBtn.addEventListener("click", function () {
+      window.location.href = withComp("/standalone?mode=create");
+    });
+  }
+  if (accountBtn) {
+    accountBtn.addEventListener("click", function () {
+      window.location.href = withComp("/standalone?account=1");
+    });
+  }
   if (continueBtn) {
     continueBtn.addEventListener("click", function () {
       togglePanel("cta-continue");
@@ -323,7 +336,7 @@
 
       var card = document.createElement("a");
       card.className = classes.join(" ");
-      card.href = withComp("/play?session=" + encodeURIComponent(sid));
+      card.href = playUrl("/play?session=" + encodeURIComponent(sid));
       card.setAttribute("data-session-id", sid);
       card.setAttribute("title", "Continue '" + sid + "'");
       card.innerHTML =
@@ -358,7 +371,9 @@
     if (hint) {
       hint.textContent = count > 0
         ? (count === 1 ? "1 run waiting" : count + " runs waiting")
-        : "open a saved run";
+        : "";
+      var cont = el("cta-continue");
+      hint.hidden = !hint.textContent || !cont || cont.getAttribute("aria-expanded") !== "true";
     }
   }
 
@@ -488,7 +503,7 @@
         setTimeout(function () {
           boot.done();
           var dest = data.play_url || ("/play?session=" + encodeURIComponent(sid));
-          window.location.href = withComp(dest);
+          window.location.href = playUrl(dest);
         }, 550);
       })
       .catch(function (err) {
@@ -529,8 +544,8 @@
     if (!raw) { input.focus(); return; }
     var check = validateCode(raw);
     if (!check.ok) {
-      input.style.borderColor = "var(--accent-red)";
-      setTimeout(function () { input.style.borderColor = ""; }, 900);
+      input.style.borderBottomColor = "#ff8f7d";
+      setTimeout(function () { input.style.borderBottomColor = ""; }, 900);
       return;
     }
     var sid = check.code;
@@ -539,7 +554,7 @@
       .then(function () {})
       .catch(function () {})
       .finally(function () {
-        window.location.href = withComp("/play?session=" + encodeURIComponent(sid));
+        window.location.href = playUrl("/play?session=" + encodeURIComponent(sid));
       });
   }
 
@@ -552,84 +567,315 @@
     });
   }
 
-  /* ============================================================
-     Landing-page interactions (nav, smooth-scroll, scroll-reveal,
-     hero CTA -> menu panels). Kept separate from the menu controller
-     above so the tested New Game / Continue flow is untouched.
-     ============================================================ */
+  // Last-run footage is the start-menu wallpaper. SOMEWHERE sits on top.
+  // Quiet if there is nothing to play; never generates frames.
+  var BrandFill = (function () {
+    var STILL_MS = 2400;
+    var VIDEO_RATE = 0.72;
+    var MAX_FRAMES = 24;
+    var playFrames = [];
+    var watchFrames = [];
+    var watchVideoUrl = "";
+    var peekMode = null;
+    var cycleTimer = null;
+    var cycleIdx = 0;
+    var cycleOnB = false;
+    var activeVideo = "";
+    var videoRaf = 0;
 
-  // ---------- Sticky nav: condense on scroll ----------
-  var siteNav = el("siteNav");
-  function onScroll() {
-    if (!siteNav) return;
-    if (window.scrollY > 24) siteNav.classList.add("is-scrolled");
-    else siteNav.classList.remove("is-scrolled");
-  }
-  onScroll();
-  window.addEventListener("scroll", onScroll, { passive: true });
+    function reduceMotion() {
+      try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
+      catch (_) { return false; }
+    }
 
-  // ---------- Smooth-scroll helper ----------
-  function scrollToId(id) {
-    var target = document.getElementById(id);
-    if (!target) return;
-    target.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
+    function fileUrl(rel) {
+      if (!rel || typeof rel !== "string") return "";
+      if (/^https?:\/\//i.test(rel) || rel.charAt(0) === "/") return rel;
+      return "/api/render/file/" + rel;
+    }
 
-  // ---------- Open the Continue (resume) panel ----------
-  function openContinue() {
-    var btn = el("cta-continue");
-    if (btn && btn.getAttribute("aria-expanded") !== "true") togglePanel("cta-continue");
-    loadSessions();
-  }
-
-  // ---------- Wire every [data-scroll] and [data-enter] control ----------
-  document.querySelectorAll("[data-scroll], [data-enter]").forEach(function (node) {
-    node.addEventListener("click", function (ev) {
-      var enter = node.getAttribute("data-enter");
-      var href = node.getAttribute("href") || "";
-
-      // NEW GAME from anywhere (hero ENTER, top-nav PLAY) = instant start.
-      if (enter === "new") {
-        ev.preventDefault();
-        bootInstance({});
-        return;
-      }
-
-      // CONTINUE = drop to the menu and reveal saved runs.
-      if (enter === "continue") {
-        ev.preventDefault();
-        scrollToId("enter");
-        setTimeout(openContinue, 460);
-        return;
-      }
-
-      if (href.charAt(0) === "#") {
-        ev.preventDefault();
-        scrollToId(href.slice(1));
-      }
-    });
-  });
-
-  // ---------- Scroll-reveal ----------
-  var revealNodes = Array.prototype.slice.call(document.querySelectorAll(".reveal"));
-  function revealAll() { revealNodes.forEach(function (n) { n.classList.add("is-visible"); }); }
-  if ("IntersectionObserver" in window && revealNodes.length) {
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (entry) {
-        if (entry.isIntersecting) {
-          entry.target.classList.add("is-visible");
-          io.unobserve(entry.target);
-        }
+    function decode(url) {
+      return new Promise(function (resolve) {
+        if (!url) return resolve(null);
+        var img = new Image();
+        img.decoding = "async";
+        img.onload = function () { resolve(url); };
+        img.onerror = function () { resolve(null); };
+        img.src = url;
       });
-    }, { rootMargin: "0px 0px -8% 0px", threshold: 0.08 });
-    revealNodes.forEach(function (n) { io.observe(n); });
-    // Safety net: never let content stay hidden. If the observer hasn't fired
-    // for something within a few seconds (headless renderers, odd scroll
-    // restoration, IO edge cases), reveal everything so the page is never
-    // stuck blank below the fold.
-    setTimeout(revealAll, 2600);
-  } else {
-    revealAll();
+    }
+
+    function decodeList(urls) {
+      return Promise.all((urls || []).slice(0, MAX_FRAMES).map(decode))
+        .then(function (got) { return got.filter(Boolean); });
+    }
+
+    function brand() { return el("start-brand") || document.querySelector("#start-menu .start-brand"); }
+    function signal() { return el("start-signal"); }
+    function imgA() { return el("start-signal-img"); }
+    function imgB() { return el("start-signal-img-b"); }
+    function video() { return el("start-signal-video"); }
+    function canvas() { return el("start-signal-canvas"); }
+
+    function ensureDom() {
+      var menu = el("start-menu");
+      var b = brand();
+      if (!menu || !b) return;
+      if (!b.id) b.id = "start-brand";
+      var s = signal();
+      if (s && s.parentElement !== menu) menu.insertBefore(s, menu.firstChild);
+      if (!signal()) {
+        var host = document.createElement("div");
+        host.id = "start-signal";
+        host.className = "start-signal";
+        host.setAttribute("aria-hidden", "true");
+        host.innerHTML =
+          '<video id="start-signal-video" class="start-signal-video" muted loop playsinline preload="none"></video>' +
+          '<canvas id="start-signal-canvas" class="start-signal-canvas"></canvas>' +
+          '<div id="start-signal-img" class="start-signal-img"></div>' +
+          '<div id="start-signal-img-b" class="start-signal-img"></div>';
+        menu.insertBefore(host, menu.firstChild);
+      }
+      if (b.querySelector(".start-brand-knockout")) {
+        var word = ((b.querySelector(".start-brand-type") || b).textContent || "").trim() || "SOMEWHERE";
+        b.innerHTML = '<span class="start-brand-type"></span>';
+        var type = b.querySelector(".start-brand-type");
+        if (type) type.textContent = word;
+      }
+    }
+
+    function markMedia(on) {
+      var menu = el("start-menu");
+      var b = brand();
+      var s = signal();
+      if (menu) menu.classList.toggle("has-media", !!on);
+      if (b) b.classList.toggle("has-media", !!on);
+      if (s) s.classList.toggle("has-img", !!on);
+    }
+
+    function paintLayer(node, url) {
+      if (!node) return;
+      node.style.backgroundImage = url ? 'url("' + url + '")' : "";
+    }
+
+    function stopPump() {
+      if (videoRaf) { cancelAnimationFrame(videoRaf); videoRaf = 0; }
+    }
+
+    function pumpCanvas() {
+      videoRaf = 0;
+      var v = video();
+      var c = canvas();
+      var s = signal();
+      if (!v || !c || !s || !s.classList.contains("has-video")) return;
+      var box = s.getBoundingClientRect();
+      var dpr = Math.min(2, window.devicePixelRatio || 1);
+      var w = Math.max(1, Math.round(box.width * dpr));
+      var h = Math.max(1, Math.round(box.height * dpr));
+      if (c.width !== w) c.width = w;
+      if (c.height !== h) c.height = h;
+      var ctx = c.getContext("2d");
+      if (ctx && v.readyState >= 2 && v.videoWidth) {
+        var vw = v.videoWidth, vh = v.videoHeight;
+        var scale = Math.max(w / vw, h / vh);
+        var dw = vw * scale, dh = vh * scale;
+        ctx.drawImage(v, (w - dw) / 2, (h - dh) / 2, dw, dh);
+      }
+      videoRaf = requestAnimationFrame(pumpCanvas);
+    }
+
+    function stopVideo() {
+      var v = video();
+      var s = signal();
+      stopPump();
+      if (!v) return;
+      try { v.pause(); } catch (_) {}
+      if (s) s.classList.remove("has-video");
+      if (v.getAttribute("src")) {
+        try { v.removeAttribute("src"); v.load(); } catch (_) {}
+      }
+      activeVideo = "";
+    }
+
+    function stopCycle() {
+      if (cycleTimer) { clearInterval(cycleTimer); cycleTimer = null; }
+      cycleIdx = 0;
+    }
+
+    function showStill(url, instant) {
+      var a = imgA();
+      var b = imgB();
+      if (!a) return;
+      if (!url) {
+        paintLayer(a, "");
+        paintLayer(b, "");
+        a.classList.remove("is-on");
+        if (b) b.classList.remove("is-on");
+        markMedia(false);
+        return;
+      }
+      markMedia(true);
+      var incoming = cycleOnB ? a : b;
+      var outgoing = cycleOnB ? b : a;
+      if (!b || instant || !outgoing || !outgoing.classList.contains("is-on")) {
+        paintLayer(a, url);
+        a.classList.add("is-on");
+        if (b) { b.classList.remove("is-on"); paintLayer(b, ""); }
+        cycleOnB = false;
+        return;
+      }
+      paintLayer(incoming, url);
+      incoming.classList.add("is-on");
+      outgoing.classList.remove("is-on");
+      cycleOnB = !cycleOnB;
+    }
+
+    function startCycle(frames) {
+      stopCycle();
+      var list = (frames || []).filter(Boolean);
+      if (!list.length) { showStill("", true); return; }
+      cycleIdx = 0;
+      showStill(list[0], true);
+      if (list.length < 2 || reduceMotion()) return;
+      cycleTimer = setInterval(function () {
+        cycleIdx = (cycleIdx + 1) % list.length;
+        showStill(list[cycleIdx], false);
+      }, STILL_MS);
+    }
+
+    function startVideo(url) {
+      var v = video();
+      var s = signal();
+      if (!v || !url || reduceMotion()) return false;
+      stopCycle();
+      if (activeVideo === url && s && s.classList.contains("has-video")) {
+        try { v.play().catch(function () {}); } catch (_) {}
+        markMedia(true);
+        return true;
+      }
+      activeVideo = url;
+      v.src = url;
+      try { v.playbackRate = VIDEO_RATE; } catch (_) {}
+      if (s) s.classList.add("has-video");
+      markMedia(true);
+      stopPump();
+      var go = v.play();
+      if (go && go.catch) {
+        go.catch(function () {
+          if (s) s.classList.remove("has-video");
+          stopPump();
+          activeVideo = "";
+          startCycle(watchFrames.length ? watchFrames : playFrames);
+        });
+      }
+      return true;
+    }
+
+    function sourceFor(mode) {
+      var preferWatch = mode === "watch" || (!mode && (watchVideoUrl || watchFrames.length));
+      if (preferWatch) {
+        return { video: watchVideoUrl, frames: watchFrames.length ? watchFrames : playFrames };
+      }
+      return { video: "", frames: playFrames.length ? playFrames : watchFrames };
+    }
+
+    function apply() {
+      var src = sourceFor(peekMode);
+      if (src.video && startVideo(src.video)) return;
+      if (src.frames && src.frames.length) {
+        stopVideo();
+        startCycle(src.frames);
+        return;
+      }
+      stopVideo();
+      startCycle([]);
+    }
+
+    function peek(mode) {
+      peekMode = mode || null;
+      document.body.classList.toggle("signal-peek-play", peekMode === "play");
+      document.body.classList.toggle("signal-peek-watch", peekMode === "watch");
+      apply();
+    }
+
+    function warm() {
+      try { ensureDom(); } catch (_) {}
+      Promise.all([
+        fetch("/api/status").then(function (r) { return r.ok ? r.json() : {}; }).catch(function () { return {}; }),
+        fetch("/api/render/history").then(function (r) { return r.ok ? r.json() : { renders: [] }; }).catch(function () { return { renders: [] }; }),
+        fetch("/api/tape").then(function (r) { return r.ok ? r.json() : { frames: [] }; }).catch(function () { return { frames: [] }; }),
+      ]).then(function (pack) {
+        var status = pack[0] || {};
+        var hist = pack[1] || {};
+        var tape = pack[2] || {};
+        var still = status.current_image_url || status.setting_plate_url || "";
+        var tapeList = (tape.frames || []).filter(function (u) { return typeof u === "string" && u; });
+        var runs = hist.renders || [];
+        var latest = null;
+        for (var i = 0; i < runs.length; i++) {
+          var run = runs[i];
+          if (run && (run.video || run.gif || run.thumbnail || (run.frames && run.frames.length))) {
+            latest = run;
+            break;
+          }
+        }
+        watchVideoUrl = latest && latest.video ? fileUrl(latest.video) : "";
+        var gif = latest ? fileUrl(latest.gif || "") : "";
+        var thumb = latest && latest.thumbnail ? fileUrl(latest.thumbnail) : "";
+        var wFrames = [];
+        if (latest && latest.frames) {
+          latest.frames.forEach(function (f) { var u = fileUrl(f); if (u) wFrames.push(u); });
+        }
+        if (gif && !watchVideoUrl) wFrames = [gif];
+        else if (!wFrames.length && thumb) wFrames = [thumb];
+        return Promise.all([decode(still), decodeList(tapeList), decodeList(wFrames)]);
+      }).then(function (got) {
+        var okStill = got[0];
+        var okTape = got[1] || [];
+        var okWatch = got[2] || [];
+        playFrames = okTape.length ? okTape : (okStill ? [okStill] : []);
+        watchFrames = okWatch;
+        apply();
+      }).catch(function () {});
+    }
+
+    function bindPeek(node, mode) {
+      if (!node) return;
+      node.addEventListener("pointerenter", function () { peek(mode); });
+      node.addEventListener("pointerleave", function () { peek(null); });
+      node.addEventListener("focus", function () { peek(mode); });
+      node.addEventListener("blur", function () { peek(null); });
+    }
+
+    function init() {
+      bindPeek(el("cta-start"), "play");
+      bindPeek(el("start-watch"), "watch");
+      try { warm(); } catch (_) {}
+    }
+
+    return { init: init };
+  })();
+
+  function revealStart() {
+    document.body.classList.add("start-arrived");
+    var menu = el("start-menu");
+    if (menu) menu.setAttribute("aria-busy", "false");
   }
+
+  (function scheduleStartArrive() {
+    var reduce = false;
+    try { reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
+    catch (_) {}
+    if (reduce) { revealStart(); return; }
+    var t0 = performance.now();
+    var go = function () {
+      var wait = Math.max(0, 1600 - (performance.now() - t0));
+      setTimeout(revealStart, wait);
+    };
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(go).catch(go);
+    else go();
+  })();
+
+  try { BrandFill.init(); } catch (_) {}
 
 })();

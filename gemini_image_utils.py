@@ -7,6 +7,7 @@ import json
 import requests
 import base64
 from pathlib import Path
+from typing import Optional
 
 # Load config
 import os
@@ -32,6 +33,33 @@ import game_identity
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", config.get("GEMINI_API_KEY", ""))
 IMAGE_DIR = Path("images")
 
+
+def write_image_atomic(path, data: bytes) -> None:
+    """Write an image so a reader can never see a partial one.
+
+    Writing straight to the final name publishes the file the instant it is
+    created and then fills it in, and the client fetches a scene the moment
+    the feed item naming it arrives — so a big still could be served
+    truncated. The browser then fails to decode it and paints the scene
+    layer's background colour instead: a black screen under a live HUD.
+    Write beside the target and rename, which is atomic on Windows and POSIX.
+    """
+    path = Path(path)
+    tmp = path.with_name(path.name + ".part")
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(str(tmp), str(path))
+
+
+def save_pil_atomic(img, path, **kwargs) -> None:
+    """Same guarantee for the PIL-encoded derivatives."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".part")
+    img.save(tmp, **kwargs)
+    os.replace(str(tmp), str(path))
+
 # CRITICAL DEBUG: Log API key status at import time
 if not GEMINI_API_KEY:
     print("[GEMINI INIT] CRITICAL: GEMINI_API_KEY is NOT SET! Images will not generate!")
@@ -44,6 +72,60 @@ else:
 # Google Gemini models
 GEMINI_FLASH_IMAGE = "gemini-3.1-flash-lite-image"  # Fast, cost-effective image generation
 GEMINI_PRO_IMAGE = "gemini-3.1-flash-image"  # Slower, higher quality, 4K support
+
+
+def resolve_model() -> str:
+    """The Gemini image model this call should use.
+
+    Every generation used to be pinned to GEMINI_FLASH_IMAGE at 1K right here,
+    which made `image_model` in ai_config.json decorative: presets could name a
+    model, the status API would report it, and the wire request ignored it. That
+    is fine while speed is the only goal and actively wrong for a render, where
+    the entire point is spending time to see how far the picture can be pushed.
+    The config is now the source of truth, with the fast model as the fallback
+    so a missing or non-Gemini setting still generates something.
+    """
+    try:
+        import ai_provider_manager
+        if ai_provider_manager.get_image_provider() != "gemini":
+            return GEMINI_FLASH_IMAGE
+        entry = ai_provider_manager.find_model("image", ai_provider_manager.get_image_model())
+        if entry and entry.get("provider") == "gemini":
+            return entry["id"]
+    except Exception as e:
+        print(f"[GEMINI] model lookup failed ({e}); using {GEMINI_FLASH_IMAGE}", flush=True)
+    return GEMINI_FLASH_IMAGE
+
+
+def resolve_image_size() -> str:
+    """Output resolution, clamped to what the selected model actually offers."""
+    try:
+        import ai_provider_manager
+        want = ai_provider_manager.get_image_size()
+        entry = ai_provider_manager.find_model("image", ai_provider_manager.get_image_model())
+        allowed = (entry or {}).get("sizes") or ["1K"]
+        return want if want in allowed else allowed[-1]
+    except Exception:
+        return "1K"
+
+
+# Gemini imageConfig.aspectRatio values this build will send. 21:9 is the
+# closest official preset to a landscape phone; anything else falls back.
+_GEMINI_ASPECT_RATIOS = ("16:9", "21:9", "4:3", "3:4", "1:1", "9:16", "3:2", "2:3", "5:4", "4:5")
+
+
+def resolve_aspect_ratio(requested: str = None) -> str:
+    """Aspect ratio for the wire request: caller override, else ai_config."""
+    try:
+        import ai_provider_manager
+        want = requested or ai_provider_manager.get_image_aspect_ratio()
+        mapped = ai_provider_manager.normalize_aspect_ratio(want) or str(want or "").strip()
+        if mapped in _GEMINI_ASPECT_RATIOS:
+            return mapped
+    except Exception:
+        pass
+    raw = str(requested or "").strip()
+    return raw if raw in _GEMINI_ASPECT_RATIOS else "4:3"
 
 # Hard ceiling on the assembled prompt.
 #
@@ -210,14 +292,16 @@ def generate_with_gemini(
     prompt: str,
     caption: str,
     world_prompt: str = None,
-    aspect_ratio: str = "4:3",
-    model: str = GEMINI_FLASH_IMAGE,
+    aspect_ratio: str = None,
+    model: str = None,
     time_of_day: str = "",
     is_first_frame: bool = False,
     action_context: str = "",
     hd_mode: bool = True,
     output_dir: Path = None,
     portrait_mode: bool = False,
+    object_subject: bool = False,
+    spec: dict | None = None,
 ) -> str:
     """
     Generate an image using Google Gemini (Nano Banana).
@@ -226,13 +310,17 @@ def generate_with_gemini(
         prompt: The full image generation prompt WITH ALL DETAILED INSTRUCTIONS
         caption: Short caption for the image (used for filename)
         world_prompt: Narrative world state context
-        aspect_ratio: Aspect ratio ("16:9", "4:3", "1:1", etc.)
+        aspect_ratio: Aspect ratio ("16:9", "21:9", "4:3", "1:1", etc.).
+            None reads the current renderer setting (see resolve_aspect_ratio).
         model: Gemini model to use (can be overridden by hd_mode)
         time_of_day: Time of day for lighting consistency
         hd_mode: If True, use Pro model for higher quality (slower). If False, use Flash for speed.
         portrait_mode: When True, skip the anti-person / environment-only
             constraints and emit a cinematic character medium-shot instead.
             Used by Conversation Moments (/api/talk/portrait).
+        object_subject: When True with ``portrait_mode``, the subject is a
+            machine/object (monitor, radio). Emit a close-up of THAT object
+            and keep the anti-person rule so the model cannot invent a face.
         
     Returns:
         Local path to the saved image (e.g., "/images/filename.png")
@@ -257,13 +345,14 @@ def generate_with_gemini(
             "Add it to config.json as GEMINI_API_KEY"
         )
     
-    # Stills are standardized on Nano Banana 2 Lite (GEMINI_FLASH_IMAGE) for
-    # speed — it returns in ~seconds at 1K. The hd_mode arg is retained for
-    # call-site compatibility but no longer promotes to the heavier Pro model
-    # (that was slower and is what we're moving off of). Flip the model here if
-    # a future call genuinely needs 4K/high-fidelity output.
-    model = GEMINI_FLASH_IMAGE
-    print(f"[GOOGLE GEMINI] Using {model} (Nano Banana 2 Lite) for speed @ 1K")
+    # Which model and how big come from ai_config.json (see resolve_model)
+    # unless a caller names one — the overload fallback below is the only thing
+    # that does, to step down to Flash when the heavier model is busy. The
+    # hd_mode arg is retained for call-site compatibility but no longer selects
+    # a model, so a render raises the ceiling for every frame at once.
+    model = model or resolve_model()
+    image_size = resolve_image_size()
+    print(f"[GOOGLE GEMINI] Using {model} @ {image_size}")
     
     # Load prompt template from JSON (single source of truth!)
     # Renders the template plus the shared art-direction / camera-rules blocks
@@ -273,21 +362,16 @@ def generate_with_gemini(
     
     # Inject time/weather/mood if provided
     if time_of_day:
-        time_injection = f"\n\n⏰ CRITICAL TIME/ATMOSPHERE CONSTRAINTS:\n{time_of_day}\nThe lighting, weather, and atmosphere MUST match these exact conditions. This is non-negotiable.\n"
+        time_injection = f"\n\nLighting: {time_of_day}.\n"
         structured_prompt = structured_prompt + time_injection
     
-    # Add CRITICAL anti-border instructions
-    anti_border = "\n\nCRITICAL - ABSOLUTELY NO BORDERS OR FRAMES:\nThe image MUST fill the ENTIRE canvas edge-to-edge with ZERO borders, frames, or edges of any kind. NO black bars, NO white borders, NO photo frames, NO matting, NO letterboxing. The content fills 100% of the image area. This is RAW FOOTAGE, not a framed photograph."
-    
-    structured_prompt = structured_prompt + anti_border
-
     # Three ways a person can relate to the frame:
     #   portrait_mode — Conversation Moments; the SUBJECT is a character.
     #   hero_mode     — the player picked a third-person camera, so their own
     #                   character is the subject and the anti-person rule is
     #                   the exact opposite of what they asked for.
     #   neither       — first person; the shipped environment-only rule holds.
-    hero_mode = (not portrait_mode) and game_identity.shows_character()
+    hero_mode = (not portrait_mode) and game_identity.shows_character(spec)
     if hero_mode:
         structured_prompt = structured_prompt + (
             "\n\nCRITICAL - THE PLAYER CHARACTER IS IN THIS SHOT:\n"
@@ -298,8 +382,21 @@ def generate_with_gemini(
             "fixed security-camera view, or zero human presence."
         )
     elif not portrait_mode:
-        anti_person = "\n\nCRITICAL - ABSOLUTELY NO PERSON/PLAYER VISIBLE:\nThis is a FIXED CAMERA VIEW mounted to a wall or tripod. The camera operator does NOT exist in this image. NEVER show ANY part of a human body - no head, no back of head, no shoulders, no arms, no hands, no legs, no feet, no torso, no silhouette. Show ONLY the environment - walls, floor, ceiling, objects, debris, sky, ground. Think: security camera footage, dashboard cam, surveillance view - PURE environmental shot with ZERO human presence in frame."
+        anti_person = (
+            "\n\nNo person in frame: no head, shoulders, back, hands, or silhouette. "
+            "Show only the environment."
+        )
         structured_prompt = structured_prompt + anti_person
+    elif object_subject:
+        portrait_anchor = (
+            "\n\nCINEMATIC OBJECT CLOSE-UP:\n"
+            "This is a stylish cinematic CLOSE-UP of the object described in the prompt.\n"
+            "The object fills the frame. Same materials, same wear, same light.\n"
+            "Do NOT invent a person, face, figure, or human. The object IS the subject.\n"
+            "Keep 1993 analog-horror palette continuity (muted, slightly degraded film stock).\n"
+            "NOT a character portrait. NOT a security camera POV. NOT a wide environment plate.\n"
+        )
+        structured_prompt = structured_prompt + portrait_anchor
     else:
         portrait_anchor = (
             "\n\nCINEMATIC PORTRAIT MODE:\n"
@@ -310,92 +407,36 @@ def generate_with_gemini(
             "NOT a security camera POV. NOT a wide environment plate. NOT a selfie.\n"
         )
         structured_prompt = structured_prompt + portrait_anchor
-    
-    # Add CRITICAL anti-timecode/text instructions (ULTRA-STRONG)
-    anti_timecode = (
-        "🚫🚫🚫 CRITICAL RULE #1 - NO TEXT ANYWHERE 🚫🚫🚫\n\n"
-        "ZERO text. ZERO numbers. ZERO letters. ZERO symbols.\n"
-        "DO NOT GENERATE: 'REC', 'DEC 14 1993', '16:45:22', date stamps, timecode\n"
-        "DO NOT GENERATE: Battery indicators, recording icons, 'PCC HISS'\n"
-        "DO NOT GENERATE: ANY TEXT OF ANY KIND\n\n"
-        "This is PURE RAW FOOTAGE with NO on-screen displays.\n"
-        "The image must be 100% visual with ZERO text overlays.\n"
-        "If reference images have text, REMOVE IT from your output.\n\n"
-        "REPEAT: NO TEXT. NO TIMECODE. NO 'REC'. NO DATES. NO NUMBERS."
-    )
-    
-    structured_prompt = structured_prompt + anti_timecode
-    
-    # Add negative prompt emphasis
-    if portrait_mode:
+    if not portrait_mode:
+        structured_prompt = structured_prompt + game_identity.keep_place_instruction(spec)
+
+    # Mode-specific "don't do this" — look and overlays live in image_art_direction
+    # / image_camera_rules. Naming REC / timecode / VHS HUD here made the model
+    # draw a viewfinder.
+    if portrait_mode and object_subject:
         negative_emphasis = (
-            "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, "
-            "numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery "
-            "indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, "
-            "photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of "
-            "border or frame element. Wide establishing shot, full-body distant figure, empty room "
-            "with no subject, security-camera angle."
+            "\n\nNot a person, not a face, not a figure, not a wide establishing shot."
         )
-        photographic_anchor = (
-            "\n\nOPTICAL REALITY - CINEMATIC STILL:\n"
-            "Photographed on 35mm film with a fast prime lens, shallow depth of field.\n"
-            "Real light, real skin/surface texture, natural film grain — NOT CGI, NOT a game render.\n"
-            "Analog-horror 1993 mood: muted palette, slight color fade, tactile grain.\n"
-            "Subject holds eye contact or a charged near-look; background soft and suggestive of the scene.\n"
+    elif portrait_mode:
+        negative_emphasis = (
+            "\n\nNot a wide establishing shot, not a full-body distant figure, "
+            "not an empty room, not a security-camera angle."
         )
     else:
-        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element."
+        negative_emphasis = ""
         if not hero_mode:
-            negative_emphasis += " Person visible, human visible, man visible, character visible, head visible, shoulders visible, back of head, person's back, body parts, hands, arms, legs, feet."
-    
-        # OPTICAL REALITY ANCHOR - Critical for first frame to set the tone
-        photographic_anchor = (
-            "\n\n📹 OPTICAL REALITY - REAL FOOTAGE:\n"
-            "This is REAL LIGHT captured through REAL GLASS OPTICS onto PHYSICAL MAGNETIC TAPE.\n"
-            "This is PHOTOGRAPHIC REALITY - actual camera capturing actual physical world.\n"
-            "NOT: video game, 3D render, CGI, game engine, Unity, Unreal Engine, digital art\n"
-            "NOT: Game screenshot with filters, rendered graphics with effects added\n"
-            "NOT: Fake artifacts, fake glitches, digital effects overlaid on render\n\n"
-            "OPTICAL CAPTURE:\n"
-            "Real optical lens capturing real light bouncing off real physical surfaces\n"
-            "Natural lighting, natural shadows, natural reflections - PHYSICAL WORLD\n"
-            "Camera optics: real glass lens, real sensor, real photographic process\n"
-            "This is PHOTOGRAPHY - light captured by camera, not graphics rendered by computer\n\n"
-            "PHOTOGRAPHIC CHAOS - ANTI-POLYGON ENFORCEMENT:\n"
-            "NOTHING is clean, geometric, or modeled. This is MESSY REALITY:\n"
-            "Ground: IRREGULAR with dirt clumps, sand ripples, footprints, debris, vegetation patches\n"
-            "Surfaces: WEATHERED with rust streaks, stains, peeling paint, cracks, damage\n"
-            "Fences: BENT, sagging, irregular - NOT straight polygon lines\n"
-            "Buildings: ASYMMETRIC with broken windows, varying textures, organic decay\n"
-            "Sky: ATMOSPHERIC DEPTH with cloud detail, haze, gradient - NOT flat color plane\n"
-            "Shadows: SOFT and DIFFUSE from real sunlight through atmosphere\n"
-            "Textures: VARIED and COMPLEX - no repeated patterns, no tiling, organic randomness\n"
-            "FORBIDDEN: Flat textured planes, geometric shapes, polygon meshes, 3D models, game assets\n"
-            "FORBIDDEN: Clean edges, perfect lines, Unity terrain, repeated textures, tiled surfaces\n"
-            "REQUIRED: Optical chaos, irregular forms, messy natural detail, photographic complexity\n\n"
-            "TAPE MEDIUM:\n"
-            "Recorded onto VHS magnetic tape (consumer analog format, 1990s)\n"
-            "Tape introduces natural softness, slight color shifts, gentle noise\n"
-            "Tape characteristics are SUBTLE - natural consequence of analog storage medium\n"
-            "NOT fake digital artifacts - real physical tape properties\n\n"
-            "HISTORICAL REFERENCE - LOOKS EXACTLY LIKE:\n"
-            "1991 Gulf War CNN news footage (Bernard Shaw, Peter Arnett)\n"
-            "1992 Rodney King video (George Holliday's camcorder)\n"
-            "1993 Waco siege news coverage (live broadcast footage)\n"
-            "Alive in Joburg (2005) - Neill Blomkamp documentary-style handheld\n"
-            "Early 1990s amateur home video, news B-roll, surveillance footage\n"
-            "Real historical footage - NOT modern recreations or game graphics with filters"
-        )
-    
-    # Put anti-timecode FIRST (highest attention), then the rest
-    structured_prompt = anti_timecode + "\n\n" + structured_prompt + negative_emphasis + photographic_anchor
+            negative_emphasis = (
+                "\n\nNo person in frame: no head, shoulders, back, hands, or silhouette."
+            )
+
+    structured_prompt = structured_prompt + negative_emphasis
 
     # Cast & camera reconciliation. `prompt` already arrives stamped with the
     # camera directive from engine.build_image_prompt(); this pass rewrites the
     # first-person wording baked into the JSON template and the constant blocks
     # assembled around it. "raw" so we don't stack a second directive.
     if not portrait_mode:
-        structured_prompt = game_identity.apply(structured_prompt, "raw")
+        structured_prompt = game_identity.apply(structured_prompt, "raw", spec)
 
     # Sanity bound only — see MAX_PROMPT_CHARS. Warn loudly if we ever hit it,
     # because silently dropping the tail of a prompt is invisible from the image.
@@ -426,11 +467,12 @@ def generate_with_gemini(
     }
     
     # Lowest resolution the Lite model offers (1K) — fastest generation.
-    # Portrait Moments prefer a wider cinematic frame; environment stills stay 4:3.
-    _ar = aspect_ratio if aspect_ratio in ("16:9", "4:3", "3:4", "1:1", "9:16") else "4:3"
-    if portrait_mode and aspect_ratio == "4:3":
+    # Portrait Moments prefer a wider cinematic frame unless the caller asked
+    # for something else; environment stills follow the renderer setting.
+    _ar = resolve_aspect_ratio(aspect_ratio)
+    if portrait_mode and (not aspect_ratio or aspect_ratio == "4:3"):
         _ar = "16:9"
-    image_config = {"aspectRatio": _ar, "imageSize": "1K"}
+    image_config = {"aspectRatio": _ar, "imageSize": image_size}
     
     payload = {
         "contents": [{
@@ -501,8 +543,7 @@ def generate_with_gemini(
         filename = f"{hash(caption) & 0xFFFFFFFF}_{safe_caption}.png"
         image_path = save_dir / filename
         
-        with open(image_path, "wb") as f:
-            f.write(image_bytes)
+        write_image_atomic(image_path, image_bytes)
         
         # Downsample for API calls (maintain 4:3 aspect ratio) - do this ONCE, not per API call
         # Smaller = faster uploads, and Gemini Flash doesn't need high-res for text/vision tasks
@@ -515,7 +556,7 @@ def generate_with_gemini(
             img = PILImage.open(io.BytesIO(image_bytes))
             img = img.convert("RGB")
             img = img.resize((480, 360), PILImage.LANCZOS)  # 4:3 aspect ratio (matches full-size)
-            img.save(small_path, format="PNG", optimize=True, quality=85)
+            save_pil_atomic(img, small_path, format="PNG", optimize=True, quality=85)
             print(f"[GOOGLE GEMINI] Image saved: {image_path} ({len(image_bytes)} bytes)")
             print(f"[GOOGLE GEMINI] Downsampled saved: {small_path} (480x360, 4:3 for API calls)")
         except Exception as e:
@@ -525,9 +566,11 @@ def generate_with_gemini(
         return str(image_path)
         
     except requests.exceptions.HTTPError as e:
-        # If Pro model is overloaded and this is the first frame, fallback to Flash
-        if e.response.status_code == 503 and is_first_frame and model == GEMINI_PRO_IMAGE:
-            print(f"[GOOGLE GEMINI] WARNING: Pro model overloaded, falling back to Flash for first frame...")
+        # A heavier model being busy shouldn't cost the run its opening frame —
+        # step down to Flash once. Keyed on "not already Flash" rather than one
+        # named model, so it still fires for whatever the render is configured to.
+        if e.response.status_code == 503 and is_first_frame and model != GEMINI_FLASH_IMAGE:
+            print(f"[GOOGLE GEMINI] WARNING: {model} overloaded, falling back to Flash for first frame...")
             return generate_with_gemini(prompt, caption, world_prompt, aspect_ratio, GEMINI_FLASH_IMAGE, time_of_day, is_first_frame=False)
         
         if e.response.status_code == 401 or e.response.status_code == 403:
@@ -573,18 +616,18 @@ def _apply_fps_hands_compositing(corrected_path, small_corrected_path, action_co
             "- Dirty, worn, weathered appearance (1993 grunge aesthetic)\n"
             "- Proper FPS positioning: lower third of frame, hands visible from wrists to fingertips\n"
             "- Natural lighting that matches the scene\n"
-            "- Slight VHS degradation on hands to match environment\n\n"
+            "- Weathered enough to match the scene\n\n"
             "COMPOSITION:\n"
             "- Hands should look like part of a first-person video game (Metro, Half-Life, Far Cry style)\n"
             "- Seamless integration with the environment\n"
             "- Maintain all scene elements behind the hands\n"
-            "- Keep VHS aesthetic and gritty 1993 atmosphere\n\n"
+            "- Keep the gritty 1993 atmosphere\n\n"
             "DO NOT:\n"
             "- Make hands too large or too small\n"
             "- Add unrealistic poses\n"
-            "- Clean up the image - keep the gritty VHS look\n"
+            "- Clean up the image\n"
             "- Change the background scene\n\n"
-            "Think: Photorealistic FPS game hands like Metro Exodus or Escape from Tarkov, but with 1993 VHS degradation."
+            "Think: Photorealistic FPS game hands like Metro Exodus or Escape from Tarkov, matching the scene."
         )
         
         # Read the corrected image
@@ -602,6 +645,9 @@ def _apply_fps_hands_compositing(corrected_path, small_corrected_path, action_co
             }
         ]
         
+        # Deliberately stays on the fast model regardless of render settings:
+        # this is a corrective pass over an already-downsampled copy, so paying
+        # Pro rates here buys nothing the finished frame can show.
         api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_FLASH_IMAGE}:generateContent"
         
         headers = {
@@ -616,7 +662,7 @@ def _apply_fps_hands_compositing(corrected_path, small_corrected_path, action_co
             "generationConfig": {
                 "responseModalities": ["IMAGE"],
                 "imageConfig": {
-                    "aspectRatio": "4:3"
+                    "aspectRatio": resolve_aspect_ratio()
                 }
             }
         }
@@ -643,8 +689,7 @@ def _apply_fps_hands_compositing(corrected_path, small_corrected_path, action_co
         fps_filename = corrected_pathobj.stem.replace("_corrected", "") + "_fps" + corrected_pathobj.suffix
         fps_path = corrected_pathobj.parent / fps_filename
         
-        with open(fps_path, "wb") as f:
-            f.write(composited_bytes)
+        write_image_atomic(fps_path, composited_bytes)
         
         # Create small version too
         from PIL import Image as PILImage
@@ -680,7 +725,7 @@ def _apply_pov_correction(original_path, small_path, previous_corrected_path=Non
             "- Any foreground held objects (guns, tools, items being carried)\n"
             "- Any character silhouette or body in the foreground\n"
             "- Photo borders, black borders, white borders, letterbox bars, frame edges\n"
-            "- Polaroid frames, picture frames, matting, VHS frame overlays\n\n"
+            "- Polaroid frames, picture frames, matting\n\n"
             "KEEP borders ONLY if they are:\n"
             "- Binocular view (figure-8 dual circles)\n"
             "- Scope/rifle view (circular reticle)\n"
@@ -690,14 +735,13 @@ def _apply_pov_correction(original_path, small_path, previous_corrected_path=Non
             "KEEP in the image:\n"
             "- All distant people (guards, enemies, figures in background) - these are fine\n"
             "- The scene composition and environment\n"
-            "- All lighting, atmosphere, and VHS aesthetic\n"
+            "- All lighting, atmosphere, and photographic look\n"
             "- Background action and details\n\n"
             "PRESERVE:\n"
-            "- 1993 VHS camcorder degradation style (grain, color bleed, analog look)\n"
             "- Muted, desaturated color palette\n"
             "- Gritty, raw, unpolished photographic quality\n\n"
             "The image should fill edge-to-edge UNLESS it's a viewing device frame.\n"
-            "Think: Security camera or handheld camcorder - pure environmental view with NO camera operator visible in foreground."
+            "Think: a photoreal environmental view with no camera operator in the foreground."
         )
         
         # Read the current image to correct
@@ -715,6 +759,9 @@ def _apply_pov_correction(original_path, small_path, previous_corrected_path=Non
             }
         ]
         
+        # Corrective pass over a downsampled copy — stays on the fast model
+        # whatever the render settings say, for the same reason as the hands
+        # compositing pass above.
         api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_FLASH_IMAGE}:generateContent"
         
         headers = {
@@ -729,7 +776,7 @@ def _apply_pov_correction(original_path, small_path, previous_corrected_path=Non
             "generationConfig": {
                 "responseModalities": ["IMAGE"],
                 "imageConfig": {
-                    "aspectRatio": "4:3"
+                    "aspectRatio": resolve_aspect_ratio()
                 }
             }
         }
@@ -756,8 +803,7 @@ def _apply_pov_correction(original_path, small_path, previous_corrected_path=Non
         corrected_filename = original_pathobj.stem + "_corrected" + original_pathobj.suffix
         corrected_path = original_pathobj.parent / corrected_filename
         
-        with open(corrected_path, "wb") as f:
-            f.write(corrected_bytes)
+        write_image_atomic(corrected_path, corrected_bytes)
         
         # Create small version too
         from PIL import Image as PILImage
@@ -819,6 +865,56 @@ def _apply_forward_zoom(image_path: str, zoom_factor: float = 1.35) -> bytes:
         return buffer.getvalue()
 
 
+def make_style_swatch(source_path: str, output_dir=None) -> Optional[str]:
+    """Reduce a frame to an abstract, blurred color/light field with no
+    legible geometry left in it — a reference an img2img call can use for
+    color/lighting continuity WITHOUT anything spatial to copy.
+
+    Telling Gemini "use this reference for style only, not composition"
+    does not reliably work when the reference is still a sharp, legible
+    photo — a hard transition tried exactly that (a "style-only" note plus
+    the previous frame as the sole reference) and the model kept
+    reproducing the old frame's camera angle and layout anyway, which is
+    why hard transitions send NO reference at all today (see
+    engine.py's _gen_image_impl). This takes the other lever: instead of
+    asking the model to ignore the photo's content, it destroys the
+    content before the request is ever sent. Downsampling to a handful of
+    cells averages away every edge and shape; blurring after upscaling
+    erases the residual mosaic blockiness so nothing resembling a boundary
+    survives. What's left is a smooth field of the frame's dominant colors
+    and roughly how bright/warm it was — exactly what color/lighting
+    continuity needs, and nothing a model could compose a new scene FROM.
+    """
+    from PIL import Image, ImageFilter
+    try:
+        with Image.open(source_path) as src:
+            src = src.convert("RGB")
+            w, h = src.size
+            if not w or not h:
+                return None
+            # A handful of cells per axis keeps "warm orange on the left,
+            # cool blue on the right" but destroys anything as specific as
+            # a doorway, a silhouette, or a horizon line.
+            tiny_w = max(6, w // 48)
+            tiny_h = max(4, h // 48)
+            tiny = src.resize((tiny_w, tiny_h), Image.BILINEAR)
+            out_w = 512
+            out_h = max(1, round(out_w * h / w))
+            swatch = tiny.resize((out_w, out_h), Image.BILINEAR)
+            swatch = swatch.filter(ImageFilter.GaussianBlur(radius=max(24, out_w // 12)))
+        out_dir = Path(output_dir) if output_dir else Path(source_path).parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{Path(source_path).stem}_styleswatch.png"
+        swatch.save(out_path)
+        print(f"[STYLE SWATCH] {Path(source_path).name} -> {out_path.name} "
+              f"({tiny_w}x{tiny_h} cells, averaged + blurred, no legible geometry)",
+              flush=True)
+        return str(out_path)
+    except Exception as e:
+        print(f"[STYLE SWATCH] failed for {source_path}: {e}", flush=True)
+        return None
+
+
 def generate_gemini_img2img(
     prompt: str,
     caption: str,
@@ -830,8 +926,17 @@ def generate_gemini_img2img(
     hd_mode: bool = True,
     output_dir: Path = None,
     is_flipbook: bool = False,
+    flipbook_grid: tuple[int, int] | None = None,
     portrait_mode: bool = False,
     ensemble_mode: bool = False,
+    style_only_swatch: bool = False,
+    subject_crop: bool = False,
+    object_subject: bool = False,
+    identity_paths: list[str] | None = None,
+    identity_seed: bool = False,
+    spec: dict | None = None,
+    include_people: bool = False,
+    hold_cast: bool = False,
 ) -> str:
     """
     Edit an image using Google Gemini (image-to-image).
@@ -846,14 +951,31 @@ def generate_gemini_img2img(
         time_of_day: Time of day for lighting consistency
         hd_mode: If True, use Pro model for higher quality (slower). If False, use Flash for speed.
         is_flipbook: If True, suppress single-image constraints (like NO BORDERS).
+        flipbook_grid: (rows, cols) of the grid being asked for. The grid note
+            below used to say "4x4" no matter what the caller had asked the
+            model for, which is a contradiction the moment the panel count is a
+            setting. Defaults to the historical 4x4 for older call sites.
         ensemble_mode: When True, treat EVERY reference image as an independent
             character/prop portrait to be composited into a BRAND NEW location
             described by `prompt` — NOT the current environment and NOT the
             previous moment. Used by the CAMP moment to gather multiple
             companions (+ the jeep prop) around a campfire that isn't the
             scene the player is standing in. Mutually exclusive in spirit with
-            `portrait_mode` (which reframes ONE character INTO the current
-            environment) — pass only one of the two as True.
+            `portrait_mode` (which holds likeness from a SCAN bbox crop of
+            ONE character) — pass only one of the two as True.
+        subject_crop: When True with ``portrait_mode``, the reference is a
+            crop of the tagged subject (their actual pixels), not a wide
+            environment plate. Continuity is likeness, not "invent a face
+            standing in this room."
+        object_subject: When True with ``portrait_mode``, the crop is a
+            machine/object. Hold those pixels and do not invent a person.
+        style_only_swatch: When True, `reference_image_path` points at a
+            `make_style_swatch()` output — the previous frame blurred past
+            recognition — rather than a legible photo. Swaps in a continuity
+            instruction that tells the model there is nothing spatial left
+            to copy and to take ONLY color/lighting from it, instead of the
+            normal "match camera position and composition" instruction that
+            would otherwise fight the swatch's own blur for no benefit.
         
     Returns:
         Local path to the saved image
@@ -869,12 +991,24 @@ def generate_gemini_img2img(
     if isinstance(reference_image_path, str):
         image_paths = [reference_image_path]
     else:
-        image_paths = reference_image_path[:6]  # Max 6 reference images
+        image_paths = list(reference_image_path or [])
+    identity_paths = [p for p in (identity_paths or []) if p]
+    identity_set = set(identity_paths)
+    # Character / level plates FIRST. Gemini copies the person in slot 1;
+    # putting the previous still there is why MOVE TO redrew the leftover guy
+    # even when a woman plate was attached last. Continuity frames follow,
+    # labeled as the previous place, not as who to draw.
+    if identity_paths and not hold_cast:
+        image_paths = identity_paths + [p for p in image_paths if p not in identity_set]
+    image_paths = image_paths[:6]
     
     print(f"[GOOGLE GEMINI] Image editing mode with {len(image_paths)} reference image(s)", flush=True)
     
-    # Read and encode all reference images
+    # Read and encode all reference images. Label each one so a character
+    # sheet is not treated as "the previous game frame" (that is how a recast
+    # kept drawing the default guy from the leftover still).
     image_parts = []
+    labeled_parts = []
     for img_path in image_paths:
         # Choose between downsampled or full-res based on USE_DOWNSAMPLED_FOR_IMG2IMG toggle
         from pathlib import Path
@@ -907,26 +1041,47 @@ def generate_gemini_img2img(
         
         print(f"[GOOGLE GEMINI] Reference image {len(image_parts)+1}: {img_path_obj.name} ({quality_note})")
         
-        image_parts.append({
+        encoded = {
             "inlineData": {
                 "mimeType": mime_type,
                 "data": image_b64
             }
-        })
+        }
+        image_parts.append(encoded)
+        if identity_seed or identity_paths or game_identity.is_viewfinder_spec(spec):
+            if style_only_swatch and img_path not in identity_set:
+                label = (
+                    "COLOR/LIGHT SWATCH — palette only. No person, no place, "
+                    "no composition to copy."
+                )
+            else:
+                label = game_identity.reference_part_label(img_path, spec)
+            labeled_parts.append({"text": label})
+        labeled_parts.append(encoded)
     
-    # Load prompt template from JSON (single source of truth!)
-    structured_prompt = prompts_store.render_image_template("gemini_image_to_image_instructions", prompt)
+    # Identity plates are not a previous game frame. Using the img2img
+    # template here ("the attached image is the PREVIOUS moment") is what
+    # made a character-sheet recast redraw the default guy at the fence.
+    template_key = (
+        "gemini_text_to_image_instructions" if identity_seed
+        else "gemini_image_to_image_instructions"
+    )
+    structured_prompt = prompts_store.render_image_template(template_key, prompt)
     
     # Inject time/weather/mood if provided
     if time_of_day:
-        time_injection = f"\n\n⏰ CRITICAL TIME/ATMOSPHERE CONSTRAINTS:\n{time_of_day}\nThe lighting, weather, and atmosphere MUST match these exact conditions. This is non-negotiable.\n"
+        time_injection = f"\n\nLighting: {time_of_day}.\n"
         structured_prompt = structured_prompt + time_injection
     
     # Add continuity instructions - DIFFERENT for flipbook vs single-frame img2img.
     # ensemble_mode takes precedence over portrait_mode when both are set: camp
     # composites pass portrait_mode=True only to allow people (skip anti-person),
     # while the continuity grammar must be the NEW-LOCATION ensemble path.
-    if ensemble_mode:
+    if identity_seed:
+        continuity_instruction = (
+            "\n\n" + game_identity.identity_seed_instruction(spec)
+        )
+    elif ensemble_mode:
         # ENSEMBLE COMPOSITE: each reference is a stand-alone character/prop
         # portrait (companion portraits + the jeep prop), not the environment
         # the player is currently standing in. The instruction describes a
@@ -960,12 +1115,91 @@ def generate_gemini_img2img(
             "placed naturally within the new location described. This is a full\n"
             "environment shot — a wide establishing shot is correct here."
         )
+    elif style_only_swatch:
+        # The reference here is make_style_swatch()'s output, not a photo of
+        # anywhere — every shape and edge in it was destroyed on purpose
+        # before this request was built. The normal single-frame branch's
+        # "match camera position/composition" language would ask the model
+        # to infer a layout from a blur, which is exactly the ambiguity that
+        # makes an img2img model default back to whatever it CAN read off
+        # the pixels (see the hard-transition history: a "style only" note
+        # next to a still-legible photo did not stop it copying that photo's
+        # composition). Removing that language, not just softening it, is
+        # the point — there is nothing left to copy, so nothing here asks
+        # for anything to be copied except color and light.
+        continuity_instruction = (
+            "\n\n🎨 CRITICAL — THIS REFERENCE IS A COLOR/LIGHT SWATCH, NOT A PLACE:\n"
+            "═══════════════════════════════════════════════════════════════════\n"
+            "The reference image has been deliberately reduced to an abstract, "
+            "blurred field of color. It contains NO shapes, NO objects, NO room, "
+            "NO camera angle, and NO composition — there is nothing spatial in "
+            "it to copy, because it was destroyed on purpose before you received "
+            "it.\n"
+            "\n"
+            "USE the reference ONLY for:\n"
+            "✅ Overall color palette / color grade\n"
+            "✅ Rough light level and warmth (bright vs dim, warm vs cool)\n"
+            "\n"
+            "DO NOT use the reference for anything else:\n"
+            "❌ Do not infer a room, a horizon, a doorway, or any shape from its blur\n"
+            "❌ Do not hold back on composing a brand-new shot — build the scene "
+            "ENTIRELY from the description below, as if this reference were blank\n"
+            "\n"
+            "The scene description below is the ONLY source of truth for what is "
+            "actually in this shot and where the camera is looking."
+        )
+    elif portrait_mode and object_subject:
+        # CONVERSATION CLOSE-UP of a machine/object crop. Those pixels ARE the
+        # object. Hold them — do not invent a person standing in a new room.
+        continuity_instruction = (
+            "\n\n🎬 CRITICAL — THIS IS THE OBJECT (SCAN CROP):\n"
+            "═══════════════════════════════════════════════════════════════════\n"
+            "The reference image is a CROP of the tagged object, cut from the live\n"
+            "realtime video frame using its detected bounding box. Those pixels ARE\n"
+            "the object — a monitor, radio, terminal, or other thing being spoken to.\n"
+            "This is not a character portrait. Do not invent a person.\n"
+            "\n"
+            "COPY from the crop (non-negotiable likeness):\n"
+            "✅ OBJECT: same shape, materials, wear, markings, screen/faceplate\n"
+            "✅ LIGHTING: same light on the object, color temperature, shadow direction\n"
+            "✅ PALETTE + FILM LOOK: same grain, color grade\n"
+            "✅ BACKGROUND: whatever of the crop's environment remains, softly out of focus\n"
+            "\n"
+            "CHANGE (the reframe only):\n"
+            "→ FRAMING: cinematic close-up, the SAME object filling the frame\n"
+            "→ FOCUS: the object is sharp; leftover background is soft\n"
+            "\n"
+            "Think: you zoomed into the tagged object and held on it. Same object.\n"
+            "NO person, NO face, NO figure, NO human in the shot."
+        )
+    elif portrait_mode and subject_crop:
+        # CONVERSATION PORTRAIT from a SCAN bbox crop: those pixels ARE the
+        # person. Hold likeness and reframe — do not invent a different face
+        # from a wide environment plate.
+        continuity_instruction = (
+            "\n\n🎬 CRITICAL — THIS IS THE PERSON (SCAN CROP):\n"
+            "═══════════════════════════════════════════════════════════════════\n"
+            "The reference image is a CROP of the tagged figure, cut from the live\n"
+            "frame using their detected bounding box. Those pixels ARE their face,\n"
+            "body, clothes, and the light falling on them. This is not a wide room\n"
+            "plate. Do not invent a different person.\n"
+            "\n"
+            "COPY from the crop (non-negotiable likeness):\n"
+            "✅ FACE: same features, age, skin, expression, hair\n"
+            "✅ BODY / CLOTHES: same build, jacket, shirt, colors, wear\n"
+            "✅ LIGHTING: same light on their face, color temperature, shadow direction\n"
+            "✅ PALETTE + FILM LOOK: same grain, color grade\n"
+            "\n"
+            "CHANGE (the reframe only):\n"
+            "→ FRAMING: cinematic medium shot, mid-torso up, this SAME figure\n"
+            "→ FOCUS: they are sharp; whatever of the crop's background remains is soft\n"
+            "→ COMPOSITION: eye-line toward camera, present and lit\n"
+            "\n"
+            "Think: you zoomed into the tagged person and held on them. Same human."
+        )
     elif portrait_mode:
-        # CONVERSATION PORTRAIT: the reference IS the environment the player is
-        # standing in. Keep that room/lighting/grain/palette, but re-frame it as
-        # the NEXT SHOT — a cinematic medium shot of the character being spoken
-        # to, standing IN that same place. This is the whole point: the portrait
-        # must read as the same continuous scene, not a new location.
+        # Fallback when we only have a full frame and no bbox (or companion
+        # placement into the current environment): keep the room and reframe.
         continuity_instruction = (
             "\n\n🎬 CRITICAL — SAME PLACE, NEXT SHOT (CONVERSATION PORTRAIT):\n"
             "═══════════════════════════════════════════════════════════════════\n"
@@ -977,8 +1211,9 @@ def generate_gemini_img2img(
             "COPY from the reference (non-negotiable continuity):\n"
             "✅ ENVIRONMENT: same room/location, same walls, props, depth, background\n"
             "✅ LIGHTING: same light sources, color temperature, shadow direction\n"
-            "✅ PALETTE + FILM LOOK: same VHS grain, color grade, analog degradation\n"
+            "✅ PALETTE + FILM LOOK: same grain, color grade\n"
             "✅ TIME OF DAY / ATMOSPHERE: identical to the reference\n"
+            "✅ If a person is already visible, keep THAT face/clothes — do not replace them.\n"
             "\n"
             "CHANGE (the reframe):\n"
             "→ FRAMING: a cinematic medium shot (mid-torso up) of the CHARACTER\n"
@@ -987,25 +1222,31 @@ def generate_gemini_img2img(
             "\n"
             "The character described in the instruction now OCCUPIES this environment.\n"
             "Think: the operator lowered the camera and turned to face the person\n"
-            "they're talking to — same tape, same room, one shot later."
+            "they're talking to — same room, one shot later."
         )
     elif is_flipbook:
-        # FLIPBOOK MODE: The FIRST reference image (panel 16 of previous sequence) is the
-        # SPATIAL GROUND TRUTH — Frame 1 of the new grid must continue from that exact position.
+        # FLIPBOOK MODE: The FIRST reference image (the previous sequence's LAST
+        # panel) is the SPATIAL GROUND TRUTH — Frame 1 of the new grid must
+        # continue from that exact position. Panel numbers here follow the
+        # caller's grid: they were written as a literal 16 when 4x4 was the only
+        # shape, which told a 2x2 request to evolve across sixteen frames.
+        _fb_rows, _fb_cols = flipbook_grid or (4, 4)
+        _fb_last = _fb_rows * _fb_cols
+        _fb_mid = max(2, _fb_last // 2)
         continuity_instruction = (
             "\n\n⚡ CRITICAL — TEMPORAL CONTINUITY: YOUR CAMERA POSITION RIGHT NOW\n"
             "═══════════════════════════════════════════════════════════════════\n"
             "\n"
-            "The FIRST reference image is PANEL 16 of the previous sequence.\n"
+            "The FIRST reference image is the FINAL PANEL of the previous sequence.\n"
             "That image shows EXACTLY WHERE YOUR CAMERA IS POINTING RIGHT NOW.\n"
             "It is the LAST THING YOU SAW before this new sequence begins.\n"
             "\n"
-            "🎯 FRAME 1 OF YOUR NEW GRID = THE VERY NEXT MOMENT AFTER PANEL 16:\n"
+            "🎯 FRAME 1 OF YOUR NEW GRID = THE VERY NEXT MOMENT AFTER IT:\n"
             "• Frame 1's camera position flows DIRECTLY from the first reference image\n"
             "• Same camera height (how high off the ground)\n"
             "• Same camera orientation (what direction you're facing)\n"
             "• Same visible landmarks, structures, ground texture\n"
-            "• Frame 1 is literally 0.25 seconds AFTER that reference — NOT a new scene\n"
+            "• Frame 1 is the instant AFTER that reference — NOT a new scene\n"
             "\n"
             "COPY from the first reference image (SPATIAL GROUND TRUTH — non-negotiable):\n"
             "✅ CAMERA HEIGHT: Eye-level position identical to reference\n"
@@ -1014,13 +1255,12 @@ def generate_gemini_img2img(
             "✅ GROUND TYPE: Same terrain texture (desert, concrete, rubble, etc.)\n"
             "✅ HORIZON LINE: Same height in frame relative to sky/ground split\n"
             "✅ LIGHTING: Same time of day, shadow direction, atmospheric haze\n"
-            "✅ FILM QUALITY: Same VHS grain, analog degradation, color palette\n"
+            "✅ FILM QUALITY: Same grain and color palette\n"
             "\n"
-            "EVOLVE ACROSS FRAMES 1 → 16 (show the action from THIS EXACT POSITION):\n"
+            f"EVOLVE ACROSS FRAMES 1 → {_fb_last} (show the action from THIS EXACT POSITION):\n"
             "🎬 Frame 1 = immediately after the reference — one step forward\n"
-            "🎬 Frames 2-8 = action building, natural body movement and camera bob\n"
-            "🎬 Frames 9-14 = significant spatial progress from the starting position\n"
-            "🎬 Frame 16 = meaningful advancement — you have MOVED through the scene\n"
+            f"🎬 Frames 2-{_fb_mid} = action building, natural body movement and camera bob\n"
+            f"🎬 Frame {_fb_last} = meaningful advancement — you have MOVED through the scene\n"
             "\n"
             "⚠️ WHAT KILLS CONTINUITY (DO NOT DO THIS):\n"
             "❌ Showing a completely different environment in Frame 1 vs the reference\n"
@@ -1034,6 +1274,25 @@ def generate_gemini_img2img(
             "Your Frame 1 is the NEXT FRAME of that same continuous recording.\n"
             "A viewer watching both in sequence should see seamless, uncut footage.\n"
         )
+    elif hold_cast:
+        # Encounter resolve: do NOT "keep similar framing" — that freezes the
+        # standoff and hides the verb. Faces stay; bodies move.
+        continuity_instruction = (
+            "\n\n⚡ ACTION RESTAGE — SAME PEOPLE, NEW POSE:\n"
+            "The reference is the confrontation photograph. It is the ONLY cast.\n"
+            "\n"
+            "COPY from the reference (non-negotiable):\n"
+            "✅ BOTH faces, hair, clothes, gender, build — pixel-level likeness\n"
+            "✅ The same place, light, materials, and sky\n"
+            "✅ The same two people. No third person. No character-sheet recast.\n"
+            "\n"
+            "CHANGE (required — a posed copy is a failure):\n"
+            "→ BODY POSITION and CONTACT so the instruction's verb is visible\n"
+            "→ Hands on the other body, weight shifting, a torso reacting\n"
+            "→ Framing may tighten or widen to show the action\n"
+            "\n"
+            "Do not return two people standing still facing each other."
+        )
     else:
         # SINGLE FRAME MODE: Previous frame is for SMOOTH CONTINUITY
         continuity_instruction = (
@@ -1045,7 +1304,7 @@ def generate_gemini_img2img(
             "✅ CAMERA HEIGHT: Maintain same eye-level/perspective height\n"
             "✅ CAMERA ANGLE: Keep similar framing and field of view\n"
             "✅ COMPOSITION: Similar framing with natural evolution\n"
-            "✅ VISUAL STYLE: VHS quality, grain, color palette, lighting\n"
+            "✅ VISUAL STYLE: grain, color palette, lighting\n"
             "✅ ENVIRONMENT: Same location, same aesthetic\n"
             "\n"
             "CHANGE naturally (show progression):\n"
@@ -1060,13 +1319,16 @@ def generate_gemini_img2img(
     
     structured_prompt = structured_prompt + continuity_instruction
     
-    # Add CRITICAL anti-border instructions (only for non-flipbooks)
-    if not is_flipbook:
-        anti_border = "\n\nCRITICAL - ABSOLUTELY NO BORDERS OR FRAMES:\nThe image MUST fill the ENTIRE canvas edge-to-edge with ZERO borders, frames, or edges of any kind. NO black bars, NO white borders, NO photo frames, NO matting, NO letterboxing. The content fills 100% of the image area. This is RAW FOOTAGE, not a framed photograph."
-        structured_prompt = structured_prompt + anti_border
-    else:
+    if is_flipbook:
         # For flipbooks, we NEED the grid lines to remain, so we're more relaxed
-        flipbook_grid_note = "\n\nCRITICAL - 4x4 GRID STRUCTURE:\nPreserve the 4x4 grid structure from the layout template. Each panel must show a slightly different moment in time. The output MUST be a 4x4 grid."
+        rows, cols = flipbook_grid or (4, 4)
+        shape = f"{rows}x{cols}"
+        flipbook_grid_note = (
+            f"\n\nCRITICAL - {shape} GRID STRUCTURE:\n"
+            f"Preserve the {shape} grid structure from the layout template. "
+            f"Each panel must show a slightly different moment in time. "
+            f"The output MUST be a {shape} grid of {rows * cols} panels."
+        )
         structured_prompt = structured_prompt + flipbook_grid_note
     
     # Anti-person REMOVAL directive — for environment stills only. Portrait and
@@ -1085,31 +1347,100 @@ def generate_gemini_img2img(
             "be recognizable."
         )
         structured_prompt = structured_prompt + add_ensemble
+    elif portrait_mode and object_subject:
+        add_object = (
+            "\n\n🎭 CRITICAL - KEEP THIS EXACT OBJECT:\n\n"
+            "The reference IS a crop of the object you are talking to. Hold its\n"
+            "shape, materials, wear, and light. Reframe to a cinematic close-up of\n"
+            "THIS same object. Do NOT invent a person. Do NOT add a face or figure.\n"
+            "Do NOT replace the object with a character portrait."
+        )
+        structured_prompt = structured_prompt + add_object
+    elif portrait_mode and subject_crop:
+        add_person = (
+            "\n\n🎭 CRITICAL - KEEP THIS EXACT PERSON:\n\n"
+            "The reference IS a crop of the person you are talking to. Hold their\n"
+            "face, hair, clothes, and build. Reframe to a cinematic medium shot of\n"
+            "THIS same figure. Do NOT invent a different person. Do NOT replace\n"
+            "their face. Do NOT turn this into an empty room."
+        )
+        structured_prompt = structured_prompt + add_person
     elif portrait_mode:
         add_person = (
             "\n\n🎭 CRITICAL - THE CHARACTER IS THE SUBJECT:\n\n"
             "Unlike the game's environment shots, THIS shot MUST feature the person.\n"
             "Render the character described in the instruction as a real, present\n"
             "human (or being) standing in the reference environment, framed as a\n"
-            "cinematic medium shot. Do NOT delete or hide them. Do NOT turn this\n"
-            "into an empty room. The character faces the camera, clearly lit and\n"
-            "in focus, with the reference environment softly behind them."
+            "cinematic medium shot. If they are already visible in a reference,\n"
+            "keep that same face and clothes. Do NOT delete or hide them. Do NOT\n"
+            "turn this into an empty room. The character faces the camera, clearly\n"
+            "lit and in focus, with the reference environment softly behind them."
         )
         structured_prompt = structured_prompt + add_person
-    elif game_identity.shows_character():
-        # Third-person camera: the player asked to see their character, so the
-        # reference frame legitimately contains them and deleting them would be
-        # deleting the protagonist.
+    elif hold_cast:
+        # Encounter resolve: the confrontation still IS the cast. A character
+        # sheet in slot 1 recasts the player and drops the challenger; the
+        # enter-path "add a new person" invents a third face. Same two bodies,
+        # new pose, verb visible.
         structured_prompt = structured_prompt + (
-            "\n\n🕹️ CRITICAL - KEEP THE PLAYER CHARACTER IN FRAME:\n\n"
-            "The reference image shows the player's own character. They belong here.\n"
-            "Carry them into this frame as the SAME person — same face, build, hair, and\n"
-            "outfit — moved and re-posed to match the action described. See the CAMERA\n"
-            "DIRECTIVE for where they sit in the composition.\n\n"
-            "DO NOT erase them. DO NOT swap them for a different person. DO NOT render an\n"
-            "empty environment plate — a frame with no character in it is a failed render."
+            "\n\n🔥 ACTION RESTAGE — SAME CAST, NEW POSE:\n"
+            "The reference photograph already contains every person who exists "
+            "in this shot. Copy BOTH faces, hair, clothes, and bodies from that "
+            "still. Do not introduce a third person. Do not replace either "
+            "person with a character sheet or a new face. Do not change gender.\n"
+            "ONLY change pose and contact so the instruction's verb is visible: "
+            "weight shifting, hands on the other body, a torso reacting. "
+            "A posed conversation with no contact is a failure.\n"
+            "Keep the same place and light."
+        )
+    elif include_people:
+        # Encounter / confrontation restage: KEEP the player AND ADD a new
+        # person. The default environment path strips humans, which is why
+        # strangers were appearing only on the aftermath turn.
+        if game_identity.shows_character(spec):
+            has_plate = bool(identity_paths) or (
+                identity_seed and bool(game_identity.character_reference_paths(spec))
+            )
+            structured_prompt = structured_prompt + game_identity.keep_character_instruction(
+                spec, has_character_plate=has_plate, extras_are_strangers=True,
+            )
+        structured_prompt = structured_prompt + game_identity.keep_place_instruction(
+            spec,
+            has_setting_plate=bool(
+                identity_paths and game_identity.setting_reference_paths(spec)
+            ),
+        )
+        structured_prompt = structured_prompt + (
+            "\n\n🔥 CONFRONTATION — A NEW PERSON MUST BE IN THIS FRAME:\n"
+            "In ADDITION to the player character, draw the newly introduced "
+            "character described in the instruction. They must be large, "
+            "readable, and already in this place — a two-shot or over-shoulder. "
+            "They are NOT a second copy of the player. Different face, hair, "
+            "clothes, and body. Do not put them in the player's vest, cap, "
+            "or press badge. Two outfits, two people.\n"
+            "Do NOT render an empty environment. Do NOT delete people. "
+            "Do NOT wait for a later frame to introduce them."
+        )
+    elif game_identity.shows_character(spec):
+        has_plate = bool(identity_paths) or (
+            identity_seed and bool(game_identity.character_reference_paths(spec))
+        )
+        structured_prompt = structured_prompt + game_identity.keep_character_instruction(
+            spec, has_character_plate=has_plate,
+        )
+        structured_prompt = structured_prompt + game_identity.keep_place_instruction(
+            spec,
+            has_setting_plate=bool(
+                identity_paths and game_identity.setting_reference_paths(spec)
+            ),
         )
     else:
+        structured_prompt = structured_prompt + game_identity.keep_place_instruction(
+            spec,
+            has_setting_plate=bool(
+                identity_paths and game_identity.setting_reference_paths(spec)
+            ),
+        )
         anti_person = "\n\n🚨 CRITICAL - REMOVE ANY PEOPLE FROM REFERENCE IMAGE:\n\n" \
                      "The REFERENCE IMAGE may contain a person/character - this is WRONG. Your job is to REMOVE THEM.\n\n" \
                      "GENERATE THE EXACT SAME SCENE but with the person DELETED. Show ONLY the environment.\n\n" \
@@ -1123,81 +1454,57 @@ def generate_gemini_img2img(
                      "ONLY SHOW: Environment, objects, vehicles, structures, sky, ground, debris, fire, smoke - NO HUMANS."
         structured_prompt = structured_prompt + anti_person
     
-    # Add CRITICAL anti-timecode/text instructions (ULTRA-STRONG for img2img)
-    anti_timecode = (
-        "🚫🚫🚫 CRITICAL RULE #1 - NO TEXT ANYWHERE 🚫🚫🚫\n\n"
-        "ZERO text. ZERO numbers. ZERO letters. ZERO symbols.\n"
-        "DO NOT GENERATE: 'REC', 'DEC 14 1993', '16:45:22', date stamps, timecode\n"
-        "DO NOT GENERATE: Battery indicators, recording icons, 'PCC HISS'\n"
-        "DO NOT GENERATE: ANY TEXT OF ANY KIND\n\n"
-        "Reference images MAY have text overlays - YOU MUST REMOVE THEM.\n"
-        "DO NOT copy 'REC' or timecode from references.\n"
-        "Your output must be 100% visual with ZERO text overlays.\n"
-        "Strip ALL text. No timecode. No 'REC'. No dates. No UI elements.\n\n"
-        "REPEAT: NO TEXT. NO TIMECODE. NO 'REC'. NO DATES. NO NUMBERS."
-    )
-    
-    structured_prompt = structured_prompt + anti_timecode
-    
-    # Add negative prompt emphasis. Portrait/ensemble keep the text/border bans
-    # but drop the person bans (characters are intentional subjects).
+    # Mode-specific "don't do this" — look lives in image_art_direction.
+    # Do not name REC / timecode / VHS HUD; that draws a viewfinder.
     if ensemble_mode:
-        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Collage layout, split-screen of separate portraits, floating heads, mismatched lighting that ignores the campfire."
+        negative_emphasis = (
+            "\n\nNot a collage, not a split-screen of portraits, not floating heads, "
+            "not lighting that ignores the campfire."
+        )
+    elif portrait_mode and object_subject:
+        negative_emphasis = (
+            "\n\nNot a person, not a face, not a figure, not a different object "
+            "than the crop, not a wide establishing shot."
+        )
+    elif portrait_mode and subject_crop:
+        negative_emphasis = (
+            "\n\nNot a different person than the crop, not an invented face, "
+            "not an empty room, not a wide establishing shot."
+        )
     elif portrait_mode:
-        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Empty room with no subject, wide establishing shot, a completely different location than the reference."
-    elif game_identity.shows_character():
-        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Empty scene with no character, a different person than the reference character, floating disembodied camera view."
+        negative_emphasis = (
+            "\n\nNot an empty room, not a wide establishing shot, "
+            "not a different person than the one already in the reference."
+        )
+    elif hold_cast:
+        negative_emphasis = (
+            "\n\nNot a posed standoff, not a new face, not a character-sheet "
+            "recast, not a third person, not empty hands at a distance."
+        )
+    elif include_people or game_identity.shows_character(spec):
+        negative_emphasis = (
+            "\n\nNot an empty scene, not a different person than the character sheet."
+            if (identity_paths or identity_seed) else
+            "\n\nNot an empty scene, not a missing second person, "
+            "not a different person than the ones described."
+        )
     else:
-        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, back of head, shoulders visible, person's back, character's back, body parts, hands, arms, legs, feet, torso, silhouette, person from behind."
-    
-    # OPTICAL REALITY ANCHOR - Prevent video game aesthetic drift over time
-    photographic_anchor = (
-        "\n\n📹 OPTICAL REALITY - REAL FOOTAGE:\n"
-        "This is REAL LIGHT captured through REAL GLASS OPTICS onto PHYSICAL MAGNETIC TAPE.\n"
-        "This is PHOTOGRAPHIC REALITY - actual camera capturing actual physical world.\n"
-        "NOT: video game, 3D render, CGI, game engine, Unity, Unreal Engine, digital art\n"
-        "NOT: Game screenshot with filters, rendered graphics with effects added\n"
-        "NOT: Fake artifacts, fake glitches, digital effects overlaid on render\n\n"
-        "OPTICAL CAPTURE:\n"
-        "Real optical lens capturing real light bouncing off real physical surfaces\n"
-        "Natural lighting, natural shadows, natural reflections - PHYSICAL WORLD\n"
-        "Camera optics: real glass lens, real sensor, real photographic process\n"
-        "This is PHOTOGRAPHY - light captured by camera, not graphics rendered by computer\n\n"
-        "PHOTOGRAPHIC CHAOS - ANTI-POLYGON ENFORCEMENT:\n"
-        "NOTHING is clean, geometric, or modeled. This is MESSY REALITY:\n"
-        "Ground: IRREGULAR with dirt clumps, sand ripples, footprints, debris, vegetation\n"
-        "Surfaces: WEATHERED with rust, stains, peeling paint, cracks, organic decay\n"
-        "Fences: BENT, sagging, irregular - NOT straight polygon lines\n"
-        "Buildings: ASYMMETRIC with broken windows, varied textures, natural damage\n"
-        "Sky: ATMOSPHERIC DEPTH with clouds, haze, gradient - NOT flat color\n"
-        "Shadows: SOFT and DIFFUSE from real sun through atmosphere\n"
-        "Textures: VARIED, COMPLEX, no repeated patterns, organic randomness\n"
-        "FORBIDDEN: Flat planes, geometric shapes, polygon meshes, 3D models, game assets\n"
-        "FORBIDDEN: Clean edges, perfect lines, repeated textures, tiled surfaces\n"
-        "REQUIRED: Optical chaos, irregular forms, messy detail, photographic complexity\n\n"
-        "TAPE MEDIUM:\n"
-        "Recorded onto VHS magnetic tape (consumer analog format, 1990s)\n"
-        "Tape introduces natural softness, slight color shifts, gentle noise\n"
-        "Tape characteristics are SUBTLE - natural consequence of analog storage medium\n"
-        "NOT fake digital artifacts - real physical tape properties\n\n"
-        "HISTORICAL REFERENCE - LOOKS EXACTLY LIKE:\n"
-        "1991 Gulf War CNN news footage (Bernard Shaw, Peter Arnett coverage)\n"
-        "1992 Rodney King video (George Holliday's Sony Handycam)\n"
-        "1993 Waco siege news coverage (live broadcast B-roll)\n"
-        "Alive in Joburg (2005) - Neill Blomkamp documentary-style handheld\n"
-        "Early 1990s amateur home video, news footage, surveillance tapes\n"
-        "Real historical footage - NOT modern recreations or game graphics\n\n"
-        "PRESERVE the photographic reality and messy irregularity from reference images.\n"
-        "DO NOT drift toward game-like rendering, geometric shapes, clean digital video, or polygon meshes."
-    )
-    
-    # Put anti-timecode FIRST (highest attention), then the rest
-    full_prompt = anti_timecode + "\n\n" + structured_prompt + negative_emphasis + photographic_anchor
+        negative_emphasis = (
+            "\n\nNo person in frame: no head, shoulders, back, hands, or silhouette."
+        )
+
+    full_prompt = structured_prompt + negative_emphasis
 
     # Cast & camera reconciliation (see generate_with_gemini). Skipped for the
     # portrait/ensemble moments, which run their own deliberate camera grammar.
-    if not (portrait_mode or ensemble_mode):
-        full_prompt = game_identity.apply(full_prompt, "raw")
+    if not (portrait_mode or ensemble_mode or hold_cast):
+        full_prompt = game_identity.apply(full_prompt, "raw", spec)
+    if include_people and not hold_cast:
+        full_prompt = full_prompt + (
+            "\n\nThe newly introduced character MUST be visible NOW, large in "
+            "frame, in this same place. They are a stranger, not a clone of "
+            "the player. Do not leave them for a later shot."
+        )
 
     # Sanitize to avoid safety blocks
     full_prompt = _sanitize_for_safety(full_prompt)
@@ -1207,12 +1514,13 @@ def generate_gemini_img2img(
               f"truncating to {MAX_PROMPT_CHARS}. The tail will not reach the model.", flush=True)
         full_prompt = full_prompt[:MAX_PROMPT_CHARS]
     
-    # Stills standardized on Nano Banana 2 Lite for speed (see generate_with_gemini).
-    selected_model = GEMINI_FLASH_IMAGE
-    mode_name = "FAST MODE"
+    # Model and resolution come from ai_config.json (see generate_with_gemini).
+    selected_model = resolve_model()
+    selected_size = resolve_image_size()
+    mode_name = "FAST MODE" if selected_model == GEMINI_FLASH_IMAGE else "RENDER MODE"
 
     print(f"[GOOGLE GEMINI {mode_name}] Editing image to show next moment...")
-    print(f"[GOOGLE GEMINI {mode_name}] Using model: {selected_model} (Nano Banana 2 Lite) @ 1K")
+    print(f"[GOOGLE GEMINI {mode_name}] Using model: {selected_model} @ {selected_size}")
     safe_prompt = prompt[:100].encode('ascii', 'replace').decode('ascii')
     print(f"[GOOGLE GEMINI {mode_name}] Edit instructions: {safe_prompt}...")
     
@@ -1224,8 +1532,10 @@ def generate_gemini_img2img(
         "Content-Type": "application/json"
     }
     
-    # Build parts array: reference images FIRST, then text prompt (Gemini 2.x/3.x requirement)
-    parts = image_parts + [{"text": full_prompt}]
+    # Build parts array: labeled references FIRST, then text prompt.
+    # Labels sit next to each image so a character sheet is not read as
+    # "the previous moment" the way unlabeled attachments were.
+    parts = labeled_parts + [{"text": full_prompt}]
     
     payload = {
         "contents": [{
@@ -1234,10 +1544,11 @@ def generate_gemini_img2img(
         "generationConfig": {
             "responseModalities": ["IMAGE"],
             "imageConfig": {
-                # Conversation portraits stay wide; ensemble CAMP plates match
-                # the game's 4:3 stills so mobile contain-fit matches gameplay.
-                "aspectRatio": "4:3" if ensemble_mode else ("16:9" if portrait_mode else "4:3"),
-                "imageSize": "1K"  # Lowest res Nano Banana 2 Lite offers — fastest generation
+                # Conversation portraits stay wide; ensemble CAMP plates stay
+                # 4:3 so mobile contain-fit matches those plates. Game stills
+                # follow the renderer setting (Watch can pick 16:9 / 21:9).
+                "aspectRatio": "4:3" if ensemble_mode else ("16:9" if portrait_mode else resolve_aspect_ratio()),
+                "imageSize": selected_size
             }
         },
         "safetySettings": [
@@ -1336,8 +1647,7 @@ def generate_gemini_img2img(
         image_path = save_dir / filename
         
         print(f"[GOOGLE GEMINI IMG2IMG] Saving to {image_path}...", flush=True)
-        with open(image_path, "wb") as f:
-            f.write(image_bytes)
+        write_image_atomic(image_path, image_bytes)
         
         # Downsample for API calls (maintain 4:3 aspect ratio) - do this ONCE, not per API call
         from PIL import Image as PILImage
@@ -1349,7 +1659,7 @@ def generate_gemini_img2img(
             img = PILImage.open(io.BytesIO(image_bytes))
             img = img.convert("RGB")
             img = img.resize((480, 360), PILImage.LANCZOS)  # 4:3 aspect ratio (matches full-size)
-            img.save(small_path, format="PNG", optimize=True, quality=85)
+            save_pil_atomic(img, small_path, format="PNG", optimize=True, quality=85)
             print(f"[GOOGLE GEMINI] Edited image saved: {image_path}", flush=True)
             print(f"[GOOGLE GEMINI] Downsampled saved: {small_path} (480x360, 4:3 for API calls)", flush=True)
         except Exception as e:

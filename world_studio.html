@@ -579,6 +579,13 @@ body.view-list #mobile-list { display: block; }
     background: rgba(0,0,0,0.68); color: #fff; font-size: 0.8rem;
 }
 .plate .plate-remove:hover { background: var(--danger); }
+.plate-status {
+    margin: 8px 0 0;
+    min-height: 1em;
+    font-size: 0.78rem;
+    color: var(--text-dim, #8a8a8a);
+}
+.plate-status.is-reading { letter-spacing: 0.06em; opacity: 0.75; }
 
 /* Live compile preview — the exact text the model receives. */
 .compiled-pane {
@@ -759,7 +766,7 @@ body.view-map #minimap-hint { display: block; }
     <button class="btn primary" id="save-all-btn" onclick="saveAllDrafts()" disabled>💾 Save All</button>
     <button class="btn danger" onclick="confirmResetAll()">⟲ Reset All</button>
     <a class="btn ghost" id="admin-link" href="/admin">⚙ Admin</a>
-    <a class="btn ghost" id="play-link" href="/standalone" target="_blank">▶ Playtest</a>
+    <a class="btn ghost" id="play-link" href="/standalone?mode=watch" target="_blank">▶ Playtest</a>
 </div>
 
 <div id="viewport">
@@ -958,7 +965,7 @@ const ZONES = {
     cast:      { x: 40,   y: 40, w: 600, h: 900, label: 'Cast & Camera', desc: 'Who you play, where, and from what angle' },
     world:     { x: 700,  y: 40, w: 600, h: 640, label: 'World',         desc: 'The place and its rules' },
     narrative: { x: 1360, y: 40, w: 920, h: 640, label: 'Story & Play',  desc: 'How a turn resolves and what you\u2019re offered next' },
-    image:     { x: 2340, y: 40, w: 640, h: 990, label: 'Look',          desc: 'What every frame looks like' },
+    image:     { x: 2340, y: 40, w: 640, h: 990, label: 'Look',          desc: 'How The World Looks — photograph the place, not a viewfinder' },
 };
 
 // Explicit per-field position within its zone (relative to zone x/y).
@@ -1472,6 +1479,7 @@ function renderTextEditor(field, body, footer) {
     runValidation(field, currentValue);
 
     footer.innerHTML = `
+        <button class="btn" onclick="clearField('${field.id}')">Clear</button>
         <button class="btn danger" onclick="resetField('${field.id}')">⟲ Reset to Default</button>
         <button class="btn primary" id="save-field-btn" onclick="saveField('${field.id}')">💾 Save</button>
         <button class="btn ghost" onclick="discardField('${field.id}')">Discard changes</button>
@@ -1499,6 +1507,15 @@ function perspectiveOption(modeId) {
 function identityValue(blockId, fieldId) {
     const block = STATE.identity[blockId] || {};
     return block[fieldId];
+}
+
+function blockHasEmptyText(blockId) {
+    const block = STATE.identityById[blockId];
+    const vals = STATE.identity[blockId] || {};
+    return ((block && block.fields) || []).some((f) =>
+        (f.type === 'text' || f.type === 'longtext') &&
+        !String(vals[f.id] == null ? '' : vals[f.id]).trim()
+    );
 }
 
 function openIdentityInspector(blockId) {
@@ -1536,6 +1553,7 @@ function renderIdentityEditor(block) {
                     <strong>Drop an image here, or click to choose one</strong>
                     PNG, JPEG, WebP or GIF · up to 8MB · paste works too
                 </div>
+                <p class="plate-status" id="plate-status" aria-live="polite"></p>
                 <input type="file" id="plate-input" accept="image/*" style="display:none;">
             </div>
         ` : ''}
@@ -1581,8 +1599,10 @@ function renderIdentityEditor(block) {
     renderCompiledPane(block);
 
     footer.innerHTML = `
+        <button class="btn" id="cast-clear-btn">Clear</button>
         <button class="btn danger" id="cast-reset-btn">⟲ Reset Cast &amp; Camera</button>
     `;
+    document.getElementById('cast-clear-btn').onclick = () => clearIdentityBlock(block.id);
     document.getElementById('cast-reset-btn').onclick = resetIdentity;
 }
 
@@ -1710,6 +1730,21 @@ async function resetIdentity() {
     }
 }
 
+async function clearIdentityBlock(blockId) {
+    try {
+        const res = await studioFetch('/api/admin/studio/identity/reset', {
+            method: 'POST',
+            body: JSON.stringify({ block: blockId }),
+        });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error || 'Clear failed');
+        applyIdentityResponse(json.data);
+        toast('success', 'Cleared');
+    } catch (e) {
+        toast('error', 'Clear failed: ' + e.message);
+    }
+}
+
 // ─────────────────────────  REFERENCE PLATES  ─────────────────────────
 
 function wirePlateZone(block) {
@@ -1754,10 +1789,18 @@ function wirePlateZone(block) {
 
 function uploadPlate(file, slot) {
     if (!file) return;
+    const blockId = slot === 'character' ? 'player_character'
+                  : slot === 'setting' ? 'setting_reference'
+                  : slot;
+    const status = document.getElementById('plate-status');
     const reader = new FileReader();
     reader.onload = async () => {
         try {
-            toast('info', 'Uploading reference…');
+            if (status) {
+                status.textContent = 'reading the image…';
+                status.classList.add('is-reading');
+            }
+            toast('info', 'reading the image…');
             const res = await studioFetch('/api/admin/studio/reference', {
                 method: 'POST',
                 body: JSON.stringify({ image: reader.result, kind: slot, label: file.name }),
@@ -1765,9 +1808,15 @@ function uploadPlate(file, slot) {
             const json = await res.json();
             if (!json.success) throw new Error(json.error || 'Upload failed');
             applyIdentityResponse(json.data);
-            toast('success', 'Reference added');
+            const filled = json.data && json.data.image_fill && json.data.image_fill.fields;
+            toast('success', filled && filled.length ? 'Drafted from the image' : 'Reference added');
         } catch (e) {
             toast('error', 'Upload failed: ' + e.message);
+        } finally {
+            if (status) {
+                status.textContent = '';
+                status.classList.remove('is-reading');
+            }
         }
     };
     reader.readAsDataURL(file);
@@ -1953,6 +2002,14 @@ async function resetField(key) {
     } catch (e) {
         toast('error', 'Reset failed: ' + e.message);
     }
+}
+
+async function clearField(key) {
+    STATE.drafts[key] = '';
+    const ta = document.getElementById('field-textarea');
+    if (ta) ta.value = '';
+    updateCounters('');
+    await saveField(key);
 }
 
 function discardField(key) {

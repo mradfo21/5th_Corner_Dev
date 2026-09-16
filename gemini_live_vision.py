@@ -182,7 +182,7 @@ class LiveVisionSession:
     Threading model: game code (Flask request handlers, gunicorn worker
     threads) drives this via the sync ``push_frame`` / ``latest`` helpers.
     Internally we run a dedicated event loop in a background thread — same
-    pattern ``scene_audio._run_stream_blocking`` uses for Lyria, but held open
+    pattern a dedicated thread + event loop uses elsewhere, but held open
     rather than one-shot.
 
     Everything degrades quietly on error: connection failures set

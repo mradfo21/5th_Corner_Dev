@@ -10,7 +10,6 @@ pytest-playwright>=0.4
 # After installing, fetch the browser binary once with:
 #   playwright install chromium
 
-# Optional: native desktop window for run_desktop.py (see
-# DESKTOP_APP_ROADMAP.md). Not required — run_desktop.py falls back to a
-# normal browser tab if this isn't installed. Uncomment to try it locally:
-# pywebview>=4.4
+# Native window for play.py / the packaged app. Without it, play.py
+# falls back to a browser tab.
+pywebview>=4.4

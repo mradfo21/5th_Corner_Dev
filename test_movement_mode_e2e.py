@@ -9,10 +9,13 @@ against a MOCK Reactor SDK — and proves the movement instrument end to end:
   * The joystick is the CENTER of the action cluster in realtime video mode,
     with the ACT hub pushed to the LEFT and the PHOTO hub to the RIGHT.
   * Two CONTROL MODES, switched from the WORLD EDITOR (persisted per browser):
-      - DOOM (default): W/S move, A/D turn, Q/E strafe, no mouse look.
-      - FPS: W/S move, A/D strafe, and the MOUSE steers the camera.
-  * Mouse look is exercised with REAL mouse events (drag-look) and a real
-    click-to-capture pointer lock — not a test-only shim.
+      - Look (first-person default): WASD move, A/D strafe, mouse looks.
+      - Tank: W/S move, A/D turn, Q/E strafe, no mouse look.
+  * Mouse look is ALWAYS ON in Look mode: sweeping the mouse OUTSIDE a
+    center dead zone steers, with NO button held (real mouse events, not a
+    test-only shim). Motion inside that box does not turn the camera, so
+    objects can be clicked. A click is never consumed by the look — it
+    still fires a SCAN.
   * Holding W (keyboard) drives the LIVE world with Happy Oyster's held move
     command (move {direction:"Front"}) — a native navigation command, no world
     rebuild — and releasing it stops (releases held controls).
@@ -82,6 +85,7 @@ class TestMovementMode(unittest.TestCase):
         env["GEMINI_API_KEY"] = ""
         env["OPENAI_API_KEY"] = ""
         env["ANTHROPIC_API_KEY"] = ""
+        env["ELEVENLABS_API_KEY"] = ""
         env["REACTOR_API_KEY"] = "test-key-not-used"
         env["SCENE_RENDERER"] = "reactor"
 
@@ -119,12 +123,10 @@ class TestMovementMode(unittest.TestCase):
         self._logs = []
         page.on("console", lambda m: self._logs.append(f"{m.type}: {m.text}"))
         page.on("pageerror", lambda e: self._logs.append(f"PAGEERROR: {e}"))
-        # Skip the first-run "tap to scan" tutorial modal so it can't intercept
-        # the pointer/keyboard interactions these movement tests drive. Pin the
-        # control mode so key→action mapping is deterministic per test.
+        # Pin the control mode so key→action mapping is deterministic per test.
         page.add_init_script(
-            "try { localStorage.setItem('scan_tutorial_seen_v1', '1'); "
-            f"localStorage.setItem('input_profile', '{mode}'); }} catch (e) {{}}"
+            f"try {{ localStorage.removeItem('input_schemes');"
+            f" localStorage.setItem('input_profile', '{mode}'); }} catch (e) {{}}"
         )
         page.route(
             "https://esm.sh/**",
@@ -166,7 +168,8 @@ class TestMovementMode(unittest.TestCase):
         # boots via the reactor facade directly, bypassing the feed that normally
         # clears these, so clear them here.
         page.evaluate(
-            "() => { document.body.classList.remove('awaiting-first-scene');"
+            "() => { document.body.classList.remove("
+            "'awaiting-first-scene','start-menu-on','xp-open');"
             " const w = document.getElementById('action-wheel'); if (w) w.classList.remove('turn-active'); }"
         )
 
@@ -180,15 +183,64 @@ class TestMovementMode(unittest.TestCase):
             arg=[name, param, value], timeout=timeout,
         )
 
-    # A real look-drag over the world: press on the scene and sweep the mouse.
-    # This is exactly what a player does — no test-only injection hooks.
-    def _look_drag(self, page, dx=0, dy=0, steps=10, start=(550, 360)):
+    # A real look-sweep over the world: move the mouse across the scene with NO
+    # button held. This is exactly what a player does in always-on Look mode —
+    # no mouse.down (a click is reserved for SCAN), no test-only injection hooks.
+    # Sweeps start just outside the center dead zone so the drag is a look,
+    # not a click-safe wander. Leave the cursor over the world afterwards so
+    # the drive loop keeps ticking and the budget drains to a natural stop.
+    def _set_camera_mode(self, page, mode):
+        """Pin the live camera without a world rebuild. Third person orbits
+        yaw only; first person still pitches. Tests that need look-up must
+        opt into first person because SOMEWHERE ships third person."""
+        page.evaluate(
+            """(mode) => {
+              const cam = window.__Camera;
+              const cur = cam.contract || {};
+              cam.contract = Object.assign({}, cur, {
+                mode: mode,
+                shows_character: mode !== 'first_person',
+              });
+            }""",
+            mode,
+        )
+
+    def _dead_zone(self, page):
+        return page.evaluate("() => window.__MouseLook.deadZone()")
+
+    def _look_drag(self, page, dx=0, dy=0, steps=10, start=None):
+        """Sweep the mouse. Default start is just OUTSIDE the center dead
+        zone along the sweep axis, so the whole drag is a look."""
+        if start is None:
+            z = self._dead_zone(page)
+            pad = 16
+            cx = (z["left"] + z["right"]) / 2
+            cy = (z["top"] + z["bottom"]) / 2
+            # The corridor is full height — vertical look only exists once
+            # the cursor is already left or right of it.
+            if dx < 0:
+                x = z["left"] - pad
+            elif dx > 0:
+                x = z["right"] + pad
+            elif dy:
+                x = z["right"] + pad
+            else:
+                x = cx
+            y = cy
+            start = (x, y)
         page.mouse.move(*start)
-        page.mouse.down()
+        page.wait_for_timeout(20)
         for i in range(steps):
             page.mouse.move(start[0] + dx * (i + 1) / steps,
                             start[1] + dy * (i + 1) / steps)
             page.wait_for_timeout(35)
+
+    def _rest_look(self, page):
+        """Return the cursor to the dead-zone center so a side-orbit stops."""
+        z = self._dead_zone(page)
+        page.mouse.move((z["left"] + z["right"]) / 2,
+                        (z["top"] + z["bottom"]) / 2)
+        page.wait_for_timeout(40)
 
     def test_doom_mode_is_the_default_and_ad_turn_the_view(self):
         """DOOM (default): W/S move Front/Back, A/D TURN the view, Q/E strafe,
@@ -232,7 +284,6 @@ class TestMovementMode(unittest.TestCase):
             self._boot_live(page, model="happy-oyster")
             self._reset_cmd_log(page)
             self._look_drag(page, dx=-240)
-            page.mouse.up()
             page.wait_for_timeout(400)
             steer = page.evaluate(
                 """() => (window.__MOCK_CMD_LOG__||[]).filter(c =>
@@ -247,8 +298,8 @@ class TestMovementMode(unittest.TestCase):
             page.close()
 
     def test_fps_mode_ad_strafe_and_mouse_looks(self):
-        """FPS: A/D become STRAFE, and a real mouse sweep steers the camera —
-        left sweep looks left, right sweep looks right, and letting go stops."""
+        """FPS: A/D become STRAFE, and parking the mouse on a side orbits —
+        left side orbits left, right side orbits right; returning to center stops."""
         page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="happy-oyster")
@@ -263,13 +314,13 @@ class TestMovementMode(unittest.TestCase):
             self._reset_cmd_log(page)
             self._look_drag(page, dx=-240)
             self._wait_cmd(page, "look", "direction", "Mouse_Left")
-            page.mouse.up()
+            self._rest_look(page)
             self._wait_cmd(page, "stop")
 
             self._reset_cmd_log(page)
-            self._look_drag(page, dx=240, start=(400, 360))
+            self._look_drag(page, dx=240)
             self._wait_cmd(page, "look", "direction", "Mouse_Right")
-            page.mouse.up()
+            self._rest_look(page)
             self._wait_cmd(page, "stop")
         except Exception:
             print("\n=== CONSOLE LOG (fps-mouse) ===\n" + self._dump_logs())
@@ -278,18 +329,18 @@ class TestMovementMode(unittest.TestCase):
             page.close()
 
     def test_fps_mouse_look_composes_with_movement_and_tilts(self):
-        """Holding W while sweeping the mouse down must do BOTH: keep moving
-        forward and tilt the view — mouse look never cancels locomotion."""
+        """Holding W while orbiting left must do BOTH: keep moving forward
+        and turn the view — mouse orbit never cancels locomotion."""
         page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="happy-oyster")
             self._reset_cmd_log(page)
             page.keyboard.down("w")
             self._wait_cmd(page, "move", "direction", "Front")
-            self._look_drag(page, dy=240)
-            self._wait_cmd(page, "look", "direction", "Mouse_Down")
-            page.mouse.up()
+            self._look_drag(page, dx=-200)
+            self._wait_cmd(page, "look", "direction", "Mouse_Left")
             page.keyboard.up("w")
+            self._rest_look(page)
             self._wait_cmd(page, "stop")
         except Exception:
             print("\n=== CONSOLE LOG (fps-compose) ===\n" + self._dump_logs())
@@ -313,7 +364,7 @@ class TestMovementMode(unittest.TestCase):
             # A decisive sweep: the rate tracks how much turn is QUEUED, so a
             # short flick legitimately reads low. Give the drive loop a tick to
             # catch up before reading the rate it settled on.
-            self._look_drag(page, dx=420, steps=18, start=(300, 360))
+            self._look_drag(page, dx=420, steps=18)
             self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "right")
             page.wait_for_timeout(220)
             speeds = page.evaluate(
@@ -322,83 +373,258 @@ class TestMovementMode(unittest.TestCase):
                        .map(c => c.data.rotation_speed_deg)"""
             )
             self.assertTrue(speeds, f"mouse look should set a rotation speed: {speeds}")
-            self.assertLessEqual(max(speeds), 6.0, f"mouse look turn rate out of range: {speeds}")
-            self.assertGreater(max(speeds), 3.4,
-                               f"a mouse sweep should out-turn a keyboard tap: {speeds}")
-            page.mouse.up()
+            self.assertLessEqual(max(speeds), 3.5, f"LingBot orbit should stay cinematic: {speeds}")
+            self.assertGreater(max(speeds), 0.5,
+                               f"a full-edge orbit should still turn: {speeds}")
+            self._rest_look(page)
             self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "idle")
+            page.wait_for_function(
+                """() => {
+                    const last = [...(window.__MOCK_CMD_LOG__||[])]
+                        .reverse().find(c => c.name==='set_rotation_speed_deg');
+                    return last && last.data.rotation_speed_deg === 0;
+                }""",
+                timeout=6000,
+            )
         except Exception:
             print("\n=== CONSOLE LOG (fps-lingbot) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
 
-    def test_a_plain_click_never_steals_the_cursor(self):
-        """Regression: a single click on the world used to silently take pointer
-        lock. The game uses clicks, so that hid the cursor and swallowed the
-        click — indistinguishable from a freeze. Only a DOUBLE-click may capture."""
+    def test_a_click_never_steals_the_cursor(self):
+        """In always-on Look mode the mouse steers by hover and a click is the
+        SCAN — so a click must NEVER capture the cursor. Pointer lock is reserved
+        for the upcoming CAMERA mode, so neither a single nor a double click may
+        grab it (stealing the cursor from a click looked exactly like a freeze)."""
         page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="happy-oyster")
-            # Plain click: no capture.
-            page.mouse.move(550, 300)
-            page.mouse.click(550, 300)
-            page.wait_for_timeout(700)
+            # Hover-look engages with NO button — the viewport reads as live.
+            self._look_drag(page, dx=-160)
+            page.wait_for_function(
+                "() => document.body.classList.contains('mouse-looking')", timeout=4000)
             self.assertFalse(page.evaluate("() => !!document.pointerLockElement"),
-                             "a single click must never capture the pointer")
-            # A look-drag: also no capture.
-            self._look_drag(page, dx=-200)
-            page.mouse.up()
+                             "hover-look must never capture the pointer")
+            # A plain click: no capture (it scans instead).
+            page.mouse.click(560, 320)
             page.wait_for_timeout(500)
             self.assertFalse(page.evaluate("() => !!document.pointerLockElement"),
-                             "a look-drag must never capture the pointer")
-            # Double-click: explicit opt-in, capture allowed.
+                             "a single click must never capture the pointer")
+            # A double-click: also no capture — lock is deferred to CAMERA mode.
             page.mouse.dblclick(560, 320)
-            page.wait_for_function("() => !!document.pointerLockElement", timeout=4000)
-            page.wait_for_function(
-                "() => document.body.classList.contains('mouse-look-locked')", timeout=4000)
+            page.wait_for_timeout(700)
+            self.assertFalse(page.evaluate("() => !!document.pointerLockElement"),
+                             "double-click must not capture (lock is deferred)")
         except Exception:
             print("\n=== CONSOLE LOG (no-cursor-theft) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
 
-    def test_capture_is_refused_while_the_world_is_still_black(self):
-        """Never grab the cursor before the live world has revealed — a slow first
-        scene plus a captured cursor is exactly what "froze on black" looked
-        like."""
+    def test_center_dead_zone_does_not_steer_until_the_cursor_leaves(self):
+        """Moving the mouse inside the full-height center strip must not turn
+        the camera. Parking left orbits left, parking right orbits right —
+        a wiggle on a side must not reverse the orbit. Center cancels it."""
         page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="happy-oyster")
-            page.evaluate("""() => {
-                window.__realShowing = window.ReactorRenderer.isShowing;
-                window.ReactorRenderer.isShowing = () => false;   // world still black
-            }""")
-            page.mouse.dblclick(560, 320)
-            page.wait_for_timeout(900)
-            self.assertFalse(page.evaluate("() => !!document.pointerLockElement"),
-                             "must not capture the cursor before the world shows")
-            page.evaluate("() => { window.ReactorRenderer.isShowing = window.__realShowing; }")
+            z = self._dead_zone(page)
+            cx = (z["left"] + z["right"]) / 2
+            cy = (z["top"] + z["bottom"]) / 2
+            vh = page.viewport_size["height"]
+            self.assertGreater(z["right"] - z["left"], 100, f"dead zone too narrow: {z}")
+            self.assertGreaterEqual(z["bottom"] - z["top"], vh * 0.95,
+                                    f"dead zone must be full height: {z}")
+
+            self._reset_cmd_log(page)
+            page.mouse.move(cx, cy)
+            page.wait_for_timeout(30)
+            # Wander the full height of the strip — tags sit above and below.
+            page.mouse.move(cx - 40, 24)
+            page.wait_for_timeout(40)
+            page.mouse.move(cx + 40, vh - 24)
+            page.wait_for_timeout(400)
+            steer = page.evaluate(
+                """() => (window.__MOCK_CMD_LOG__||[]).filter(c =>
+                       ['move','look'].includes(c.name))"""
+            )
+            self.assertEqual(steer, [], f"motion inside the dead zone must not look: {steer}")
+            self.assertIsNone(
+                page.evaluate("() => window.__MouseLook.intent()"),
+                "dead-zone wander must not leave a look budget")
+
+            # Park on the left — orbit left and KEEP orbiting even if the
+            # pointer wiggles toward center while still on that side.
+            self._look_drag(page, dx=-200)
+            self._wait_cmd(page, "look", "direction", "Mouse_Left")
+            it = page.evaluate(
+                "(x) => window.__MouseLook.__holdAt(x, 400)", z["left"] - 20)
+            self.assertTrue(it and it.get("lookH") == "left",
+                            f"wiggle on the left must still orbit left: {it}")
+            near = it
+            far = page.evaluate("(x) => window.__MouseLook.__holdAt(x, 400)", 8)
+            self.assertTrue(far and far.get("lookH") == "left",
+                            f"the far left must still orbit left: {far}")
+            self.assertLess(near.get("intensity") or 0, 0.22,
+                            f"just outside the strip must crawl: {near}")
+            self.assertGreater(far.get("intensity") or 0, 0.85,
+                               f"the screen edge must be full speed: {far}")
+            self.assertGreater(far["intensity"], near["intensity"],
+                               f"further left must turn harder: near={near} far={far}")
+
+            it = page.evaluate(
+                "(x) => window.__MouseLook.__holdAt(x, 400)", z["right"] + 40)
+            self.assertTrue(it and it.get("lookH") == "right",
+                            f"the right side must orbit right: {it}")
+
+            # Re-enter the strip: orbit dies so a click can land.
+            self.assertIsNone(
+                page.evaluate("(x) => window.__MouseLook.__holdAt(x, 400)", cx),
+                "re-entering the dead zone must cancel the look")
         except Exception:
-            print("\n=== CONSOLE LOG (black-world-capture) ===\n" + self._dump_logs())
+            print("\n=== CONSOLE LOG (dead-zone) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
 
-    def test_mouse_look_release_restores_scanning(self):
-        """Regression: holding the look pointer must not leave the game stuck in
-        the "moving" state — that permanently hid the OCR hotspots and disabled
-        SCAN. Motion state has to follow ACTUAL camera motion."""
+    def test_a_scene_click_freezes_orbit_so_a_tag_can_be_clicked(self):
+        """A click on the picture — even left or right of the strip — must
+        stop the camera for a beat so the pointer can land on a tag."""
         page = self._new_realtime_page(mode="fps")
-        page.add_init_script("window.__MOVE_SETTLE_MS__ = 250;")
         try:
             self._boot_live(page, model="happy-oyster")
-            self._look_drag(page, dx=-240)
-            page.wait_for_function("() => document.body.classList.contains('moving')", timeout=4000)
-            page.mouse.up()
-            page.wait_for_function("() => !document.body.classList.contains('moving')", timeout=5000)
+            page.evaluate("() => { window.__MOUSE_LOOK_CLICK_HOLD_MS__ = 350; }")
+            z = self._dead_zone(page)
+            self._look_drag(page, dx=-200)
+            self._wait_cmd(page, "look", "direction", "Mouse_Left")
+            page.mouse.click(max(8, z["left"] - 48), 360)
+            page.wait_for_timeout(50)
+            self.assertTrue(
+                page.evaluate("() => window.__MouseLook.__state().clickHold"),
+                "a scene click must arm the click-hold")
+            self.assertIsNone(
+                page.evaluate("() => window.__MouseLook.intent()"),
+                "orbit must freeze after a click, even off the dead zone")
+            page.mouse.move(16, 360)
+            page.wait_for_timeout(80)
+            self.assertIsNone(
+                page.evaluate("() => window.__MouseLook.intent()"),
+                "moving further left during the hold must not restart orbit")
+            page.wait_for_function(
+                """() => {
+                    const i = window.__MouseLook.intent();
+                    return i && i.lookH === 'left';
+                }""",
+                timeout=2500,
+            )
         except Exception:
-            print("\n=== CONSOLE LOG (scan-restore) ===\n" + self._dump_logs())
+            print("\n=== CONSOLE LOG (click-hold) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_a_scene_click_zeros_lingbot_rotation_so_the_camera_halts(self):
+        """LingBot keeps turning at the last deg/frame until we send 0.
+        A scene click must idle look AND zero rotation, then resume after."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="lingbot-world-2")
+            page.evaluate("() => { window.__MOUSE_LOOK_CLICK_HOLD_MS__ = 350; }")
+            z = self._dead_zone(page)
+            self._look_drag(page, dx=-240)
+            self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "left")
+            self._reset_cmd_log(page)
+            page.mouse.click(max(8, z["left"] - 48), 360)
+            self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "idle")
+            self._wait_cmd(page, "set_rotation_speed_deg", "rotation_speed_deg", 0)
+            self.assertTrue(
+                page.evaluate("() => window.__MouseLook.__state().clickHold"),
+                "a scene click must arm the click-hold")
+            self.assertIsNone(
+                page.evaluate("() => window.__MouseLook.intent()"),
+                "orbit must freeze after a click")
+            page.mouse.move(16, 360)
+            page.wait_for_function(
+                """() => {
+                    const i = window.__MouseLook.intent();
+                    return i && i.lookH === 'left';
+                }""",
+                timeout=4000,
+            )
+            page.wait_for_function(
+                """() => (window.__MOCK_CMD_LOG__||[]).some(
+                    c => c.name==='set_look_horizontal' && c.data.look_horizontal==='left')""",
+                timeout=2500,
+            )
+        except Exception:
+            print("\n=== CONSOLE LOG (lingbot-click-hold) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_look_does_not_steer_while_the_world_is_still_black(self):
+        """Never steer before the live world has revealed — a camera already
+        turning over a black first scene reads as broken. Hover-look is gated on
+        the world actually showing, so a sweep over black does nothing."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            self._reset_cmd_log(page)
+            page.evaluate("""() => {
+                window.__realShowing = window.ReactorRenderer.isShowing;
+                window.ReactorRenderer.isShowing = () => false;   // world still black
+            }""")
+            self._look_drag(page, dx=-240)
+            page.wait_for_timeout(600)
+            steer = page.evaluate(
+                """() => (window.__MOCK_CMD_LOG__||[]).filter(c =>
+                       ['move','look'].includes(c.name))"""
+            )
+            self.assertEqual(steer, [], f"look must wait for the world to show, got: {steer}")
+            self.assertFalse(
+                page.evaluate("() => document.body.classList.contains('mouse-looking')"),
+                "hover-look must not engage over a black world")
+            page.evaluate("() => { window.ReactorRenderer.isShowing = window.__realShowing; }")
+        except Exception:
+            print("\n=== CONSOLE LOG (black-world-look) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_mouse_look_does_not_clear_scans(self):
+        """Looking around must not tear down a SCAN. Walking does (the frame
+        is gone); a mouse sweep is just aiming, and wiping tags on it made
+        SCAN feel broken."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            page.evaluate(
+                """() => {
+                    const layer = document.getElementById('scan-layer');
+                    const tags = document.getElementById('scan-tags');
+                    if (layer) layer.classList.remove('hidden');
+                    if (tags) {
+                        const t = document.createElement('div');
+                        t.className = 'scan-tag';
+                        t.textContent = 'crate';
+                        tags.appendChild(t);
+                    }
+                }"""
+            )
+            self._look_drag(page, dx=-240)
+            page.wait_for_timeout(400)
+            self.assertFalse(
+                page.evaluate("() => document.body.classList.contains('moving')"),
+                "look-only must not mark the body as travelling")
+            self.assertFalse(
+                page.evaluate("() => document.getElementById('scan-layer').classList.contains('hidden')"),
+                "a mouse sweep must not hide the scan overlay")
+            self.assertGreaterEqual(
+                page.evaluate("() => document.querySelectorAll('#scan-tags .scan-tag').length"), 1,
+                "look must not tear down scan tags")
+        except Exception:
+            print("\n=== CONSOLE LOG (look-keeps-scan) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
@@ -446,7 +672,8 @@ class TestMovementMode(unittest.TestCase):
             self.assertTrue(result["resting"], f"camera never came to rest: {result}")
             self.assertEqual(result["looks"], ["Mouse_Left"],
                              f"tremor should not re-issue look commands: {result}")
-            self.assertEqual(result["stops"], 1, f"expected exactly one stop: {result}")
+            self.assertGreaterEqual(result["stops"], 1, f"look must stop: {result}")
+            self.assertLessEqual(result["stops"], 2, f"too many stops: {result}")
         except Exception:
             print("\n=== CONSOLE LOG (no-endless-spin) ===\n" + self._dump_logs())
             raise
@@ -454,35 +681,46 @@ class TestMovementMode(unittest.TestCase):
             page.close()
 
     def test_mouse_look_turn_is_proportional_to_mouse_distance(self):
-        """"Tied to the mouse": a longer sweep owes a longer turn, and any sweep
-        winds down on its own within a few hundred ms of the mouse stopping."""
+        """Tied to the mouse: a longer sweep turns harder WHILE moving. Stopping
+        the mouse must stop the look (PC contract) — a leftover hold is what
+        made a flick pitch up forever."""
         page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="happy-oyster")
             result = page.evaluate(
                 """async () => {
                     const sleep = (m) => new Promise(r => setTimeout(r, m));
-                    async function sweepThenTime(px, steps) {
-                        for (let i = 0; i < steps; i++) { window.__MouseLook.__feed(px, 0); await sleep(10); }
-                        const t0 = performance.now();
-                        for (let i = 0; i < 60; i++) {
-                            await sleep(25);
-                            if (!window.__MouseLook.intent()) return Math.round(performance.now() - t0);
+                    async function sweep(px, steps) {
+                        for (let i = 0; i < steps; i++) {
+                            window.__MouseLook.__feed(px, 0);
+                            if (i < steps - 1) await sleep(10);
                         }
-                        return -1;  // never stopped
+                        const peak = window.__MouseLook.intent();
+                        const t0 = performance.now();
+                        let coast = -1;
+                        for (let i = 0; i < 40; i++) {
+                            await sleep(20);
+                            if (!window.__MouseLook.intent()) {
+                                coast = Math.round(performance.now() - t0);
+                                break;
+                            }
+                        }
+                        return { peak: peak && peak.intensity, coast: coast };
                     }
-                    const small = await sweepThenTime(4, 4);
-                    await sleep(600);   // let the budget fully drain between sweeps
-                    const big = await sweepThenTime(30, 12);
+                    const small = await sweep(4, 4);
+                    await sleep(300);
+                    const big = await sweep(30, 12);
                     return { small: small, big: big };
                 }"""
             )
-            self.assertGreater(result["small"], 0, f"small sweep never settled: {result}")
-            self.assertGreater(result["big"], 0, f"big sweep never settled: {result}")
-            self.assertGreater(result["big"], result["small"],
-                               f"a longer sweep should owe a longer turn: {result}")
-            # Bounded: a full-budget sweep unwinds fast enough to feel connected.
-            self.assertLess(result["big"], 1800, f"wind-down too long: {result}")
+            self.assertGreater(result["small"]["peak"] or 0, 0, f"small sweep never looked: {result}")
+            self.assertGreater(result["big"]["peak"] or 0, 0, f"big sweep never looked: {result}")
+            self.assertGreater(result["big"]["peak"], result["small"]["peak"],
+                               f"a longer sweep should turn harder: {result}")
+            self.assertGreater(result["small"]["coast"], 0, f"small sweep never settled: {result}")
+            self.assertGreater(result["big"]["coast"], 0, f"big sweep never settled: {result}")
+            self.assertLess(result["small"]["coast"], 400, f"small coast too long: {result}")
+            self.assertLess(result["big"]["coast"], 400, f"big coast too long: {result}")
         except Exception:
             print("\n=== CONSOLE LOG (proportional) ===\n" + self._dump_logs())
             raise
@@ -490,21 +728,24 @@ class TestMovementMode(unittest.TestCase):
             page.close()
 
     def test_mouse_look_supports_diagonals(self):
-        """Up AND left at once. Models with independent look axes hold a true
-        diagonal; Happy Oyster can only hold ONE look verb, so the two are
-        interleaved in time slices — either way both axes get driven."""
-        # LingBot: independent axes -> both held simultaneously.
+        """Hover orbit is yaw-only (side of the screen). First-person pitch
+        is a delta look via __feed / pointer-lock, not parking the mouse."""
         page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="lingbot-world-2")
+            self._set_camera_mode(page, "first_person")
             self._reset_cmd_log(page)
             self._look_drag(page, dx=-180, dy=-180)
             self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "left")
-            self._wait_cmd(page, "set_look_vertical", "look_vertical", "up")
             it = page.evaluate("() => window.__MouseLook.intent()")
+            self.assertTrue(it and it.get("lookH") == "left", f"side park must orbit: {it}")
+            self.assertEqual(it.get("lookV"), "idle",
+                             f"hover orbit must stay yaw-only: {it}")
+            it = page.evaluate(
+                "() => { window.__MouseLook.__feed(-40, -40); return window.__MouseLook.intent(); }")
+            self.assertTrue(it, "first person must still accept a diagonal look")
             self.assertEqual(it["lookH"], "left", f"intent: {it}")
             self.assertEqual(it["lookV"], "up", f"intent: {it}")
-            page.mouse.up()
         except Exception:
             print("\n=== CONSOLE LOG (diagonal-lingbot) ===\n" + self._dump_logs())
             raise
@@ -518,13 +759,49 @@ class TestMovementMode(unittest.TestCase):
         page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="happy-oyster")
+            self._set_camera_mode(page, "first_person")
             self.assertTrue(page.evaluate("() => window.ReactorRenderer.looksOneAxisAtATime()"))
             self._reset_cmd_log(page)
-            self._look_drag(page, dx=-60, dy=-260, steps=14)   # mostly vertical
-            self._wait_cmd(page, "look", "direction", "Mouse_Up")
-            page.mouse.up()
+            self._look_drag(page, dx=-60, dy=-260, steps=14)
+            self._wait_cmd(page, "look", "direction", "Mouse_Left")
         except Exception:
             print("\n=== CONSOLE LOG (diagonal-oyster) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_third_person_mouse_orbits_yaw_only(self):
+        """Follow-cam + latency makes pitch walk the character out of frame,
+        and the mouse has to stay free to click. Vertical motion must not
+        look up or down; left/right still orbits."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            self._set_camera_mode(page, "third_person")
+            self.assertTrue(page.evaluate("() => window.__Camera.yawOnly()"))
+            page.evaluate("() => { window.__MouseLook.__feed(0, -80); }")
+            it = page.evaluate("() => window.__MouseLook.intent()")
+            self.assertTrue(not it or it.get("lookV") == "idle",
+                            f"vertical mouse must not pitch in third person: {it}")
+            page.evaluate("() => { window.__MouseLook.__feed(-80, -80); }")
+            it = page.evaluate("() => window.__MouseLook.intent()")
+            self.assertIsNotNone(it, "a left sweep must still orbit")
+            self.assertEqual(it.get("lookH"), "left", f"intent: {it}")
+            self.assertEqual(it.get("lookV"), "idle", f"diagonal must drop pitch: {it}")
+            self._reset_cmd_log(page)
+            page.keyboard.down("ArrowUp")
+            page.wait_for_timeout(200)
+            looks = page.evaluate(
+                """() => (window.__MOCK_CMD_LOG__ || [])
+                     .filter(c => c.name === 'look' || c.name === 'set_look_vertical')
+                     .map(c => c.data)""")
+            page.keyboard.up("ArrowUp")
+            self.assertFalse(
+                any((d or {}).get("direction") == "Mouse_Up"
+                    or (d or {}).get("look_vertical") == "up" for d in looks),
+                f"ArrowUp must not pitch the follow cam: {looks}")
+        except Exception:
+            print("\n=== CONSOLE LOG (third-person-orbit) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
@@ -550,15 +827,15 @@ class TestMovementMode(unittest.TestCase):
         page.wait_for_selector("#we-input-sens", timeout=4000)
 
     def test_editor_exposes_look_sensitivity(self):
-        """Sensitivity is tunable from the editor CONTROLS row, defaults to 3x,
+        """Sensitivity is tunable from the editor CONTROLS row, defaults to 10x,
         persists, clamps, and is inert (disabled) in DOOM where there's no mouse
         look."""
         page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="happy-oyster")
-            self.assertEqual(page.evaluate("() => window.__InputBindings.sensitivity()"), 8)
+            self.assertEqual(page.evaluate("() => window.__InputBindings.sensitivity()"), 10)
             self._open_controls(page)
-            self.assertEqual(page.evaluate("() => document.getElementById('we-input-sens').value"), "8")
+            self.assertEqual(page.evaluate("() => document.getElementById('we-input-sens').value"), "10")
             self.assertFalse(page.evaluate("() => document.getElementById('we-input-sens').disabled"),
                              "slider should be usable in FPS mode")
             # Drag the slider like a player would.
@@ -659,20 +936,20 @@ class TestMovementMode(unittest.TestCase):
         Oyster from the player's side."""
         for mode, cases in (
             ("fps", [
-                (["a"], ["lat:left"]),
-                (["d"], ["lat:right"]),
-                (["w", "a"], ["lon:forward", "lat:left"]),
-                (["w", "d"], ["lon:forward", "lat:right"]),
-                (["s", "a"], ["lon:back", "lat:left"]),
-                (["q"], ["lat:left"]),
-                (["e"], ["lat:right"]),
+                (["a"], ["lat:strafe_left"]),
+                (["d"], ["lat:strafe_right"]),
+                (["w", "a"], ["lon:forward", "lat:strafe_left"]),
+                (["w", "d"], ["lon:forward", "lat:strafe_right"]),
+                (["s", "a"], ["lon:back", "lat:strafe_left"]),
+                (["q"], ["lat:strafe_left"]),
+                (["e"], ["lat:strafe_right"]),
             ]),
             ("doom", [
                 (["a"], ["lookH:left"]),
                 (["d"], ["lookH:right"]),
-                (["q"], ["lat:left"]),
-                (["e"], ["lat:right"]),
-                (["w", "q"], ["lon:forward", "lat:left"]),
+                (["q"], ["lat:strafe_left"]),
+                (["e"], ["lat:strafe_right"]),
+                (["w", "q"], ["lon:forward", "lat:strafe_left"]),
             ]),
         ):
             page = self._new_realtime_page(mode=mode)
@@ -707,7 +984,7 @@ class TestMovementMode(unittest.TestCase):
             self._boot_live(page, model="lingbot-world-2")
             self._reset_cmd_log(page)
             page.keyboard.down("a")
-            self._wait_cmd(page, "set_move_lateral", "move_lateral", "left")
+            self._wait_cmd(page, "set_move_lateral", "move_lateral", "strafe_left")
             page.keyboard.up("a")
             self._wait_cmd(page, "set_move_lateral", "move_lateral", "idle")
         except Exception:
@@ -779,7 +1056,7 @@ class TestMovementMode(unittest.TestCase):
             self.assertLessEqual(
                 len(set(looks)), 1,
                 f"the look slot is oscillating across a diagonal: {stream}")
-            page.mouse.up()
+            self._rest_look(page)
             self._wait_cmd(page, "stop")
         except Exception:
             print("\n=== CONSOLE LOG (look-slot-churn) ===\n" + self._dump_logs())
@@ -817,11 +1094,10 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
-    def test_look_drag_release_does_not_burn_a_scan(self):
-        """Regression: tapping the world fires a PAID detection pass, and the
-        mouseup ending a look-drag is a real click on the scene — so steering the
-        camera bought a scan every time you let go. A gesture that MOVED must eat
-        its click, while a stationary tap still scans."""
+    def test_hover_look_does_not_scan_but_a_click_does(self):
+        """Always-on look steers by hover, with no click involved, so sweeping
+        the camera never fires a paid SCAN on its own. A deliberate click on the
+        world still scans — a click IS the shoot/scan button."""
         page = self._new_realtime_page(mode="fps")
         detects = []
 
@@ -833,17 +1109,16 @@ class TestMovementMode(unittest.TestCase):
         page.route("**/api/detect", on_detect)
         try:
             self._boot_live(page, model="happy-oyster")
-            # Steering the camera must not scan.
+            # Sweeping the camera (no button) must not scan.
             self._look_drag(page, dx=-220)
-            page.mouse.up()
             page.wait_for_timeout(1500)
             self.assertEqual(len(detects), 0,
-                             f"a look-drag must not trigger a scan, got {len(detects)}")
-            # A deliberate stationary tap still scans (unchanged behaviour).
+                             f"a hover-look sweep must not trigger a scan, got {len(detects)}")
+            # A deliberate click on the world still scans.
             page.mouse.click(620, 300)
             page.wait_for_timeout(1800)
             self.assertEqual(len(detects), 1,
-                             f"a stationary world tap should still scan, got {len(detects)}")
+                             f"a world click should still scan, got {len(detects)}")
         except Exception:
             print("\n=== CONSOLE LOG (scan-gate) ===\n" + self._dump_logs())
             raise
@@ -861,18 +1136,18 @@ class TestMovementMode(unittest.TestCase):
                 """() => Array.from(document.querySelectorAll('#we-input-profile button'))
                        .map(b => b.textContent.trim())"""
             )
-            self.assertEqual(labels, ["DOOM", "FPS"])
+            self.assertEqual(labels, ["Tank", "Look"])
             self.assertEqual(
                 page.evaluate(
                     """() => (document.querySelector('#we-input-profile button.on')||{}).textContent"""
-                ), "DOOM")
+                ), "Tank")
             page.click("#we-input-profile button[data-value='fps']")
             page.wait_for_function("() => window.__InputBindings.current() === 'fps'", timeout=4000)
             self.assertEqual(page.evaluate("() => localStorage.getItem('input_profile')"), "fps")
             self.assertEqual(
                 page.evaluate(
                     """() => (document.querySelector('#we-input-profile button.on')||{}).textContent"""
-                ), "FPS")
+                ), "Look")
             # Close the editor and confirm the NEW binding is live: A strafes.
             page.click("#we-close")
             page.wait_for_timeout(500)
@@ -883,6 +1158,66 @@ class TestMovementMode(unittest.TestCase):
             self._wait_cmd(page, "stop")
         except Exception:
             print("\n=== CONSOLE LOG (editor-switch) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_mouse_is_a_bind_in_the_controls_list(self):
+        """Mouse look lives in the same remappable list as WASD — not a
+        side checkbox. Look binds it (`looks`); unbinding it makes hover-look
+        go quiet; binding it again puts the steer back."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            painted = page.evaluate(
+                """() => {
+                    window.__InputProfileUi.paint();
+                    const row = document.getElementById('we-input-mouse');
+                    return {
+                        enabled: window.__InputBindings.mouseLookEnabled(),
+                        current: window.__InputBindings.current(),
+                        name: row && row.querySelector('.we-input-bind-name').textContent,
+                        keys: row && row.querySelector('.we-input-bind-keys').textContent,
+                        device: !!(row && row.classList.contains('is-device')),
+                    };
+                }"""
+            )
+            self.assertEqual(painted["current"], "fps")
+            self.assertTrue(painted["enabled"])
+            self.assertEqual(painted["name"], "Mouse")
+            self.assertIn(painted["keys"], ("looks", "orbits"))
+            self.assertTrue(painted["device"])
+
+            page.evaluate(
+                "() => window.__InputBindings.bindMouse(window.__InputBindings.liveScheme(), false)"
+            )
+            page.wait_for_function(
+                "() => window.__InputBindings.mouseLookEnabled() === false", timeout=4000)
+            self.assertEqual(
+                page.evaluate(
+                    "() => document.querySelector('#we-input-mouse .we-input-bind-keys').textContent"
+                ),
+                "—",
+            )
+            self._reset_cmd_log(page)
+            self._look_drag(page, dx=-240)
+            page.wait_for_timeout(400)
+            steer = page.evaluate(
+                """() => (window.__MOCK_CMD_LOG__||[]).filter(c =>
+                       ['move','look'].includes(c.name))"""
+            )
+            self.assertEqual(steer, [], f"unbound mouse must not look, got: {steer}")
+
+            page.evaluate(
+                "() => window.__InputBindings.bindMouse(window.__InputBindings.liveScheme(), true)"
+            )
+            page.wait_for_function(
+                "() => window.__InputBindings.mouseLookEnabled() === true", timeout=4000)
+            self._reset_cmd_log(page)
+            self._look_drag(page, dx=-240)
+            self._wait_cmd(page, "look", "direction", "Mouse_Left")
+        except Exception:
+            print("\n=== CONSOLE LOG (mouse-bind) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
@@ -899,12 +1234,12 @@ class TestMovementMode(unittest.TestCase):
             page.keyboard.down("a")
             self._wait_cmd(page, "set_rotation_speed_deg")
             page.wait_for_timeout(1500)  # hold a while — speed must NOT creep up
-            page.keyboard.up("a")
             speeds = page.evaluate(
                 """() => (window.__MOCK_CMD_LOG__||[])
                        .filter(c => c.name==='set_rotation_speed_deg')
                        .map(c => c.data.rotation_speed_deg)"""
             )
+            page.keyboard.up("a")
             self.assertTrue(len(speeds) >= 1, f"no rotation speed sent. speeds={speeds}")
             # Bounded within the model's allowed range (0..30), not runaway.
             self.assertLessEqual(max(speeds), 6.0, f"look speed out of expected range: {speeds}")

@@ -344,6 +344,84 @@ class TestDesignPipeline(unittest.TestCase):
         self.assertEqual(r["status"], "ready")
 
 
+class TestVoiceLibrary(unittest.TestCase):
+    """The live ElevenLabs library — your voices, not the shipped vanilla
+    roster — has to be what the game actually lists and accepts."""
+
+    def setUp(self):
+        self.vd = _reload_with_env(
+            ELEVENLABS_API_KEY="sk_" + "a" * 40,
+            ELEVENLABS_DYNAMIC_VOICES="1",
+        )
+        self.vd._LIBRARY_CACHE["voices"] = []
+        self.vd._LIBRARY_CACHE["at"] = 0.0
+
+    def tearDown(self):
+        self.vd._LIBRARY_CACHE["voices"] = []
+        self.vd._LIBRARY_CACHE["at"] = 0.0
+
+    def test_a_dashboard_key_id_does_not_hit_the_network(self):
+        vd = _reload_with_env(ELEVENLABS_API_KEY="6" * 64)
+        called = []
+        vd._page_v2_voices = lambda *a, **k: called.append("hit") or ([], 400)
+        voices, reason = vd._list_workspace_voices(with_reason=True)
+        self.assertEqual(reason, "bad_key")
+        self.assertEqual(voices, [])
+        self.assertFalse(called)
+        self.assertEqual(vd.voice_library()["reason"], "bad_key")
+
+    def test_listing_asks_for_personal_voices_first(self):
+        seen = []
+
+        def fake_page(headers, extra=None):
+            seen.append((extra or {}).get("voice_type"))
+            if (extra or {}).get("voice_type") == "non-community":
+                return ([{"voice_id": "mine", "name": "Mine",
+                          "category": "cloned"}], 200)
+            return ([], 200)
+
+        self.vd._page_v2_voices = fake_page
+        voices, reason = self.vd._list_workspace_voices(with_reason=True)
+        self.assertEqual(reason, "ok")
+        self.assertEqual([v["voice_id"] for v in voices], ["mine"])
+        self.assertEqual(seen[0], "non-community")
+        self.assertNotIn(None, seen)
+
+    def test_library_hides_premade_once_yours_exist(self):
+        def fake_list(with_reason=False):
+            raw = [
+                {"voice_id": "custom_1", "name": "SW_Flesh",
+                 "category": "generated", "description": "ours",
+                 "labels": {"gender": "male"}},
+                {"voice_id": "cjVigY5qzO86Huf0OWal", "name": "Eric",
+                 "category": "premade", "description": "stock", "labels": {}},
+            ]
+            return (raw, "ok") if with_reason else raw
+
+        self.vd._list_workspace_voices = fake_list
+        lib = self.vd.voice_library(force=True)
+        self.assertTrue(lib["ok"])
+        self.assertEqual([v["id"] for v in lib["voices"]], ["custom_1"])
+        self.assertEqual(lib["yours"], 1)
+        self.assertTrue(self.vd.is_library_voice_id("custom_1"))
+        self.assertFalse(self.vd.is_library_voice_id("cjVigY5qzO86Huf0OWal"))
+
+    def test_library_hides_ephemeral_designed_voices(self):
+        def fake_list(with_reason=False):
+            raw = [
+                {"voice_id": "keep_me", "name": "Clara (Drifter)",
+                 "category": "generated", "labels": {}},
+                {"voice_id": "tmp_dyn", "name": "[dyn] warden",
+                 "category": "generated",
+                 "labels": {"source": self.vd.LABEL_TAG}},
+            ]
+            return (raw, "ok") if with_reason else raw
+
+        self.vd._list_workspace_voices = fake_list
+        lib = self.vd.voice_library(force=True)
+        self.assertEqual([v["id"] for v in lib["voices"]], ["keep_me"])
+
+
 class TestFeatureDisabled(unittest.TestCase):
     def test_no_api_key_makes_is_available_false(self):
         vd = _reload_with_env(ELEVENLABS_API_KEY=None,
@@ -373,6 +451,50 @@ class TestEngineResolver(unittest.TestCase):
         self.assertTrue(r["voice_id"])
         self.assertEqual(r["status"], "disabled")
 
+    def test_a_library_voice_is_valid_and_is_what_the_registry_shows(self):
+        """Picking one of our ElevenLabs voices used to be thrown away by
+        _valid_voice_id, so TALK always fell back to Eric from voices.json."""
+        vd = _reload_with_env(ELEVENLABS_API_KEY="sk_" + "a" * 40,
+                              ELEVENLABS_DYNAMIC_VOICES="1")
+        vd._LIBRARY_CACHE["voices"] = [{
+            "id": "custom_voice_abc", "name": "Ours", "category": "cloned",
+            "tag": "yours", "gender": "male",
+        }]
+        vd._LIBRARY_CACHE["at"] = time.time()
+        import importlib
+        import engine
+        importlib.reload(engine)
+        self.assertEqual(engine._valid_voice_id("custom_voice_abc"),
+                         "custom_voice_abc")
+        self.assertEqual(engine._valid_voice_id("not-a-voice"), "")
+        reg = engine.get_voice_registry()
+        self.assertEqual(reg["source"], "library")
+        self.assertEqual([v["id"] for v in reg["voices"]], ["custom_voice_abc"])
+        self.assertEqual(reg["default"], "custom_voice_abc")
+        self.assertEqual(engine._valid_voice_id("cjVigY5qzO86Huf0OWal"), "",
+                         "a leftover stock id must not win once the library is live")
+        vd._LIBRARY_CACHE["voices"] = []
+        vd._LIBRARY_CACHE["at"] = 0.0
+
+    def test_narrator_prefers_a_library_voice_named_narrator(self):
+        vd = _reload_with_env(ELEVENLABS_API_KEY="sk_" + "a" * 40,
+                              ELEVENLABS_DYNAMIC_VOICES="1")
+        vd._LIBRARY_CACHE["voices"] = [
+            {"id": "aaa_bread", "name": "Baking Bread", "category": "cloned"},
+            {"id": "narr_ours", "name": "Defect - Narrator", "category": "generated"},
+            {"id": "clara_1", "name": "Clara (Drifter)", "category": "generated"},
+        ]
+        vd._LIBRARY_CACHE["at"] = time.time()
+        import importlib
+        import engine
+        importlib.reload(engine)
+        engine.ELEVENLABS_NARRATOR_VOICE_ID = "BF8pwMTsMLfoEJTkla4e"  # stock leftover
+        engine.ELEVENLABS_VOICE_ID = ""
+        self.assertEqual(engine._narrator_voice_id(), "narr_ours")
+        self.assertEqual(engine._default_voice_id(), "clara_1")
+        vd._LIBRARY_CACHE["voices"] = []
+        vd._LIBRARY_CACHE["at"] = 0.0
+
 
 class TestFallbackVoiceForSubject(unittest.TestCase):
     """The smart fallback voice picker: hashes subject label into a
@@ -381,6 +503,11 @@ class TestFallbackVoiceForSubject(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        # A leftover sk_ key + library cache from TestVoiceLibrary would
+        # replace the shipped roster and break the gender-pool assertions.
+        cls.vd = _reload_with_env(ELEVENLABS_API_KEY="test-key")
+        cls.vd._LIBRARY_CACHE["voices"] = []
+        cls.vd._LIBRARY_CACHE["at"] = 0.0
         import importlib
         import engine
         importlib.reload(engine)

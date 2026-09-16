@@ -31,6 +31,26 @@ PNG = (
 )
 
 
+def _grid_png(width=160, height=96):
+    """A real, splittable image.
+
+    PNG above is 1x1, and flipbook.split_grid refuses anything whose panels
+    would land under MIN_PANEL_PX — so a generator stub returning a 1x1 (or a
+    path to nothing at all) exercises the flipbook's failure ladder rather than
+    the path the game actually takes.
+    """
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (90, 90, 90)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+GRID_PNG = _grid_png()
+
+
 class TestResolvePlateCaption(unittest.TestCase):
     def test_different_verbs_get_different_stems(self):
         a = encounter.resolve_plate_caption("A stranger", "Shove them", "confront",
@@ -147,6 +167,32 @@ class TestEncounterSkipImage(unittest.TestCase):
         self.assertTrue(encounter.encounter_turn_skip_image("wounded"))
         self.assertTrue(encounter.encounter_turn_skip_image("die"))
 
+    def test_winning_a_fight_draws_the_place_afterwards(self):
+        # A won fight used to resume play on the standoff plate, so the picture
+        # of the confrontation stayed on screen as the world the player kept
+        # walking through. Any ending except death draws the aftermath now.
+        for state in ("down", "standing_down"):
+            self.assertFalse(
+                encounter.encounter_turn_skip_image(
+                    "survive", {"enemy_state": state}), state)
+        # Mid-fight is still mid-fight: the blow just landed and stays up.
+        self.assertTrue(
+            encounter.encounter_turn_skip_image(
+                "survive", {"enemy_state": "staggered"}))
+        # Death is the one ending whose last frame is the kill itself.
+        self.assertTrue(
+            encounter.encounter_turn_skip_image("die", {"enemy_state": "down"}))
+
+    def test_the_won_frame_is_asked_for_this_place_afterwards(self):
+        text = encounter.encounter_action_for_turn(
+            "Put it down",
+            {"character": {"label": "A creature"}, "enemy_state": "down"},
+            lane="confront", outcome="survive",
+        )
+        self.assertIn("THIS SAME PLACE", text)
+        self.assertIn("on the ground where it fell", text)
+        self.assertIn("Not the standoff", text)
+
 
 class TestResolveRestagesTheEnterPlate(unittest.TestCase):
     """The enter plate IS the reference, and the caption is per-verb.
@@ -186,7 +232,18 @@ class TestResolveRestagesTheEnterPlate(unittest.TestCase):
                 "caption": caption,
                 "style_only": bool(kwargs.get("style_only_swatch")),
             })
-            return str(Path(self._tmpdir.name) / f"{label}_{len(self.calls)}.png")
+            # Write a real image at the path we hand back. The stub used to
+            # return a path to nothing, which made this class's result depend
+            # on whether some EARLIER test file had imported `api` — api.py
+            # calls tunables.apply_all(), which flips engine.FLIPBOOK_ENABLED
+            # on, and a flipbook resolve then tried to split a file that did
+            # not exist. Measured: flipbook off costs 1 generation per verb,
+            # flipbook on with a splittable grid costs 1, and only the
+            # can't-split path costs 3 — so an unwritable stub was testing the
+            # failure ladder and calling it the normal cost.
+            out = Path(self._tmpdir.name) / f"{label}_{len(self.calls)}.png"
+            out.write_bytes(GRID_PNG)
+            return str(out)
         return stub
 
     def test_enter_plate_is_the_img2img_init(self):
@@ -228,7 +285,12 @@ class TestResolveRestagesTheEnterPlate(unittest.TestCase):
         # The duplicate-file bug: one caption for every verb.
         self.assertIn("Strike", img2img[0]["caption"])
         self.assertTrue(path)
-        self.assertIn("hard_cut", mode)
+        # A flipbook play-out is the same restage drawn straight to frames, and
+        # it is the shipped setting — so it satisfies everything this test is
+        # about (the enter plate is the init, the verb is in the caption, no
+        # style swatch). Only a text-only or failed plate breaks the lesson.
+        self.assertTrue("hard_cut" in mode or mode == "flipbook", mode)
+        self.assertNotIn("t2i", mode)
 
     def test_two_verbs_request_two_captions(self):
         import gemini_image_utils as giu

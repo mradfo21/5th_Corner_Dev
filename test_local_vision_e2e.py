@@ -87,6 +87,8 @@ class TestLocalScanE2E(unittest.TestCase):
         env["GEMINI_API_KEY"] = ""
         env["OPENAI_API_KEY"] = ""
         env["ANTHROPIC_API_KEY"] = ""
+        env["ELEVENLABS_API_KEY"] = ""
+        env["ELEVENLABS_API_KEY"] = ""
         env["DETECT_BACKEND"] = "local"
         # Stills renderer: the reactor video has nothing to connect to offline,
         # and SCAN needs something on screen to capture.
@@ -147,9 +149,7 @@ class TestLocalScanE2E(unittest.TestCase):
             detect_responses.append(r.json())
             if "/api/detect" in r.url and r.status == 200 else None))
 
-        # Skip first-run onboarding; ?talkdev exposes the client's own QA hooks.
-        page.add_init_script(
-            "try { localStorage.setItem('scan_tutorial_seen_v1','1'); } catch(e){}")
+        # ?talkdev exposes the client's own QA hooks.
         page.goto(f"{self.base_url}/standalone?talkdev")
         page.keyboard.press("r")
         page.wait_for_selector(".choice-btn", state="attached", timeout=25000)
@@ -165,7 +165,9 @@ class TestLocalScanE2E(unittest.TestCase):
         # decoded still directly, which is the input path under test.)
         import engine
         state = engine.get_state("default")
-        state["current_image_prompt"] = SCENE_PROMPT
+        # Detect reads current_observed_vision (a description of the on-screen
+        # frame), not the last still's render recipe.
+        state["current_observed_vision"] = SCENE_PROMPT
         engine._save_state(state, "default")
 
         # Prime the still and fire the scan the player would fire.

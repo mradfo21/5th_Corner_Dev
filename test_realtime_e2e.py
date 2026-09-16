@@ -45,6 +45,12 @@ try:
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False
 
+# INTERACT is shelved until the live world model reacts visibly to a poke (see
+# INTERACT_ENABLED in standalone.js). Read the switch rather than hard-coding
+# it, so flipping the button back on also un-skips the tests that cover it.
+INTERACT_ENABLED = "const INTERACT_ENABLED = true;" in (
+    ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
+
 
 # A 1x1 transparent PNG as a data URL — uploadStill() fetches the scene image,
 # and fetch() works fine against a data: URL in the browser, so no image route
@@ -221,6 +227,7 @@ class TestRealtimeRenderer(unittest.TestCase):
         env["GEMINI_API_KEY"] = ""
         env["OPENAI_API_KEY"] = ""
         env["ANTHROPIC_API_KEY"] = ""
+        env["ELEVENLABS_API_KEY"] = ""
         # Advertise realtime as enabled + default renderer so /realtime forces it.
         env["REACTOR_API_KEY"] = "test-key-not-used"
         env["SCENE_RENDERER"] = "reactor"
@@ -264,9 +271,7 @@ class TestRealtimeRenderer(unittest.TestCase):
         """Everything a realtime page needs before `goto`, for desktop AND phone.
 
         Shared rather than copied because it already drifted once: the mobile
-        helper below was a near-copy that had fallen two entries behind — it
-        never set the tutorial-seen flag, so the first-run "tap to scan" modal
-        covered the SCAN button and swallowed the click, and it never mocked
+        helper below was a near-copy that had fallen behind and never mocked
         /api/reactor/config, so it booted the production world model instead of
         the Happy Oyster protocol this suite is written around.
         """
@@ -278,9 +283,6 @@ class TestRealtimeRenderer(unittest.TestCase):
         # tests so a scanned tag stays put through multi-step assertions; the
         # dedicated fade-out test overrides this back to a short value.
         page.add_init_script("window.__SCAN_TTL_MS__ = 60000;")
-        # Start past first-run onboarding so the "tap to scan" tutorial modal
-        # never pops up and intercepts the pointer clicks these tests make.
-        page.add_init_script("try { localStorage.setItem('scan_tutorial_seen_v1', '1'); } catch (e) {}")
 
         # Serve the mock SDK in place of the pinned CDN module.
         page.route(
@@ -298,6 +300,24 @@ class TestRealtimeRenderer(unittest.TestCase):
                 status=200,
                 content_type="application/json",
                 body='{"jwt": "mock.jwt.token", "expires_at": 9999999999}',
+            ),
+        )
+        # PHOTO restage would otherwise hit the mock server (images disabled)
+        # and 503 — the client then stays veiled and shots fail. Serve a plate
+        # so camera tests do not depend on Gemini.
+        page.route(
+            "**/api/viewfinder",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "image_url": TINY_PNG_DATA_URL,
+                    "cached": False,
+                    "from_live": True,
+                    "seed_image": True,
+                    "prompt": "first-person empty eyes",
+                    "camera": {"mode": "first_person", "shows_character": False},
+                }),
             ),
         )
         # Pin the advertised default world model to Happy Oyster. This suite is
@@ -598,10 +618,12 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('realtime-btn')).display"), "none")
             self.assertTrue(page.evaluate("!!document.querySelector('#touch-reticle .touch-cam')"))
             self.assertIsNone(page.evaluate("document.querySelector('#touch-reticle .touch-hand')"))
-            # Arm it — photographable targets surface from the live detection.
+            # Arm it — detect boxes are parked; shutter is live on the viewfinder.
             page.evaluate("document.getElementById('realtime-btn').click()")
             self.assertTrue(page.evaluate("document.getElementById('realtime-btn').classList.contains('aiming')"))
-            page.wait_for_function("document.querySelectorAll('#touch-targets .photo-target').length >= 1", timeout=8000)
+            page.wait_for_function(
+                "document.body.classList.contains('touch-aiming') && document.body.classList.contains('camera-mode')",
+                timeout=8000)
             page.evaluate("window.__MOCK_CMDS__ = []")
             # TAP the centered subject (press+release) — a worthy shot.
             page.evaluate(
@@ -627,9 +649,8 @@ class TestRealtimeRenderer(unittest.TestCase):
             filed = page.evaluate("document.querySelector('#photo-filed .filed-text').textContent")
             self.assertIn("Filed", filed, f"expected a filed line, got {filed!r}")
             self.assertIn("rusted valve", filed.lower(), f"the line must name the keeper, got {filed!r}")
-            # ...counts it on the one ambient readout there is...
-            page.wait_for_function(
-                "!document.getElementById('shot-tally').classList.contains('hidden')", timeout=6000)
+            # ...counts it on the dossier (HUD is CSS-hidden in camera-mode;
+            # the text still updates so the case file stays consistent)...
             page.wait_for_function(
                 "!/^0\\//.test(document.getElementById('tally-count').textContent)", timeout=8000)
             # ...adds it to the case file...
@@ -645,12 +666,10 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.close()
 
     def test_camera_zoom_scales_scene_and_suppresses_pinch_capture(self):
-        """Optical zoom: the camera arms on the FULL frame (1.0x), the mouse wheel
-        then magnifies the scene (a CSS scale transform on the video layer) within
-        bounds, the readout tracks it, a big wheel-down clamps back to the wide
-        1.0x bound (transform cleared), and a two-finger PINCH zooms WITHOUT
-        firing a capture (no /api/investigate) — only a clean single-finger tap
-        shoots."""
+        """Optical zoom: the camera arms already pushed in (~1.6x) so look can
+        pan a sub-region. The mouse wheel then magnifies further, a big
+        wheel-down clamps back to the wide 1.0x bound (transform cleared), and
+        a two-finger PINCH zooms WITHOUT firing a capture."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -668,13 +687,16 @@ class TestRealtimeRenderer(unittest.TestCase):
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            # Arm the camera -> opens on the full frame (1.0x): no scale transform.
+            # Arm the camera -> already pushed in so look can pan a sub-region.
             page.evaluate("document.getElementById('realtime-btn').click()")
             page.wait_for_function("!document.getElementById('touch-layer').classList.contains('hidden')", timeout=4000)
+            page.wait_for_function(
+                "Math.abs(parseFloat(document.getElementById('touch-zoom').textContent) - 1.6) < 0.05",
+                timeout=8000)
             z_armed = page.evaluate("parseFloat(document.getElementById('touch-zoom').textContent)")
-            self.assertAlmostEqual(z_armed, 1.0, places=1, msg="arming opens on the full 16:9 frame")
-            self.assertNotIn("scale(", page.evaluate("document.getElementById('reactor-video').style.transform || ''"),
-                             "the full-frame view is not magnified")
+            self.assertAlmostEqual(z_armed, 1.6, places=1, msg="arming opens pushed-in")
+            self.assertIn("scale(", page.evaluate("document.getElementById('reactor-video').style.transform || ''"),
+                             "the armed view is magnified")
 
             # Wheel up (deltaY < 0) zooms IN: the readout climbs and the layer scales up.
             page.evaluate("""() => document.getElementById('touch-layer').dispatchEvent(
@@ -740,9 +762,10 @@ class TestRealtimeRenderer(unittest.TestCase):
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            # Arm the camera: the dossier HUD (with the case goal) is revealed.
+            # Arm the camera. The dossier HUD is faded in camera-mode; the
+            # census goal still lives on the Evidence tracker.
             page.evaluate("document.getElementById('realtime-btn').click()")
-            page.wait_for_function("!document.getElementById('shot-tally').classList.contains('hidden')", timeout=5000)
+            page.wait_for_function("document.body.classList.contains('camera-mode')", timeout=4000)
             # The census goal is whatever the live tracker reports (CASE_TARGET).
             goal = page.evaluate("window.Evidence.target()")
             self.assertGreaterEqual(goal, 1)
@@ -753,7 +776,7 @@ class TestRealtimeRenderer(unittest.TestCase):
             photo_items["body"] = json.dumps({
                 "items": [{"label": s, "interest": 4, "note": "clue"} for s in subjects],
                 "caption": "A dense, telling frame.", "mood": "ominous"})
-            page.wait_for_function("document.querySelectorAll('#touch-targets .photo-target').length >= 1", timeout=8000)
+            page.wait_for_function("document.body.classList.contains('touch-aiming')", timeout=8000)
             # Take the shot at the centered subject (press + release).
             page.evaluate("""() => {
                 const L = document.getElementById('touch-layer');
@@ -776,11 +799,8 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.close()
 
     def test_photo_worthy_shot_requires_a_framed_subject(self):
-        """A shot only gathers evidence when a DETECTED subject is framed. The
-        viewfinder is a fixed, centered window, so every shot captures the center;
-        an EMPTY frame (nothing detected) misses (no receipt, no /api/photo),
-        while a centered detected subject is worthy (receipt shows). This uses
-        genuine in-game perception data."""
+        """Detect boxes are parked (they drift off the live view). The shutter
+        stays live: a centered shot always captures and appraises."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -822,27 +842,13 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
             page.evaluate("document.getElementById('realtime-btn').click()")
-            # Wait for the first (empty) detection to return, so the worthy-shot
-            # gate is live (detection has run) but no subject is framed.
-            for _ in range(80):
-                if detects:
-                    break
-                page.wait_for_timeout(100)
-            self.assertGreaterEqual(len(detects), 1, "photo detection never ran")
-            page.wait_for_timeout(300)  # let the detect result mark detection live
+            page.wait_for_function("document.body.classList.contains('touch-aiming')", timeout=8000)
+            page.wait_for_timeout(300)
 
-            # MISS: shoot the centered (empty) frame -> no receipt, no appraisal.
             shoot_center(2)
-            page.wait_for_timeout(700)
-            self.assertEqual(len(photos), 0, "an empty frame must not appraise the shot")
-            self.assertFalse(page.evaluate("document.getElementById('photo-filed').classList.contains('show')"),
-                             "a miss must not show the receipt")
-
-            # WORTHY: once the centered subject is detected, framing it develops a receipt.
-            page.wait_for_function("document.querySelectorAll('#touch-targets .photo-target').length >= 1", timeout=8000)
-            shoot_center(3)
             page.wait_for_function("document.getElementById('photo-filed').classList.contains('show')", timeout=12000)
-            self.assertGreaterEqual(len(photos), 1, "a worthy shot must appraise the frame")
+            self.assertGreaterEqual(len(photos), 1, "a viewfinder shot must appraise the frame")
+            self.assertEqual(len(detects), 0, "photo targeting must not poll detect")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (worthy) ===\n" + self._dump_logs())
             raise
@@ -962,9 +968,14 @@ class TestRealtimeRenderer(unittest.TestCase):
                 tag.click();
             }""")
             self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting')"))
-            # INTERACT and MOVE TO action icons are offered (no typing).
-            self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting .scan-action-interact')"))
+            # MOVE TO is always offered (no typing). INTERACT appears only while
+            # the switch is on, so the bar can't hand players the dead verb.
             self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting .scan-action-move')"))
+            self.assertEqual(
+                INTERACT_ENABLED,
+                page.evaluate("!!document.querySelector('.scan-tag.acting .scan-action-interact')"))
+            if not INTERACT_ENABLED:
+                return  # the rest of this test drives INTERACT; nothing to drive
             # Tap INTERACT in realtime -> a LIVE interaction on the running world
             # (Happy Oyster interact({action}) verb), NOT a full turn: the world
             # reacts in place, so /api/choose is never called and no world rebuild
@@ -991,6 +1002,7 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    @unittest.skipUnless(INTERACT_ENABLED, "INTERACT is shelved (INTERACT_ENABLED)")
     def test_realtime_interact_steers_without_a_cached_scene_base(self):
         """Regression: INTERACT must inject a LIVE world interaction even when the
         standalone layer never cached a scene bible (Renderer.lastBase/lastScene
@@ -1438,9 +1450,15 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.close()
 
     def test_realtime_scan_move_action(self):
-        """MOVE TO on a non-enterable object composes a RELOCATION prompt (naming
-        the object + a hard-transition cue so the scenery fully changes) and
-        commits a full turn — no typing. MOVE always changes the scene."""
+        """MOVE TO composes a single, universal phrase naming the object and
+        commits a full turn — no typing. It used to compose a different
+        phrase for a "non-enterable" object (a curated word-list match)
+        because the SERVER inferred hard-cut-vs-not from that text; MOVE is
+        now an unconditional hard cut regardless of what was tapped (see
+        is_move in engine.advance_turn_image_fast), so the client no longer
+        differentiates by object name — see the sibling
+        test_realtime_scan_move_enters_a_passage, which taps a nominally
+        "enterable" object and must produce the identical phrasing."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -1481,12 +1499,9 @@ class TestRealtimeRenderer(unittest.TestCase):
                     break
                 page.wait_for_timeout(100)
             self.assertGreaterEqual(len(choose_bodies), 1, f"MOVE action must commit a turn. logs:\n{self._dump_logs()}")
-            choice = (json.loads(choose_bodies[0] or "{}").get("choice") or "").strip().lower()
-            # A non-enterable object -> RELOCATION phrasing ("cross over" is a
-            # hard-transition trigger so the scenery fully changes), naming the
-            # object. MOVE is always a full change of scenery, never a static drift.
-            self.assertIn("rusty valve", choice, f"move action must name the object; got {choice!r}")
-            self.assertIn("cross over", choice, f"move must cue a full change of scenery (hard transition); got {choice!r}")
+            choice = (json.loads(choose_bodies[0] or "{}").get("choice") or "").strip()
+            self.assertEqual(choice, "Move to the rusty valve.",
+                             f"MOVE must compose the single universal phrase; got {choice!r}")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (scan-move) ===\n" + self._dump_logs())
             raise
@@ -1494,9 +1509,14 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.close()
 
     def test_realtime_scan_move_enters_a_passage(self):
-        """MOVE TO on an enterable object (door/opening/room/vehicle/…) must phrase
-        the action as an ENTRY ('Enter the <object> …') so the engine cuts to a
-        fresh interior scene instead of drifting in place."""
+        """MOVE TO on an object that LOOKS enterable (door/opening/room/…) must
+        compose the exact same universal phrase as any other object — no
+        special "Enter the …" wording. It used to be phrased as an entry
+        specifically so the SERVER's text classifier would grant it a hard
+        cut; now every scan_move gets an unconditional hard cut regardless of
+        wording (see is_move in engine.advance_turn_image_fast), so treating
+        this object differently client-side would only reintroduce the
+        wording-dependent inconsistency the fix removed."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -1531,8 +1551,8 @@ class TestRealtimeRenderer(unittest.TestCase):
                 page.wait_for_timeout(100)
             self.assertGreaterEqual(len(choose_bodies), 1, f"MOVE action must commit a turn. logs:\n{self._dump_logs()}")
             choice = (json.loads(choose_bodies[0] or "{}").get("choice") or "").strip()
-            self.assertTrue(choice.lower().startswith("enter the steel door"),
-                            f"MOVE TO an enterable object must be an entry; got {choice!r}")
+            self.assertEqual(choice, "Move to the steel door.",
+                             f"MOVE must compose the single universal phrase; got {choice!r}")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (scan-move-enter) ===\n" + self._dump_logs())
             raise
@@ -1562,8 +1582,8 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertIsNotNone(page.query_selector("#scan-btn"), "the SCAN button must exist in realtime")
             self._scan_now(page)
             page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=12000)
-            # Switch to still images via the renderer toggle -> overlay tears down.
-            page.evaluate("document.getElementById('btn-renderer').click()")
+            # Lock the stills floor (tests only) -> overlay tears down.
+            page.evaluate("() => window.__Renderer.setMode('image')")
             page.wait_for_function("document.body.classList.contains('realtime-on') === false", timeout=5000)
             page.wait_for_function("document.getElementById('scan-layer').classList.contains('hidden')", timeout=5000)
             # ...and the SCAN button is still there in stills mode.
@@ -1621,17 +1641,17 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertGreaterEqual(len(detects), 1, "SCAN never called /api/detect in stills mode")
             labels = page.evaluate("Array.from(document.querySelectorAll('.scan-tag-label')).map(e=>e.textContent)")
             self.assertIn("steel door", labels)
-            # Click the tag, tap INTERACT -> commits a full turn on the object.
+            # Click the tag, tap MOVE TO -> commits a full turn on the object.
             page.evaluate("document.querySelector('.scan-tag').click()")
-            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-interact')", timeout=5000)
-            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
+            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-move')", timeout=5000)
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-move').click()")
             for _ in range(60):
                 if chooses:
                     break
                 page.wait_for_timeout(100)
             self.assertGreaterEqual(len(chooses), 1, f"stills SCAN action didn't commit a turn. logs:\n{self._dump_logs()}")
             choice = json.loads(choose_bodies[0] or "{}").get("choice") or ""
-            self.assertEqual(choice.strip(), "Interact with the steel door.",
+            self.assertEqual(choice.strip(), "Move to the steel door.",
                              f"action must be composed from verb + object; got {choice!r}")
         except Exception:
             print("\n=== CONSOLE LOG (scan-stills) ===\n" + self._dump_logs())
@@ -1694,8 +1714,8 @@ class TestRealtimeRenderer(unittest.TestCase):
                 timeout=12000)
             # Commit an action on it -> turn resolves via the feed's new scene.
             page.evaluate("document.querySelector('.scan-tag').click()")
-            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-interact')", timeout=5000)
-            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
+            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-move')", timeout=5000)
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-move').click()")
             # The new still lands; the old crate hotspot is dropped with the scene.
             page.wait_for_function(
                 "!Array.from(document.querySelectorAll('.scan-tag-label')).some(e=>e.textContent==='old crate')",
@@ -2255,6 +2275,10 @@ class TestRealtimeRenderer(unittest.TestCase):
         "movement_clause": ("Smooth continuous third-person motion, the camera travelling "
                             "with Wren Alvarez, who stays in frame as the environment flows past."),
         "scene_floor": "Third-person cinematic view of the current scene, Wren Alvarez in frame.",
+        "place_line": "",
+        "protagonist_line": "Wren Alvarez — salvage diver.",
+        "prefix": ("third-person follow-cam vantage, the camera several metres back. "
+                   "Wren Alvarez — salvage diver stays in frame."),
     }
 
     def _route_camera(self, page, camera):
@@ -2287,6 +2311,10 @@ class TestRealtimeRenderer(unittest.TestCase):
                 builds[0]["data"].get("perspective"), "third_person",
                 "the world was built with the wrong camera — the authored cast sheet "
                 "never reached create_world")
+            self.assertEqual(
+                page.evaluate("window.__InputBindings.liveScheme()"),
+                "third_person",
+                "CONTROLS stayed first person despite the authored camera")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (authored-camera) ===\n" + self._dump_logs())
             raise
@@ -2302,6 +2330,30 @@ class TestRealtimeRenderer(unittest.TestCase):
             self._route_camera(page, self.THIRD_PERSON_CAMERA)
             self._seed_live_scene(page)
 
+            # Happy Oyster Adventure cannot take a live prompt edit — a nudge
+            # used to applyScene and rebuild the world. Refuse instead.
+            self.assertFalse(
+                page.evaluate("window.ReactorRenderer.supportsLiveSteer()"),
+                "Happy Oyster Adventure must not accept a live prompt steer")
+            self.assertFalse(
+                page.evaluate("window.Renderer.steerRealtime('push open the hatch')"),
+                "steerRealtime must not rebuild an Adventure world")
+
+            # LingBot can take a live edit. The authored camera still leads
+            # the beat so a third-person world is not argued back to POV.
+            page.evaluate("window.Renderer.setWorldModel('lingbot-world-2')")
+            page.wait_for_function(
+                "window.ReactorRenderer.getModel() === 'lingbot-world-2'", timeout=8000)
+            page.wait_for_function("window.ReactorRenderer.isReady() === true", timeout=15000)
+            page.evaluate(
+                "(img) => window.ReactorRenderer.applyScene({prompt: 'A dim loading dock you can walk through', imageUrl: img, hardTransition: false})",
+                TINY_PNG_DATA_URL,
+            )
+            page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
+            self.assertTrue(
+                page.evaluate("window.ReactorRenderer.supportsLiveSteer()"),
+                "LingBot must accept a live prompt steer")
+
             # Record what a live nudge would steer with.
             page.evaluate("""() => {
               window.__STEERED__ = [];
@@ -2315,6 +2367,8 @@ class TestRealtimeRenderer(unittest.TestCase):
             steered = page.evaluate("window.__STEERED__ || []")
             self.assertTrue(steered, "the nudge never reached the renderer")
             self.assertIn("the camera follows as Wren Alvarez", steered[-1])
+            self.assertIn("Push open the hatch", steered[-1])
+            self.assertNotIn("Motion:", steered[-1])
             self.assertNotIn("the view shifts as you", steered[-1])
 
             # And the floor a re-steer builds on when there is no scene yet.

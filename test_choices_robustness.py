@@ -64,7 +64,7 @@ class TestChoicesParseRobustness(unittest.TestCase):
             with patch.object(self.choices.engine, "_ask", return_value=""):
                 return self.choices.generate_choices(
                     None,
-                    "SITUATION SUMMARY: {situation_summary}\nCURRENT DISPATCH: {dispatch}\nIMAGE DESCRIPTION: {image_description}\n{beat_nudge}\n{seen_elements}\n{injury_state}",
+                    "SITUATION SUMMARY: {situation_summary}\nCURRENT DISPATCH: {dispatch}\nIMAGE DESCRIPTION: {image_description}\n{beat_nudge}\n{seen_elements}",
                     last_dispatch="You stand on a lookout tower above the Horizon facility.",
                     n=3,
                     image_url=None,
@@ -75,7 +75,6 @@ class TestChoicesParseRobustness(unittest.TestCase):
                     world_prompt="rusted lookout tower platform overlooking facility",
                     temperature=0.7,
                     situation_summary="",
-                    injury_state="none",
                 )
 
     def test_empty_candidates_returns_contextual_fallback(self):
@@ -151,6 +150,130 @@ class TestChoicesParseRobustness(unittest.TestCase):
         )
 
 
+class TestChoiceSlateIsAlwaysFull(unittest.TestCase):
+    """The slate handed to the UI must always hold `n` options.
+
+    Every stage of generate_choices can REMOVE an option — diversity, the
+    meaningless-choice drop, the critic de-duping against recent turns — and
+    only a completely EMPTY result was ever refilled. A turn that lost one
+    option to a filter therefore served two buttons where the UI lays out
+    three, which reads as the game running out of ideas rather than as a
+    filter doing its job.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import choices  # noqa: F401
+        cls.choices = choices
+
+    def _call(self, llm_text, critic_text=""):
+        payload = {
+            "candidates": [
+                {"finishReason": "STOP", "content": {"parts": [{"text": llm_text}]}}
+            ]
+        }
+        with patch("requests.post") as mock_post:
+            mock_post.return_value = _make_response(200, payload)
+            with patch.object(self.choices.engine, "_ask", return_value=critic_text):
+                return self.choices.generate_choices(
+                    None,
+                    "CURRENT DISPATCH: {dispatch}",
+                    last_dispatch="You crouch behind a rusted crate inside the facility yard.",
+                    n=3,
+                    world_prompt="rusted crates in a facility yard, chain-link fence",
+                    temperature=0.7,
+                    situation_summary="",
+                )
+
+    def test_critic_returning_two_choices_is_topped_up(self):
+        result = self._call(
+            "1. Vault over the rusted railing\n"
+            "2. Scramble down the rocky slope\n"
+            "3. Shoulder the crate aside\n",
+            critic_text="Vault over the rusted railing\nScramble down the rocky slope\n",
+        )
+        self.assertEqual(len(result), 3, f"slate came back short: {result!r}")
+
+    def test_single_usable_option_is_topped_up(self):
+        result = self._call("1. Vault over the rusted railing\n")
+        self.assertEqual(len(result), 3, f"slate came back short: {result!r}")
+
+    def test_slate_never_exceeds_n(self):
+        result = self._call(
+            "1. Vault over the rusted railing\n"
+            "2. Scramble down the rocky slope\n"
+            "3. Shoulder the crate aside\n"
+            "4. Sprint for the fence gap\n"
+            "5. Crawl beneath the pipes\n"
+        )
+        self.assertEqual(len(result), 3)
+
+    def test_topped_up_choices_are_unique(self):
+        result = self._call("1. Vault over the rusted railing\n")
+        self.assertEqual(len(set(c.lower() for c in result)), len(result))
+
+    def test_critic_rewrite_cannot_serve_a_long_clause(self):
+        """The critic used to rewrite past the parse cap and skip truncate."""
+        long_line = (
+            "Attempt to pry the jagged, shattered glass shards from the "
+            "smashed CRT monitor"
+        )
+        result = self._call(
+            "1. Vault over the rusted railing\n"
+            "2. Scramble down the rocky slope\n"
+            "3. Shoulder the crate aside\n",
+            critic_text=(
+                long_line + "\n"
+                "Drag the body clear\n"
+                "Break and run for open ground\n"
+            ),
+        )
+        self.assertEqual(len(result), 3)
+        for line in result:
+            self.assertNotIn("…", line)
+            self.assertLessEqual(len(line.split()), self.choices.CHOICE_MAX_WORDS)
+            self.assertLessEqual(len(line), self.choices.CHOICE_MAX_CHARS)
+        self.assertFalse(any("from the" in line.lower() for line in result))
+
+    def test_long_llm_lines_are_clipped_not_dropped(self):
+        result = self._call(
+            "1. Attempt to pry the jagged shattered glass shards from the monitor\n"
+            "2. Drag the body clear of the sparks\n"
+            "3. Break and run for open ground\n",
+            critic_text="",
+        )
+        self.assertEqual(len(result), 3)
+        joined = " | ".join(result).lower()
+        self.assertTrue("pry" in joined or "attempt" in joined)
+        for line in result:
+            self.assertNotIn("…", line)
+            self.assertLessEqual(len(line.split()), self.choices.CHOICE_MAX_WORDS)
+            self.assertLessEqual(len(line), self.choices.CHOICE_MAX_CHARS)
+
+
+class TestFastPathRequiresFullSlate(unittest.TestCase):
+    """The turn loop's fast path must not serve a short slate.
+
+    advance_turn_choices_deferred can reuse the next-action options the
+    consequence call already produced and skip two LLM round-trips. It used
+    to take that shortcut on as few as TWO clean options, so the saving was
+    paid for with a button the player never got. Falling back to the full
+    generator on a short list costs one round-trip on those turns only.
+    """
+
+    def test_fast_path_threshold_is_the_full_slate(self):
+        src = (WORKSPACE / "engine.py").read_text(encoding="utf-8")
+        block = src.split("# FAST PATH:", 1)[1].split("if _pregen is not None:", 1)[0]
+        self.assertIn("len(_cleaned) >= SLATE_SIZE", block)
+        self.assertNotIn("len(_cleaned) >= 2", block)
+
+    def test_slate_size_is_shared_with_the_generator(self):
+        import choices
+        self.assertEqual(choices.SLATE_SIZE, 3)
+        src = (WORKSPACE / "engine.py").read_text(encoding="utf-8")
+        self.assertIn("from choices import drop_meaningless_choices, enforce_diversity, SLATE_SIZE", src)
+
+
 class TestChoicesPayloadHasSafetySettings(unittest.TestCase):
     """Source-level invariant: choices payload disables Gemini safety filters.
 
@@ -211,6 +334,60 @@ class TestMeaninglessChoiceFilter(unittest.TestCase):
                 self.choices.is_meaningless_choice(c),
                 f"a valid forward action was wrongly filtered: {c!r}",
             )
+
+
+class TestChoiceLength(unittest.TestCase):
+    def setUp(self):
+        import choices
+        self.choices = choices
+
+    def test_long_clause_is_clipped_without_ellipsis(self):
+        raw = (
+            "Attempt to pry the jagged, shattered glass shards from the "
+            "smashed CRT monitor"
+        )
+        out = self.choices.truncate_choice(raw)
+        self.assertNotIn("…", out)
+        self.assertNotIn("...", out)
+        self.assertLessEqual(len(out.split()), self.choices.CHOICE_MAX_WORDS)
+        self.assertLessEqual(len(out), self.choices.CHOICE_MAX_CHARS)
+        self.assertTrue(out.lower().startswith("pry"))
+        self.assertNotIn("attempt", out.lower())
+
+    def test_short_choice_is_left_alone(self):
+        self.assertEqual(self.choices.truncate_choice("Pry the glass free"), "Pry the glass free")
+
+    def test_does_not_end_on_a_dangling_the(self):
+        out = self.choices.truncate_choice(
+            "Attempt to pry the jagged shattered glass shards from the"
+        )
+        self.assertFalse(out.lower().endswith(" the"))
+        self.assertFalse(out.lower().endswith(" from"))
+
+    def test_enforce_diversity_clips_the_slate(self):
+        slate = self.choices.enforce_diversity([
+            "Attempt to pry the jagged, shattered glass shards from the monitor",
+            "Drag",
+            "Break and run for open ground past the fence line toward the mesa",
+        ])
+        for line in slate:
+            self.assertNotIn("…", line)
+            self.assertLessEqual(len(line.split()), self.choices.CHOICE_MAX_WORDS)
+            self.assertLessEqual(len(line), self.choices.CHOICE_MAX_CHARS)
+
+
+class TestChoiceImageResolvesSessionFrames(unittest.TestCase):
+    """Realtime observe writes JPEG grabs under sessions/<id>/images/.
+    generate_choices used to look in the legacy images/ folder and never
+    attached the live frame, so MOVE-TO-style slates stayed on the last
+    still's nouns."""
+
+    def test_generate_choices_uses_session_aware_resolver(self):
+        src = Path(__file__).parent.joinpath("choices.py").read_text(encoding="utf-8")
+        block = src.split("if image_url:", 1)[1].split("print(f\"[GEMINI TEXT]", 1)[0]
+        self.assertIn("_resolve_image_path", block)
+        self.assertIn("_sniff_image_mime", block)
+        self.assertNotIn('Path("images") / image_url.replace("/images/", "")', block)
 
 
 if __name__ == "__main__":

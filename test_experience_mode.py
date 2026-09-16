@@ -563,24 +563,81 @@ class TestPacingFairnessHardening(unittest.TestCase):
 
     # -- Fairness doctrine --
     def test_death_fairness_doctrine_present(self):
-        """Prompt must encode 'characters/events kill, environment only injures'."""
-        self.assertIn("DEATH FAIRNESS DOCTRINE", self.prompts_src)
-        self.assertIn("CHARACTERS AND DRAMATIC EVENTS KILL", self.prompts_src)
-        self.assertIn("ENVIRONMENT ONLY WOUNDS", self.prompts_src)
+        """Prompt must encode 'characters/events kill, environment only injures'.
+
+        The doctrine survived the prompt trim; its ~450-word presentation (a
+        boxed heading, three bulleted cause lists, and a four-question
+        checklist) did not. What is asserted here is the rule, not the layout.
+        """
+        self.assertIn("INJURY IS THE DEFAULT, NOT DEATH", self.prompts_src)
+        self.assertIn("Only characters and dramatic events kill", self.prompts_src)
+        self.assertIn("wounds badly and never kills", self.prompts_src)
 
     def test_unlucky_fate_modifier_forbids_cheap_deaths(self):
-        """The UNLUCKY fate path must not re-introduce random impalement deaths."""
-        self.assertIn(
-            "FORBIDDEN UNDER UNLUCKY",
-            self.engine_src,
-            "engine.py must explicitly forbid cheap-death patterns under UNLUCKY",
-        )
+        """The UNLUCKY fate path must not re-introduce random impalement deaths.
+
+        The rule survived the trim; the "FORBIDDEN UNDER UNLUCKY" heading and its
+        three ❌ bullets did not. What matters is that inert scenery still cannot
+        kill, which is now stated as one sentence.
+        """
+        self.assertIn("Only characters and dramatic events may kill", self.engine_src)
+        self.assertIn("wounds badly and never", self.engine_src)
+
+    def test_unlucky_cannot_cancel_the_players_action(self):
+        """The complication is the action's COST, not its cancellation.
+
+        Every bullet in the old UNLUCKY block could substitute for the action
+        rather than charge for it — "equipment fails", "sprained ankle" — and a
+        live run duly produced "you lunge forward, BUT the film strip tightens,
+        snagging your boot and dragging you to your knees." The move never
+        happened. The consequence template already carried "A MOVE ALWAYS
+        COMPLETES" and lost the argument, because this modifier is appended after
+        it and is far more concrete about what to write. So the rule has to be
+        stated at the point of decision, with an example of the failure.
+        """
+        self.assertIn("cancellation of it", self.engine_src)
+        self.assertIn("still happened", self.engine_src)
+
+    def test_the_fate_modifier_does_not_cite_a_heading_that_is_gone(self):
+        """It used to tell the model that the death-fairness doctrine "above
+        still applies", naming a heading the consequence template no longer has
+        (it now reads "INJURY IS THE DEFAULT, NOT DEATH"). Pointing the model at
+        a governing rule it cannot locate is worse than not citing one, and a
+        prompt rename orphans such a citation silently. The fix is to restate the
+        rule rather than cite it, so nothing here should reference a heading."""
+        self.assertNotIn("DOCTRINE above", self.engine_src)
+        self.assertNotIn("DOCTRINE above still applies", self.engine_src)
+
+    def test_luck_never_becomes_arithmetically_impossible(self):
+        """A 13-turn scan_move run rolled LUCKY zero times.
+
+        `lucky_cut = 0.25 - bias` hits zero at bias 0.25, and scan_move adds
+        +0.15 unconditionally (every turn is a SCAN interaction) on top of phase
+        bias (up to 0.22) and detection bias (up to 0.24). From "escalating"
+        onward a break was unavailable, so the world could only be neutral or
+        cruel — which reads as a game that has stopped responding to you.
+        """
+        import engine
+        for bias in (0.0, 0.15, 0.27, 0.42, 0.5, 1.0):
+            with self.subTest(bias=bias):
+                rolls = [engine.compute_fate(bias) for _ in range(4000)]
+                lucky = rolls.count("LUCKY") / len(rolls)
+                unlucky = rolls.count("UNLUCKY") / len(rolls)
+                self.assertGreater(lucky, 0.05, "relief became unavailable")
+                self.assertLess(unlucky, 0.62, "misfortune became the default")
+
+    def test_the_base_odds_are_untouched_when_nothing_is_at_stake(self):
+        """The floors must not flatten the dial at bias 0 — 25/50/25 stands."""
+        import engine
+        rolls = [engine.compute_fate(0.0) for _ in range(6000)]
+        self.assertAlmostEqual(rolls.count("LUCKY") / len(rolls), 0.25, delta=0.03)
+        self.assertAlmostEqual(rolls.count("UNLUCKY") / len(rolls), 0.25, delta=0.03)
 
     # -- Tension rhythm --
     def test_tension_rhythm_allows_stillness_beats(self):
         """The action_consequence_instructions must allow ~30% stillness beats."""
-        self.assertIn("TENSION RHYTHM", self.prompts_src)
-        self.assertIn("STILLNESS BEAT", self.prompts_src)
+        self.assertIn("The rest end on stillness", self.prompts_src)
+        self.assertIn("Constant crescendo goes numb", self.prompts_src)
         # The old "MANDATORY FINAL SENTENCE" rule must be gone.
         self.assertNotIn(
             "TENSION ESCALATION (MANDATORY FINAL SENTENCE)",
@@ -600,25 +657,10 @@ class TestPacingFairnessHardening(unittest.TestCase):
         key is gone; the doctrine that actually runs lives in the consequence
         prompt, which is what this checks.
         """
-        self.assertIn("FAIRNESS", self.prompts_src.upper())
+        self.assertIn("would call it cheap", self.prompts_src)
         self.assertIn("action_consequence_instructions", self.prompts_src)
 
     # -- Injury state threading --
-    def test_injury_state_threaded_into_choices(self):
-        """generate_choices must accept and format injury_state."""
-        self.assertIn("injury_state", self.choices_src)
-        self.assertIn(
-            "injury_state=injury_state or",
-            self.choices_src,
-            "generate_choices must pass injury_state into prompt .format()",
-        )
-
-    def test_injury_state_threaded_into_dispatch(self):
-        """The dispatch prompt builder must inject seen_elements + injury_state."""
-        self.assertIn("INJURY STATE", self.engine_src)
-        self.assertIn("DISCOVERED ENTITIES", self.engine_src)
-
-    # -- Choice slate composition --
     def test_choice_slot_is_randomized(self):
         """The mandatory 'slot 1 = forward movement' rule must be replaced
         with a randomized-slot rule so players cannot rote-memorize it."""
@@ -634,11 +676,13 @@ class TestPacingFairnessHardening(unittest.TestCase):
         )
 
     # -- Phase-linked time of day --
-    def test_time_of_day_can_advance_with_phase(self):
-        # Lives in action_consequence_instructions, which is read every turn.
-        # A duplicate of this rule also sat in world_tick_micro_change_
-        # instructions, a key nothing read; that copy is gone.
-        self.assertIn("TIME-OF-DAY PROGRESSION (PHASE-LINKED)", self.prompts_src)
+    def test_time_of_day_is_not_a_writer_dial(self):
+        # The writer used to be told to darken the light on a phase tip.
+        # That invented a new sky in visual_scene, which the image model
+        # then rendered — on top of the engine also rewriting time_of_day.
+        # The evening is set at reset; the prose must not rename it.
+        self.assertIn("The evening of this run is already set", self.prompts_src)
+        self.assertNotIn("It darkens one tier when the phase escalates", self.prompts_src)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -648,47 +692,6 @@ class TestPacingFairnessHardening(unittest.TestCase):
 # bug sat in main for months while the fix sat on a branch. They're guarded
 # here so the next long-lived branch can't quietly re-open them.
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestPersistentInjuries(unittest.TestCase):
-    """`state['injuries']` is read by the consequence grounding and every
-    choice call, and used to be written by nothing — so the UNLUCKY prompt's
-    promise that a wound "becomes a persistent burden the player carries
-    forward" was empty for the whole run."""
-
-    def test_a_wound_in_the_prose_is_recorded(self):
-        import engine
-        st = {"injuries": []}
-        self.assertTrue(engine._apply_injuries(
-            st, "You vault the rail. Jagged metal opens a deep cut across your forearm."))
-        self.assertEqual(len(st["injuries"]), 1)
-        self.assertIn("deep cut", st["injuries"][0].lower())
-
-    def test_a_clean_turn_records_nothing(self):
-        import engine
-        st = {"injuries": []}
-        self.assertFalse(engine._apply_injuries(
-            st, "You sprint across the yard and reach the gantry untouched."))
-        self.assertEqual(st["injuries"], [])
-
-    def test_body_parts_alone_are_not_injuries(self):
-        """A false positive follows the player for the rest of the run, so the
-        signal list is verbs of harm, not nouns of anatomy."""
-        import engine
-        st = {"injuries": []}
-        self.assertFalse(engine._apply_injuries(st, "You raise a hand and steady your shoulder against the door."))
-        self.assertEqual(st["injuries"], [])
-
-    def test_wounds_are_capped_so_a_run_cannot_be_crippled_forever(self):
-        import engine
-        st = {"injuries": []}
-        for i in range(8):
-            engine._apply_injuries(st, f"Scalding steam burns your {i} hand.")
-        self.assertLessEqual(len(st["injuries"]), 3)
-
-    def test_the_turn_loop_actually_calls_it(self):
-        src = (Path(__file__).parent / "engine.py").read_text(encoding="utf-8")
-        self.assertIn("_apply_injuries(state, dispatch, is_timeout_penalty)", src)
 
 
 class TestFlipbookTextBleed(unittest.TestCase):
@@ -702,11 +705,20 @@ class TestFlipbookTextBleed(unittest.TestCase):
         cls.engine_src = (root / "engine.py").read_text(encoding="utf-8")
         cls.prompts = json.loads((root / "prompts" / "simulation_prompts.json").read_text(encoding="utf-8"))
 
-    def test_blank_grid_template_is_preferred_over_the_numbered_one(self):
-        i_blank = self.engine_src.index('if os.path.exists(blank_template_path):')
-        i_numbered = self.engine_src.index('elif os.path.exists(numbered_template_path):')
-        self.assertLess(i_blank, i_numbered,
-                        "the numbered template has FRAME/timestamp labels printed on it")
+    def test_the_layout_guide_the_engine_attaches_has_nothing_to_copy(self):
+        # This used to be a pick between two committed template files, one of
+        # which had FRAME/timestamp labels printed on it. The guides are
+        # generated per grid shape now (flipbook.build_guide), and the numbered
+        # variant exists only for humans reading the order — so the engine must
+        # ask for a guide by shape and never for a numbered one.
+        import flipbook
+        flipbook_path = self.engine_src.split("def _flipbook_generate", 1)[1]
+        self.assertIn("flipbook.find_guide(", flipbook_path)
+        self.assertNotIn("numbered", flipbook_path.split("def _gen_image", 1)[0])
+        import inspect
+        self.assertIs(inspect.signature(flipbook.build_guide)
+                      .parameters["numbered"].default, False,
+                      "blank has to be the default guide")
 
     def test_no_timestamp_ladder_left_in_the_flipbook_prompt(self):
         leftovers = re.findall(r"\d+\.\d+s", self.prompts["gemini_flipbook_4panel_prefix"])
@@ -829,6 +841,13 @@ class TestRealtimeFailuresAreNamed(unittest.TestCase):
     def setUpClass(cls):
         cls.src = (Path(__file__).parent / "static" / "js" / "reactor_renderer.js").read_text(encoding="utf-8")
 
+    def test_the_renderer_script_does_not_redeclare_const_v(self):
+        """A second `const v` in armRevealWatchdog made the whole IIFE fail
+        to parse, so window.ReactorRenderer never existed and every session
+        stayed on stills with a green ACCOUNT lamp."""
+        watchdog = self.src.split("function armRevealWatchdog", 1)[1].split("function clearRevealWatchdog", 1)[0]
+        self.assertEqual(watchdog.count("const v ="), 1)
+
     def test_each_distinct_cause_is_classified(self):
         for reason in ("not_configured", "bad_key", "sdk_blocked", "token_exchange_failed", "capacity"):
             self.assertIn(f'"{reason}"', self.src)
@@ -837,12 +856,65 @@ class TestRealtimeFailuresAreNamed(unittest.TestCase):
         client = (Path(__file__).parent / "static" / "js" / "standalone.js").read_text(encoding="utf-8")
         self.assertIn("lastErr && lastErr.hint", client)
 
+    def test_a_warmup_reapply_does_not_restage_the_same_seed(self):
+        """The editor poll used to re-apply the cached frame while the freeze
+        still covered the video, which reset LingBot and hid the stream."""
+        apply = self.src.split("function applyScene", 1)[1][:2800]
+        self.assertIn("const sameGuide", apply)
+        self.assertIn("rstate.started || rstate.applying || showing", apply)
+
     def test_stream_health_is_measured_not_assumed(self):
         """A stalled stream keeps showing its last decoded frame, so `status`
         alone cannot tell a running world from a frozen picture of one."""
         self.assertIn("function getTelemetry", self.src)
         self.assertIn("stalled:", self.src)
         self.assertIn("getTelemetry: getTelemetry", self.src)
+
+
+class TestAuthoredCameraBeatsStaleFirstPerson(unittest.TestCase):
+    """Every instance was first person despite a controls override: leftover
+    localStorage beat the cast sheet, LingBot never restaged, and CONTROLS
+    stayed on first_person until a later Camera.load that often lost the race."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).parent
+        cls.reactor = (root / "static" / "js" / "reactor_renderer.js").read_text(encoding="utf-8")
+        cls.client = (root / "static" / "js" / "standalone.js").read_text(encoding="utf-8")
+
+    def test_authored_camera_beats_leftover_localstorage(self):
+        fn = self.reactor.split("function happyOysterPerspective", 1)[1].split("function directorParams", 1)[0]
+        self.assertIn(
+            "rstate.hoPerspective || page || rstate.authoredPerspective || stored",
+            fn,
+        )
+
+    def test_lingbot_restages_when_the_camera_changes(self):
+        fn = self.reactor.split("rebuildWorld:", 1)[1].split("getExperience:", 1)[0]
+        self.assertNotIn("if (!isHappyOyster() || !rstate.started) return false;", fn)
+        self.assertIn("decoratePrompt", fn)
+        self.assertIn("hardTransition: true", fn)
+
+    def test_scene_prompts_carry_the_authored_vantage(self):
+        self.assertIn("function decoratePrompt", self.reactor)
+        self.assertIn("window.__InputBindings.followCamera", self.reactor)
+        self.assertIn("Camera.prefix()", self.client)
+        self.assertIn("cameraReady.then(bootRenderer", self.client)
+        self.assertIn("resteerLiveFromSheet", self.client)
+        self.assertIn("keepSheet: true", self.client)
+        self.assertIn("function paintCompiled", self.client)
+        self.assertIn("data-compiled-for", self.client)
+        steer = self.client.split("function worldSteerPrompt", 1)[1][:1800]
+        self.assertIn("Camera.prefix()", steer)
+        self.assertNotIn("has(who)", steer)
+        self.assertIn("setTimeout(commit, 520)", self.client)
+        self.assertIn('addEventListener("input"', self.client)
+        decorate = self.reactor.split("function decoratePrompt", 1)[1].split("async function loadConfig", 1)[0]
+        self.assertIn("cam.prefix", decorate)
+        resolve = self.reactor.split("function resolveModelId", 1)[1].split("async function fetchToken", 1)[0]
+        self.assertIn("pick(q) || pick(rstate.cfg.world_model) || pick(stored)", resolve)
+        keep = self.client.split("function keepLiveExperience", 1)[1][:2400]
+        self.assertIn("samePrompt", keep)
 
 
 class TestInvestigationGroundsTheTurn(unittest.TestCase):

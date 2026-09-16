@@ -52,6 +52,46 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
         "help": "How sure the on-device detector has to be before it names "
                 "something. Lower finds more, and more rubbish.",
     },
+    # ── Danger ────────────────────────────────────────────────────────────
+    # These decide whether a run is survival horror or a stroll, and the right
+    # answer depends on how long it is meant to be — a 60-turn render and a
+    # ten-minute sitting want different numbers. They were constants in
+    # engine.py, which meant editing code to change the difficulty.
+    #
+    # "Wound cost" and "Recovery" used to live here, driving a hit-point pool.
+    # That pool is gone (see engine's "how a run ends"), so detection is the
+    # difficulty surface now: how fast the world notices you and how long it
+    # stays interested is what decides whether a run is tense or a stroll.
+    "detect_cool": {
+        "kind": "number",
+        "label": "Losing them",
+        "min": 0,
+        "max": 5,
+        "step": 1,
+        "default": 1,
+        "help": "Heat shed by a turn that draws no attention. 0 means once "
+                "you are seen you stay hunted for the rest of the run.",
+    },
+    "story_escalate_at": {
+        "kind": "number",
+        "label": "Act two at",
+        "min": 2,
+        "max": 40,
+        "step": 1,
+        "default": 4,
+        "help": "Accumulated threat before the story tips into escalating. "
+                "Raise it for a slower burn.",
+    },
+    "story_critical_at": {
+        "kind": "number",
+        "label": "Act three at",
+        "min": 3,
+        "max": 80,
+        "step": 1,
+        "default": 9,
+        "help": "Accumulated threat before the story tips into critical. "
+                "Keep it above act two or the middle act never happens.",
+    },
     "camp_companion_cap": {
         "kind": "number",
         "label": "Seats",
@@ -67,6 +107,39 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
         "label": "Bring the jeep",
         "default": True,
         "help": "Include the jeep as a reference so camp keeps the same vehicle.",
+    },
+    # ── Flipbook ──────────────────────────────────────────────────────────
+    # A flipbook turn asks for a grid of panels and splits it back into the
+    # in-between frames of the action, instead of one still. The count is a
+    # knob because it is a straight quality trade: the panels are slices of ONE
+    # generation, so 16 of them are a quarter the width and height of 4. The
+    # old build hardcoded 16 and looked like a bootleg.
+    "flipbook_enabled": {
+        "kind": "bool",
+        "label": "Flipbook",
+        "default": False,
+        "help": "Draw each turn as a short sequence of in-between frames "
+                "instead of one still. Costs the same as a still (one "
+                "generation) but takes longer to come back. Gemini images only.",
+    },
+    "flipbook_frames": {
+        "kind": "enum",
+        "label": "Frames",
+        "options": ["2", "4", "8", "16"],
+        "default": "4",
+        "help": "How many in-betweens per turn. They are slices of one "
+                "generation, so fewer means each frame is bigger: 4 frames are "
+                "twice the width of 16. Raise the image size to go higher.",
+    },
+    "flipbook_frame_ms": {
+        "kind": "number",
+        "label": "Frame hold",
+        "min": 80,
+        "max": 1000,
+        "step": 10,
+        "default": 420,
+        "help": "Milliseconds each frame stays on screen. 4 frames at 420ms is "
+                "under two seconds of motion per turn.",
     },
     "default_voice_id": {
         "kind": "voice",
@@ -180,18 +253,36 @@ def _live(name: str, spec: Dict[str, Any]) -> Any:
         if name == "detect_min_score":
             import local_vision
             return getattr(local_vision, "MIN_SCORE", None)
+        if name == "detect_cool":
+            import engine
+            return getattr(engine, "DETECT_COOL", spec.get("default"))
+        if name == "story_escalate_at":
+            import engine
+            return getattr(engine, "STORY_ESCALATE_AT", spec.get("default"))
+        if name == "story_critical_at":
+            import engine
+            return getattr(engine, "STORY_CRITICAL_AT", spec.get("default"))
         if name == "camp_companion_cap":
             import engine
             return getattr(engine, "CAMP_COMPANION_CAP", spec.get("default"))
         if name == "camp_include_jeep":
             import engine
             return getattr(engine, "CAMP_INCLUDE_JEEP", spec.get("default"))
+        if name == "flipbook_enabled":
+            import engine
+            return getattr(engine, "FLIPBOOK_ENABLED", spec.get("default"))
+        if name == "flipbook_frames":
+            import engine
+            return str(getattr(engine, "FLIPBOOK_FRAMES", 0) or spec["default"])
+        if name == "flipbook_frame_ms":
+            import engine
+            return getattr(engine, "FLIPBOOK_FRAME_MS", spec.get("default"))
         if name == "default_voice_id":
             import engine
             return engine._default_voice_id()
         if name == "narrator_voice_id":
             import engine
-            return getattr(engine, "ELEVENLABS_NARRATOR_VOICE_ID", None) or None
+            return engine._narrator_voice_id()
     except Exception:  # noqa: BLE001
         pass
     return spec.get("default")
@@ -218,12 +309,36 @@ def _apply_one(name: str, value: Any) -> None:
     elif name == "detect_min_score":
         import local_vision
         local_vision.MIN_SCORE = float(value)
+    elif name == "detect_cool":
+        import engine
+        # Moving has always shed heat faster than standing still; keep that
+        # relationship rather than letting the two knobs cross over.
+        engine.DETECT_COOL = int(value)
+        engine.DETECT_COOL_MOVING = int(value) * 2
+    elif name == "story_escalate_at":
+        import engine
+        engine.STORY_ESCALATE_AT = int(value)
+    elif name == "story_critical_at":
+        import engine
+        engine.STORY_CRITICAL_AT = int(value)
     elif name == "camp_companion_cap":
         import engine
         engine.CAMP_COMPANION_CAP = int(value)
     elif name == "camp_include_jeep":
         import engine
         engine.CAMP_INCLUDE_JEEP = bool(value)
+    elif name == "flipbook_enabled":
+        import engine
+        engine.FLIPBOOK_ENABLED = bool(value)
+    elif name == "flipbook_frames":
+        import engine
+        import flipbook
+        # The enum stores a string; the engine wants a count it can build a
+        # grid out of, and normalize_frames is the one place that decides.
+        engine.FLIPBOOK_FRAMES = flipbook.normalize_frames(value)
+    elif name == "flipbook_frame_ms":
+        import engine
+        engine.FLIPBOOK_FRAME_MS = int(value)
     elif name == "narrator_voice_id":
         import engine
         engine.ELEVENLABS_NARRATOR_VOICE_ID = value

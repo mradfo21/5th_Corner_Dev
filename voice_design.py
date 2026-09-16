@@ -114,13 +114,27 @@ _URL_SUBSCRIPTION = _API_BASE + "/v1/user/subscription"
 # Public availability probe
 # ────────────────────────────────────────────────────────────────────────────
 
+def _api_key() -> str:
+    """Live key. keys_store patches os.environ and this module's API_KEY after
+    import; reading only the import-time constant is how a pasted secret never
+    reached the list call."""
+    return (os.getenv("ELEVENLABS_API_KEY") or API_KEY or "").strip()
+
+
+def _key_looks_real() -> bool:
+    """ElevenLabs rejects anything that is not an ``sk_`` secret. The dashboard
+    lists keys by hex ID; pasting that ID is the usual reason the library is
+    empty and the game falls back to the shipped vanilla roster."""
+    return _api_key().startswith("sk_")
+
+
 def is_available() -> bool:
     """True when we can plausibly design + save voices.
 
     Cheap: only checks flag + key presence. Actual tier / quota errors surface
     at design time and degrade to the fallback voice.
     """
-    return bool(ENABLED and API_KEY)
+    return bool(ENABLED and _api_key())
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -501,13 +515,14 @@ def _count_session_designs(session_id: str) -> int:
 
 def _post_design(brief: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """POST /v1/text-to-voice/design -> {previews: [...]} or None on failure."""
-    if not API_KEY:
+    key = _api_key()
+    if not key:
         return None
     try:
         import requests
         resp = requests.post(
             _URL_DESIGN,
-            headers={"xi-api-key": API_KEY, "Content-Type": "application/json"},
+            headers={"xi-api-key": key, "Content-Type": "application/json"},
             json={
                 "voice_description": brief["description"],
                 "model_id": TTV_MODEL,
@@ -537,13 +552,14 @@ def _post_design(brief: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 def _post_save(generated_voice_id: str, brief: Dict[str, Any]) -> Optional[str]:
     """POST /v1/text-to-voice/{gvid} to save the preview -> voice_id or None."""
-    if not API_KEY or not generated_voice_id:
+    key = _api_key()
+    if not key or not generated_voice_id:
         return None
     try:
         import requests
         resp = requests.post(
             _URL_SAVE_TPL.format(gvid=generated_voice_id),
-            headers={"xi-api-key": API_KEY, "Content-Type": "application/json"},
+            headers={"xi-api-key": key, "Content-Type": "application/json"},
             json={
                 "voice_name": brief["voice_name"],
                 "voice_description": brief["description"],
@@ -566,13 +582,14 @@ def _post_save(generated_voice_id: str, brief: Dict[str, Any]) -> Optional[str]:
 
 def _delete_voice(voice_id: str) -> bool:
     """DELETE /v1/voices/{voice_id}. True on success or 404. Never raises."""
-    if not API_KEY or not voice_id:
+    key = _api_key()
+    if not key or not voice_id:
         return False
     try:
         import requests
         resp = requests.delete(
             _URL_DELETE_TPL.format(voice_id=voice_id),
-            headers={"xi-api-key": API_KEY},
+            headers={"xi-api-key": key},
             timeout=15,
         )
         if resp.status_code in (200, 204, 404):
@@ -587,55 +604,113 @@ def _delete_voice(voice_id: str) -> bool:
         return False
 
 
-def _list_workspace_voices(with_reason: bool = False):
-    """GET /v1/voices — the raw voice list, empty on failure.
+def _page_v2_voices(headers: Dict[str, str], extra: Optional[Dict[str, Any]] = None):
+    """One filtered walk of GET /v2/voices. Returns ``(voices, status)``."""
+    import requests
+    voices: List[Dict[str, Any]] = []
+    token = None
+    last_status = 0
+    for _ in range(10):
+        params: Dict[str, Any] = {"page_size": 100}
+        if extra:
+            params.update(extra)
+        if token:
+            params["next_page_token"] = token
+        resp = requests.get(_URL_LIST_VOICES_V2, headers=headers,
+                            params=params, timeout=15)
+        last_status = resp.status_code
+        if resp.status_code != 200:
+            return voices, last_status
+        data = resp.json() or {}
+        voices.extend(list(data.get("voices") or []))
+        token = data.get("next_page_token")
+        if not data.get("has_more") or not token:
+            return voices, 200
+    return voices, last_status
 
-    With ``with_reason`` returns ``(voices, reason)``. The reason matters to the
-    editor: a key that exists but lacks `voices_read` fails exactly like a
-    network problem from the outside, and "couldn't reach it" sends you looking
-    in the wrong place.
+
+def _dedupe_voices(voices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for v in voices:
+        if not isinstance(v, dict):
+            continue
+        vid = v.get("voice_id")
+        if not vid or vid in seen:
+            continue
+        seen.add(vid)
+        out.append(v)
+    return out
+
+
+def _is_ours(voice: Dict[str, Any]) -> bool:
+    """True for a voice this account made or keeps — not a stock premade."""
+    cat = (voice.get("category") or "").strip().lower()
+    return bool(cat) and cat != "premade"
+
+
+def _list_workspace_voices(with_reason: bool = False):
+    """The voices on this ElevenLabs account, empty on failure.
+
+    Asks v2 for ``personal`` / ``workspace`` first. An unfiltered v2 page is
+    mostly the stock premade roster, which is why a workspace full of hand-made
+    voices used to look empty from inside the game.
+
+    With ``with_reason`` returns ``(voices, reason)``.
     """
     def out(voices, reason):
         return (voices, reason) if with_reason else voices
 
-    if not API_KEY:
+    if not _api_key():
         return out([], "no_api_key")
+    if not _key_looks_real():
+        return out([], "bad_key")
     try:
         import requests
-        headers = {"xi-api-key": API_KEY}
-        # v2 first, and paged. v1 returns the whole workspace in one response and
-        # a 400 once that gets big, which is exactly the account this is for:
-        # somebody with a lot of designed voices could not list any of them.
-        voices: List[Dict[str, Any]] = []
-        token = None
-        for _ in range(10):                       # 10 × 100 is plenty
-            params = {"page_size": 100}
-            if token:
-                params["next_page_token"] = token
-            resp = requests.get(_URL_LIST_VOICES_V2, headers=headers,
-                                params=params, timeout=15)
-            if resp.status_code != 200:
+        headers = {"xi-api-key": _api_key()}
+        collected: List[Dict[str, Any]] = []
+        last_status = 0
+        # non-community = personal + workspace (excludes Voice Library copies).
+        # Fall through the older type names if this deployment doesn't know one.
+        for vtype in ("non-community", "personal", "workspace"):
+            batch, status = _page_v2_voices(headers, {"voice_type": vtype})
+            last_status = status
+            if status != 200:
+                print(f"[VOICE DESIGN] list v2 voice_type={vtype} http {status}",
+                      flush=True)
+                continue
+            collected.extend(batch)
+            if vtype == "non-community" and batch:
                 break
-            data = resp.json() or {}
-            voices.extend(list(data.get("voices") or []))
-            token = data.get("next_page_token")
-            if not data.get("has_more") or not token:
-                return out(voices, "ok" if voices else "empty")
-        if voices:
-            return out(voices, "ok")
+        collected = _dedupe_voices(collected)
+        if collected:
+            ours = [v for v in collected if _is_ours(v)]
+            # Typed queries should already be theirs; keep them even when
+            # ElevenLabs omitted `category`, otherwise a nameless clone
+            # falls through to the premade roster.
+            return out(ours or collected, "ok")
 
-        # Older deployments / smaller accounts: the v1 shape.
+        # Unfiltered v2 (premade + whatever else) and the older v1 dump, so a
+        # brand-new account still has something in the menu.
+        batch, status = _page_v2_voices(headers)
+        last_status = status
+        if status == 200 and batch:
+            return out(_dedupe_voices(batch), "ok")
+
         resp = requests.get(_URL_LIST_VOICES, headers=headers, timeout=15)
+        last_status = resp.status_code
         if resp.status_code == 200:
             data = resp.json() or {}
-            voices = list(data.get("voices") or [])
+            voices = _dedupe_voices(list(data.get("voices") or []))
             return out(voices, "ok" if voices else "empty")
-        print(f"[VOICE DESIGN] list http {resp.status_code}", flush=True)
-        if resp.status_code in (401, 403):
+        print(f"[VOICE DESIGN] list http {last_status}", flush=True)
+        if last_status in (401, 403):
             return out([], "key_cannot_read_voices")
-        if resp.status_code == 429:
+        if last_status == 429:
             return out([], "rate_limited")
-        return out([], f"http_{resp.status_code}")
+        if last_status:
+            return out([], f"http_{last_status}")
+        return out([], "empty")
     except Exception as e:  # noqa: BLE001
         print(f"[VOICE DESIGN] list exception: {e}", flush=True)
         return out([], "unreachable")
@@ -645,19 +720,37 @@ _LIBRARY_CACHE: Dict[str, Any] = {"at": 0.0, "voices": []}
 _LIBRARY_TTL_S = 120.0
 
 
-def voice_library(force: bool = False) -> Dict[str, Any]:
-    """Every voice on the ElevenLabs account — the stock ones AND the custom ones
-    you designed there — as `{ok, voices: [{id, name, category, description}],
-    reason?}`.
+def _shape_library_entry(v: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(v, dict) or not v.get("voice_id"):
+        return None
+    labels = v.get("labels") if isinstance(v.get("labels"), dict) else {}
+    desc = (v.get("description") or "").strip()
+    if not desc:
+        desc = ", ".join(str(x) for x in labels.values() if x)
+    gender = str(labels.get("gender") or "").strip().lower()
+    return {
+        "id": v.get("voice_id"),
+        "name": v.get("name") or v.get("voice_id"),
+        # "cloned" / "generated" / "professional" / "premade"
+        "category": (v.get("category") or "").strip(),
+        "description": desc[:120],
+        "gender": gender,
+        "tag": desc[:80] or (v.get("category") or ""),
+    }
 
-    The editor only ever showed `voices.json`, a curated list of eleven stock
-    ids baked into the repo, so a workspace full of hand-made voices was
-    invisible from inside the game. This is the same GET /v1/voices the sweeper
-    already uses, shaped for a menu and cached for two minutes because it is a
-    network round trip behind a UI panel. Never returns the key.
+
+def voice_library(force: bool = False) -> Dict[str, Any]:
+    """Voices on the ElevenLabs account, shaped for a menu.
+
+    Prefers the ones you made (cloned / generated / professional). The stock
+    premade roster is only returned when the account has none of yours, so the
+    game stops sounding like Eric-and-Sarah the moment a real library is
+    readable. Cached two minutes. Never returns the key.
     """
-    if not API_KEY:
+    if not _api_key():
         return {"ok": False, "reason": "no_api_key", "voices": []}
+    if not _key_looks_real():
+        return {"ok": False, "reason": "bad_key", "voices": []}
     now = time.time()
     if not force and _LIBRARY_CACHE["voices"] and (now - _LIBRARY_CACHE["at"]) < _LIBRARY_TTL_S:
         return {"ok": True, "voices": _LIBRARY_CACHE["voices"], "cached": True}
@@ -666,31 +759,47 @@ def voice_library(force: bool = False) -> Dict[str, Any]:
         return {"ok": False, "reason": reason, "voices": []}
     out = []
     for v in raw:
-        if not isinstance(v, dict) or not v.get("voice_id"):
-            continue
         labels = v.get("labels") if isinstance(v.get("labels"), dict) else {}
-        # A one-line description for the menu: whatever ElevenLabs gave us, else
-        # the labels it was tagged with.
-        desc = (v.get("description") or "").strip()
-        if not desc:
-            desc = ", ".join(str(x) for x in labels.values() if x)
-        out.append({
-            "id": v.get("voice_id"),
-            "name": v.get("name") or v.get("voice_id"),
-            # "cloned" / "generated" / "premade" — which is how you tell your own
-            # from the stock ones.
-            "category": (v.get("category") or "").strip(),
-            "description": desc[:120],
-        })
-    out.sort(key=lambda e: (e["category"] == "premade", (e["name"] or "").lower()))
-    _LIBRARY_CACHE["voices"] = out
+        name = (v.get("name") or "")
+        # Session-designed temps are tagged and swept; they are not "your"
+        # voices and must not refill the picker after a relaunch.
+        if name.startswith("[dyn]") or labels.get("source") == LABEL_TAG:
+            continue
+        entry = _shape_library_entry(v)
+        if entry:
+            out.append(entry)
+    yours = [e for e in out if e.get("category") and e["category"] != "premade"]
+    # Once we can see your voices, those ARE the library. Stock stays as the
+    # no-key / empty-account fallback in get_voice_registry.
+    chosen = yours or out
+    chosen.sort(key=lambda e: ((e.get("name") or "").lower()))
+    _LIBRARY_CACHE["voices"] = chosen
     _LIBRARY_CACHE["at"] = now
-    return {"ok": True, "voices": out}
+    return {"ok": True, "voices": chosen, "yours": len(yours)}
+
+
+def is_library_voice_id(voice_id: str) -> bool:
+    """True when ``voice_id`` is in the live ElevenLabs library cache.
+
+    Used by ``engine._valid_voice_id`` so a custom voice picked in the editor
+    or the TALK menu is not rejected as "unknown" and silently replaced with
+    a stock id from voices.json.
+    """
+    vid = (voice_id or "").strip()
+    if not vid:
+        return False
+    cached = _LIBRARY_CACHE.get("voices") or []
+    if any(isinstance(v, dict) and v.get("id") == vid for v in cached):
+        return True
+    lib = voice_library()
+    return any(isinstance(v, dict) and v.get("id") == vid
+               for v in (lib.get("voices") or []))
 
 
 def _get_subscription_slots() -> Tuple[int, int]:
     """Return (used, limit) from GET /v1/user/subscription. Zeros on failure."""
-    if not API_KEY:
+    key = _api_key()
+    if not key:
         return (0, 0)
     now = _now_ts()
     if _SLOT_INFO["checked_at"] and now - _SLOT_INFO["checked_at"] < 24 * 3600:
@@ -699,7 +808,7 @@ def _get_subscription_slots() -> Tuple[int, int]:
         import requests
         resp = requests.get(
             _URL_SUBSCRIPTION,
-            headers={"xi-api-key": API_KEY},
+            headers={"xi-api-key": key},
             timeout=15,
         )
         if resp.status_code == 200:
@@ -1313,7 +1422,9 @@ def sweep_orphans(max_age_hours: Optional[int] = None,
     active = set(active_session_ids or [])
     cutoff_ts = _now_ts() - max_age * 3600
 
-    remote = _list_workspace_voices()
+    remote, list_reason = _list_workspace_voices(with_reason=True)
+    if list_reason not in ("ok", "empty"):
+        return {"deleted": 0, "unknown": 0, "kept": 0, "reason": list_reason}
     deleted = 0
     kept = 0
     unknown = 0

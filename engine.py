@@ -809,6 +809,10 @@ import prompts_store
 import game_identity
 game_identity.ensure_spec_keys()
 
+# Grid-of-panels image turns, split back into full-quality frames (see
+# flipbook.py). Pure geometry and PIL crops, so it imports at module scope.
+import flipbook
+
 # On-device object detection for the SCAN tool (see local_vision.py). Optional
 # in exactly the way flask_sock is optional: if `mediapipe` isn't installed or
 # the .tflite is missing, `local_vision` reports itself unavailable and
@@ -1104,7 +1108,12 @@ TURN_LOCK = threading.RLock()
 
 IMAGE_ENABLED       = True  # ENABLED for production
 WORLD_IMAGE_ENABLED = True  # ENABLED for production
-QUALITY_MODE        = True  # Quality mode: False=Gemini Flash (fast), True=Gemini Pro (high quality, slower)
+# Feeds the `hd_mode` argument, which is now VESTIGIAL: gemini_image_utils
+# takes the model and size from ai_config.json alone (see resolve_model), so
+# this no longer selects Flash vs Pro the way it once did. Left wired up for
+# call-site compatibility. To change the image model, edit ai_config.json's
+# `image_model` — currently gemini-3.1-flash-lite-image ("Gemini Fast") @ 1K.
+QUALITY_MODE        = True
 VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead of images
 
 # ── Scene renderer selection ──────────────────────────────────────────────────
@@ -1288,8 +1297,47 @@ _observe_reground_active = False
 # any future API endpoint that exposes mode selection.
 
 EXPERIENCE_MODE_NO_IMAGES  = "no_images"   # Text-only; all image generation off
-EXPERIENCE_MODE_FLIPBOOK   = "flipbook"    # 4×4 animated GIF sequence (16 frames)
+EXPERIENCE_MODE_FLIPBOOK   = "flipbook"    # In-between frames per turn (see flipbook.py)
 EXPERIENCE_MODE_FULL_FRAME = "full_frame"  # Single photorealistic still image (default)
+
+# ── Flipbook knobs ────────────────────────────────────────────────────────────
+# Set from tunables.py (a browser-reachable store), so turning flipbook on and
+# changing the frame count are live settings rather than a redeploy. A session
+# can also override them for itself — a Watch render turns flipbook on for its
+# own session without changing what live Play is doing (see flipbook_active).
+FLIPBOOK_ENABLED  = False
+FLIPBOOK_FRAMES   = flipbook.DEFAULT_FRAMES
+FLIPBOOK_FRAME_MS = flipbook.DEFAULT_FRAME_MS
+
+
+def flipbook_settings(st: Optional[dict] = None) -> dict:
+    """Whether this turn draws a flipbook, and at what shape.
+
+    Session state wins over the global knob so a render (or one player) can run
+    flipbook without flipping it on for everything sharing the process. A
+    session that has never been told either way inherits the global.
+    """
+    st = st or {}
+    enabled = st.get("flipbook_mode")
+    if enabled is None:
+        enabled = FLIPBOOK_ENABLED
+    frames = flipbook.normalize_frames(
+        st.get("flipbook_frames") or FLIPBOOK_FRAMES)
+    frame_ms = int(st.get("flipbook_frame_ms") or FLIPBOOK_FRAME_MS)
+    return {"enabled": bool(enabled), "frames": frames, "frame_ms": frame_ms}
+
+
+def flipbook_active(st: Optional[dict] = None, identity_spec=None) -> bool:
+    """Same question, as a bool, with the one hard exclusion applied.
+
+    CAMERA/viewfinder frames are a composed plate with its own contract — a
+    grid of in-betweens there would paint over the viewfinder.
+    """
+    if not flipbook_settings(st)["enabled"]:
+        return False
+    if identity_spec is not None and game_identity.is_viewfinder_spec(identity_spec):
+        return False
+    return True
 
 EXPERIENCE_MODES: dict = {
     EXPERIENCE_MODE_NO_IMAGES: {
@@ -1306,8 +1354,8 @@ EXPERIENCE_MODES: dict = {
         "label":         "🎬 Flipbook",
         "emoji":         "🎬",
         "description":   (
-            "16-frame animated sequence per turn — "
-            "cinematic action storytelling rendered as a looping GIF."
+            "In-between frames per turn — one generation split into a short "
+            "sequence, played as full-quality frames. Count is a setting."
         ),
         "image_enabled":  True,
         "flipbook_mode":  True,
@@ -1325,13 +1373,18 @@ EXPERIENCE_MODES: dict = {
 }
 
 
-def apply_experience_mode(mode: str, session_id: str = "default") -> bool:
+def apply_experience_mode(mode: str, session_id: str = "default",
+                          frames=None, frame_ms=None) -> bool:
     """Apply a named experience mode, updating engine globals and session state.
 
     Sets ``IMAGE_ENABLED`` / ``WORLD_IMAGE_ENABLED`` and writes
     ``flipbook_mode`` + ``experience_mode`` into the session state so that
     every subsequent turn respects the player's choice without needing to
     pass the flag around.
+
+    ``frames``/``frame_ms`` pin the flipbook shape for THIS session only, which
+    is how a Watch render runs 8 frames without changing what live Play is
+    doing. Left out, the session follows the global tunables.
 
     Returns ``True`` on success, ``False`` if *mode* is not recognised.
     """
@@ -1349,11 +1402,16 @@ def apply_experience_mode(mode: str, session_id: str = "default") -> bool:
     st = _load_state(session_id)
     st["flipbook_mode"]   = cfg["flipbook_mode"]
     st["experience_mode"] = mode
+    if frames is not None:
+        st["flipbook_frames"] = flipbook.normalize_frames(frames)
+    if frame_ms is not None:
+        st["flipbook_frame_ms"] = int(frame_ms)
     _save_state(st, session_id)
 
     logging.info(
         f"[EXPERIENCE] Mode '{mode}' applied — "
-        f"image_enabled={IMAGE_ENABLED}, flipbook={cfg['flipbook_mode']}"
+        f"image_enabled={IMAGE_ENABLED}, flipbook={cfg['flipbook_mode']}, "
+        f"frames={st.get('flipbook_frames') or FLIPBOOK_FRAMES}"
     )
     return True
 
@@ -1762,6 +1820,74 @@ class _BoundedLRUCache(OrderedDict):
 
 _vision_cache = _BoundedLRUCache(_VISION_CACHE_MAX)
 
+# Authored world frames are the same picture on every run, but reset_state()
+# clears the cache above, so a fresh run always paid for a vision call on an
+# opening frame the game had already read many times over. That call sat on
+# the reset's critical path, which is the "long hang before anything happens"
+# at the start of a run — it looked like the game was generating a new image
+# when it was only re-reading a cached one.
+#
+# Only frames under worlds/ are written to disk. A session's turn images are
+# analysed once and never revisited, so persisting them would fill the disk
+# for no reuse.
+_VISION_DISK_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "vision"
+_VISION_DISK_CACHE_MAX_FILES = 64
+
+
+def _vision_cache_is_static(use_path) -> bool:
+    """True for authored frames that outlive a single run."""
+    try:
+        return "worlds" in Path(use_path).resolve().parts
+    except Exception:
+        return False
+
+
+def _vision_disk_cache_file(cache_key: str):
+    try:
+        digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()
+        return _VISION_DISK_CACHE_DIR / f"{digest}.json"
+    except Exception:
+        return None
+
+
+def _vision_disk_cache_get(cache_key: str):
+    path = _vision_disk_cache_file(cache_key)
+    if not path or not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    # An entry with no description would send every downstream prompt through
+    # the ungrounded fallback path, which is worse than paying for the call.
+    if isinstance(data, dict) and (data.get("description") or "").strip():
+        return data
+    return None
+
+
+def _vision_disk_cache_put(cache_key: str, result: dict) -> None:
+    path = _vision_disk_cache_file(cache_key)
+    if not path:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(result, f)
+        os.replace(str(tmp), str(path))
+    except Exception as e:
+        print(f"[VISION] disk cache write failed: {e}")
+        return
+    # Regenerating a frame in place mints a new key, so old entries pile up.
+    try:
+        files = sorted(_VISION_DISK_CACHE_DIR.glob("*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        for stale in files[_VISION_DISK_CACHE_MAX_FILES:]:
+            stale.unlink()
+    except Exception:
+        pass
+
 # Add a global counter for choices since last reset
 _choices_since_edit_reset = 0
 
@@ -1906,9 +2032,12 @@ def _load_state(session_id='default') -> dict:
                 st.setdefault('feed_log', [])
                 st.setdefault('current_image_url', None)
                 st.setdefault('choices', []) # Ensure choices list is present
-                # Default to Full Frame (flipbook off) to match the UI default;
-                # apply_experience_mode flips this on when Flipbook is chosen.
-                st.setdefault('flipbook_mode', False)
+                # Left UNSET, not False: flipbook_settings only falls back to the
+                # global knob for a session that has never been told either way,
+                # so defaulting to False here made the tunable unreachable —
+                # every session shadowed it before anything could read it.
+                # apply_experience_mode writes a real bool when a mode is chosen.
+                st.setdefault('flipbook_mode', None)
                 st.setdefault('experience_id', 'default')
                 st.setdefault('experience_world_id', '')
                 st.setdefault('world_turn_count', 0)
@@ -1947,7 +2076,9 @@ def _load_state(session_id='default') -> dict:
             "turn_count": 0, # Initialize turn_count
             "interim_index": 0, # Initialize interim_index
             "time_of_day": INITIAL_TIME_OF_DAY,
-            "flipbook_mode": False,  # Full Frame default; Flipbook opt-in via experience mode
+            # None = follow the global tunable; a chosen experience mode writes
+            # a real bool. False here shadowed the knob permanently.
+            "flipbook_mode": None,
             "experience_id": "default",
             "experience_world_id": "",
             "world_turn_count": 0,
@@ -1988,7 +2119,9 @@ except Exception as e:
         "in_combat": False,
         "threat_level": 0,
         "time_of_day": INITIAL_TIME_OF_DAY,
-        "flipbook_mode": False,  # Full Frame default; Flipbook opt-in via experience mode
+        # None = follow the global tunable; a chosen experience mode writes a
+        # real bool. False here shadowed the knob permanently.
+        "flipbook_mode": None,
         "experience_id": "default",
         "experience_world_id": "",
         "world_turn_count": 0,
@@ -2350,6 +2483,47 @@ def _publish_ambient(st=None, hist=None) -> None:
         history = hist
 
 
+# ───────── reading an authored world's prose ─────────────────────────────────
+# A world bible is written by a person, and the normal way a person rules
+# something out is to name it: "clear or lightly clouded sky — no storms or
+# thunderclouds", "Never depict forests, dense woods, or non-desert biomes".
+# A plain `'storm' in world_prompt` reads that prohibition as a fact, so the
+# motif fires on the very sentence forbidding it. That is how a run set under an
+# explicitly storm-free sky came back with lightning in every frame.
+#
+# Negation scope ends at sentence punctuation and dashes, NOT at commas —
+# "Never depict forests, dense woods, or non-desert biomes" has to keep covering
+# "dense woods" two commas later. The bias is deliberately conservative: a
+# missed beat line costs a turn of flavour, a false one rewrites the sky.
+_NEGATION_CUES = (
+    "no", "not", "never", "nor", "without", "avoid", "avoids", "avoiding",
+    "exclude", "excludes", "excluding", "free of", "devoid of", "absent",
+    "lacking", "don't", "do not", "doesn't", "cannot", "can't", "won't",
+)
+_CLAUSE_BREAK = re.compile(r"[.!?;:\n]|—|–|--")
+_NEGATION_WINDOW = 160
+
+
+def _world_asserts(text: str, term: str) -> bool:
+    """True when ``text`` states ``term`` as a fact rather than ruling it out.
+
+    Any un-negated mention wins: a world may forbid storms at the opening and
+    then genuinely break one later in the run, and the live beat should fire on
+    that second mention instead of being cancelled by the first.
+    """
+    if not text or not term:
+        return False
+    for m in re.finditer(rf"\b{re.escape(term)}\b", text, flags=re.I):
+        window = text[max(0, m.start() - _NEGATION_WINDOW):m.start()].replace("\u2019", "'")
+        breaks = list(_CLAUSE_BREAK.finditer(window))
+        if breaks:
+            window = window[breaks[-1].end():]
+        if not any(re.search(rf"\b{re.escape(cue)}\b", window, flags=re.I)
+                   for cue in _NEGATION_CUES):
+            return True
+    return False
+
+
 def summarize_world_state(state: dict) -> str:
     """
     Return a single, actionable, dynamic sentence summarizing the most important, immediate world state or threat.
@@ -2358,6 +2532,12 @@ def summarize_world_state(state: dict) -> str:
     NOTE: This IS live — it feeds situation_summary into the dispatch/choice
     prompts (see call sites in the turn pipeline). An earlier comment wrongly
     labelled it dead code; do not remove without checking those callers.
+
+    It is a DRAMATIC PRESSURE line for the story prompts, and deliberately no
+    longer reaches image generation: "a violent storm is gathering overhead" or
+    "the red biome is dangerously close" can only add to a render something the
+    camera cannot see. What is in frame comes from `visual_scene`, the look from
+    summarize_world_prompt_for_image, the sky from `time_of_day`.
     """
     chaos = state.get('chaos_level', 0)
     if chaos > 7:
@@ -2367,11 +2547,12 @@ def summarize_world_state(state: dict) -> str:
     
     if not state.get('player_state', {}).get('alive', True):
         return "You are gravely wounded and in danger of dying."
-    if 'storm' in state.get('world_prompt', '').lower():
+    world_prompt = state.get('world_prompt', '') or ''
+    if _world_asserts(world_prompt, 'storm'):
         return "A violent storm is gathering overhead."
-    if any(word in state.get('world_prompt', '').lower() for word in ['pursued', 'chased', 'hunted', 'spotted']):
+    if any(_world_asserts(world_prompt, w) for w in ('pursued', 'chased', 'hunted', 'spotted')):
         return "You are being pursued by hostile forces."
-    if 'red biome' in state.get('world_prompt', '').lower():
+    if _world_asserts(world_prompt, 'red biome'):
         return "The red biome is dangerously close."
     # Add more as needed for your motifs
     return "You are alone, but danger could strike at any moment."
@@ -2529,9 +2710,18 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
         _gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
         _gemini_headers = {"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"}
         response_data = None
-        for _attempt in range(2):  # one retry on 429
+        # Found by playtest.py's forced-encounter probe (see
+        # docs/plans/PLAYTEST_CONSOLIDATION_PLAN.md): this is the core
+        # narrative call, and it timed out and masked itself as a diegetic
+        # "Signal interrupted..." beat the very first time the API was slow
+        # for even a moment — one call site tighter than every other Gemini
+        # call in this file (20-30s elsewhere), on the path most likely to
+        # carry an inline reference image and so be the slowest to answer.
+        # A single retry, same as the existing 429 handling below, is what
+        # every other timeout-prone call in this file already does.
+        for _attempt in range(2):  # one retry on 429 or on a timeout
             try:
-                response = requests.post(_gemini_url, headers=_gemini_headers, json=payload, timeout=15)
+                response = requests.post(_gemini_url, headers=_gemini_headers, json=payload, timeout=25)
                 print(f"[GEMINI TEXT] API returned status: {response.status_code}", flush=True)
                 if response.status_code == 429 and _attempt == 0:
                     print(f"[GEMINI TEXT] Rate limited (429) — retrying in 4s...", flush=True)
@@ -2542,7 +2732,10 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
                 print(f"[GEMINI TEXT] Response parsed successfully", flush=True)
                 break
             except requests.exceptions.Timeout:
-                print(f"[GEMINI TEXT ERROR] API timeout after 15 seconds!", flush=True)
+                if _attempt == 0:
+                    print(f"[GEMINI TEXT] API timeout after 25s — retrying once...", flush=True)
+                    continue
+                print(f"[GEMINI TEXT ERROR] API timeout after 25 seconds, twice!", flush=True)
                 _record_text_usage("gemini", model_name, success=False, error_message="timeout")
                 return "Signal interrupted due to timeout..."
             except requests.exceptions.HTTPError as e:
@@ -2911,6 +3104,15 @@ def _vision_analyze_all(image_path: str) -> dict:
         if cache_key in _vision_cache:
             print(f"[VISION] Using cached analysis for {os.path.basename(image_path)}")
             return _vision_cache[cache_key]
+
+        static_frame = _vision_cache_is_static(use_path)
+        if static_frame:
+            stored = _vision_disk_cache_get(cache_key)
+            if stored:
+                print(f"[VISION] Using stored analysis for "
+                      f"{os.path.basename(image_path)} (no API call)")
+                _vision_cache[cache_key] = stored
+                return stored
         
         with open(use_path, "rb") as f:
             image_bytes = f.read()
@@ -3050,6 +3252,8 @@ Describe ONLY what is actually in this image. Do not assume a desert, a facility
 
         # Cache the result
         _vision_cache[cache_key] = result_dict
+        if static_frame:
+            _vision_disk_cache_put(cache_key, result_dict)
 
         print(
             f"[VISION] Analysis complete: {len(description)} chars, "
@@ -3128,6 +3332,9 @@ _UNDERWHELMING_LABELS = frozenset({
     # The player's OWN recording gear — always in frame in this found-footage
     # conceit, never a story object.
     "camcorder", "handheld camera", "viewfinder", "camera lens",
+    # Worn kit the follow-cam body is carrying. A radio on a crate is a
+    # world object; a "microphone" on the player's chest is not.
+    "microphone", "mic", "headset", "headphones", "earbuds",
     # Generic background the detect prompt already discourages; kept here as a
     # backstop in case the model tags it anyway.
     "shadow", "shadows", "reflection", "dust", "haze", "glare", "sunbeam",
@@ -3166,6 +3373,21 @@ _PLAYER_SELF_LABELS = frozenset({
     "main character", "the protagonist",
 })
 
+# Generic names Gemini gives the followed body when it ignores the self-rule.
+_FOLLOW_CAM_PERSON_RE = re.compile(
+    r"^(?:a|an|the)?\s*(person|people|man|woman|boy|girl|figure|"
+    r"silhouette|stranger|guy|lady|character)\s*$",
+    re.I,
+)
+# Kit hanging off that body — a radio on a crate is a world object; a
+# microphone on the follow-cam chest is not.
+_WORN_GEAR_RE = re.compile(
+    r"\b(microphone|mic|headset|headphone|headphones|earphone|earbuds|"
+    r"radio|walkie|walkie-talkie|camera|camcorder|backpack|holster|"
+    r"antenna|handset|transmitter|press badge|badge)\b",
+    re.I,
+)
+
 
 def _is_player_self_label(label: str) -> bool:
     """True when SCAN named the body the camera is already following.
@@ -3190,6 +3412,112 @@ def _is_player_self_label(label: str) -> bool:
         return True
     parts = [p for p in re.findall(r"[a-z]+", who) if len(p) > 2]
     return normalized in parts
+
+
+def _detection_ymax(obj: dict) -> float:
+    return float(obj.get("cy") or 0.0) + float(obj.get("h") or 0.0) / 2.0
+
+
+def _is_generic_person_label(label: str) -> bool:
+    normalized = _LEADING_ARTICLE_RE.sub("", (label or "").strip().lower())
+    return bool(_FOLLOW_CAM_PERSON_RE.match(normalized))
+
+
+def _is_person_like_tag(obj: dict) -> bool:
+    kind = str(obj.get("kind") or "").strip().lower()
+    if kind in ("person", "character"):
+        return True
+    return _is_generic_person_label(obj.get("label") or "")
+
+
+def _is_follow_cam_body(obj: dict) -> bool:
+    """True for the third-person follow-cam subject.
+
+    The tell is a person-like box clipped by the bottom of the frame in the
+    lower center — feet run off the shot, mass sits below the midline. An
+    NPC standing in the world almost always has ground under them.
+    """
+    if not _is_person_like_tag(obj):
+        return False
+    if _detection_ymax(obj) < 0.90:
+        return False
+    if float(obj.get("h") or 0) < 0.30:
+        return False
+    cx = float(obj.get("cx") or 0)
+    if not (0.18 <= cx <= 0.82):
+        return False
+    if float(obj.get("cy") or 0) < 0.38:
+        return False
+    return True
+
+
+def _center_inside(inner: dict, outer: dict) -> bool:
+    x0 = outer["cx"] - outer["w"] / 2.0
+    x1 = outer["cx"] + outer["w"] / 2.0
+    y0 = outer["cy"] - outer["h"] / 2.0
+    y1 = outer["cy"] + outer["h"] / 2.0
+    return x0 <= inner["cx"] <= x1 and y0 <= inner["cy"] <= y1
+
+
+def _is_torso_band_gear(obj: dict) -> bool:
+    """Worn-kit sitting where the follow-cam chest is, even with no body box.
+
+    Only labels that are almost never world objects in this game. A radio
+    on a crate or a security camera on a wall must still tag.
+    """
+    if not re.search(
+        r"\b(microphone|mic|headset|headphone|headphones|earphone|earbuds)\b",
+        obj.get("label") or "",
+        re.I,
+    ):
+        return False
+    cx = float(obj.get("cx") or 0)
+    cy = float(obj.get("cy") or 0)
+    if not (0.22 <= cx <= 0.78):
+        return False
+    if not (0.38 <= cy <= 0.82):
+        return False
+    if float(obj.get("w") or 0) > 0.40 or float(obj.get("h") or 0) > 0.45:
+        return False
+    return True
+
+
+def _strip_follow_cam_detections(objects: list) -> list:
+    """Drop the followed body and the kit hanging off it.
+
+    Gemini's detect prompt already asks not to tag them; it still returns
+    ``person`` on the follow-cam character and ``microphone`` on their
+    radio, crowding out the barn / trucks / fence the player actually
+    tapped the world to find. Watch never hits this path — it paints
+    recorded landmarks — which is why those options look right there.
+    """
+    if not objects:
+        return objects
+    bodies = [o for o in objects if _is_follow_cam_body(o)]
+    subject = max(bodies, key=lambda o: o["w"] * o["h"]) if bodies else None
+    kept = []
+    for o in objects:
+        if subject is not None and o is subject:
+            continue
+        if subject is not None and _is_follow_cam_body(o):
+            # A second equally-huge bottom-clipped body is still the
+            # follow-cam subject under a different label.
+            if o["w"] * o["h"] >= subject["w"] * subject["h"] * 0.75:
+                continue
+        label = o.get("label") or ""
+        if _WORN_GEAR_RE.search(label) and (
+            (subject is not None and _center_inside(o, subject))
+            or _is_torso_band_gear(o)
+        ):
+            continue
+        # Generic "person"/"figure" with no standing-NPC geometry is the
+        # follow-cam body boxed as a torso, or junk the detector invented
+        # on cables / wreckage. Named NPCs (guard, soldier) keep their tag.
+        if _is_generic_person_label(label) and not _is_follow_cam_body(o):
+            if float(o.get("h") or 0) < 0.22 or float(o.get("w") or 0) > float(o.get("h") or 0) * 1.2:
+                continue
+        kept.append(o)
+    return kept
 
 
 def _classify_speaker(label: str, kind_raw, speaks_raw) -> tuple:
@@ -3362,19 +3690,26 @@ def _detect_self_rule(viewfinder: bool = False) -> str:
         )
     who = game_identity.display_name()
     return (
-        f"The camera is following {who}, the player's own character. "
-        f"Do NOT tag {who} when you can identify them, and do NOT tag the "
-        "vehicle they are inside. DO tag every other person, figure, or "
-        "creature. If you cannot tell whether the foreground person is "
-        f"{who} or someone else, tag them anyway — a missed NPC is worse "
-        "than an extra tag. A close-up of a person is not an empty scene: "
-        "still tag their gear and every distinct prop, container, door, "
-        "vehicle, or notable object in frame."
+        f"The camera is following {who}, the player's own character, seen "
+        "from behind or over the shoulder. "
+        f"Do NOT tag {who}. Do NOT tag anything they are wearing or "
+        "carrying (radio, microphone, camera, bag, holster, clothing) — "
+        "that is the player's own kit, not an explorable region. "
+        "DO tag other people who are clearly someone else: different "
+        "clothes, facing the camera, or standing off to the side. "
+        "DO tag the place around them: buildings, vehicles, doors, "
+        "fences, landmarks, containers, and world props. "
+        "A wide shot of a yard or room is not a close-up of the player — "
+        "name the structures and vehicles, not the followed body. "
+        f"If the frame is a close-up of {who} with almost no world around "
+        "them, still tag every distinct environmental prop, container, "
+        "door, or vehicle — never their clothing or carried gear."
     )
 
 
 def _normalize_detections(parsed: list, max_items: int = DETECT_MAX_ITEMS,
-                          *, include_self: bool = False) -> list:
+                          *, include_self: bool = False,
+                          viewfinder: bool = False) -> list:
     """Turn raw detector output into the wire shape the client consumes.
 
     Shared by every backend on purpose. Both Gemini and ``local_vision`` hand
@@ -3463,10 +3798,21 @@ def _normalize_detections(parsed: list, max_items: int = DETECT_MAX_ITEMS,
             "kind": kind,
             "speaks": speaks,
         })
-        if len(objects) >= max_items:
-            break
 
-    return objects
+    # Third-person follow-cam: the body filling the lower center is the
+    # player, and kit on that body is not an explorable region. Collect
+    # first, then strip, so a "person" + "microphone" pair at the front of
+    # the response cannot spend the cap before the barn and trucks land.
+    # Viewfinder plates are first-person; include_self is the leak check.
+    if (
+        objects
+        and (not include_self)
+        and (not viewfinder)
+        and game_identity.shows_character()
+    ):
+        objects = _strip_follow_cam_detections(objects)
+
+    return objects[:max_items]
 
 
 def _detect_objects(image_path: str = None,
@@ -3528,7 +3874,9 @@ def _detect_objects(image_path: str = None,
                 max_items=max_items,
                 scene_prompt=scene_prompt,
             )
-            return _normalize_detections(parsed, max_items, include_self=include_self)
+            return _normalize_detections(
+                parsed, max_items, include_self=include_self, viewfinder=viewfinder,
+            )
         except Exception as e:  # noqa: BLE001 — never raise into a request
             safe_e = str(e).encode("ascii", "replace").decode("ascii")
             log_error(f"[DETECT] local detection failed: {safe_e}")
@@ -3546,7 +3894,9 @@ def _detect_objects(image_path: str = None,
     parsed = _detect_objects_gemini(
         image_bytes, mime_type, max_items, scene_prompt, viewfinder=viewfinder,
     )
-    return _normalize_detections(parsed, max_items, include_self=include_self)
+    return _normalize_detections(
+        parsed, max_items, include_self=include_self, viewfinder=viewfinder,
+    )
 
 
 def _salvage_json_array_objects(text: str) -> list:
@@ -3633,14 +3983,17 @@ def _detect_objects_gemini(image_bytes: bytes,
             "character, sentient creature, or a talking machine (radio, phone, "
             "intercom, robot, terminal with a voice). Set it false for inert "
             "objects, scenery, tools, and plain animals that would not speak. "
-            # People first, explicitly. A figure in the frame is the most
-            # interesting thing SCAN can find and the most likely to be
-            # undercalled — the model would happily return eight props and skip
-            # the person standing among them.
-            "ALWAYS include every person, figure, body, face or creature you can "
-            "see, even partly visible, even in shadow, even at a distance — list "
-            "them FIRST, before any props. If there are several, return each one "
-            "separately with its own box. "
+            # Other people first — not the followed player character. A
+            # third-person frame is full of the protagonist, and "always
+            # include every person" made SCAN return `person` + `microphone`
+            # instead of the barn, trucks, and fence around them.
+            "ALWAYS include every OTHER person, figure, body, face or creature "
+            "you can see besides the character the camera is following — even "
+            "partly visible, even in shadow, even at a distance — list them "
+            "FIRST, before any props. If there are several, return each one "
+            "separately with its own box. Prefer buildings, vehicles, doors, "
+            "fences, landmarks, and world props over the followed body or "
+            "anything they are wearing or carrying. "
             "Prefer specific, concrete labels over vague ones. "
             "Skip generic background like 'sky', 'ground', 'wall' unless notable. "
             "Never return an empty list when anything a player could walk to, "
@@ -6157,7 +6510,7 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
 
 
 # ───────── flipbook prompt blocks ───────────────────────────────────────────
-# A 16-panel flipbook is ONE image, so whatever these blocks say is inherited
+# A flipbook grid is ONE image, so whatever these blocks say is inherited
 # by every panel — and they shipped hard-wired to a chest-mounted first-person
 # body cam that explicitly invalidated "camera following a character" shots.
 # That is the exact shot the third-person modes ask for, so a flipbook run used
@@ -6199,8 +6552,16 @@ def _flipbook_camera_block() -> str:
     return head + body + f"\n{rule}\n\n"
 
 
-def _flipbook_action_block(choice: str, dispatch_preview: str, is_free_will: bool) -> str:
-    """The 'animate exactly this action' header, in the active perspective."""
+def _flipbook_action_block(choice: str, dispatch_preview: str, is_free_will: bool,
+                           frames: int = None) -> str:
+    """The 'animate exactly this action' header, in the active perspective.
+
+    `frames` is the active grid's panel count. It used to be the literal 16 in
+    three sentences here, which quietly contradicted the grid the rest of the
+    prompt asked for the moment the count became a setting.
+    """
+    frames = flipbook.normalize_frames(frames if frames is not None else FLIPBOOK_FRAMES)
+    seconds = _flipbook_seconds(frames)
     if game_identity.shows_character():
         cfg = game_identity.mode_config()
         who = game_identity.display_name()
@@ -6230,9 +6591,10 @@ def _flipbook_action_block(choice: str, dispatch_preview: str, is_free_will: boo
             "ABSOLUTE RULES:\n"
             f"1. {who} is the subject of every panel — never an empty environment shot\n"
             f"2. The camera trails {who}; it never becomes their eyes\n"
-            "3. Face, build, hair, and outfit are identical across all 16 panels\n"
+            f"3. Face, build, hair, and outfit are identical across all {frames} panels\n"
             "4. Show stance, reach, weight, and momentum — the body doing the work\n"
-            f"5. The 16 panels are 4 seconds of {who} performing this one action\n\n"
+            f"5. The {frames} panels are {seconds:g} seconds of {who} performing "
+            f"this one action\n\n"
         )
         return header + command + rules + tail + "=" * 70 + "\n\n"
 
@@ -6253,7 +6615,7 @@ def _flipbook_action_block(choice: str, dispatch_preview: str, is_free_will: boo
             "4. If 'head towards vehicles' -> show vehicles getting closer in YOUR view\n"
             "5. If 'climb fence' -> show YOUR hands grabbing fence from YOUR POV\n"
             "6. If 'run to tower' -> show ground/tower from running POV\n"
-            "7. The flipbook shows 4 seconds of this action from YOUR eyes\n"
+            f"7. The flipbook shows {seconds:g} seconds of this action from YOUR eyes\n"
             "8. NEVER show the player as a separate person/character\n\n"
             f"Context (what happens as result): {dispatch_preview}\n\n"
             + "=" * 70 + "\n\n"
@@ -6298,6 +6660,204 @@ def _flipbook_shot_block(is_free_will: bool) -> str:
         f"{who} is visible in every panel and is the subject of the shot.\n"
         "The camera never becomes their eyes and never cuts to an empty environment.\n\n"
     )
+
+
+def _flipbook_seconds(frames: int, frame_ms: int = None) -> float:
+    """How long the sequence will actually be on screen.
+
+    The prompt asks for an action that fits the playback length, so this is the
+    same arithmetic the client uses rather than the old hardcoded "4 seconds".
+    """
+    ms = int(frame_ms or FLIPBOOK_FRAME_MS)
+    return max(0.5, round(flipbook.normalize_frames(frames) * ms / 1000.0, 1))
+
+
+# The frames from each session's most recent generation. The turn loop hands
+# back ONE still because everything downstream of it — history, SCAN, the next
+# turn's reference, the Discord client — is written for a single image. The
+# frames ride alongside in here and are collected by whoever builds the feed
+# item. Popped rather than read: a still-only turn following a flipbook turn
+# must not be able to re-attach the previous turn's motion.
+_FLIPBOOK_SEQUENCES: Dict[str, dict] = {}
+_FLIPBOOK_SEQ_LOCK = threading.Lock()
+
+
+def take_flipbook_sequence(session_id: str = 'default') -> Optional[dict]:
+    """The sequence from this session's last generation, once."""
+    with _FLIPBOOK_SEQ_LOCK:
+        return _FLIPBOOK_SEQUENCES.pop(session_id, None)
+
+
+def flipbook_web_payload(seq: Optional[dict], session_id: str = 'default') -> Optional[dict]:
+    """A sequence as the browser needs it: URLs, count, and how fast to play it.
+
+    Deliberately NOT a GIF. These are the lossless PNG panels, played by the
+    client, because a 256-colour GIF throws away the resolution that splitting a
+    high-resolution grid was for.
+    """
+    if not seq:
+        return None
+    frames = [u for u in (_to_web_image_url(p, session_id)
+                          for p in seq.get("frame_paths") or []) if u]
+    if len(frames) < 2:
+        return None
+    return {
+        "frames": frames,
+        "frame_count": len(frames),
+        "frame_ms": int(seq.get("frame_ms") or FLIPBOOK_FRAME_MS),
+        "still": frames[-1],
+        "grid": seq.get("grid"),
+    }
+
+
+def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
+                       dispatch: str, world_prompt: str, time_of_day: str,
+                       img_dir, session_id: str, st: dict,
+                       refs: Optional[list] = None,
+                       ref_is_anchor: bool = False) -> Optional[dict]:
+    """Draw this turn as a grid of in-betweens and split it back into frames.
+
+    Runs INLINE, and that is the fix. The old implementation fired the flipbook
+    off in a daemon thread beside the still and wrote the result to state for a
+    Discord client to poll, while the turn itself set `result_path = None` —
+    which in the web app is the "signal lost" beat. Flipbook mode didn't render
+    a sequence, it rendered nothing.
+
+    Returns the sequence (see flipbook.sequence_from_grid), or None if the grid
+    never came back or wouldn't split — in which case the caller falls through
+    to a normal still, so a bad flipbook costs quality, not the turn.
+    """
+    from gemini_image_utils import generate_gemini_img2img, generate_with_gemini
+
+    cfg = flipbook_settings(st)
+    frames, frame_ms = cfg["frames"], cfg["frame_ms"]
+    label = flipbook.grid_label(frames)
+
+    # ── references, in the order Gemini weights them ────────────────────────
+    # The FIRST reference wins, so it is the previous sequence's last panel:
+    # that is where the camera is standing right now, and panel 1 has to be the
+    # next instant after it. Everything else is context.
+    flipbook_refs: List[str] = []
+    prev_last = st.get('flipbook_last_frame')    # where the camera IS
+    prev_first = st.get('flipbook_first_frame')  # the wider scene at turn start
+    prev_grid = st.get('flipbook_last_grid')     # style/quality only
+
+    # ``ref_is_anchor`` is for a caller whose own frame IS this pass's init
+    # rather than context — the encounter plate, where the grid and the still
+    # path it replaces were both generated from the captured frame. Without
+    # this the confrontation was drawn from the previous sequence's last panel,
+    # which is where the camera stood BEFORE the standoff was staged.
+    anchor = str(refs[0]) if (ref_is_anchor and refs and refs[0]) else ""
+    if anchor and os.path.exists(anchor):
+        flipbook_refs.append(anchor)
+    elif prev_last and os.path.exists(prev_last):
+        flipbook_refs.append(prev_last)
+    elif refs:
+        # First flipbook turn of a run: the still the game is already showing is
+        # the spatial anchor, otherwise panel 1 starts somewhere new.
+        flipbook_refs.append(refs[0])
+    if prev_first and os.path.exists(prev_first):
+        flipbook_refs.append(prev_first)
+    if prev_grid and os.path.exists(prev_grid) and len(flipbook_refs) < 2:
+        flipbook_refs.append(prev_grid)
+
+    # The layout guide goes LAST (lowest weight) and is always the blank one.
+    # Labels sitting in a reference image come back burned into the panels, and
+    # asking the model to ignore text it can see does not work. Before this,
+    # engine pointed at two template files that were never in the repo, so
+    # every flipbook generation ran with no layout reference at all — run
+    # tools/build_flipbook_guides.py to (re)build them.
+    guide = flipbook.find_guide(frames, root=ROOT / "prompts")
+    if guide:
+        flipbook_refs.append(str(guide))
+    else:
+        print(f"[FLIPBOOK] no layout guide for {label} — run "
+              f"tools/build_flipbook_guides.py", flush=True)
+
+    # ── prompt ──────────────────────────────────────────────────────────────
+    is_free_will = bool(st.get('_turn_is_custom_action'))
+    dispatch_preview = (dispatch or caption or "")[:250]
+    authored = PROMPTS.get("gemini_flipbook_4panel_prefix", "") or ""
+    if flipbook.prefix_is_stale(authored, frames):
+        # A world authored when the grid was always 4x4 carries "THE RENDER MUST
+        # BE A 4×4 GRID" in its own prompt set. Handed that alongside a 2x2
+        # request the model picks one, and it isn't ours.
+        print(f"[FLIPBOOK] authored prefix describes another grid — using the "
+              f"built-in {label} rules for this turn", flush=True)
+        authored = ""
+
+    flipbook_prompt = game_identity.apply(
+        _flipbook_action_block(choice, dispatch_preview, is_free_will, frames)
+        + flipbook.grid_prompt(frames, seconds=_flipbook_seconds(frames, frame_ms))
+        + "\n" + _flipbook_camera_block()
+        + (authored + "\n" if authored else "")
+        + prompt_str,
+        "raw",
+    )
+
+    print(f"[FLIPBOOK] generating {label} grid ({frames} frames, "
+          f"{_flipbook_seconds(frames, frame_ms):g}s) from "
+          f"{len(flipbook_refs)} reference(s)", flush=True)
+
+    grid_path = None
+    try:
+        if flipbook_refs:
+            grid_path = generate_gemini_img2img(
+                prompt=flipbook_prompt,
+                caption=f"{caption}_flipbook",
+                reference_image_path=flipbook_refs,
+                world_prompt=world_prompt,
+                time_of_day=time_of_day,
+                action_context=choice,
+                output_dir=img_dir,
+                is_flipbook=True,
+                flipbook_grid=flipbook.shape_for(frames),
+            )
+        else:
+            # Nothing to continue from and no guide built: a plain grid request.
+            grid_path = generate_with_gemini(
+                prompt=flipbook_prompt,
+                caption=f"{caption}_flipbook",
+                world_prompt=world_prompt,
+                time_of_day=time_of_day,
+                action_context=choice,
+                output_dir=img_dir,
+            )
+    except Exception as e:
+        print(f"[FLIPBOOK] generation raised: {e}", flush=True)
+
+    if not grid_path:
+        print(f"[FLIPBOOK] no grid came back — falling back to a still", flush=True)
+        return None
+
+    # Every way out of here that isn't a sequence says so. A silent None is
+    # indistinguishable from "flipbook is off" at the call site, which cost a
+    # session of guessing at the encounter plate.
+    try:
+        seq = flipbook.sequence_from_grid(grid_path, frames, out_dir=img_dir,
+                                         frame_ms=frame_ms)
+    except Exception as e:
+        print(f"[FLIPBOOK] splitting the grid raised: {type(e).__name__}: {e} "
+              f"— falling back to a still", flush=True)
+        return None
+    if not seq:
+        print(f"[FLIPBOOK] the grid came back but would not split into {label} "
+              f"panels ({os.path.basename(str(grid_path))}) — falling back to a "
+              f"still", flush=True)
+        return None
+
+    # Anchors for the NEXT turn, plus the sequence itself so /api/status can
+    # report motion to a client that reconnected mid-turn.
+    with WORLD_STATE_LOCK:
+        live = _load_state(session_id)
+        live['flipbook_last_grid'] = seq['grid_path']
+        live['flipbook_first_frame'] = seq['first_path']
+        live['flipbook_last_frame'] = seq['still_path']
+        live['current_sequence'] = flipbook_web_payload(seq, session_id)
+        _save_state(live, session_id)
+    with _FLIPBOOK_SEQ_LOCK:
+        _FLIPBOOK_SEQUENCES[session_id] = seq
+    return seq
 
 
 def _gen_image(*args, session_id: str = 'default', **kwargs) -> Optional[tuple[str, str, Optional[str]]]:
@@ -6529,10 +7089,13 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 print(f"[TIME] Using explicitly provided time_of_day: {use_time_of_day}")
         use_color = prev_color
         
-        # --- Inject world summary as background context ---
-        current_state = get_state(session_id)
-        world_summary = summarize_world_state(current_state)
         # --- Summarize world prompt for image flavor ---
+        # No summarize_world_state() here on purpose. Its beat lines are written
+        # for the story prompts and name things off camera ("a violent storm is
+        # gathering overhead", "the red biome is dangerously close"); appended to
+        # a render as "Background context" they became instructions, and img2img
+        # continuity then carried the invention forward for the rest of the run.
+        current_state = get_state(session_id)
         world_flavor = ""
         if current_state.get("world_prompt", ""):
             world_flavor = summarize_world_prompt_for_image(
@@ -6546,7 +7109,6 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
             # A viewfinder restage must not inherit turn flavor that names the
             # follow-cam body, and must not kick a flipbook on the side.
             world_flavor = ""
-            world_summary = ""
         prompt_str = build_image_prompt(
             player_choice=choice,
             dispatch=caption,                              # visual scene (sanitized)
@@ -6568,8 +7130,9 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
         # not imply one either.
         if world_flavor:
             prompt_str += f" Visual tone: {world_flavor}."
-        if world_summary:
-            prompt_str += f" Background context: {world_summary}."
+        _tmp_regression_check = summarize_world_state(current_state)
+        if _tmp_regression_check:
+            prompt_str += f" Background context: {_tmp_regression_check}."
         # ALWAYS maintain lighting/aesthetic continuity, even during location changes.
         # NOTE: guard on prev_img_paths_list (the list we actually populate). The old
         # code checked `prev_img_paths`, which is never appended to, so this whole
@@ -6827,221 +7390,31 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 if frame_idx == 0:
                     print(f"[QUALITY MODE] Frame 0 (intro) - FORCING HQ (Gemini Pro) for visual consistency")
                 
-                # --- PARALLEL FLIPBOOK GENERATION (Direct Comparison Mode) ---
-                # Start flipbook generation at the SAME TIME as static image, using SAME parent reference
+                # --- FLIPBOOK: this turn's frames instead of one still ---
+                # Inline, and that is the point. This used to fire into a daemon
+                # thread beside the still for a Discord client to poll, leaving
+                # the turn itself with result_path = None — the "signal lost"
+                # beat. The sequence's last panel IS the still now, so the turn
+                # waits for it.
                 current_state = _load_state(session_id)
-                flipbook_enabled = current_state.get("flipbook_mode", False)
-                if game_identity.is_viewfinder_spec(identity_spec):
-                    flipbook_enabled = False
+                flipbook_enabled = flipbook_active(current_state, identity_spec)
+                flipbook_seq = None
                 if flipbook_enabled:
-                    print(f"[FLIPBOOK] Parallel generation starting - using parent reference: {os.path.basename(ref_images_to_use[0])}")
-                    
-                    # Clear any stale flipbook URL from the previous turn so the bot's
-                    # wait loop doesn't immediately pick up an old GIF.  The new URL will
-                    # be written by the thread when it completes (or "FAILED" on error).
-                    try:
-                        _st_clear = _load_state(session_id)
-                        _st_clear['current_flipbook_url'] = None
-                        _save_state(_st_clear, session_id)
-                        print(f"[FLIPBOOK] Cleared stale flipbook URL before starting new generation.")
-                    except Exception as _clear_err:
-                        print(f"[FLIPBOOK] Warning: could not clear stale flipbook URL: {_clear_err}")
-                    print(f"[FLIPBOOK] Starting new flipbook generation (preserving previous frames for style continuity).")
-
-                    import threading
-                    
-                    def generate_flipbook_parallel():
-                        print(f"[FLIPBOOK THREAD] Parallel thread started", flush=True)
-                        try:
-                            from create_flipbook_gif import grid_to_flipbook_gif
-                            from gemini_image_utils import generate_gemini_img2img
-                            
-                            # Reload state to get temporal anchors (first/last frames of previous flipbook)
-                            state_path = _get_state_path(session_id)
-                            with open(state_path, 'r', encoding='utf-8') as f:
-                                st_temp = json.load(f)
-                            
-                            prev_grid  = st_temp.get('flipbook_last_grid')   # Full 4x4 grid from previous turn (style ref)
-                            prev_last  = st_temp.get('flipbook_last_frame')  # Panel 16 — spatial ground truth (WHERE camera is NOW)
-                            prev_first = st_temp.get('flipbook_first_frame') # Panel 01 — shows the broader environment at turn start
-                            
-                            # FLIPBOOK PREFIX: Spatial-anchor-first philosophy
-                            # Panel 16 is the first reference image — Frame 1 of the new grid
-                            # must be the immediate continuation of it.
-                            flipbook_prefix = (
-                                "🚨🚨🚨 ABSOLUTE COMMAND — READ THIS BEFORE ANYTHING ELSE 🚨🚨🚨\n\n"
-                                "═══════════════════════════════════════════════════════════════\n"
-                                "⚡ SPATIAL CONTINUITY — YOUR CAMERA POSITION IS LOCKED ⚡\n"
-                                "═══════════════════════════════════════════════════════════════\n\n"
-                                "THE FIRST REFERENCE IMAGE IS PANEL 16 OF THE PREVIOUS SEQUENCE.\n"
-                                "It shows EXACTLY where the camera is pointing RIGHT NOW.\n"
-                                "YOUR FRAME 1 MUST BE THE VERY NEXT MOMENT AFTER THAT IMAGE.\n\n"
-                                "FRAME 1 REQUIREMENTS (non-negotiable):\n"
-                                "✓ Camera at IDENTICAL height as the first reference image\n"
-                                "✓ Camera pointing in the SAME DIRECTION as the first reference image\n"
-                                "✓ Same visible landmarks, terrain, and sky/ground ratio\n"
-                                "✓ Scene is clearly 0.25 seconds AFTER the reference — seamless cut\n\n"
-                                "A viewer watching the reference then Frame 1 must see UNCUT FOOTAGE.\n\n"
-                                "═══════════════════════════════════════════════════════════════\n"
-                                "📐 GRID OUTPUT FORMAT\n"
-                                "═══════════════════════════════════════════════════════════════\n\n"
-                                "Output: 4×4 grid, 16 panels, 1200×896 pixels total\n"
-                                "• Each panel: 300×224 pixels\n"
-                                "• Grid reads: LEFT→RIGHT, TOP→BOTTOM (panels 1…16)\n"
-                                "• No captions or labels in any panel\n"
-                                "• NO borders visible within panels (grid dividers only between panels)\n\n"
-                                + _flipbook_camera_block()
-                            )
-                            flipbook_prefix += game_identity.apply(
-                                PROMPTS.get("gemini_flipbook_4panel_prefix", "") or "", "raw"
-                            )
-                            
-                            # --- REFERENCE STRATEGY: SPATIAL ANCHOR FIRST ---
-                            # ORDER MATTERS: Gemini weights the FIRST reference most heavily.
-                            # 1. PANEL 16 (last frame) — PRIMARY spatial anchor; Frame 1 must continue from here
-                            # 2. PANEL 01 (first frame) — shows what the environment looked like at turn start
-                            # 3. FULL grid — style/quality reference only (lower priority)
-                            # Grid templates (if they exist) are appended last — layout aid only.
-                            flipbook_refs = []
-
-                            # 1. LAST FRAME (panel_16) — THE PRIMARY SPATIAL ANCHOR
-                            # This is where the camera IS right now. Frame 1 of the new sequence
-                            # must be the very next moment after this image.
-                            if prev_last and os.path.exists(prev_last):
-                                flipbook_refs.append(prev_last)
-                                print(f"[FLIPBOOK ANCHOR] Panel 16 (spatial ground truth) FIRST: {os.path.basename(prev_last)}", flush=True)
-                            else:
-                                print(f"[FLIPBOOK GEN] No panel_16 available (first turn after intro)", flush=True)
-
-                            # 2. FIRST FRAME (panel_01) — environment reference for world coherence
-                            # Shows the broader environment before the previous action began.
-                            if prev_first and os.path.exists(prev_first):
-                                flipbook_refs.append(prev_first)
-                                print(f"[FLIPBOOK ANCHOR] Panel 01 (environment reference) SECOND: {os.path.basename(prev_first)}", flush=True)
-
-                            # 3. FULL previous flipbook grid — style/quality reference (lowest priority)
-                            # Only included if we have fewer than 2 spatial refs to pad context.
-                            if prev_grid and os.path.exists(prev_grid) and len(flipbook_refs) < 2:
-                                flipbook_refs.append(prev_grid)
-                                print(f"[FLIPBOOK STYLE] Full grid as style reference: {os.path.basename(prev_grid)}", flush=True)
-
-                            # 4. Grid template (layout hint — lowest weight, append last).
-                            # The BLANK grid wins. The numbered template has
-                            # "FRAME 1".."FRAME 16" and 0.00s..3.75s printed on it,
-                            # and telling a model not to copy text that is sitting
-                            # in its reference image does not work — those labels
-                            # came back burned into the generated panels. The blank
-                            # grid carries the same layout with nothing to copy.
-                            numbered_template_path = str(ROOT / "prompts" / "flipbook_numbered_template.png")
-                            blank_template_path    = str(ROOT / "prompts" / "flipbook_blank_grid_template.png")
-                            if os.path.exists(blank_template_path):
-                                flipbook_refs.append(blank_template_path)
-                                print(f"[FLIPBOOK LAYOUT] Blank grid template appended (layout hint)", flush=True)
-                            elif os.path.exists(numbered_template_path):
-                                flipbook_refs.append(numbered_template_path)
-                                print(f"[FLIPBOOK LAYOUT] Numbered template appended (no blank grid available)", flush=True)
-
-                            if not flipbook_refs:
-                                print(f"[FLIPBOOK GEN] No reference images available (first turn)", flush=True)
-                            
-                            print(f"[FLIPBOOK GEN] Using {len(flipbook_refs)} total references (template + grid + last frame)", flush=True)
-
-                            # CRITICAL: Add explicit action enforcement AT THE VERY START
-                            # FREE WILL ACTIONS (custom actions not in standard choices) MUST TAKE PRIORITY
-                            dispatch_preview = dispatch[:250] if dispatch else caption[:250]
-                            
-                            # Whether the player typed this action, set by
-                            # advance_turn_image_fast onto state (see
-                            # is_custom_action in its docstring) — reloaded here
-                            # rather than passed as a parameter because this
-                            # branch reads a fresh `current_state` off disk.
-                            # This used to guess from the choice TEXT against a
-                            # stale prefix list ("Approach"/"Examine"/...) that
-                            # nothing generated any more, so it misfired on
-                            # every curated pick — see the note in
-                            # _generate_combined_dispatches.
-                            is_free_will = bool(current_state.get('_turn_is_custom_action'))
-                            
-                            if is_free_will:
-                                # FREE WILL: Show the player's EXACT action, ignore AI interpretation
-                                try:
-                                    safe_choice = choice[:80].encode('ascii', 'replace').decode('ascii')
-                                    print(f"[FREE WILL DETECTED] Prioritizing player's direct command: {safe_choice}", flush=True)
-                                except:
-                                    print(f"[FREE WILL DETECTED] Prioritizing player's direct command (contains special characters)", flush=True)
-                            else:
-                                # Standard choice: Use consequence text as primary instruction
-                                print(f"[STANDARD CHOICE] Using consequence text as primary instruction", flush=True)
-                            action_enforcement = _flipbook_action_block(choice, dispatch_preview, bool(is_free_will))
-
-                            # Use the FULL prompt_str for flipbooks with action FIRST.
-                            # `prompt_str` was already reconciled by build_image_prompt;
-                            # the two wrapper blocks in front of it were not, and the
-                            # JSON flipbook prefix between them is player-editable, so
-                            # the whole thing gets one "raw" pass (no second directive).
-                            flipbook_prompt = game_identity.apply(
-                                action_enforcement + flipbook_prefix + prompt_str, "raw"
-                            )
-                            try:
-                                safe_prompt = prompt_str[:100].encode('ascii', 'replace').decode('ascii')
-                                print(f"[FLIPBOOK] Using full prompt with context: {safe_prompt}...", flush=True)
-                            except:
-                                print(f"[FLIPBOOK] Using full prompt (contains special characters)", flush=True)
-                            
-                            # Use layout template + parent references
-                            grid_path = generate_gemini_img2img(
-                                prompt=flipbook_prompt,
-                                caption=f"{caption}_flipbook",
-                                reference_image_path=flipbook_refs,
-                                world_prompt=world_prompt,
-                                time_of_day=use_time_of_day,
-                                action_context=choice,
-                                hd_mode=True, # Use Pro model for HIGH QUALITY flipbooks
-                                output_dir=img_dir,
-                                is_flipbook=True
-                            )
-                            
-                            if grid_path:
-                                result_dict = grid_to_flipbook_gif(Path(grid_path))
-                                gif_path = result_dict.get('gif_path')
-                                if gif_path:
-                                    # Save to state (SAFE LOCK VERSION)
-                                    st = _load_state(session_id)
-                                    st['current_flipbook_url'] = str(gif_path)
-                                    st['flipbook_last_grid'] = str(grid_path) # Store the entire 4x4 grid PNG
-                                    st['flipbook_first_frame'] = str(result_dict.get('first_frame')) if result_dict.get('first_frame') else None
-                                    st['flipbook_last_frame'] = str(result_dict.get('last_frame')) if result_dict.get('last_frame') else None
-                                    _save_state(st, session_id)
-                                    print(f"[FLIPBOOK] Parallel GIF ready and stored in state: {gif_path}", flush=True)
-                                else:
-                                    # PRODUCTION HARDENING: GIF conversion failure must signal FAILED to
-                                    # state, otherwise the bot's wait loop polls for the full 120s timeout
-                                    # holding _turn_processing_lock and the whole channel freezes.
-                                    st = _load_state(session_id)
-                                    st['current_flipbook_url'] = "FAILED"
-                                    _save_state(st, session_id)
-                                    print(f"[FLIPBOOK ERROR] GIF conversion failed - signaled FAILED to unblock bot", flush=True)
-                            else:
-                                # Signal failure (SAFE LOCK VERSION)
-                                st = _load_state(session_id)
-                                st['current_flipbook_url'] = "FAILED"
-                                _save_state(st, session_id)
-                                print(f"[FLIPBOOK] Parallel generation blocked/failed", flush=True)
-                        except Exception as e:
-                            try:
-                                # Signal failure (SAFE LOCK VERSION)
-                                st = _load_state(session_id)
-                                st['current_flipbook_url'] = "FAILED"
-                                _save_state(st, session_id)
-                            except: pass
-
-                            try:
-                                safe_e = str(e).encode('ascii', 'replace').decode('ascii')
-                                print(f"[FLIPBOOK ERROR] Parallel exception: {safe_e}", flush=True)
-                            except:
-                                print(f"[FLIPBOOK ERROR] Parallel exception (contains special characters)", flush=True)
-                    
-                    threading.Thread(target=generate_flipbook_parallel, daemon=True).start()
+                    flipbook_seq = _flipbook_generate(
+                        prompt_str=prompt_str,
+                        caption=caption,
+                        choice=choice,
+                        dispatch=dispatch,
+                        world_prompt=world_prompt,
+                        time_of_day=use_time_of_day,
+                        img_dir=img_dir,
+                        session_id=session_id,
+                        st=current_state,
+                        refs=ref_images_to_use,
+                    )
+                    # A flipbook that didn't come back costs quality, not the
+                    # turn: fall through to the ordinary still below.
+                    flipbook_enabled = bool(flipbook_seq)
 
                 # --- STATIC IMAGE GENERATION (Skip if in Flipbook Mode) ---
                 if not flipbook_enabled and not ref_images_to_use and not identity_plates:
@@ -7126,8 +7499,9 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             output_dir=img_dir,
                         )
                 else:
-                    print(f"[IMG GENERATION] Skipping static image - Flipbook mode is active.")
-                    result_path = None
+                    print(f"[IMG GENERATION] Flipbook sequence stands in for the still "
+                          f"({flipbook_seq['frame_count']} frames)")
+                    result_path = flipbook_seq['still_path']
             else:
                 print(f"\n{'='*70}")
                 print(f"[IMG GENERATION] USING TEXT-TO-IMAGE MODE (NO STYLE ANCHOR)")
@@ -7139,227 +7513,27 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                     print(f"[IMG GENERATION] This may cause style/aesthetic discontinuity")
                 print(f"{'='*70}\n")
                 
-                # --- PARALLEL FLIPBOOK GENERATION (Direct Comparison Mode for T2I) ---
+                # --- FLIPBOOK: this turn's frames instead of one still ---
+                # Same inline treatment as the img2img branch above. Nothing to
+                # continue from here (intro turn, or a run with no history), so
+                # the player's own plates are the only spatial anchor available.
                 current_state = _load_state(session_id)
-                flipbook_enabled = current_state.get("flipbook_mode", False)
-                if game_identity.is_viewfinder_spec(identity_spec):
-                    flipbook_enabled = False
+                flipbook_enabled = flipbook_active(current_state, identity_spec)
+                flipbook_seq = None
                 if flipbook_enabled:
-                    print(f"[FLIPBOOK] Parallel generation starting for TEXT-TO-IMAGE mode (Turn 0 or no references)")
-                    
-                    # For Turn 0 (intro), clear all flipbook data since there's no previous reference
-                    # NOTE: For subsequent turns, we do NOT clear current_flipbook_url (the client clears it after display)
-                    try:
-                        st_init = _load_state(session_id)
-                        st_init['current_flipbook_url'] = None
-                        st_init['flipbook_last_frame'] = None
-                        st_init['flipbook_first_frame'] = None
-                        st_init['flipbook_last_grid'] = None
-                        _save_state(st_init, session_id)
-                        print(f"[FLIPBOOK] Reset all flipbook data for Turn 0 (intro).")
-                    except Exception as e:
-                        print(f"[FLIPBOOK ERROR] Failed to manage flipbook data: {e}")
-
-                    import threading
-                    
-                    def generate_flipbook_parallel_t2i():
-                        print(f"[FLIPBOOK THREAD] Parallel T2I thread started", flush=True)
-                        try:
-                            from create_flipbook_gif import grid_to_flipbook_gif
-                            # Note: For T2I, we use generate_with_gemini which produces the grid if the prompt asks for it
-                            # OR we can still use img2img with the layout template as the only reference.
-                            # Using img2img with the template is safer for layout consistency.
-                            from gemini_image_utils import generate_gemini_img2img
-                            
-                            # Add flipbook prefix - SPECIAL CASE for intro
-                            flipbook_prefix = game_identity.apply(
-                                PROMPTS.get("gemini_flipbook_4panel_prefix", "") or "", "raw"
-                            )
-                            
-                            # Add standard template instruction
-                            flipbook_prefix = (
-                                "LAYOUT REFERENCE: The attached image is a 4x4 grid template showing STRUCTURAL LAYOUT ONLY.\n\n"
-                                "Use the reference for:\n"
-                                "- Grid arrangement (4 rows, 4 columns, 16 panels total)\n"
-                                "- Panel dimensions and spacing\n\n"
-                                "DO NOT use the reference for:\n"
-                                "- Content, scenes, subjects, or visual themes\n"
-                                "- Any imagery shown in the reference panels\n\n"
-                                "The reference is an empty structural template.\n"
-                                "Generate completely new visual content based solely on the text prompt below.\n\n" +
-                                flipbook_prefix
-                            )
-                            
-                            # CRITICAL: Add action enforcement for FREE WILL (same as img2img path)
-                            dispatch_preview = dispatch[:250] if dispatch else caption[:250]
-                            
-                            # See the matching img2img branch above for why this
-                            # reads the flag off state instead of guessing from
-                            # choice text.
-                            is_free_will = bool(current_state.get('_turn_is_custom_action'))
-                            
-                            if is_free_will:
-                                # FREE WILL: Show the player's EXACT action, ignore AI interpretation
-                                try:
-                                    safe_choice = choice[:80].encode('ascii', 'replace').decode('ascii')
-                                    print(f"[FREE WILL DETECTED - T2I] Prioritizing player's direct command: {safe_choice}", flush=True)
-                                except:
-                                    print(f"[FREE WILL DETECTED - T2I] Prioritizing player's direct command (contains special characters)", flush=True)
-                                action_enforcement = _flipbook_action_block(
-                                    choice, dispatch_preview, True
-                                )
-                                flipbook_prompt = action_enforcement + flipbook_prefix + prompt_str
-                            elif choice == "Intro":
-                                # Intro - use standard prompt
-                                print(f"[INTRO] Using standard intro prompt", flush=True)
-                                flipbook_prompt = flipbook_prefix + prompt_str
-                            else:
-                                # Standard choice - add action enforcement
-                                print(f"[STANDARD CHOICE - T2I] Using consequence text as primary instruction", flush=True)
-                                action_enforcement = (
-                                    "CRITICAL INSTRUCTION - READ THIS FIRST\n\n"
-                                    "YOU MUST ANIMATE THIS SPECIFIC ACTION:\n"
-                                    f">>> {dispatch_preview} <<<\n\n"
-                                    f"Player's choice was: \"{choice}\"\n\n"
-                                    "RULES:\n"
-                                    "1. Show EXACTLY what the text above describes\n"
-                                    "2. DO NOT show climbing ladders, opening boxes, or indoor scenes unless the text says so\n"
-                                    "3. If text says 'outside' -> show outdoor scene\n"
-                                    "4. If text says 'approach' -> show walking toward something\n"
-                                    "5. If text says 'examine' -> show looking at something\n"
-                                    "6. IGNORE any conflicting visual references - follow the TEXT ONLY\n\n"
-                                    + _flipbook_shot_block(False)
-                                    + "=" * 70 + "\n\n"
-                                )
-                                flipbook_prompt = action_enforcement + flipbook_prefix + prompt_str
-                            # Same reasoning as the img2img flipbook path: the wrapper
-                            # blocks and the editable JSON prefix haven't been through
-                            # the perspective pass, only `prompt_str` has.
-                            flipbook_prompt = game_identity.apply(flipbook_prompt, "raw")
-                            try:
-                                safe_prompt = prompt_str[:100].encode('ascii', 'replace').decode('ascii')
-                                print(f"[FLIPBOOK T2I] Using full prompt with context: {safe_prompt}...", flush=True)
-                            except:
-                                print(f"[FLIPBOOK T2I] Using full prompt (contains special characters)", flush=True)
-                            
-                            # For intro (Turn 0), use PURE T2I with NO reference images
-                            # ANY reference (even blank template) confuses the AI for intro
-                            print(f"[FLIPBOOK T2I] Using PURE T2I with INTRO-SPECIFIC prefix (no reference)", flush=True)
-                            from gemini_image_utils import generate_with_gemini
-                            
-                            # INTRO-SPECIFIC flipbook prefix — a wide establishing shot
-                            # of the level. "The ENTIRE facility complex" and the
-                            # no-character ban are both overridable: an authored level
-                            # isn't a facility, and in a third-person mode the player
-                            # arriving on screen IS the establishing shot.
-                            _intro_subject = game_identity.place_summary() or "the facility complex"
-                            if game_identity.shows_character():
-                                _intro_cast_rules = (
-                                    f"• {game_identity.display_name()} is visible in the frame, small in "
-                                    "the landscape, arriving at the location\n"
-                                    "• The camera is locked off and observational; only the character and "
-                                    "the weather move\n"
-                                )
-                            else:
-                                _intro_cast_rules = (
-                                    "• ABSOLUTELY NO people, NO hands, NO body parts, NO character visible\n"
-                                    "• Show ONLY the environment: buildings, landscape, terrain, sky\n"
-                                )
-                            intro_flipbook_prefix = (
-                                "🚨🚨🚨 ABSOLUTE COMMAND - READ THIS FIRST 🚨🚨🚨\n\n"
-                                "YOU MUST GENERATE A 4x4 GRID OF 16 SEPARATE IMAGES.\n"
-                                "DO NOT GENERATE ONE CONTINUOUS IMAGE.\n"
-                                "GENERATE 4 ROWS × 4 COLUMNS = 16 SEPARATE PANELS.\n\n"
-                                "🚫🚫🚫 ABSOLUTELY NO TEXT IN THE OUTPUT 🚫🚫🚫\n"
-                                "❌ DO NOT include 'FRAME 1', 'FRAME 2', etc.\n"
-                                "❌ DO NOT include timestamps like '0.00s', '0.25s', etc.\n"
-                                "❌ DO NOT include ANY text, numbers, labels, or overlays\n"
-                                "✅ ONLY generate CLEAN photorealistic imagery (NO TEXT)\n\n"
-                                "EACH PANEL IS A DISTINCT FRAME IN A 16-FRAME ANIMATION.\n"
-                                "Your output MUST show clear visual separation between all 16 panels.\n\n"
-                                "FLIPBOOK MODE - ENVIRONMENTAL ESTABLISHING SHOT\n\n"
-                                "**ALL panels must be the same resolution and arranged in a perfect grid.**\n\n"
-                                "This is an ESTABLISHING SHOT showing a location BEFORE the player enters.\n"
-                                "Think: Opening scene of a documentary or film showing the setting.\n\n"
-                                "📐 FIELD OF VIEW: EXTRA WIDE ANGLE (24mm-28mm equivalent)\n"
-                                "CRITICAL: Use an EXTREMELY WIDE field of view for this establishing shot.\n"
-                                f"• Show all of {_intro_subject} in frame\n"
-                                "• Show MAXIMUM landscape - sky, horizon, distant terrain\n"
-                                "• Think: Wide documentary establishing shot\n"
-                                "• MORE environment visible, NOT close-up details\n"
-                                "• Avoid narrow/telephoto compositions\n\n"
-                                "CRITICAL RULES FOR INTRO:\n"
-                                "• WIDE LANDSCAPE VIEW from an elevated/distant vantage point\n"
-                                + _intro_cast_rules +
-                                "• This is a STATIONARY CAMERA on a tripod or mounted position\n"
-                                "• Documentary/observational style - showing the location FROM OUTSIDE\n"
-                                "• The 16 frames show subtle environmental changes over 4 seconds:\n"
-                                "  - Dust blowing, clouds moving, light shifting\n"
-                                "  - NO major camera movement, just ambient atmosphere\n"
-                                "  - Each frame is slightly different but maintains same viewpoint\n\n"
-                                "GRID LAYOUT:\n"
-                                "Row 1: Frames 1-4 (0-1 seconds) - Initial view\n"
-                                "Row 2: Frames 5-8 (1-2 seconds) - Subtle changes\n"
-                                "Row 3: Frames 9-12 (2-3 seconds) - Continued atmosphere\n"
-                                "Row 4: Frames 13-16 (3-4 seconds) - Final establishing view\n\n"
-                                "LOOK:\n"
-                                "• Photoreal 1993 still: muted colour, available light, slight grain\n\n"
-                                "=" * 70 + "\n\n"
-                            )
-                            
-                            flipbook_prompt = game_identity.apply(
-                                intro_flipbook_prefix + prompt_str, "raw"
-                            )
-                            
-                            grid_path = generate_with_gemini(
-                                prompt=flipbook_prompt,
-                                caption=f"{caption}_flipbook",
-                                world_prompt=world_prompt,
-                                time_of_day=use_time_of_day,
-                                action_context=choice,
-                                hd_mode=True, # Use Pro model for HIGH QUALITY flipbooks
-                                output_dir=img_dir
-                            )
-                            
-                            if grid_path:
-                                result_dict = grid_to_flipbook_gif(Path(grid_path))
-                                gif_path = result_dict.get('gif_path')
-                                if gif_path:
-                                    # Save to state (SAFE LOCK VERSION)
-                                    st = _load_state(session_id)
-                                    st['current_flipbook_url'] = str(gif_path)
-                                    st['flipbook_last_grid'] = str(grid_path) # Store intro grid
-                                    st['flipbook_first_frame'] = str(result_dict.get('first_frame')) if result_dict.get('first_frame') else None
-                                    st['flipbook_last_frame'] = str(result_dict.get('last_frame')) if result_dict.get('last_frame') else None
-                                    _save_state(st, session_id)
-                                    print(f"[FLIPBOOK] Parallel T2I GIF ready and stored in state: {gif_path}", flush=True)
-                                else:
-                                    # Signal failure (SAFE LOCK VERSION)
-                                    st = _load_state(session_id)
-                                    st['current_flipbook_url'] = "FAILED"
-                                    _save_state(st, session_id)
-                                    print(f"[FLIPBOOK ERROR] T2I GIF conversion failed", flush=True)
-                            else:
-                                # Signal failure (SAFE LOCK VERSION)
-                                st = _load_state(session_id)
-                                st['current_flipbook_url'] = "FAILED"
-                                _save_state(st, session_id)
-                                print(f"[FLIPBOOK] Parallel T2I generation blocked/failed", flush=True)
-                        except Exception as e:
-                            try:
-                                # Signal failure (SAFE LOCK VERSION)
-                                st = _load_state(session_id)
-                                st['current_flipbook_url'] = "FAILED"
-                                _save_state(st, session_id)
-                            except: pass
-                            
-                            try:
-                                safe_e = str(e).encode('ascii', 'replace').decode('ascii')
-                                print(f"[FLIPBOOK ERROR] Parallel T2I exception: {safe_e}", flush=True)
-                            except:
-                                print(f"[FLIPBOOK ERROR] Parallel T2I exception (contains special characters)", flush=True)
-                    
-                    threading.Thread(target=generate_flipbook_parallel_t2i, daemon=True).start()
+                    flipbook_seq = _flipbook_generate(
+                        prompt_str=prompt_str,
+                        caption=caption,
+                        choice=choice,
+                        dispatch=dispatch,
+                        world_prompt=world_prompt,
+                        time_of_day=use_time_of_day,
+                        img_dir=img_dir,
+                        session_id=session_id,
+                        st=current_state,
+                        refs=list(identity_plates or []),
+                    )
+                    flipbook_enabled = bool(flipbook_seq)
 
                 # ALWAYS use HQ for first image, then respect quality toggle
                 use_hq_for_this_frame = True if frame_idx == 0 else QUALITY_MODE
@@ -7402,8 +7576,9 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             output_dir=img_dir  # Session-specific directory
                         )
                 else:
-                    print(f"[IMG GENERATION] Skipping static T2I image - Flipbook mode is active.")
-                    result_path = None
+                    print(f"[IMG GENERATION] Flipbook sequence stands in for the still "
+                          f"({flipbook_seq['frame_count']} frames)")
+                    result_path = flipbook_seq['still_path']
             # Return canonical frame (always single image now)
             _last_image_path = result_path
             return (result_path, prompt_str, None)  # Return canonical frame for story logic
@@ -7999,6 +8174,54 @@ def _extract_time_and_color(image_path: str) -> tuple[str, str]:
     result = _vision_analyze_all(image_path)
     return result["time_of_day"], result["color_palette"]
 
+# Weather words that stand or fall together. A world that rules out storms has
+# ruled out the lightning inside them, but "no storms or thunderclouds" is the
+# only sentence it is ever going to write about it — so a ban on one member bans
+# the family. Without this, a legal roll of "hazy twilight with purple lightning"
+# passed the shape check and became the `Lighting:` line on every render of the
+# session, because time_of_day is written once at reset and never re-examined.
+_WEATHER_FAMILIES = (
+    ("storm", "storms", "stormy", "thunderstorm", "thunderstorms", "thundercloud",
+     "thunderclouds", "thunderhead", "thunder", "lightning", "squall", "tempest"),
+    ("rain", "rainy", "raining", "rainfall", "downpour", "drizzle", "sleet", "hail", "monsoon"),
+    ("snow", "snowy", "snowing", "snowfall", "blizzard", "flurries"),
+    ("fog", "foggy", "mist", "misty"),
+)
+
+
+def _world_constraint_text() -> str:
+    """The authored prose a world states its rules in, as it exists at reset.
+
+    Read at reset rather than from state['world_prompt'], because the run's world
+    document is built after this and the evolving copy will eventually describe
+    whatever is actually happening.
+    """
+    parts = [PROMPTS.get("world_initial_state", "") or ""]
+    try:
+        setting = game_identity.authored_setting() or {}
+        parts += [str(setting.get("opening_shot") or ""), str(setting.get("summary") or "")]
+    except Exception:
+        pass
+    return "\n".join(p for p in parts if p)
+
+
+def _forbidden_weather(text: str) -> set:
+    """Weather words the world names only to rule out, expanded by family."""
+    banned = set()
+    for family in _WEATHER_FAMILIES:
+        for term in family:
+            if (re.search(rf"\b{re.escape(term)}\b", text or "", flags=re.I)
+                    and not _world_asserts(text, term)):
+                banned.update(family)
+                break
+    return banned
+
+
+def _named_terms(text: str, terms) -> list:
+    return sorted(t for t in terms
+                  if re.search(rf"\b{re.escape(t)}\b", text or "", flags=re.I))
+
+
 def _generate_random_starting_time() -> str:
     """
     Use LLM to generate a randomized starting time/weather/mood for each game session.
@@ -8013,6 +8236,12 @@ def _generate_random_starting_time() -> str:
         if game_identity.setting_enabled()
         else "Desert weather + lighting description (clear/cloudy/dusty/overcast + lighting type)"
     )
+    banned = _forbidden_weather(_world_constraint_text())
+    if banned:
+        weather_rule += (
+            f". This world rules the following out — never name or imply any of "
+            f"them, in the weather OR the mood: {', '.join(sorted(banned))}"
+        )
     prompt = f"""Generate a starting time/weather/mood for a horror game set in {place}
 
 Use EXACTLY this format: "TIME | weather: DESCRIPTION | mood: DESCRIPTION"
@@ -8025,20 +8254,29 @@ Requirements:
 - MOOD: Horror/suspense mood (2-3 words describing emotional tone)
 
 Generate ONE random variation. Return ONLY the formatted string, no explanation."""
-    
-    try:
-        result = _ask(prompt, model="gemini", temp=1.2, tokens=40, use_lore=False).strip()
-        
-        # Validate format roughly (has | separators and pm)
-        if '|' in result and 'pm' in result.lower() and 'weather:' in result and 'mood:' in result:
-            print(f"[INIT] Generated starting time: {result}")
-            return result
-        else:
-            print(f"[INIT] LLM returned invalid format, using default")
+
+    # Two attempts, then the seed line. Telling the model the ban is not enough
+    # on its own at temp 1.2 — the whole string is checked, mood clause included,
+    # because all of it is injected as the render's lighting instruction.
+    for attempt in (1, 2):
+        try:
+            result = _ask(prompt, model="gemini", temp=1.2, tokens=40, use_lore=False).strip()
+        except Exception as e:
+            print(f"[INIT] Error generating time: {e}, using default")
             return INITIAL_TIME_OF_DAY
-    except Exception as e:
-        print(f"[INIT] Error generating time: {e}, using default")
-        return INITIAL_TIME_OF_DAY
+        if not ('|' in result and 'pm' in result.lower()
+                and 'weather:' in result and 'mood:' in result):
+            print(f"[INIT] LLM returned invalid format (attempt {attempt})")
+            continue
+        violations = _named_terms(result, banned)
+        if violations:
+            print(f"[INIT] Rolled weather this world rules out "
+                  f"({', '.join(violations)}) on attempt {attempt}")
+            continue
+        print(f"[INIT] Generated starting time: {result}")
+        return result
+    print("[INIT] Falling back to default starting time")
+    return INITIAL_TIME_OF_DAY
 
 def extract_scene_elements(*args):
     """Extract key nouns/entities from dispatch, vision, and world state."""
@@ -8475,6 +8713,55 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
     # next Moment slate. State is always persisted to disk regardless.
 
 
+# How long after a turn starts a second /api/choose is treated as an accidental
+# duplicate rather than the player's next move. A double-click or a client retry
+# lands in milliseconds; a real next action requires reading the new prose and
+# deciding, and the client will not even offer it until the choices are live.
+DOUBLE_SUBMIT_WINDOW_S = 4.0
+
+
+def _clear_turn_processing(session_id: str) -> None:
+    """Release the api_choose re-entrancy guard (see its `turn_processing`
+    check). Best-effort — a failure here should never crash the background
+    thread it's cleaning up after."""
+    try:
+        with WORLD_STATE_LOCK:
+            st = _load_state(session_id) or {}
+            if st.get("turn_processing"):
+                st["turn_processing"] = False
+                _save_state(st, session_id)
+                _sync_ambient_state(st, session_id)
+    except Exception:
+        pass
+
+
+def _process_turn_background_guarded(*args, **kwargs):
+    """Thread target wrapper for _process_turn_background.
+
+    Found by playtest.py's double-submit race probe (see
+    docs/plans/PLAYTEST_CONSOLIDATION_PLAN.md): api_choose had NO
+    re-entrancy guard at all, unlike encounter.api_resolve's
+    encounter_resolving flag. Two concurrent /api/choose calls for the same
+    session — a double-click, a client-side retry — both got HTTP 200 and
+    both ran a full turn: doubled narrative_event, doubled
+    player_choice_prompt, doubled LLM/image spend, for one player click.
+
+    api_choose sets `turn_processing=True` (atomically, under
+    WORLD_STATE_LOCK, right next to the existing cutscene_playing check) and
+    refuses a second /api/choose with 409 while it's set. The turn itself
+    runs on a daemon thread that api_choose doesn't wait on, so the flag has
+    to be cleared from the far end of that thread, not from api_choose's own
+    return — hence this wrapper, kept OUTSIDE _process_turn_background's own
+    (large, many-return-path) body so the guard's lifecycle doesn't have to
+    be threaded through every existing exit point by hand.
+    """
+    session_id = kwargs.get("session_id", "default")
+    try:
+        _process_turn_background(*args, **kwargs)
+    finally:
+        _clear_turn_processing(session_id)
+
+
 def _structure_choices_for_feed(choice_texts: List[str], prompt_text: str = "What do you do next?", image_url: Optional[str] = None) -> Dict[str, Any]:
     global state 
     structured_choices_list = []
@@ -8599,6 +8886,11 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                     st = _load_state(session_id)
                     st['current_render_prompt'] = render_prompt
                     st['current_render_base'] = render_base
+                    # The last good still is deliberately kept (see above), but
+                    # its motion is not: replaying the previous turn's frames
+                    # under a new dispatch would animate the wrong action.
+                    st['current_sequence'] = None
+                    take_flipbook_sequence(session_id)
                     _feed_append(st, blocked_item)
                     _save_state(st, session_id)
                     _sync_ambient_state(st, session_id)
@@ -8607,11 +8899,18 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                 return None
 
             web = _to_web_image_url(img_path, session_id)
+            # In flipbook mode this turn produced a sequence, and `img_path` is
+            # its LAST panel. The still stays the contract for everything that
+            # only understands one image; the frames travel on the beat so the
+            # client can play the motion and land on that same still.
+            sequence = flipbook_web_payload(take_flipbook_sequence(session_id),
+                                            session_id)
             item = create_feed_item(
                 type="scene_image",
                 content="",
                 image_url=web,
                 metadata={
+                    "sequence": sequence,
                     "prompt": render_prompt,
                     # 'base' (style + scene, no action) lets the client re-steer
                     # instantly with the next action before the turn resolves.
@@ -8626,6 +8925,9 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
             with WORLD_STATE_LOCK:
                 st = _load_state(session_id)
                 st['current_image_url'] = web
+                # Cleared, not left behind: a client that reconnects after a
+                # still-only turn must not be handed the previous turn's frames.
+                st['current_sequence'] = sequence
                 st['current_image_prompt'] = image_prompt
                 st['current_render_prompt'] = render_prompt
                 st['current_render_base'] = render_base
@@ -8816,8 +9118,13 @@ def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispat
 
 # Ensure generate_intro_turn_feed_items is defined AFTER _structure_choices_for_feed
 def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optional[dict] = None,
-                                   spawn_image: bool = True):
+                                   spawn_image: bool = True, frame_path: Optional[str] = None):
     """Build the intro feed items for a fresh session.
+
+    `frame_path` — the still this run will OPEN on, when we already have one
+    (a warm World frame). The opening slate is generated from that picture
+    rather than from the shot description, so turn 1 is grounded the same way
+    every later turn is.
 
     `new_state` — the LOCAL (not module-global) fresh-state dict the caller
     just built for `session_id`. Reading/writing it directly (instead of the
@@ -8837,9 +9144,11 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
     initial_narrative_content = game_identity.opening_narration() or (
         "1993. Golden hour bleeds across the Four Corners desert. You are Jason Fleece, "
         "photojournalist, crouched at the perimeter of Horizon Industries' quarantined "
-        "facility \u2014 the last place the missing were ever seen. Your camcorder hums against "
-        "your palm. Red dust drifts over the chain-link fence ahead. Whatever they buried "
-        "out here, you came to film it."
+        "facility \u2014 the last place the missing were ever seen. The camera strap bites into "
+        "your neck. Fifty yards off along the fence line, a black-clad patrol sweeps a "
+        "flashlight through the dusk, red night-vision goggles catching the last of the "
+        "light. Whatever they buried out here, you came to photograph it \u2014 and you are "
+        "already not alone."
     )
     narrative_item = create_feed_item(type="narrative_event", content=initial_narrative_content)
     intro_items.append(narrative_item)
@@ -8855,12 +9164,27 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
         choice_prompt_text = "You've arrived. What's your first move?"
         fallback_choices = ["Move deeper into the space", "Search the nearest structure", "Circle the perimeter on foot"]
     else:
-        intro_image_description = "Golden-hour desert at the perimeter fence of the Horizon facility; red mesas, chain-link fence, abandoned vehicles."
-        intro_situation = "You are crouched at the fence line of the quarantined Horizon facility as the sun drops. This is your way in."
-        choice_prompt_text = "The fence line waits. What's your first move?"
-        fallback_choices = ["Vault the perimeter fence", "Crouch low and scan the facility", "Photograph the abandoned vehicles"]
+        intro_image_description = "Golden-hour desert at the perimeter fence of the Horizon facility; a black-clad guard patrol sweeps the fence line fifty yards off, red mesas and abandoned vehicles beyond."
+        intro_situation = "You are crouched at the fence line of the quarantined Horizon facility as a guard patrol sweeps past, fifty yards off. This is your way in \u2014 if they don't see you first."
+        choice_prompt_text = "The patrol hasn't spotted you yet. What's your first move?"
+        fallback_choices = ["Duck behind cover from the patrol", "Cut the fence while their backs are turned", "Circle wide around the guard"]
 
-    # Choices are grounded on text (no image needed), so the intro returns fast.
+    # Ground the opening slate on the picture the player is about to be looking
+    # at, when we have it. intro_image_description is the shot we ASKED for; a
+    # slate written from it offers to vault a fence the render may never have
+    # drawn. With no cached frame there is nothing to look at yet, so we fall
+    # back to the description and reground once the render lands (see
+    # _spawn_scene_choices_reground at the reset call site).
+    intro_frame_vision = ""
+    if frame_path and VISION_ENABLED:
+        try:
+            _vres = _vision_analyze_all(frame_path)
+            if isinstance(_vres, dict):
+                intro_frame_vision = (_vres.get("description") or "").strip()
+        except Exception as e_vis:
+            log_error(f"[INTRO] opening-frame vision failed: {e_vis}")
+        print(f"[INTRO] opening frame vision len={len(intro_frame_vision)}", flush=True)
+
     initial_choice_texts = []
     try:
         initial_choice_texts = generate_choices(
@@ -8868,8 +9192,9 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
             prompt_tmpl=PROMPTS["player_choice_generation_instructions"],
             last_dispatch=initial_narrative_content,
             world_prompt=new_state.get("world_prompt", "System Online."),
-            image_description=intro_image_description,
-            situation_summary=intro_situation,
+            image_url=frame_path or None,
+            image_description=intro_frame_vision or intro_image_description,
+            situation_summary=intro_frame_vision or intro_situation,
             n=3,
             beat_nudge=beat_nudge_text(new_state),
         )
@@ -8955,23 +9280,21 @@ def _spawn_cached_opening_vision(session_id: str, img_path: str) -> None:
     threading.Thread(target=_worker, name="opening-vision", daemon=True).start()
 
 
-def _apply_cached_opening_frame(
-    session_id: str,
-    new_state: dict,
-    intro_items: list,
-    intro_image_kwargs: dict,
-) -> bool:
-    """Put the World's cached first frame into a fresh run's feed.
+def _cached_opening_frame(new_state: dict) -> tuple:
+    """Resolve the World's cached first frame for a fresh run.
 
-    Returns True if intro gen should still spawn (cache missing, or dirty so
-    we want a background refresh). Returns False when the cache is warm and
-    clean — Play can start on that still with no render wait.
+    Returns (slug, rec). `rec` is {} when there is nothing usable to open on, in
+    which case the intro has to render its own frame. Split out of
+    _apply_cached_opening_frame so the opening CHOICE SLATE can be grounded on
+    this still before the feed items are built — the slate used to be written
+    from the shot description while the picture the player actually starts on
+    sat on disk, unread.
     """
     try:
         import world_frames
     except Exception as e:
         logging.warning(f"[WORLD FRAMES] inject skipped: {e}")
-        return True
+        return "", {}
     slug = ""
     try:
         wid = str((new_state or {}).get("experience_world_id") or "")
@@ -8993,7 +9316,7 @@ def _apply_cached_opening_frame(
                 world_frames.ensure(slug, wait=False)
             except Exception:
                 pass
-        return True
+        return slug, {}
     # The frame on disk may be a picture of somebody else. It is stamped with
     # the World SNAPSHOT's hash, but a run is played on the live prompts, and
     # the snapshot only moves when the level is saved — so editing the
@@ -9007,6 +9330,33 @@ def _apply_cached_opening_frame(
         # Deliberately no ensure() here: it would re-render from the snapshot,
         # i.e. the wrong hero again. The intro about to run installs the right
         # frame itself (see world_frames.remember_from_play).
+        return slug, {}
+    return slug, rec
+
+
+def _apply_cached_opening_frame(
+    session_id: str,
+    new_state: dict,
+    intro_items: list,
+    intro_image_kwargs: dict,
+    resolved: Optional[tuple] = None,
+) -> bool:
+    """Put the World's cached first frame into a fresh run's feed.
+
+    Returns True if intro gen should still spawn (cache missing, or dirty so
+    we want a background refresh). Returns False when the cache is warm and
+    clean — Play can start on that still with no render wait.
+
+    `resolved` is the (slug, rec) the caller already looked up to ground the
+    opening slate; passing it through avoids resolving (and re-warming) twice.
+    """
+    slug, rec = resolved if resolved is not None else _cached_opening_frame(new_state)
+    if not rec:
+        return True
+    try:
+        import world_frames
+    except Exception as e:
+        logging.warning(f"[WORLD FRAMES] inject skipped: {e}")
         return True
     web = rec["url"]
     img_path = rec["path"]
@@ -9192,15 +9542,21 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
         else:
             logging.info("_perform_game_reset: history.json does not exist, no need to clear.")
 
+        # Resolve the opening still BEFORE the intro items, so the first slate
+        # can be generated from the picture the run opens on rather than from
+        # the shot description.
+        opening_slug, opening_rec = _cached_opening_frame(new_state)
         initial_items, intro_image_kwargs = generate_intro_turn_feed_items(
-            SID, new_state, spawn_image=False)
+            SID, new_state, spawn_image=False,
+            frame_path=opening_rec.get("path") or None)
         logging.info(f"_perform_game_reset: initial_items from generate_intro_turn_feed_items (IDs): {[item['id'] for item in initial_items if item]}")
 
         # Cached first frame is the load time. If this World already has a
         # still, put it in the reset payload so Play / Watch paint immediately
         # instead of sitting on a black screen until intro gen returns.
         need_intro_spawn = _apply_cached_opening_frame(
-            SID, new_state, initial_items, intro_image_kwargs)
+            SID, new_state, initial_items, intro_image_kwargs,
+            resolved=(opening_slug, opening_rec))
 
         if new_state.get("experience_cutscene_id"):
             # Opening is the montage — don't leave intro verbs under it.
@@ -9241,6 +9597,19 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
     # how this used to feel slow.
     if need_intro_spawn:
         _spawn_scene_image_async(**intro_image_kwargs)
+        # There was no still to ground the opening slate on, so it came from the
+        # shot description. Replace it with one read off the frame as soon as the
+        # render lands — otherwise the very first thing the game asks the player
+        # to do is the only decision in the run that never saw a picture.
+        _intro_prompt = next(
+            (it for it in initial_items
+             if (it or {}).get("type") == "player_choice_prompt"), None)
+        if _intro_prompt:
+            _spawn_scene_choices_reground(
+                _intro_prompt.get("id"),
+                new_state.get("current_image_url"),
+                SID,
+            )
     return initial_items
 
 def api_reset():
@@ -9517,6 +9886,28 @@ def api_choose():
             _cut_st = _load_state(session_id) or {}
             if str(_cut_st.get("experience_cutscene_id") or "").strip():
                 return jsonify({"ok": False, "error": "cutscene_playing"}), 409
+            # Re-entrancy guard — see _process_turn_background_guarded's
+            # docstring for the double-submit bug this closes. Check-and-set
+            # in the same lock hold as the cutscene check above so two
+            # concurrent /api/choose calls can't both read "not processing"
+            # before either writes "processing".
+            #
+            # The flag is only cleared at the far end of the background thread,
+            # which does not finish until the scene image is rendered (up to
+            # 75s). But the client hands input back the moment the CHOICES are
+            # live (~27s), by design. So a flat "is it set?" refused the
+            # player's next real action for the whole image tail and surfaced as
+            # "The world hesitated. Choose again." Only a genuine double-submit
+            # — a double-click, a client retry — is near-simultaneous, so scope
+            # the refusal to a short window instead of the entire turn.
+            _now = time.time()
+            _started = float(_cut_st.get("turn_processing_at") or 0)
+            if _cut_st.get("turn_processing") and (_now - _started) < DOUBLE_SUBMIT_WINDOW_S:
+                return jsonify({"error": "turn_in_progress"}), 409
+            _cut_st["turn_processing"] = True
+            _cut_st["turn_processing_at"] = _now
+            _save_state(_cut_st, session_id)
+            _sync_ambient_state(_cut_st, session_id)
         # How the action was issued. SCAN object interactions ("scan_interact"/
         # "scan_move") drive the story-escalation backend harder (see
         # _process_turn_background) so poking the world moves the plot + raises risk.
@@ -9633,7 +10024,7 @@ def api_choose():
 
         try:
             thread = threading.Thread(
-                target=_process_turn_background,
+                target=_process_turn_background_guarded,
                 args=(turn_choice_text, player_action_item['id'], str(temp_signal_file)),
                 kwargs={"source": action_source, "session_id": session_id,
                         "subject": action_subject},
@@ -9644,6 +10035,10 @@ def api_choose():
 
         except Exception as e_thread_start:
             print(f"CRITICAL DEBUG PRINT: api_choose - ERROR STARTING THREAD: {e_thread_start}", flush=True)
+            # The thread never started, so _process_turn_background_guarded's
+            # finally never runs — release the guard here or the session
+            # would be stuck refusing every /api/choose with turn_in_progress.
+            _clear_turn_processing(session_id)
             # Optionally re-raise or handle specifically if needed, for now just printing
             raise # Re-raise to see if it gets caught by the broader handler or stops the test
 
@@ -9662,6 +10057,12 @@ def api_choose():
                 err_session_id = _resolve_request_session_id()
                 err_state = _load_state(err_session_id)
                 err_state.setdefault('feed_log', []).append(error_item)
+                # If this exception happened after the turn_processing guard
+                # was set but before the background thread started (which is
+                # the only thing that clears it), clear it here too — else
+                # every /api/choose for this session refuses with
+                # turn_in_progress forever after one failure this early.
+                err_state["turn_processing"] = False
                 _save_state(err_state, err_session_id)
                 _sync_ambient_state(err_state, err_session_id)
         except Exception as e_log:
@@ -14023,8 +14424,10 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         # Phase directives make the STORY PHASE actually STEER the beat — pressure
         # rises turn over turn instead of the world staying flat at "normal".
         phase_directive = {
-            "normal": "Establish dread. Threats stay latent and atmospheric, but "
-                      "the world is already watching — end on a cue that tightens the noose.",
+            "normal": "COLD OPEN. Get a character or a direct threat on screen — or "
+                      "close enough to hear/see — within THIS beat or the next one. "
+                      "Atmosphere alone is not enough: give the player someone or "
+                      "something to be afraid of, then end on a cue that tightens the noose.",
             "escalating": "STAKES ARE RISING. Press the player: a threat moves closer, a "
                           "complication compounds, or the facility reacts to what they've "
                           "stirred up. Do NOT let this beat idle — something must develop.",
@@ -14575,6 +14978,8 @@ STORY_CRITICAL_AT = 9   # ... and into "critical"
 # Platform default when an Experience does not name its own curve.
 _HARNESS_ESCALATE_AT = 8
 _HARNESS_CRITICAL_AT = 20
+_DEFAULT_BEAT_NORMAL = ("BEAT: put a character or a direct threat in view early — "
+                        "a patrol, a figure, a voice — don't let the opening stay empty.")
 _DEFAULT_BEAT_ESCALATING = "BEAT: pressure is rising. Push the situation forward."
 _DEFAULT_BEAT_CRITICAL = "BEAT: the situation is critical. Offer a way through or a last stand."
 
@@ -14608,10 +15013,16 @@ def _threat_marks() -> tuple[int, int]:
 
 
 def beat_nudge_text(state: Optional[dict] = None) -> str:
-    """Fills {beat_nudge} on the choice template. Empty when the story is calm.
+    """Fills {beat_nudge} on the choice template.
 
-    The two lines are Experience pacing — authored in Create — not a
+    The three lines are Experience pacing — authored in Create — not a
     hardcoded engine slogan. Missing copy falls back to the shipped beats.
+
+    "Calm" used to mean silence here: threat 0 sent the choice slate nothing
+    at all, so turn one — the run's only chance at a cold open — read exactly
+    like a quiet turn fifteen minutes in. A run that wants its danger to show
+    up FAST needs the opening beat pulling in that direction too, not just the
+    two escalation marks further down the clock.
     """
     st = state if isinstance(state, dict) else {}
     threat = int(st.get("threat_level") or 0)
@@ -14623,7 +15034,8 @@ def beat_nudge_text(state: Optional[dict] = None) -> str:
     if phase == "escalating":
         text = str(raw.get("beat_escalating") or "").strip()
         return text or _DEFAULT_BEAT_ESCALATING
-    return ""
+    text = str(raw.get("beat_normal") or "").strip()
+    return text or _DEFAULT_BEAT_NORMAL
 
 # How much a single deliberate act of meddling can add to the story clock on top
 # of the turn's own +1. Measured, not guessed: at the original +2, a SCAN-driven
@@ -15354,21 +15766,26 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
     flipbook_first = None
     flipbook_last = None
     
-    if state.get("flipbook_mode", False):
+    # flipbook_settings is the one answer to "is this a flipbook turn" — reading
+    # the raw session key here ignored the global knob and, once the key is left
+    # unset, would have skipped grounding on a turn that really did draw one.
+    if flipbook_settings(state)["enabled"]:
         flipbook_first = state.get('flipbook_first_frame')
         flipbook_last = state.get('flipbook_last_frame')
         if flipbook_last and os.path.exists(flipbook_last):
             print(f"[VISION] Flipbook mode - will analyze first and last frames")
             analysis_img_url = flipbook_last  # Primary analysis uses last frame
 
-    # The new frame is the source of truth. generate_choices attaches it.
-    # A second vision-caption call used to hang the slate after the picture
-    # had already landed — skip that when we have the still.
+    # The new frame is the source of truth, so LOOK at it before building the
+    # slate. vision_dispatch is only the fallback: it is the caption the image
+    # model was ASKED to draw, and a render that answered with barrels where we
+    # asked for a crate would otherwise never be noticed — the slate, the
+    # situation report, and the critic's grounding check all read this string.
     vision_analysis_text  = (vision_dispatch or "").strip()
     _spatial_compass_turn = ""   # directional compass: ahead/left/right/ground/height
     _setting_type_turn    = ""   # environment type: outdoor-desert, indoor-corridor, etc.
 
-    if (not analysis_img_url) and VISION_ENABLED:
+    if analysis_img_url and VISION_ENABLED:
         # Analyze BOTH frames if flipbook mode
         if flipbook_first and flipbook_last and os.path.exists(flipbook_first) and os.path.exists(flipbook_last):
             print(f"[VISION] Analyzing FIRST frame: {os.path.basename(flipbook_first)}")
@@ -15408,16 +15825,21 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
             print(f"[VISION] Analyzing image for spatial context (source: {'flipbook' if analysis_img_url != consequence_img_url else 'static'})...")
             try:
                 vision_result         = _vision_analyze_all(analysis_img_url)
-                vision_analysis_text  = vision_result.get("description", "")
+                _rendered_desc        = (vision_result.get("description") or "").strip()
                 _spatial_compass_turn = vision_result.get("spatial", "")
                 _setting_type_turn    = vision_result.get("setting", "")
-                if vision_analysis_text:
+                # Only displace the fallback when we actually got a reading. A
+                # blanked description used to leave the slate with no scene text
+                # at all, which is worse than the render request.
+                if _rendered_desc:
+                    vision_analysis_text = _rendered_desc
                     print(f"[VISION] Analysis complete: {vision_analysis_text[:100]}...")
+                else:
+                    print("[VISION] No description returned — keeping the render caption")
                 if _spatial_compass_turn:
                     print(f"[VISION] Spatial compass: {_spatial_compass_turn[:80]}...")
             except Exception as e:
-                print(f"[VISION] Analysis failed: {e}")
-                vision_analysis_text  = ""
+                print(f"[VISION] Analysis failed: {e} — keeping the render caption")
 
     # FAST PATH: if the consequence call already produced usable next-action
     # options, reuse them and SKIP both the situation-report and choice-generation
@@ -15499,13 +15921,23 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
     is_custom_action = bool(state.get('_turn_is_custom_action'))
     
     # CRITICAL TEMPORAL CONTINUITY FIX:
-    # In flipbook mode, static images aren't generated, so consequence_img_url is None.
-    # Use flipbook_last_frame as the history image so NEXT turn can reference it for img2img continuity!
+    # On a flipbook turn the LAST PANEL is where the action ended, so it is the
+    # only honest img2img reference for the next turn.
+    #
+    # This used to prefer consequence_img_url and fall back to the panel only
+    # when that was empty. But on a flipbook turn consequence_img_url can still
+    # be carrying an EARLIER image, so the next generation was seeded from a
+    # frame taken before the motion happened and the story jumped backwards —
+    # make a helicopter appear, and the turn after it is standing where you
+    # started. `current_sequence` is the proof that THIS turn drew a flipbook,
+    # so a turn whose flipbook failed still uses its own still rather than a
+    # stale panel from an older one.
     history_image = consequence_img_url
-    if not history_image and state.get("flipbook_mode", False):
-        history_image = state.get("flipbook_last_frame")
-        if history_image:
-            print(f"[HISTORY] Using flipbook_last_frame as reference for next turn: {os.path.basename(history_image)}")
+    if flipbook_settings(state)["enabled"] and state.get("current_sequence"):
+        _fb_last = state.get("flipbook_last_frame")
+        if _fb_last:
+            history_image = _fb_last
+            print(f"[HISTORY] Flipbook: next turn's img2img reference is the LAST panel: {os.path.basename(_fb_last)}")
     
     history_entry = {
         "choice":            choice,
@@ -15710,7 +16142,9 @@ def reset_state(session_id='default'):
     except Exception as e:
         print(f"[RESET] Failed to delete history: {e}")
     
-    # Clear vision cache
+    # Clear vision cache. The disk layer (authored worlds/ frames only) is
+    # deliberately left alone: those pictures are identical next run, and
+    # re-reading them is what made a fresh start hang on a vision call.
     _vision_cache.clear()
     print("[CLEANUP] Cleared vision analysis cache")
     
@@ -15901,7 +16335,7 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
     flipbook_first = None
     flipbook_last = None
     
-    if state.get("flipbook_mode", False):
+    if flipbook_settings(state)["enabled"]:
         flipbook_first = state.get('flipbook_first_frame')
         flipbook_last = state.get('flipbook_last_frame')
         if flipbook_last and os.path.exists(flipbook_last):
@@ -15995,13 +16429,18 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
     
     # Save to session-specific history
     # CRITICAL TEMPORAL CONTINUITY FIX (same as regular turns):
-    # In flipbook mode, static images aren't generated, so image_url is None.
-    # Use flipbook_last_frame as the history image so NEXT turn can reference it for img2img continuity!
+    # On a flipbook intro the LAST PANEL is where the opening ended, so it is the
+    # only honest img2img reference for turn 1. Preferring image_url and falling
+    # back only when it was empty meant turn 1 could be seeded from a frame taken
+    # before the intro's motion. `current_sequence` proves THIS pass drew a
+    # flipbook, so an intro whose flipbook failed still uses its own still rather
+    # than a stale panel.
     history_image = image_url
-    if not history_image and state.get("flipbook_mode", False):
-        history_image = state.get("flipbook_last_frame")
-        if history_image:
-            print(f"[INTRO HISTORY] Using intro flipbook_last_frame as reference for Turn 1: {os.path.basename(history_image)}")
+    if flipbook_settings(state)["enabled"] and state.get("current_sequence"):
+        _fb_last = state.get("flipbook_last_frame")
+        if _fb_last:
+            history_image = _fb_last
+            print(f"[INTRO HISTORY] Flipbook: turn 1's img2img reference is the LAST panel: {os.path.basename(_fb_last)}")
     
     entry = {
         "choice": "Intro",

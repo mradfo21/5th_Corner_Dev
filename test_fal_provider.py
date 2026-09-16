@@ -173,11 +173,11 @@ class TestCallFalSelfHeal(unittest.TestCase):
 
 
 class TestProviderManagerWiring(unittest.TestCase):
-    def test_fal_preset_available(self):
+    def test_fal_is_not_offered_as_an_image_preset(self):
         presets = apm.get_available_presets()
-        self.assertIn("fal", presets)
-        self.assertEqual(presets["fal"]["image_provider"], "fal")
-        self.assertEqual(presets["fal"]["image_model"], "fal-ai/fast-lightning-sdxl")
+        self.assertNotIn("fal", presets)
+        offered = {e["id"] for e in apm.available_model_catalogue("image")}
+        self.assertNotIn("fal-ai/fast-lightning-sdxl", offered)
 
 
 if __name__ == "__main__":

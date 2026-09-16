@@ -136,15 +136,34 @@ class TestFeedEngineContinuity(unittest.TestCase):
         self._advance_turn("Move forward carefully", last_id)
         self.assertEqual(self._status()["turn"], 1)
 
-    def test_chaos_level_persists_not_reverted(self):
-        """generate_and_apply_choice() bumps chaos_level; the subsequent
-        world-evolution step must not silently revert it to 0."""
+    def test_status_includes_experience_world(self):
+        self._reset()
+        status = self._status()
+        self.assertIn("experience_world_id", status)
+        self.assertIn("experience_world_name", status)
+        self.assertIn("world_turn_count", status)
+
+    def test_turn_dials_persist_not_reverted(self):
+        """A turn advances the story dials; the subsequent world-evolution step
+        must not silently revert them to 0.
+
+        Probed on `threat_level`, which climbs on every turn without exception.
+        This used to probe chaos_level, back when chaos was `+= 1` per turn in
+        generate_and_apply_choice — but chaos is now a bounded dial that reads
+        what the turn contained (engine.apply_chaos), so a quiet turn legitimately
+        leaves it at 0 and it can no longer stand in for "state survived".
+        """
         initial = self._reset()
         last_id = initial[-1]["id"]
-        self.assertEqual(self._status()["chaos"], 0)
+        self.assertEqual(self._status()["threat"], 0)
 
         self._advance_turn("Move forward carefully", last_id)
-        self.assertGreaterEqual(self._status()["chaos"], 1)
+        status = self._status()
+        self.assertGreaterEqual(status["threat"], 1)
+        # Chaos must still be REPORTED and in range — the dial existing at all
+        # is what the HUD and summarize_world_state read.
+        self.assertGreaterEqual(status["chaos"], 0)
+        self.assertLessEqual(status["chaos"], status["chaos_max"])
 
     def test_realtime_concurrent_write_not_clobbered_by_turn(self):
         """Regression for the realtime SCAN/observe freeze.

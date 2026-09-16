@@ -44,38 +44,26 @@ def load_ai_config() -> Dict[str, Any]:
                 "text_provider": "gemini",
                 "text_model": "gemini-3.1-flash-lite",
                 "image_provider": "gemini",
-                "image_model": "gemini-3.1-flash-image",
+                "image_model": "gemini-3.1-flash-lite-image",
                 "last_updated": datetime.now(timezone.utc).isoformat(),
                 "available_configs": {
                     "gemini": {
                         "text_provider": "gemini",
                         "text_model": "gemini-3.1-flash-lite",
                         "image_provider": "gemini",
-                        "image_model": "gemini-3.1-flash-image"
+                        "image_model": "gemini-3.1-flash-lite-image"
                     },
-                    "openai": {
-                        "text_provider": "openai",
-                        "text_model": "gpt-4o-mini",
-                        "image_provider": "openai",
-                        "image_model": "gpt-image-1"
+                    "gemini_pro": {
+                        "text_provider": "gemini",
+                        "text_model": "gemini-3.1-flash-lite",
+                        "image_provider": "gemini",
+                        "image_model": "gemini-3-pro-image"
                     },
                     "krea": {
                         "text_provider": "gemini",
                         "text_model": "gemini-3.1-flash-lite",
                         "image_provider": "krea",
                         "image_model": "krea-2/medium"
-                    },
-                    "krea_large": {
-                        "text_provider": "gemini",
-                        "text_model": "gemini-3.1-flash-lite",
-                        "image_provider": "krea",
-                        "image_model": "krea-2/large"
-                    },
-                    "fal": {
-                        "text_provider": "gemini",
-                        "text_model": "gemini-3.1-flash-lite",
-                        "image_provider": "fal",
-                        "image_model": "fal-ai/fast-lightning-sdxl"
                     }
                 }
             }
@@ -136,7 +124,182 @@ def get_image_provider() -> str:
 def get_image_model() -> str:
     """Get current image generation model."""
     _ensure_initialized()
-    return load_ai_config().get("image_model", "gemini-3.1-flash-image")
+    return load_ai_config().get("image_model", "gemini-3.1-flash-lite-image")
+
+
+# The resolutions the image APIs accept. Anything else is rejected rather than
+# passed through, because an unknown value fails inside the provider call where
+# the error surfaces as a blank frame rather than a bad setting.
+IMAGE_SIZES = ("1K", "2K", "4K")
+
+# Aspect ratios Gemini (and Krea) actually accept on the wire. 21:9 is the
+# closest official preset to a landscape phone (~19.5:9 / 20:9); we advertise
+# that one as "phone horizontal" rather than inventing a ratio the APIs refuse.
+# Live play still defaults to 4:3 when nothing is configured; Watch defaults
+# to 16:9 on its own form (see render_jobs.options).
+IMAGE_ASPECT_RATIOS = ("16:9", "21:9", "4:3", "1:1", "9:16")
+PHONE_HORIZONTAL_ASPECT = "21:9"
+_ASPECT_ALIASES = {
+    "phone_horizontal": PHONE_HORIZONTAL_ASPECT,
+    "phone-horizontal": PHONE_HORIZONTAL_ASPECT,
+    "phone": PHONE_HORIZONTAL_ASPECT,
+}
+
+
+def get_image_size() -> str:
+    """Output resolution for the image model — "1K", "2K" or "4K".
+
+    Split from the model because they trade off independently: the same model
+    at 4K is a different wait and a different bill from the same model at 1K,
+    and a render is the one context where paying that is the point.
+    """
+    _ensure_initialized()
+    size = str(load_ai_config().get("image_size", "1K") or "1K").upper()
+    return size if size in IMAGE_SIZES else "1K"
+
+
+def normalize_aspect_ratio(value: str) -> Optional[str]:
+    """Map a form id or alias onto an API aspect ratio, or None if unknown."""
+    raw = str(value or "").strip().lower().replace(" ", "_")
+    if raw in _ASPECT_ALIASES:
+        return _ASPECT_ALIASES[raw]
+    # Accept "16:9" / "16-9" / "16x9" as the same id.
+    compact = raw.replace("-", ":").replace("x", ":")
+    for allowed in IMAGE_ASPECT_RATIOS:
+        if compact == allowed.lower():
+            return allowed
+    return None
+
+
+def get_image_aspect_ratio() -> str:
+    """Output aspect ratio for stills — one of IMAGE_ASPECT_RATIOS.
+
+    Unset or garbage reads as 4:3 so live play keeps the house style it has
+    always used. Watch's form defaults to 16:9 independently.
+    """
+    _ensure_initialized()
+    got = normalize_aspect_ratio(load_ai_config().get("aspect_ratio", "4:3"))
+    return got or "4:3"
+
+
+def aspect_ratio_options() -> list:
+    """The tight list the Watch desk draws: id is what goes on the wire."""
+    return [
+        {"id": "16:9", "label": "16:9", "title": "Widescreen"},
+        {"id": "21:9", "label": "PHONE",
+         "title": "Phone horizontal · 21:9 landscape",
+         "alias": "phone_horizontal"},
+        {"id": "4:3", "label": "4:3", "title": "Classic"},
+        {"id": "1:1", "label": "1:1", "title": "Square"},
+        {"id": "9:16", "label": "9:16", "title": "Portrait"},
+    ]
+
+
+def model_catalogue(kind: str = "image") -> list:
+    """Every model this build knows about, whether or not it can actually run
+    right now — used to recognize/apply an id (find_model, apply_models) so a
+    model already selected in ai_config.json is never "unknown" just because
+    its key got unset later. Pickers should use available_model_catalogue()
+    instead, which is the subset worth offering.
+
+    Lives in ai_config.json rather than in code so adding a model is an edit to
+    data: the id is what goes on the wire, and the provider rides along with it
+    so choosing a model implies its backend and nothing has to be picked twice.
+    """
+    cat = load_ai_config().get("model_catalogue", {})
+    entries = cat.get(kind, [])
+    return [e for e in entries if isinstance(e, dict) and e.get("id")]
+
+
+# Env var each provider needs its key from, for the ones that need one at all.
+# Gemini has no entry — every build already needs GEMINI_API_KEY just to run
+# the base game, so gating on it here would hide the whole catalogue instead
+# of the handful of entries actually missing a key. Veo rides on the same
+# Gemini credentials (it's a Google model), not a key of its own.
+_PROVIDER_KEY_ENV: Dict[str, str] = {
+    "krea": "KREA_API_KEY",
+    "fal": "FAL_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "veo": "GEMINI_API_KEY",
+}
+
+
+def _provider_available(provider: str) -> bool:
+    """Whether calling this provider would actually do something right now,
+    rather than fail on the first turn for want of a key nobody's set."""
+    env_var = _PROVIDER_KEY_ENV.get(provider)
+    return bool(os.environ.get(env_var)) if env_var else True
+
+
+def available_model_catalogue(kind: str = "image") -> list:
+    """The models a picker should actually offer: model_catalogue(kind),
+    minus entries whose provider needs a key that isn't configured.
+
+    Mock mode is the one exception — nothing there calls a real API, so the
+    whole catalogue is fair game for testing regardless of which keys are set.
+    """
+    entries = model_catalogue(kind)
+    if is_mock_active(kind):
+        return entries
+    return [e for e in entries if _provider_available(e.get("provider", ""))]
+
+
+def find_model(kind: str, model_id: str) -> Optional[Dict[str, Any]]:
+    """The catalogue entry for `model_id`, or None if this build doesn't know it."""
+    for entry in model_catalogue(kind):
+        if entry.get("id") == model_id:
+            return entry
+    return None
+
+
+def model_settings() -> Dict[str, Any]:
+    """The values that decide what a frame costs and how good it looks."""
+    return {
+        "text_provider": get_text_provider(),
+        "text_model": get_text_model(),
+        "image_provider": get_image_provider(),
+        "image_model": get_image_model(),
+        "image_size": get_image_size(),
+        "aspect_ratio": get_image_aspect_ratio(),
+    }
+
+
+def apply_models(image_model: str = None, image_size: str = None,
+                 text_model: str = None, aspect_ratio: str = None) -> Dict[str, Any]:
+    """Point the renderer at specific models. Returns the settings now in force.
+
+    Providers are derived from the catalogue rather than accepted from the
+    caller: a model belongs to exactly one backend, so asking for both is an
+    invitation to send krea-2/large to Gemini. Unknown ids raise instead of
+    being written, because the failure would otherwise land much later, inside
+    a provider call, looking like a broken renderer.
+    """
+    config = load_ai_config()
+    if image_model:
+        entry = find_model("image", image_model)
+        if not entry:
+            raise ValueError(f"unknown image model: {image_model}")
+        config["image_model"] = image_model
+        config["image_provider"] = entry.get("provider") or config.get("image_provider")
+    if image_size:
+        size = str(image_size).upper()
+        if size not in IMAGE_SIZES:
+            raise ValueError(f"unknown image size: {image_size}")
+        config["image_size"] = size
+    if aspect_ratio:
+        mapped = normalize_aspect_ratio(aspect_ratio)
+        if not mapped:
+            raise ValueError(f"unknown aspect_ratio: {aspect_ratio}")
+        config["aspect_ratio"] = mapped
+    if text_model:
+        entry = find_model("text", text_model)
+        if not entry:
+            raise ValueError(f"unknown text model: {text_model}")
+        config["text_model"] = text_model
+        config["text_provider"] = entry.get("provider") or config.get("text_provider")
+    save_ai_config(config)
+    return model_settings()
 
 def set_preset(preset_name: str) -> bool:
     """
@@ -329,8 +492,36 @@ def _mock_chat_response(messages) -> str:
     return _MOCK_NARRATIVE
 
 
+# Marker the identity-sheet filler puts in its prompt so mock vision can return
+# a structured draft instead of the one-line scene caption.
+IDENTITY_DRAFT_MARKER = "IDENTITY_DRAFT_JSON"
+
+_MOCK_CHARACTER_DRAFT = {
+    "name": "Mock Wren",
+    "role": "field researcher",
+    "appearance": "adult in a weathered coat, dark hair, standing on open ground",
+    "wardrobe": "weathered field coat, dark trousers, scuffed boots",
+    "signature_gear": "battered notebook",
+    "demeanor": "quiet, watchful",
+    "backstory": "Came outdoors to see what the horizon was hiding.",
+}
+
+_MOCK_SETTING_DRAFT = {
+    "name": "The Open Ground",
+    "summary": "Outdoors and alive, a wide stretch of ground with no immediate threats visible.",
+    "landmarks": "The far horizon, a distant metal structure",
+    "opening_shot": "A wide view of open ground under a pale sky.",
+    "era": "present day",
+    "palette": "dust, pale sky, worn metal",
+}
+
+
 def _mock_vision_response(prompt: str = "") -> str:
     """Deterministic offline vision response."""
+    text = prompt or ""
+    if IDENTITY_DRAFT_MARKER in text:
+        draft = _MOCK_SETTING_DRAFT if "setting_reference" in text else _MOCK_CHARACTER_DRAFT
+        return json.dumps(draft)
     return "outdoors, alive, no immediate threats visible"
 
 
@@ -393,7 +584,8 @@ def chat(messages, model: Optional[str] = None, temperature: float = 0.7, max_to
 
 
 def vision(image_path: Optional[str] = None, image_data_b64: Optional[str] = None,
-           prompt: str = "Describe this image.", model: Optional[str] = None, **kwargs) -> str:
+           prompt: str = "Describe this image.", model: Optional[str] = None,
+           max_tokens: int = 150, **kwargs) -> str:
     """Unified image->text call. Accepts either a filesystem path
     (`image_path`) or a pre-encoded base64 string (`image_data_b64`)."""
     backend = active_backend("vision")
@@ -420,7 +612,8 @@ def vision(image_path: Optional[str] = None, image_data_b64: Optional[str] = Non
     parts = [{"text": prompt}]
     if image_b64:
         parts.insert(0, {"inlineData": {"mimeType": "image/png", "data": image_b64}})
-    payload = {"contents": [{"parts": parts}], "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}, "temperature": 0.4, "maxOutputTokens": 150}}
+    token_cap = max(32, min(int(max_tokens or 150), 2048))
+    payload = {"contents": [{"parts": parts}], "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}, "temperature": 0.4, "maxOutputTokens": token_cap}}
     try:
         resp = _requests.post(url, headers=headers, json=payload, timeout=20)
         resp.raise_for_status()

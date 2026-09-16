@@ -43,6 +43,11 @@
       "input_per_1k": 0.15,
       "output_per_1k": 0.6
     },
+    "anthropic:claude-sonnet-4-5": {
+      "unit_type": "tokens",
+      "input_per_1k": 3.0,
+      "output_per_1k": 15.0
+    },
     "anthropic:claude-opus-4-5": {
       "unit_type": "tokens",
       "input_per_1k": 15.0,
@@ -92,6 +97,14 @@
     "elevenlabs:talk_agent": {
       "unit_type": "seconds",
       "per_unit": 0.0016
+    },
+    "elevenlabs:music_v2": {
+      "unit_type": "seconds",
+      "per_unit": 0.0025
+    },
+    "elevenlabs:eleven_text_to_sound_v2": {
+      "unit_type": "seconds",
+      "per_unit": 0.002
     },
     "elevenlabs:default": {
       "unit_type": "characters",

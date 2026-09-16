@@ -448,6 +448,16 @@ def get_sessions(sort: str = "cost_desc", limit: int = 50, offset: int = 0) -> D
             conn.close()
 
 
+def session_cost_usd(session_id: str) -> float:
+    """Running provider-cost total for one session. 0 if unknown."""
+    try:
+        detail = get_session_detail(session_id, limit=1)
+        rollup = detail.get("rollup") or {}
+        return float(rollup.get("total_cost_usd") or 0.0)
+    except Exception:
+        return 0.0
+
+
 def get_session_detail(session_id: str, limit: int = 500) -> Dict[str, Any]:
     init_db()
     with _lock:

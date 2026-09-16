@@ -137,6 +137,111 @@ class TestClockAdvances(unittest.TestCase):
         self.assertEqual(engine.advance_time_of_day(""), "")
 
 
+class TestAWorldsProhibitionsAreReadAsProhibitions(unittest.TestCase):
+    """A watch of SOMEWHERE came back with purple lightning in all eight frames,
+    including two shot inside a concrete tunnel, under a world bible whose only
+    sentence about weather is "clear or lightly clouded sky — no storms or
+    thunderclouds at the start".
+
+    Three mechanisms conspired: `'storm' in world_prompt` matched the ban, the
+    resulting beat line rode into every render as "Background context", and the
+    session's rolled weather named lightning outright. These pin the readers."""
+
+    BAN = ("Dusty wind, warm sunlight, clear or lightly clouded sky — no storms "
+           "or thunderclouds. Never depict forests, dense woods, or non-desert biomes.")
+
+    def test_a_ban_is_not_an_assertion(self):
+        for term in ("storms", "thunderclouds", "forests", "dense woods",
+                     "non-desert biomes"):
+            with self.subTest(term=term):
+                self.assertFalse(engine._world_asserts(self.BAN, term))
+
+    def test_what_the_world_does_say_still_reads_as_true(self):
+        for term in ("dusty wind", "warm sunlight", "sky"):
+            with self.subTest(term=term):
+                self.assertTrue(engine._world_asserts(self.BAN, term))
+
+    def test_negation_scope_survives_commas_but_not_sentences(self):
+        # "Never depict forests, dense woods" has to reach across two commas,
+        # while a genuine later mention must not inherit the earlier "never".
+        text = "Never depict forests, dense woods. The forests are burning."
+        self.assertTrue(engine._world_asserts(text, "forests"))
+        self.assertFalse(engine._world_asserts("Never depict forests, dense woods.",
+                                               "dense woods"))
+
+    def test_a_storm_that_actually_breaks_still_fires_the_beat(self):
+        state = {"chaos_level": 0, "player_state": {"alive": True},
+                 "world_prompt": self.BAN + " The sky splits. A storm rolls over the mesa."}
+        self.assertIn("storm", engine.summarize_world_state(state).lower())
+
+    def test_the_ban_alone_never_fires_the_storm_beat(self):
+        state = {"chaos_level": 0, "player_state": {"alive": True},
+                 "world_prompt": self.BAN}
+        self.assertNotIn("storm", engine.summarize_world_state(state).lower())
+
+    def test_a_banned_family_takes_its_whole_family_with_it(self):
+        # The world says "no storms or thunderclouds". It will never think to
+        # also say "no lightning" — but lightning is what got rendered.
+        banned = engine._forbidden_weather(self.BAN)
+        for term in ("storm", "lightning", "thunder", "thunderhead"):
+            with self.subTest(term=term):
+                self.assertIn(term, banned)
+
+    def test_weather_the_world_permits_is_left_alone(self):
+        banned = engine._forbidden_weather(self.BAN)
+        self.assertEqual(engine._named_terms(
+            "7:42pm | weather: dusty haze under bruised twilight | mood: dread",
+            banned), [])
+
+    def test_the_rolled_line_that_broke_the_watch_is_caught(self):
+        banned = engine._forbidden_weather(self.BAN)
+        rolled = "7:14pm | weather: hazy twilight with purple lightning | mood: oppressive isolation"
+        self.assertEqual(engine._named_terms(rolled, banned), ["lightning"])
+
+    def test_the_mood_clause_is_checked_too(self):
+        # The whole string becomes the render's `Lighting:` line, not just the
+        # weather clause, so a "stormy dread" mood is the same leak.
+        banned = engine._forbidden_weather(self.BAN)
+        self.assertEqual(engine._named_terms(
+            "6:45pm | weather: overcast and still | mood: stormy dread", banned),
+            ["stormy"])
+
+    def test_the_shipped_world_bans_the_storm_family(self):
+        # Not a fixture: the prompts the game actually resets on.
+        banned = engine._forbidden_weather(engine._world_constraint_text())
+        self.assertIn("lightning", banned)
+
+
+class TestTheRenderNeverInheritsTheStoryBeat(unittest.TestCase):
+    """summarize_world_state() used to be appended to every image prompt as
+    "Background context". A sentence about something off camera reads as an
+    instruction to an image model, and once it had been drawn, "match the
+    lighting and atmospheric conditions of the previous image" carried the
+    invention to the end of the run — purple lightning in a concrete tunnel.
+
+    A layering rule, asserted on the call graph rather than on a rendered
+    prompt: running `_gen_image_impl` for real needs a session, a stubbed
+    provider and the live identity spec, and leaks all three into whatever
+    test file runs next."""
+
+    def _calls_in(self, fn):
+        import ast
+        import inspect
+        import textwrap
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        return {node.func.id for node in ast.walk(tree)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+
+    def test_the_image_path_does_not_read_the_story_beat(self):
+        self.assertNotIn("summarize_world_state", self._calls_in(engine._gen_image_impl))
+
+    def test_the_image_path_still_gets_its_look_from_the_tone_gloss(self):
+        # The fix is "the beat line goes", not "the world stops reaching the
+        # render" — tone, and only tone, still does.
+        self.assertIn("summarize_world_prompt_for_image",
+                      self._calls_in(engine._gen_image_impl))
+
+
 class TestChaosIsADial(unittest.TestCase):
     """chaos_level was `+= 1` in generate_and_apply_choice — a second turn
     counter, unbounded, that never fell. It is now a decaying average of recent

@@ -157,6 +157,15 @@ class TestPixelDetections(unittest.TestCase):
             out = local_vision.detect(frame_bytes(), scene_prompt="")
         self.assertEqual([o["label"] for o in out], ["figure"])
 
+    def test_a_waist_up_follow_cam_figure_is_not_the_operators_hand(self):
+        """Third-person close-ups clip the followed body at the bottom of the
+        frame — the same geometry the hand guard uses. A person filling half
+        the picture is in the world, not a flashlight grip."""
+        body = (0.28, 0.12, 0.78, 0.99)  # h = 0.87, bottom-clipped
+        with stub_boxes(("person", 0.8, body)):
+            out = local_vision.detect(frame_bytes(), scene_prompt="")
+        self.assertEqual([o["label"] for o in out], ["figure"])
+
     def test_pinpoint_boxes_are_rejected_as_tape_noise(self):
         with stub_boxes(("person", 0.23, (0.783, 0.981, 0.800, 0.998))):
             out = local_vision.detect(frame_bytes(), scene_prompt="")
