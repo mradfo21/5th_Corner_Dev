@@ -2112,6 +2112,12 @@
       clearTimeout(ceiling);
       try { console.log("[opening] fading up on " + (reason || "?")); } catch (_) {}
       document.body.classList.remove("opening-blackout");
+      // The first turn's deadline starts NOW, not when the montage was
+      // requested. Everything before this beat was the opening playing, which
+      // the player was watching rather than waiting on.
+      try {
+        if (state.awaitingResolution) armTurnWatchdog();
+      } catch (_) {}
     }
 
     function isHolding() { return holding; }
@@ -16164,8 +16170,20 @@
   }
   function armTurnWatchdog(extension) {
     clearTurnWatchdog();
-    const ext = extension || 0;
-    const ms = encounterBusy() ? 120000 : TURN_WATCHDOG_MS;
+    // Coerced on purpose. One caller passed (choiceText, contextItemId) into a
+    // slot that means "extension count", so `ext` became a string; the liveness
+    // check below compares it with `<`, string-versus-number is never true, and
+    // the extension ladder that exists precisely to stop the watchdog
+    // interrupting a slow-but-alive turn was dead. That is why "the world
+    // hesitated" kept landing on turns that then arrived anyway.
+    const ext = Number(extension) || 0;
+    // The opening is not a turn the player is waiting on: it is a montage, and
+    // while the screen is deliberately black there is nothing to recover TO.
+    // Since the 4K montage the opening takes ~45-60s on its own, which walked
+    // straight into this deadline.
+    let holding = false;
+    try { holding = OpeningFade.isHolding(); } catch (_) {}
+    const ms = (encounterBusy() || holding) ? 120000 : TURN_WATCHDOG_MS;
     const armedAtId = state.lastId; // liveness baseline, see above
     state.turnWatchdog = setTimeout(async () => {
       state.turnWatchdog = null;
@@ -16236,7 +16254,7 @@
     }
     state.awaitingResolution = true;
     state.lastTurnTs = Date.now(); // pre-warm defers around the turn
-    armTurnWatchdog(choiceText, contextItemId);
+    armTurnWatchdog();
     // IMMEDIATE WORLD STEER: the live world model starts reacting to the chosen
     // action right away (see the steer block just below the act-frame capture),
     // so the world "travels" without waiting on the consequence + choice LLM

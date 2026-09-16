@@ -228,6 +228,16 @@ CAMERA = r"""
 # turned it into a 153s STUCK on a run that was perfectly alive.
 READ_ONLY_ACTIONS = {"photo"}
 
+# Console output that says something true about the machine or the account rather
+# than about the code. Reactor answering 402 credits_depleted is the standing
+# example: the client handles it correctly (terminal, straight to stills), but the
+# browser logs the failed request regardless, so it turned up in every run's
+# console-error list and trained the reader to ignore that list.
+ENVIRONMENT_NOISE = re.compile(
+    r"\b402\b|credits?[_\s-]?depleted|no available capacity|payment required",
+    re.I,
+)
+
 
 def do_photo(page, log, findings=None, attempts=2):
     """Actually take a photograph: raise, aim, and click the shutter.
@@ -386,7 +396,13 @@ def start_run(page, log):
     while time.time() - t0 < TURN_TIMEOUT:
         time.sleep(1.5)
         s = page.evaluate(STATE)
-        if s["prose"] and not s["gated"]:
+        # "Playable" has to mean the player can SEE something. Prose arriving is
+        # not enough now that the opening deliberately holds a black screen until
+        # the first picture is ready — at 4K that hold is a minute, and treating
+        # the turn as playable during it made every run screenshot pure black and
+        # file the intended behaviour as a black-screen fault.
+        blacked_out = "opening-blackout" in (s.get("cls") or "")
+        if s["prose"] and not s["gated"] and not blacked_out:
             log(f">>> turn 1 playable after {time.time() - t0:.1f}s"
                 + (f" ({black} black samples while loading)" if black else "")
                 + (f" [{held} of them the opening blackout, by design]" if held else ""))
@@ -1015,12 +1031,24 @@ def main():
         for e in errors:
             if e not in uniq:
                 uniq.append(e)
-        if uniq:
+        # An empty Reactor balance is a real fact about the account, not a defect
+        # in the build: the client already classifies it as terminal and falls
+        # back to stills immediately. Reported separately because the browser's
+        # own "Failed to load resource: 402" cannot be suppressed, and left in the
+        # main list it appeared on every single run — which is exactly how a
+        # genuine console error gets skimmed past.
+        env = [e for e in uniq if ENVIRONMENT_NOISE.search(e or "")]
+        real = [e for e in uniq if e not in env]
+        if real:
             log("\nCLIENT CONSOLE ERRORS:")
-            for e in uniq[:12]:
+            for e in real[:12]:
                 log(f"  {a(e)}")
         else:
             log("no client console errors")
+        if env:
+            log("\nENVIRONMENT (not a code fault):")
+            for e in env[:4]:
+                log(f"  {a(e)[:200]}")
 
     with open(os.path.join(SHOTS, "REPORT.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines))

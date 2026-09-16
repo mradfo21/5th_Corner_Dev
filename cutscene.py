@@ -64,19 +64,25 @@ MOODS: Dict[str, Dict[str, Any]] = {
     # outside" or "open ground". An indoor level also gets an approach (down the
     # length of the space toward the far door), and naming the outdoors here
     # contradicted the indoor/outdoor clause the prompt adds below it.
-    # The opening montage. Three of these four shots deliberately have NOBODY in
-    # them and are not the same moment as each other — see OPENING_IS_DISCONTINUOUS
-    # in build_cutscene_prompt. The old version was four angles on one continuous
-    # walk-in, all containing the character, and it played as the same shot four
-    # times with the figure sliding around: repetitive, and it gave the model four
-    # chances to redraw the protagonist badly.
+    # The opening montage. ALL FOUR generated panels are empty of people, and the
+    # montage then cuts to the level's own plate as a fifth and final beat — see
+    # the tail of generate_shots.
     #
-    # The grammar borrowed here is the arthouse cold open: hold on landscape,
-    # hold on a detail, hold on an empty built thing, and only then cut to the
-    # person. Unrelated scales and subjects, no implied continuity, no motion —
-    # each one is a photograph that establishes the place and its dread. Panel 4
-    # is the only one that carries the character, and it is the composition the
-    # game continues from, so it is the one that has to be exactly right.
+    # Two rounds of live renders got it here. Four angles on one continuous
+    # walk-in (the original) played as the same shot repeated with the figure
+    # sliding around inside it. Making three empty and asking for the character in
+    # the fourth was better, but the model would not draw that fourth panel
+    # correctly: it came back as a front-facing portrait, then as a side-on
+    # medium, with the wardrobe drifting each time — and because the last panel is
+    # the frame the run continues from, a wrong one poisons every later frame.
+    #
+    # So the montage stopped asking. The composition the game needs already
+    # exists as the level plate, drawn by the pipeline that knows the follow-cam
+    # rules, so the last beat IS that plate. The model does what it is reliably
+    # good at (unpeopled establishing photographs) and nothing else.
+    #
+    # The grammar is the arthouse cold open: scale, texture, emptiness, absence —
+    # unrelated distances and subjects, no implied continuity, nothing happening.
     "approach": {
         "label": "Approach",
         "hint": "A cold open on this place. Nobody until the last frame.",
@@ -101,24 +107,20 @@ MOODS: Dict[str, Dict[str, Any]] = {
              "this place, standing empty — architecture as portrait, deadpan and "
              "frontal, nobody in it and nothing happening. The emptiness is the "
              "subject"),
-            # Camera id stays "threshold": this panel becomes history[0], and it
-            # is the settled composition play starts from.
-            # The camera language here is deliberately the same discipline the
-            # main image pipeline uses, because this panel becomes the first
-            # playable frame and the game is a third-person follow-cam. Left to
-            # itself the model returns a front-facing portrait — it did, and the
-            # run then opened on a face-on shot the rest of the game never uses.
-            ("threshold", "The character",
-             "THIS PANEL HAS THE CHARACTER IN IT. Third-person follow-cam, shot "
-             "FROM BEHIND: the camera is several metres behind the player "
-             "character at chest height, looking over their back into the place "
-             "they face. We see the BACK of their head and shoulders; the location "
-             "opens up in the depth in front of them. Full body, reading about a "
-             "third to a half of the frame height. NOT a portrait. NOT facing the "
-             "lens, NOT looking at camera, NOT walking toward camera, no face-on "
-             "reverse — a sliver of cheek in profile is the most face this panel "
-             "may show. A settled, held, level composition: the exact frame the "
-             "story starts from and continues in"),
+            # Absence, not arrival. The character does not appear in any generated
+            # panel; the montage cuts to the level plate after these four.
+            #
+            # This brief used to describe "the evidence that people were here and
+            # are not now", and the render answered with a pair of legs and boots
+            # standing in the dirt. Naming people at all — even to say they are
+            # gone — puts a person in the frame. So the subject is stated purely as
+            # objects, and the ban names the parts that actually turned up.
+            ("leftovers", "What was left",
+             "NO PEOPLE. A held frame low on the ground: tyre tracks pressed into "
+             "dust, scattered litter and broken board, a door standing open onto "
+             "darkness, a chair facing nothing. Objects and ground only. NO legs, "
+             "NO feet, NO boots, NO hands, NO shadow of a figure, nothing alive "
+             "anywhere in the frame"),
         ),
     },
     "arrival": {
@@ -395,11 +397,13 @@ def build_cutscene_prompt(
             "landscape, one is a macro detail, one is a frontal architectural "
             "wide. They belong together because they are the same place and the "
             "same light, not because they are the same instant.\n"
-            "PANELS 1, 2 AND 3 ARE COMPLETELY EMPTY OF PEOPLE — no figure, no "
-            "face, no back, no hands, no silhouette, no crowd, nobody in the "
-            "distance. If a person appears in panels 1-3 the render has failed.\n"
-            "PANEL 4 IS THE ONLY PANEL WITH A PERSON IN IT, and it is the shot the "
-            "game continues from, so it must be the cleanest of the four."
+            "ALL FOUR PANELS ARE COMPLETELY EMPTY OF PEOPLE — no figure, no face, "
+            "no back, no hands, no legs, no feet, no boots, no silhouette, no "
+            "shadow of a person, no crowd, nobody in the distance, nobody "
+            "reflected in anything. A cropped body part is still a person: a pair "
+            "of legs at the edge of frame fails this. These are photographs of a "
+            "place with nobody in it; the person arrives after this montage, in a "
+            "shot that is not yours to draw."
         )
     else:
         bits.append(
@@ -457,12 +461,10 @@ def build_cutscene_prompt(
         bits.append(f"Panel {i} — {_cell_name(i)} ({label}): {instruction}.")
     if opening:
         bits.append(
-            f"PANEL PLACEMENT IS NOT INTERCHANGEABLE. Each instruction belongs to "
-            f"the cell it names and nowhere else. In particular the "
-            f"{_cell_name(len(pack['shots']))} panel is the one with the character "
-            f"in it — it is the frame the game continues from — and the other three "
-            f"cells are the empty ones. Putting the character in any other cell, or "
-            f"a detail in that one, is a failed render."
+            "PANEL PLACEMENT IS NOT INTERCHANGEABLE. Each instruction belongs to "
+            "the cell it names and nowhere else — a render that draws all four "
+            "subjects correctly but puts them in the wrong cells is a failed "
+            "render, because the panels are cut apart and shown in that order."
         )
     bits.append(
         "A finished 1993 photograph in each panel. Empty hands, no text, "
@@ -670,6 +672,34 @@ def generate_shots(
             "camera": shot["camera"],
             "label": shot["label"],
         })
+
+    # The opening ends on the plate itself, as a fifth beat.
+    #
+    # This is the frame the run continues from: _finish_opening_montage takes
+    # shots[-1] and writes it into history as the opening handoff, and turn one
+    # does img2img off it. Asking the model for that composition did not work —
+    # the panel came back as a front-facing portrait, then a side-on medium, with
+    # the wardrobe drifting — and a wrong frame there is not a cosmetic problem,
+    # it is the seed for every later frame in the run.
+    #
+    # The plate is already the right composition, drawn by the pipeline that
+    # knows the follow-cam rules and locked to the character reference. Ending on
+    # it makes the montage-to-play cut exact by construction rather than by
+    # persuasion, and it costs nothing: the file already exists.
+    #
+    # Note this does NOT undo the earlier decision that the plate must not open
+    # the run (see _stage_opening_montage, which keeps it out of the feed). The
+    # objection there was to the FIRST thing a player sees being a frame nobody
+    # shot for this run. Arriving on it after four photographs of the empty place
+    # is the opposite: it is the shot the montage has been withholding.
+    if plate_role == "destination" and payload_shots:
+        payload_shots.append({
+            "url": _to_web(source_path, session_id),
+            "path": str(source_path),
+            "camera": "threshold",
+            "label": "The place, as you find it",
+        })
+
     return {
         "source": used,
         "mood": mood,

@@ -9365,7 +9365,12 @@ def _cached_opening_frame(new_state: dict) -> tuple:
     # drawn from the prompts this run is about to use.
     if not world_frames.drawn_from_live(rec):
         print(f"[WORLD FRAMES] not opening on {slug}'s cached frame — it was "
-              f"drawn from different prompts; rendering this run's own",
+              f"drawn from different prompts; rendering this run's own. "
+              f"NOTE: this also means NO OPENING MONTAGE this run — the montage "
+              f"is drawn from the cached plate and there isn't a usable one yet. "
+              f"The intro about to render installs a correct plate, so the next "
+              f"run gets its cutscene. Expected for one run after editing a "
+              f"world; not a cutscene fault.",
               flush=True)
         # Deliberately no ensure() here: it would re-render from the snapshot,
         # i.e. the wrong hero again. The intro about to run installs the right

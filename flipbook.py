@@ -293,7 +293,20 @@ def grid_prompt(frames, seconds: float = 2.0) -> str:
     return (
         f"OUTPUT FORMAT: a single image containing a {rows}x{cols} grid of "
         f"{frames} panels, all the same size.\n\n"
+        # Stated here as well as at the end, because it kept losing. Panels came
+        # back with "T=0s" and "1+6 sec" burned into the corner: the instruction
+        # talks about time advancing and hands the model a diagram with numbers
+        # sitting inside cells, and it read both as things to draw. A ban 3000
+        # characters later did not survive that. Say it before the diagram, and
+        # say what the diagram is, immediately after it.
+        f"NO TEXT IS DRAWN IN THIS IMAGE. Not a timecode, not a clock, not "
+        f"\"T=0s\", not a duration, not a frame number, not a panel label, not a "
+        f"caption, not a watermark. The panels contain photographed scene and "
+        f"nothing else.\n\n"
         f"{diagram}\n\n"
+        f"The numbers in that diagram tell YOU which cell is which. They are a "
+        f"key to this instruction and they are NOT part of the picture — do not "
+        f"draw them, or anything like them, anywhere in the render.\n\n"
         f"{order} Panel 1 is the earliest moment, panel {frames} is the "
         f"latest. TIME ADVANCES across the panels: they carry the action from "
         f"where the reference image left off through to its completion, and by "
