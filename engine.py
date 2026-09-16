@@ -2677,16 +2677,14 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
                 # Use pre-downsampled version if available (saves processing time)
                 small_path = actual_path.parent / actual_path.name.replace(".png", "_small.png")
                 use_path = small_path if small_path.exists() else actual_path
-                
-                with open(use_path, "rb") as f:
-                    image_data = base64.b64encode(f.read()).decode('utf-8')
-                
-                parts.insert(0, {
-                    "inlineData": {
-                        "mimeType": "image/png",
-                        "data": image_data
-                    }
-                })
+
+                # Compact JPEG attach (falls back to raw bytes on any error).
+                _img_part = _encode_image_inline_part(use_path)
+                if _img_part is None:
+                    with open(use_path, "rb") as f:
+                        image_data = base64.b64encode(f.read()).decode('utf-8')
+                    _img_part = {"inlineData": {"mimeType": "image/png", "data": image_data}}
+                parts.insert(0, _img_part)
                 size_note = "(480x360, 4:3)" if small_path.exists() else "(full-res)"
                 print(f"[GEMINI TEXT+IMG] Including image: {image_path} {size_note}")
         
@@ -3035,6 +3033,45 @@ def _sniff_image_mime(path) -> str:
     return "image/png"
 
 
+def _encode_image_inline_part(path) -> Optional[dict]:
+    """Build a Gemini `inlineData` part for an image path.
+
+    Four multimodal attachments ride the turn's critical path (the previous
+    frame on the consequence call, the new frame on the vision read, the choice
+    call, and the critic when it runs). Each is a 480x360 sidecar; re-encoding
+    to JPEG shrinks the upload several-fold versus PNG for the same content.
+    Falls back to the raw file bytes with a sniffed MIME on ANY error, so a
+    decode problem never drops the image entirely. Returns None only when the
+    file itself cannot be read."""
+    import base64 as _b64
+    try:
+        p = Path(path)
+        raw = p.read_bytes()
+    except Exception:
+        return None
+    try:
+        import io
+        from PIL import Image
+        with Image.open(io.BytesIO(raw)) as im:
+            if im.mode not in ("RGB", "L"):
+                im = im.convert("RGB")
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=85)
+            data = buf.getvalue()
+        # Only prefer JPEG when it is actually smaller (it essentially always is
+        # for these PNG sidecars; a tiny image could round the other way).
+        if data and len(data) < len(raw):
+            return {"inlineData": {"mimeType": "image/jpeg",
+                                   "data": _b64.b64encode(data).decode("utf-8")}}
+    except Exception:
+        pass
+    try:
+        return {"inlineData": {"mimeType": _sniff_image_mime(p),
+                               "data": _b64.b64encode(raw).decode("utf-8")}}
+    except Exception:
+        return None
+
+
 def _detect_scene_prior(st) -> str:
     """Label hint for SCAN / detect — must describe the on-screen frame.
 
@@ -3128,15 +3165,20 @@ def _vision_analyze_all(image_path: str) -> dict:
                 _vision_cache[cache_key] = stored
                 return stored
         
-        with open(use_path, "rb") as f:
-            image_bytes = f.read()
-        image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+        # Attach the frame as a compact JPEG part (falls back to the raw bytes
+        # on any decode error). This is the read on the turn's critical path, so
+        # the smaller upload shaves real wall-clock.
+        _img_part = _encode_image_inline_part(use_path)
+        if _img_part is None:
+            # Last-resort: keep the original raw-bytes attach so a decode failure
+            # never drops the frame.
+            with open(use_path, "rb") as f:
+                image_bytes = f.read()
+            _img_part = {"inlineData": {"mimeType": _sniff_image_mime(use_path),
+                                        "data": base64.b64encode(image_bytes).decode('utf-8')}}
         
         if small_path.exists():
             print(f"[VISION] Using pre-downsampled image (480x360, 4:3)")
-        
-        # Determine MIME type from bytes — observed_*.png files are often JPEG.
-        mime_type = _sniff_image_mime(use_path)
         
         # Use Gemini vision API - ONE call for everything
         print(f"[VISION] Analyzing {os.path.basename(image_path)} (all-in-one)...")
@@ -3179,12 +3221,7 @@ Describe ONLY what is actually in this image. Do not assume a desert, a facility
             "contents": [{
                 "parts": [
                     # IMAGE FIRST per Gemini best practices for single-image prompts
-                    {
-                        "inlineData": {
-                            "mimeType": mime_type,
-                            "data": image_b64
-                        }
-                    },
+                    _img_part,
                     {"text": vision_prompt}
                 ]
             }],
@@ -8344,6 +8381,18 @@ def extract_scene_elements(*args):
         nouns.add(w.lower())
     return nouns
 
+# Safety cap on how long a turn will wait to join its deferred world-evolution
+# thread. On the normal path evolve overlaps the ~6s render and is already done,
+# so the join is instant; this only bounds a genuinely hung evolve (whose own
+# HTTP calls time out well inside this) so it can never wedge the turn forever.
+EVOLVE_JOIN_TIMEOUT = float(os.getenv("EVOLVE_JOIN_TIMEOUT", "25"))
+
+# Safety cap on how long Phase 2 waits to join its parallel frame-read thread
+# before writing the history entry. The read's own HTTP call times out at 30s,
+# so this only bounds a genuinely hung request; normally it is already done.
+VISION_JOIN_TIMEOUT = float(os.getenv("VISION_JOIN_TIMEOUT", "35"))
+
+
 # RENAMED from advance_turn
 def _latest_history_image_path(session_id: str = "default") -> str:
     """Filesystem path of the newest history still, if it still exists."""
@@ -8406,7 +8455,10 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             pass
 
     if pacing:
-        time.sleep(0.75)  # brief pacing delay so the client renders the action first
+        # Brief pacing delay so the client paints the action line before the
+        # turn's work lands. 0.25s is enough for that repaint; the old 0.75s
+        # was pure dead time on the critical path.
+        time.sleep(0.25)
 
     SID = session_id
     # Serialize this session's ENTIRE turn pipeline (world update, scene
@@ -8414,6 +8466,16 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
     # The slate is derived from the new frame, so the render stays on this
     # path instead of racing ahead of the choices.
     with TURN_LOCK:
+        # Handle to this turn's deferred world-evolution thread. Joined before
+        # Phase 2 (so the choice phase reads the EVOLVED world_prompt /
+        # seen_elements, never the pre-turn values) and again in `finally` so
+        # evolution never outlives the turn that spawned it.
+        evolve_thread = None
+        # Per-stage wall-clock (ms) for the turn-timing play_log event. usage.db
+        # never records latency for operation=ask, so this is the only measured
+        # split of consequence / image / evolve / vision / choices per turn.
+        _turn_t0 = time.time()
+        _turn_timings: dict = {}
         try:
             # ── STORY ESCALATION + FATE ──
             # Drive the risk backend BEFORE the consequence generates, so the rising
@@ -8463,10 +8525,20 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             except Exception:
                 pass
 
-            # ── PHASE 1: camera beat + blocking world update (NO image yet) ──
-            # Evolve must finish before the frame, or the picture improvises
-            # against a stale novel. The frame then derives the slate.
-            p1 = advance_turn_image_fast(choice, fate=turn_fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=False, interaction=is_interaction, local_only=True, subject=(subject or ""), is_move=is_move, escalated=bool(dyn.get("escalated")), is_custom_action=is_custom_action)
+            # ── PHASE 1: camera beat + NO image, evolution deferred to a thread ──
+            # The consequence LLM writes visual_scene; the still is composed from
+            # THAT, not from the evolved world document — so world evolution no
+            # longer blocks the frame. defer_evolve=True runs it on a thread that
+            # OVERLAPS the render below; it is joined before Phase 2 reads
+            # world_prompt / seen_elements, so those stay fresh (see the join
+            # before advance_turn_choices_deferred). skip_evolve stays False: this
+            # is a deferred-but-joined evolve, not a fire-and-forget one.
+            _t_conseq = time.time()
+            p1 = advance_turn_image_fast(choice, fate=turn_fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=False, interaction=is_interaction, local_only=True, subject=(subject or ""), is_move=is_move, escalated=bool(dyn.get("escalated")), is_custom_action=is_custom_action, defer_evolve=True)
+            _turn_timings["consequence_ms"] = int((time.time() - _t_conseq) * 1000)
+            # World evolution is now in flight on this thread, running in parallel
+            # with the scene render. Joined before the choice phase.
+            evolve_thread = p1.get("_evolve_thread")
             turn_state = _load_state(SID)
             _sync_ambient_state(turn_state, SID)
 
@@ -8619,6 +8691,9 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             hard_cut = bool(p1.get("hard_transition", False))
             if source == "encounter" and encounter_released:
                 hard_cut = True
+            # The render is where world evolution overlaps: evolve_thread is in
+            # flight while this ~6s call runs, so joining it afterward is ~free.
+            _t_img = time.time()
             if skip_image:
                 scene = None
                 img_path = _latest_history_image_path(SID)
@@ -8641,6 +8716,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 _sync_ambient_state(turn_state, SID)
                 img_path = (scene or {}).get("img_path") or ""
                 img_prompt = (scene or {}).get("image_prompt") or ""
+            _turn_timings["image_ms"] = int((time.time() - _t_img) * 1000)
 
             # Survive / wounded stay locked. The world just evolved through
             # the same pipeline as MOVE TO / a typed action. The Moment
@@ -8697,11 +8773,40 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     }
                 return held
 
+            # Join world evolution BEFORE Phase 2 so the choice generator and the
+            # history entry it writes both read the evolved world_prompt /
+            # seen_elements — not the pre-turn values. It has been overlapping the
+            # render, so on the normal path this returns immediately.
+            _t_evolve = time.time()
+            if evolve_thread is not None:
+                try:
+                    evolve_thread.join(timeout=EVOLVE_JOIN_TIMEOUT)
+                except Exception:
+                    pass
+                evolve_thread = None
+            _turn_timings["evolve_join_ms"] = int((time.time() - _t_evolve) * 1000)
+
+            _t_p2 = time.time()
             p2 = advance_turn_choices_deferred(
                 img_path, vision_dispatch_text, vision_dispatch_text, choice,
                 img_prompt, p1.get("hard_transition", False), SID, local_only=True,
                 pregenerated_choices=[],
             )
+            _turn_timings["phase2_ms"] = int((time.time() - _t_p2) * 1000)
+            # Fold in the finer Phase-2 split (vision / choices / critic) so the
+            # timing event has every stage, not just the phase2 total.
+            try:
+                _p2_timing = p2.get("_timing") if isinstance(p2, dict) else None
+                if isinstance(_p2_timing, dict):
+                    _turn_timings.update(_p2_timing)
+            except Exception:
+                pass
+            _turn_timings["turn_total_ms"] = int((time.time() - _turn_t0) * 1000)
+            try:
+                import play_log as _play_log
+                _play_log.record("turn_timing", SID, {"source": source, **_turn_timings})
+            except Exception:
+                pass
             turn_state = _load_state(SID)
             _sync_ambient_state(turn_state, SID)
 
@@ -8761,6 +8866,16 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     _sync_ambient_state(current_state_for_err, SID)
             except Exception as e_final_log:
                 log_error(f"Could not even log critical error to feed_log: {e_final_log}")
+        finally:
+            # Never let a deferred world-evolution thread outlive the turn that
+            # spawned it (early returns on the death / encounter-held paths reach
+            # here too). On the normal path it was already joined before Phase 2,
+            # so this is a no-op there.
+            if evolve_thread is not None:
+                try:
+                    evolve_thread.join(timeout=EVOLVE_JOIN_TIMEOUT)
+                except Exception:
+                    pass
     # Thread callers ignore the return. Sync encounter-hold reads it for the
     # next Moment slate. State is always persisted to disk regardless.
 
@@ -9134,10 +9249,16 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
     ).start()
 
 
-def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispatch: str):
-    """Run world evolution off the turn's critical path. evolve_world_state is
-    read-only; we merge only the world fields under lock so a concurrent feed
-    write is never clobbered. Affects the next turn's world_prompt."""
+def _spawn_evolve_thread(session_id: str, consequence_summary: str,
+                         vision_dispatch: str) -> "threading.Thread":
+    """Run world evolution on a daemon thread and RETURN the thread handle.
+
+    evolve_world_state is read-only against live state; the worker merges only
+    the world fields under WORLD_STATE_LOCK with a fresh reload-inside-lock, so
+    a concurrent scene-image write (which touches disjoint keys the same way)
+    is never clobbered. Affects only the NEXT turn's world_prompt / seen_elements,
+    so the caller can let it OVERLAP the scene render and then join it before the
+    choice phase reads those fields — see _process_turn_background."""
     def _worker():
         global state
         try:
@@ -9165,7 +9286,15 @@ def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispat
         except Exception as e:
             log_error(f"[ASYNC EVOLVE] failed: {e}")
 
-    threading.Thread(target=_worker, daemon=True).start()
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    return t
+
+
+def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispatch: str):
+    """Fire-and-forget world evolution off the turn's critical path (the bot /
+    skip_evolve path, which does not join). Affects the next turn's world_prompt."""
+    _spawn_evolve_thread(session_id, consequence_summary, vision_dispatch)
 
 
 # Ensure generate_intro_turn_feed_items is defined AFTER _structure_choices_for_feed
@@ -15681,7 +15810,7 @@ def _phase_escalation_beat(phase: str) -> str:
     return random.choice(beats) if beats else ""
 
 # ───────── game loop ──────────────────────────────────────────────────────────
-def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False, skip_evolve: bool = False, interaction: bool = False, local_only: bool = False, subject: str = "", is_move: bool = False, escalated: bool = False, is_custom_action: bool = False) -> dict:
+def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False, skip_evolve: bool = False, interaction: bool = False, local_only: bool = False, subject: str = "", is_move: bool = False, escalated: bool = False, is_custom_action: bool = False, defer_evolve: bool = False) -> dict:
     """
     PHASE 1 (FAST): Generate dispatch and image, return immediately.
 
@@ -15689,6 +15818,13 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
     skip_evolve=True  -> run the world-evolution rewrite in the background
                          (it only affects the next turn), so the turn's
                          narrative + choices return fast.
+    defer_evolve=True -> run the world-evolution rewrite on a thread and return
+                         its handle in the result dict under "_evolve_thread",
+                         WITHOUT blocking on it here. The web caller starts the
+                         scene render, lets evolve overlap it, then joins the
+                         thread before the choice phase reads world_prompt /
+                         seen_elements (see _process_turn_background). Ignored
+                         when skip_evolve is set.
     subject           -> the detection label the player tapped to issue this
                          action, if any. Required to survive into this turn's
                          `visual_scene` — see the OBJECT PERMANENCE block.
@@ -15833,7 +15969,17 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         # developing. The dummy summarize_world_state_diff string is not the
         # evolve input.
         consequence_summary = dispatch or vision_dispatch
-        if skip_evolve:
+        _deferred_evolve_thread = None
+        if defer_evolve and not skip_evolve:
+            # Web path: run world evolution on a thread so it OVERLAPS the scene
+            # render the caller is about to do. evolve only changes the NEXT
+            # turn's world_prompt / seen_elements — never this turn's still,
+            # which is composed from visual_scene — so the caller joins the
+            # returned handle before Phase 2 reads those fields. Same read-
+            # inside-lock merge as the async path; no feed_log clobber.
+            _deferred_evolve_thread = _spawn_evolve_thread(
+                session_id, consequence_summary, vision_dispatch)
+        elif skip_evolve:
             # Feed path: run the (slow, ~1k-token) world evolution in the
             # background so the turn's narrative + choices return fast. It only
             # affects the NEXT turn's world_prompt. evolve_world_state is
@@ -16010,6 +16156,10 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "degraded": degraded,
             "frame_idx": frame_idx,  # for async image generation on the feed path
             "provisional_choices": provisional_choices,  # next-action options from the same LLM call (may be empty)
+            # Handle to the deferred world-evolution thread (defer_evolve=True),
+            # or None. The caller joins this before the choice phase reads
+            # world_prompt / seen_elements — see _process_turn_background.
+            "_evolve_thread": _deferred_evolve_thread,
             "evolution_summary": state.get("evolution_summary", ""),  # Include world changes
             "phase": state["current_phase"],
             "chaos": state["chaos_level"],
@@ -16071,86 +16221,51 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
     history = None
     state = _load_state(session_id)
     
-    # --- FLIPBOOK GROUNDING ---
-    # If flipbook mode is on, analyze BOTH first and last frames for better context
+    # --- FRAME TO READ ---
+    # The rendered frame is the source of truth for the NEXT turn's spatial
+    # anchor. For a flipbook turn the LAST panel is where the action ended, so
+    # that is the only frame worth reading — the first panel is just where the
+    # player already was, and analyzing it too was a second sequential vision
+    # call for context the slate no longer consumes.
     analysis_img_url = consequence_img_url
-    flipbook_first = None
-    flipbook_last = None
-    
-    # flipbook_settings is the one answer to "is this a flipbook turn" — reading
-    # the raw session key here ignored the global knob and, once the key is left
-    # unset, would have skipped grounding on a turn that really did draw one.
     if flipbook_settings(state)["enabled"]:
-        flipbook_first = state.get('flipbook_first_frame')
-        flipbook_last = state.get('flipbook_last_frame')
-        if flipbook_last and os.path.exists(flipbook_last):
-            print(f"[VISION] Flipbook mode - will analyze first and last frames")
-            analysis_img_url = flipbook_last  # Primary analysis uses last frame
+        _fb_last = state.get('flipbook_last_frame')
+        if _fb_last and os.path.exists(_fb_last):
+            print(f"[VISION] Flipbook mode - reading the LAST panel only")
+            analysis_img_url = _fb_last
 
-    # The new frame is the source of truth, so LOOK at it before building the
-    # slate. vision_dispatch is only the fallback: it is the caption the image
-    # model was ASKED to draw, and a render that answered with barrels where we
-    # asked for a crate would otherwise never be noticed — the slate, the
-    # situation report, and the critic's grounding check all read this string.
+    # vision_dispatch is the fallback caption (what the image model was ASKED to
+    # draw); the real read overwrites it once it lands.
     vision_analysis_text  = (vision_dispatch or "").strip()
     _spatial_compass_turn = ""   # directional compass: ahead/left/right/ground/height
     _setting_type_turn    = ""   # environment type: outdoor-desert, indoor-corridor, etc.
 
-    if analysis_img_url and VISION_ENABLED:
-        # Analyze BOTH frames if flipbook mode
-        if flipbook_first and flipbook_last and os.path.exists(flipbook_first) and os.path.exists(flipbook_last):
-            print(f"[VISION] Analyzing FIRST frame: {os.path.basename(flipbook_first)}")
-            try:
-                first_result = _vision_analyze_all(flipbook_first)
-                first_desc   = first_result.get("description", "")
-                print(f"[VISION] First frame: {first_desc[:80]}...")
-            except Exception as e:
-                print(f"[VISION] First frame analysis failed: {e}")
-                first_desc = ""
+    # Read the frame on a BACKGROUND thread so it OVERLAPS choice generation
+    # below. The slate is grounded on the attached frame itself, so it does not
+    # need to wait on the vision TEXT — the text only feeds this turn's
+    # situation_report and the NEXT turn's spatial anchor (the history entry),
+    # both of which are consumed AFTER the join further down. This is the
+    # "picture on screen, buttons a beat later" wait the plan removes: vision no
+    # longer sits in series in front of the choice call.
+    _vision_holder = {"description": "", "spatial": "", "setting": ""}
+    _vision_ms = {"ms": 0}
 
-            print(f"[VISION] Analyzing LAST frame: {os.path.basename(flipbook_last)}")
-            try:
-                last_result = _vision_analyze_all(flipbook_last)
-                last_desc   = last_result.get("description", "")
-                # Spatial compass comes from the LAST frame (most current position)
-                _spatial_compass_turn = last_result.get("spatial", "")
-                _setting_type_turn    = last_result.get("setting", "")
-                print(f"[VISION] Last frame: {last_desc[:80]}...")
-                if _spatial_compass_turn:
-                    print(f"[VISION] Spatial compass (last frame): {_spatial_compass_turn[:80]}...")
-            except Exception as e:
-                print(f"[VISION] Last frame analysis failed: {e}")
-                last_desc = ""
+    def _run_vision():
+        if not (analysis_img_url and VISION_ENABLED):
+            return
+        _vt0 = time.time()
+        try:
+            r = _vision_analyze_all(analysis_img_url)
+            _vision_holder["description"] = (r.get("description") or "").strip()
+            _vision_holder["spatial"]     = r.get("spatial", "") or ""
+            _vision_holder["setting"]     = r.get("setting", "") or ""
+        except Exception as e:
+            print(f"[VISION] Analysis failed: {e} — keeping the render caption")
+        finally:
+            _vision_ms["ms"] = int((time.time() - _vt0) * 1000)
 
-            # Combine both descriptions
-            if first_desc and last_desc:
-                vision_analysis_text = f"ANIMATION CONTEXT:\nStarting position: {first_desc}\nEnding position: {last_desc}"
-            elif last_desc:
-                vision_analysis_text = last_desc
-            elif first_desc:
-                vision_analysis_text = first_desc
-
-            print(f"[VISION] Combined flipbook analysis complete")
-        else:
-            # Single frame analysis (static image or only last frame available)
-            print(f"[VISION] Analyzing image for spatial context (source: {'flipbook' if analysis_img_url != consequence_img_url else 'static'})...")
-            try:
-                vision_result         = _vision_analyze_all(analysis_img_url)
-                _rendered_desc        = (vision_result.get("description") or "").strip()
-                _spatial_compass_turn = vision_result.get("spatial", "")
-                _setting_type_turn    = vision_result.get("setting", "")
-                # Only displace the fallback when we actually got a reading. A
-                # blanked description used to leave the slate with no scene text
-                # at all, which is worse than the render request.
-                if _rendered_desc:
-                    vision_analysis_text = _rendered_desc
-                    print(f"[VISION] Analysis complete: {vision_analysis_text[:100]}...")
-                else:
-                    print("[VISION] No description returned — keeping the render caption")
-                if _spatial_compass_turn:
-                    print(f"[VISION] Spatial compass: {_spatial_compass_turn[:80]}...")
-            except Exception as e:
-                print(f"[VISION] Analysis failed: {e} — keeping the render caption")
+    _vision_thread = threading.Thread(target=_run_vision, daemon=True)
+    _vision_thread.start()
 
     # FAST PATH: if the consequence call already produced usable next-action
     # options, reuse them and SKIP both the situation-report and choice-generation
@@ -16180,19 +16295,27 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
             print(f"[PHASE 2] pregenerated-choices cleaning failed, will generate: {_e_pre}", flush=True)
             _pregen = None
 
+    situation_summary = ""
+    _choice_timing: dict = {}
     if _pregen is not None:
-        situation_summary = ""
         next_choices = list(_pregen)
         print(f"[PHASE 2] Using {len(next_choices)} provisional choice(s) from the consequence call "
               f"(skipped situation-report + choice LLM calls).", flush=True)
     else:
-        # The attached frame already grounds the slate. A situation-report
-        # round-trip is leftover from text-first choices.
-        situation_summary = vision_analysis_text if analysis_img_url else _generate_situation_report(
-            current_image=analysis_img_url,
-            current_dispatch=dispatch,
-            vision_analysis=vision_analysis_text
-        )
+        # The slate is grounded on the ATTACHED FRAME, generated in PARALLEL with
+        # the vision read started above. We deliberately do NOT wait on the
+        # vision text to feed it: the picture is stronger grounding than a
+        # caption, and blocking the slate on that read is exactly the serial cost
+        # this parallelization removes. When there is no frame at all, fall back
+        # to the text situation report so choices still have something to stand
+        # on. situation_report for the client is filled from the vision text
+        # after the join below.
+        if not analysis_img_url:
+            situation_summary = _generate_situation_report(
+                current_image=None,
+                current_dispatch=dispatch,
+                vision_analysis=vision_analysis_text,
+            )
 
         next_choices = generate_choices(
             client, PROMPTS["player_choice_generation_instructions"],
@@ -16204,13 +16327,39 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
             seen_elements=grounded_entities(state),
             recent_choices='',
             caption=vision_dispatch,
-            image_description=vision_analysis_text, # Now correctly populated!
+            # Frame is attached; the vision TEXT read runs in parallel and is not
+            # available yet, so the slate leans on the picture, not the caption.
+            image_description="",
             world_prompt=state.get('world_prompt', ''),
             temperature=0.7,
             situation_summary=situation_summary,
             beat_nudge=beat_nudge_text(state),
         )
-    
+        try:
+            import choices as _choices_mod
+            _choice_timing = dict(_choices_mod.LAST_CHOICE_TIMING)
+        except Exception:
+            _choice_timing = {}
+
+    # Join the frame read started above. The slate is already generated; the read
+    # only has to finish before we write the history entry (next turn's spatial
+    # anchor) and the situation_report.
+    try:
+        _vision_thread.join(timeout=VISION_JOIN_TIMEOUT)
+    except Exception:
+        pass
+    if _vision_holder["description"]:
+        vision_analysis_text = _vision_holder["description"]
+        print(f"[VISION] Analysis complete: {vision_analysis_text[:100]}...")
+    if _vision_holder["spatial"]:
+        _spatial_compass_turn = _vision_holder["spatial"]
+        print(f"[VISION] Spatial compass: {_spatial_compass_turn[:80]}...")
+    if _vision_holder["setting"]:
+        _setting_type_turn = _vision_holder["setting"]
+    # The client's situation_report is the vision reading once we have it.
+    if analysis_img_url and vision_analysis_text:
+        situation_summary = vision_analysis_text
+
     next_choices = [c for c in next_choices if c and c.strip() and c.strip() != '—']
     if not next_choices:
         next_choices = ["Look around", "Move forward", "Wait"]
@@ -16282,7 +16431,15 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
         "streak_reward": state.get('streak_reward', None),
         "rare_event": state.get('rare_event', None),
         "danger": False,
-        "combat": False
+        "combat": False,
+        # Per-stage split for the turn-timing log (see _process_turn_background).
+        # vision_ms overlaps choices_ms in wall-clock now — that overlap is the
+        # point; phase2_ms upstream captures the true elapsed for the pair.
+        "_timing": {
+            "vision_ms": int(_vision_ms.get("ms", 0) or 0),
+            "choices_ms": int(_choice_timing.get("choices_ms", 0) or 0),
+            "critic_ms": int(_choice_timing.get("critic_ms", 0) or 0),
+        },
     }
 
 def advance_turn(choice: str) -> dict:

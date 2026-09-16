@@ -17,6 +17,7 @@ Run with:
 import json
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import prompts_store as ps
@@ -949,6 +950,63 @@ class ImageFillTestCase(_IdentityFixture):
         key = gi.CHARACTER_KEY if kind == "character" else gi.SETTING_KEY
         gi.save_spec({key: {"reference_images": [meta["id"]]}})
         return meta, key
+
+    def test_a_sheet_with_no_plate_still_drafts_from_the_world(self):
+        """The half of the contract that was missing.
+
+        Every route into autofill went through vision, so a sheet could only be
+        drafted from an attached plate — and a world authored in words has no
+        plate. Each field the schema gained therefore stayed permanently empty on
+        those worlds: setting_reference.goal was "", level_goal() fell back to
+        naming a landmark, and the opening montage told the player they had come
+        here to reach a fence they were already standing at.
+        """
+        ps.save_prompts_bulk({"world_initial_state":
+                              "A 1993 quarantine perimeter under a red mesa. " * 40})
+        gi.save_spec({gi.SETTING_KEY: {"name": "the fence", "summary": "",
+                                       "goal": "", "reference_images": []}})
+
+        drafted = {"summary": "A company perimeter nobody maintains.",
+                   "goal": "The pump house with the red door."}
+        with unittest.mock.patch.object(gi, "infer_fields_from_text",
+                                        return_value=drafted) as text_fill:
+            result = gi.apply_image_fill(gi.SETTING_KEY)
+
+        self.assertTrue(text_fill.called, "no plate must not mean no draft")
+        self.assertEqual(result["source"], "text")
+        self.assertFalse(result["skipped"], result)
+        spec = gi.get_spec()[gi.SETTING_KEY]
+        self.assertEqual(spec["goal"], "The pump house with the red door.")
+
+    def test_a_plate_that_cannot_answer_a_field_defers_to_the_world(self):
+        """A photograph of a valley cannot say what the player came here for.
+
+        So the image path fills what it can see and the prose fills the rest;
+        choosing a reference image has to leave the sheet COMPLETE, not merely
+        complete in the fields a photograph happens to answer.
+        """
+        meta, key = self._attach("level")
+        gi.save_spec({key: {"goal": "", "summary": ""}})
+
+        with unittest.mock.patch.object(gi, "infer_fields_from_image",
+                                        return_value={"summary": "A fenced yard."}), \
+             unittest.mock.patch.object(gi, "infer_fields_from_text",
+                                        return_value={"goal": "The pump house."}) as txt:
+            result = gi.apply_image_fill(key, ref_id=meta["id"])
+
+        self.assertEqual(result["source"], "vision+text")
+        self.assertIn("goal", txt.call_args[0][1], "only the blanks go to the prose")
+        spec = gi.get_spec()[key]
+        self.assertEqual(spec["summary"], "A fenced yard.")
+        self.assertEqual(spec["goal"], "The pump house.")
+
+    def test_a_world_with_nothing_written_drafts_nothing(self):
+        """No bible and no filled fields means there is nothing to read."""
+        ps.save_prompts_bulk({"world_initial_state": ""})
+        gi.save_spec({gi.SETTING_KEY: {"name": "", "summary": "", "goal": "",
+                                       "era": "", "palette": "", "landmarks": "",
+                                       "opening_shot": "", "reference_images": []}})
+        self.assertEqual(gi.infer_fields_from_text(gi.SETTING_KEY), {})
 
     def test_fillable_blocks_are_character_and_level(self):
         self.assertEqual(

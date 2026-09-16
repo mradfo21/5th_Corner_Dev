@@ -3557,6 +3557,58 @@ def admin_studio_identity_reset():
         return error_response("Failed to reset the cast sheet", str(e))
 
 
+@app.route('/api/admin/studio/identity/fill', methods=['POST'])
+def admin_studio_identity_fill():
+    """Draft the blank fields of a cast/level sheet. The contract's missing door.
+
+    game_identity.apply_image_fill has always been able to do this and nothing
+    could reach it: no route called it, so the only way a sheet ever got drafted
+    was as a side effect of uploading a reference plate. A world authored in words
+    therefore kept every field the schema gained but never filled one, and
+    `setting_reference.goal` stayed "" — which is why level_goal() fell back to
+    naming a landmark and the opening montage told the player they had come here
+    to reach a fence they were already standing at.
+
+    Body: {"block": "setting_reference", "overwrite": false}
+      overwrite=false  fill blanks only, keep everything the author wrote
+      overwrite=true   redraw the whole sheet from scratch
+
+    Fills from the attached plate where there is one, and from the world's own
+    prose for whatever a photograph cannot answer — a picture of a valley cannot
+    tell you what the player came here for.
+    """
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import game_identity
+        body = request.get_json(silent=True) or {}
+        block = str(body.get('block') or '').strip()
+        if block not in game_identity.image_fillable_blocks():
+            return error_response(
+                "block must be one of: "
+                + ", ".join(game_identity.image_fillable_blocks()) + ".", code=400)
+        result = game_identity.apply_image_fill(
+            block, overwrite=bool(body.get('overwrite')),
+        )
+        filled = list((result.get('filled') or {}).keys())
+        if filled:
+            message = (f"Drafted {len(filled)} field(s) from "
+                       f"{result.get('source') or 'the sheet'}: "
+                       f"{', '.join(filled)}")
+        elif result.get('reason') == 'all_filled':
+            message = "Nothing to draft — every field is already written"
+        else:
+            message = f"Nothing drafted ({result.get('reason') or 'unknown'})"
+        return jsonify(success_response(
+            {"fill": result,
+             "identity": game_identity.get_spec(),
+             "preview": game_identity.preview()},
+            message))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to draft the sheet", str(e))
+
+
 @app.route('/api/admin/studio/reference', methods=['POST'])
 def admin_studio_reference_upload():
     """Store an uploaded character sheet / level plate.

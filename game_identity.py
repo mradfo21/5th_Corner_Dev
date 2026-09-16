@@ -945,12 +945,72 @@ def infer_fields_from_image(
     return {fid: parsed[fid] for fid in wanted if parsed.get(fid)}
 
 
+def infer_fields_from_text(
+    block_id: str,
+    only_fields: Optional[List[str]] = None,
+) -> Dict[str, str]:
+    """Draft the named fields from the world's own prose. Does not persist.
+
+    The other half of the fill contract, and it was missing. Every path into
+    autofill went through vision, so a sheet could only be drafted from an
+    attached plate — and a world authored in words has no plate. The result was
+    that each field added to the schema stayed permanently empty on those worlds:
+    `setting_reference.goal` was "", so level_goal() fell back to naming a
+    landmark, and the opening montage was told the player had come here to reach
+    a chain-link fence they were already standing at.
+
+    There is plenty to read without a picture: the world bible is thousands of
+    words, and whatever fields the author HAS filled describe the rest.
+    """
+    allowed = {f["id"] for f in fillable_text_fields(block_id)}
+    wanted = [f for f in (only_fields or sorted(allowed)) if f in allowed]
+    if not wanted:
+        return {}
+
+    bible = ""
+    try:
+        import prompts_store
+        bible = str(prompts_store.PROMPTS.get("world_initial_state") or "")
+    except Exception:
+        bible = ""
+
+    current = get_spec().get(block_id) or {}
+    known = {k: v for k, v in current.items()
+             if k not in ("enabled", "reference_images")
+             and str(v or "").strip() and k not in wanted}
+    if not bible.strip() and not known:
+        return {}
+
+    prompt = (
+        f"{_identity_fill_prompt(block_id, wanted)}\n\n"
+        "You have no photograph this time. Draft the fields from the world "
+        "described below, and from the fields that are already filled in — stay "
+        "consistent with both. Be specific and concrete; a field that restates "
+        "the question ('a navigable space you can walk through') is worse than "
+        "useless, because the rest of the game reads it as though it meant "
+        "something.\n\n"
+        f"ALREADY FILLED IN (do not contradict):\n{json.dumps(known, indent=2)}\n\n"
+        f"THE WORLD:\n{bible[:6000]}\n"
+    )
+
+    try:
+        import engine
+        raw = engine._ask(prompt, temp=0.9, tokens=IMAGE_FILL_MAX_TOKENS,
+                          use_lore=False)
+    except Exception as err:
+        print(f"[IDENTITY] text fill failed: {err}", flush=True)
+        return {}
+    parsed = _parse_fill_json(raw)
+    return {fid: parsed[fid] for fid in wanted if parsed.get(fid)}
+
+
 def apply_image_fill(
     block_id: str,
     image_path: Optional[str] = None,
     ref_id: Optional[str] = None,
     *,
     overwrite: bool = False,
+    allow_text: bool = False,
 ) -> Dict[str, Any]:
     """Draft sheet fields from a reference image and persist.
 
@@ -969,8 +1029,6 @@ def apply_image_fill(
             ref_id = refs[0] if refs else None
         resolved = reference_path(ref_id) if ref_id else None
         path = str(resolved) if resolved else None
-    if not path:
-        return {"filled": {}, "skipped": True, "reason": "no_image"}
 
     wanted = [f["id"] for f in fillable_text_fields(block_id)]
     if not overwrite:
@@ -978,7 +1036,22 @@ def apply_image_fill(
         if not wanted:
             return {"filled": {}, "skipped": True, "reason": "all_filled"}
 
-    inferred = infer_fields_from_image(block_id, path, wanted)
+    # No plate is no longer the end of it. Returning "no_image" here is what left
+    # a text-authored world permanently hollow: the fields existed, the editor
+    # offered to fill them, and nothing ever did.
+    if path:
+        inferred = infer_fields_from_image(block_id, path, wanted)
+        source = "vision"
+        # A plate answers what a place LOOKS like and not what the player is
+        # doing there, so anything it could not see is drafted from the prose.
+        still_blank = [f for f in wanted if not str(inferred.get(f) or "").strip()]
+        if still_blank:
+            inferred = dict(inferred, **infer_fields_from_text(block_id, still_blank))
+            source = "vision+text"
+    else:
+        inferred = infer_fields_from_text(block_id, wanted)
+        source = "text"
+
     current = get_spec().get(block_id) or {}
     patch = {}
     for key, value in inferred.items():
@@ -993,6 +1066,7 @@ def apply_image_fill(
         "skipped": not bool(patch),
         "reason": "" if patch else "nothing_inferred",
         "fields": list(patch.keys()),
+        "source": source,
         "backend": ai_provider_manager.active_backend("vision"),
         "model": ai_provider_manager.resolve_model(None, "vision"),
     }
@@ -1026,8 +1100,17 @@ def attach_reference_and_fill(
             if not str(current.get(fid, "") or "").strip()
         ]
     inferred: Dict[str, str] = {}
-    if path and wanted:
-        inferred = infer_fields_from_image(block_id, path, wanted)
+    if wanted:
+        if path:
+            inferred = infer_fields_from_image(block_id, path, wanted)
+            # What the plate could not see, the prose can. Choosing a new
+            # reference image has to leave the sheet COMPLETE, not just
+            # complete in the fields a photograph happens to answer.
+            blank = [f for f in wanted if not str(inferred.get(f) or "").strip()]
+            if blank:
+                inferred = dict(inferred, **infer_fields_from_text(block_id, blank))
+        else:
+            inferred = infer_fields_from_text(block_id, wanted)
     filled: Dict[str, str] = {}
     for key, value in inferred.items():
         if not value:

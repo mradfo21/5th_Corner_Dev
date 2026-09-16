@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
+import time
 from pathlib import Path
 from typing import List, Union
 
@@ -17,6 +19,20 @@ import game_identity
 # many buttons and binds number keys 1..SLATE_SIZE, so a short slate reads as
 # the game running out of ideas rather than as a filter having done its job.
 SLATE_SIZE = 3
+
+# Latency of the last generate_choices() call, split into the choice LLM and
+# the optional critic pass. Read by engine._advance_turn_choices_deferred_impl
+# for the per-stage turn-timing log so the choices/critic split is measured
+# instead of inferred. Best-effort: assumes one active turn at a time (the same
+# tradeoff engine._active_session_id already documents).
+LAST_CHOICE_TIMING: dict = {"choices_ms": 0, "critic_ms": 0}
+
+# The choice slate is generated with the rendered frame attached, so it is
+# already grounded in what is on screen. choice_critic() is a THIRD read of
+# that same frame; skip it on the frame-attached path and lean on the
+# diversity / ban / egress backstops below instead of paying another
+# round-trip. Set SOMEWHERE_KEEP_CRITIC=1 to force the critic back on.
+SKIP_CRITIC_WHEN_FRAME_ATTACHED = os.getenv("SOMEWHERE_KEEP_CRITIC", "") not in ("1", "true", "True")
 
 # Overlay / HUD buttons cannot hold a sentence. The model is told 3–6 words;
 # this is the hard backstop so a long clause never lands with an ellipsis.
@@ -224,6 +240,12 @@ def generate_choices(
       • {beat_nudge}   — the current story beat nudge (if any)
       • {situation_summary} — a single actionable summary of the world state (if any)
     """
+    # Per-stage timing (see LAST_CHOICE_TIMING). Reset up front so a fallback
+    # return never reports a previous turn's split.
+    _gc_start = time.time()
+    LAST_CHOICE_TIMING["choices_ms"] = 0
+    LAST_CHOICE_TIMING["critic_ms"] = 0
+
     # No longer using OpenAI client - everything uses Gemini now
     # Update the prompt to require unique, contextually grounded, and diverse choices
     prompt = prompt_tmpl.replace('2-4 words', '2-5 words').replace(
@@ -385,15 +407,13 @@ def generate_choices(
         print(f"[CHOICES DEBUG] File exists: {use_path.exists()}")
         
         if use_path.exists():
-            with open(use_path, "rb") as f:
-                image_data = base64.b64encode(f.read()).decode('utf-8')
-            
-            parts.insert(0, {
-                "inlineData": {
-                    "mimeType": _sniff_image_mime(use_path),
-                    "data": image_data
-                }
-            })
+            # Compact JPEG attach (falls back to raw bytes on any decode error).
+            _img_part = engine._encode_image_inline_part(use_path)
+            if _img_part is None:
+                with open(use_path, "rb") as f:
+                    image_data = base64.b64encode(f.read()).decode('utf-8')
+                _img_part = {"inlineData": {"mimeType": _sniff_image_mime(use_path), "data": image_data}}
+            parts.insert(0, _img_part)
             frame_attached = True
             attached_frame_path = str(use_path)
             size_note = "(480x270)" if small_path.exists() else "(full-res)"
@@ -670,16 +690,26 @@ def generate_choices(
             recent = recent_choices
         elif isinstance(recent_choices, str):
             recent = [recent_choices]
-    try:
-        improved_choices = choice_critic(last_dispatch, vision, opts, world_prompt,
-                                         recent_choices=recent, frame_attached=frame_attached,
-                                         frame_path=attached_frame_path)
-    except Exception as _critic_err:
-        print(f"[CHOICE CRITIC] Crashed: {_critic_err} — keeping un-critiqued options", flush=True)
+    _critic_t0 = time.time()
+    if frame_attached and SKIP_CRITIC_WHEN_FRAME_ATTACHED:
+        # The slate was generated with the actual rendered frame attached, so
+        # it is already grounded in what is on screen. Skip the critic's third
+        # read of that frame (see plan) — the diversity / ban / egress
+        # backstops below still run, so a junk option is still dropped.
+        print("[CHOICE CRITIC] Skipped (frame attached — slate already image-grounded)", flush=True)
         improved_choices = opts
-    if not improved_choices:
-        print(f"[CHOICE CRITIC] Returned empty — keeping un-critiqued options", flush=True)
-        improved_choices = opts
+    else:
+        try:
+            improved_choices = choice_critic(last_dispatch, vision, opts, world_prompt,
+                                             recent_choices=recent, frame_attached=frame_attached,
+                                             frame_path=attached_frame_path)
+        except Exception as _critic_err:
+            print(f"[CHOICE CRITIC] Crashed: {_critic_err} — keeping un-critiqued options", flush=True)
+            improved_choices = opts
+        if not improved_choices:
+            print(f"[CHOICE CRITIC] Returned empty — keeping un-critiqued options", flush=True)
+            improved_choices = opts
+    LAST_CHOICE_TIMING["critic_ms"] = int((time.time() - _critic_t0) * 1000)
     # Backstop again: the critic LLM can reintroduce camera/observation choices.
     _critic_kept = drop_meaningless_choices(improved_choices)
     if _critic_kept:
@@ -722,6 +752,7 @@ def generate_choices(
         path.write_text(json.dumps(state, indent=2))
     except Exception as e:
         print("[CHOICES] Failed to persist recent choices:", e)
+    LAST_CHOICE_TIMING["choices_ms"] = int((time.time() - _gc_start) * 1000)
     return improved_choices
 
 # --- Threat detection groundwork ---

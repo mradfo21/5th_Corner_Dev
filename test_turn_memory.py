@@ -39,10 +39,21 @@ class TestTapeHelpers(unittest.TestCase):
 
 
 class TestLoopWiring(unittest.TestCase):
-    def test_web_turn_waits_for_evolve(self):
+    def test_web_turn_overlaps_evolve_with_the_render(self):
+        # World evolution no longer blocks the frame. The web turn DEFERS it to a
+        # thread that overlaps the scene render, then JOINS it before Phase 2 so
+        # the choice generator and the history entry read the EVOLVED
+        # world_prompt / seen_elements — not the pre-turn values. skip_evolve
+        # stays False: this is deferred-but-joined, not fire-and-forget.
         src = inspect.getsource(engine._process_turn_background)
+        self.assertIn("defer_evolve=True", src)
         self.assertIn("skip_evolve=False", src)
-        self.assertNotIn("skip_evolve=True", src)
+        image_at = src.index("scene = _generate_and_append_scene_image")
+        join_at = src.index("evolve_thread.join")
+        choices_at = src.index("p2 = advance_turn_choices_deferred")
+        # Evolve is joined after the render starts and before choices are built.
+        self.assertLess(image_at, join_at)
+        self.assertLess(join_at, choices_at)
 
     def test_web_turn_renders_image_before_choices(self):
         src = inspect.getsource(engine._process_turn_background)
@@ -54,10 +65,20 @@ class TestLoopWiring(unittest.TestCase):
         self.assertNotIn("_spawn_scene_choices_reground", after_choices)
         self.assertIn("img_path", src[image_at:choices_at + 400])
 
-    def test_choices_attach_the_frame_instead_of_a_second_vision_pass(self):
+    def test_choices_attach_the_frame_and_vision_runs_in_parallel(self):
+        # The slate is grounded on the attached frame (image_url=analysis_img_url),
+        # and the vision READ runs on a background thread in PARALLEL with the
+        # choice call rather than as a serial pre-pass — then is joined before the
+        # history entry (next turn's spatial anchor) is written.
         src = inspect.getsource(engine._advance_turn_choices_deferred_impl)
-        self.assertIn("if (not analysis_img_url) and VISION_ENABLED", src)
         self.assertIn("image_url=analysis_img_url", src)
+        self.assertIn("_vision_thread", src)
+        start_at = src.index("_vision_thread.start()")
+        choices_at = src.index("next_choices = generate_choices(")
+        join_at = src.index("_vision_thread.join")
+        hist_at = src.index("history_entry = {")
+        self.assertLess(start_at, choices_at)
+        self.assertLess(join_at, hist_at)
 
     def test_evolve_input_is_the_narrative_not_the_dummy_diff(self):
         # The evolve prompt has separate CONSEQUENCE OF ACTION and VISION

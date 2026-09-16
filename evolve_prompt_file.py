@@ -59,6 +59,53 @@ def _trim_to_sentence(text: str) -> str:
         return t[:cut + 1]
     return t
 
+
+# Structured-output schema for the single-call evolution: world_prompt +
+# player-facing summary + discovered entities in ONE request instead of three.
+# evolve_world_state falls back to the legacy prose call + two helper calls on
+# any parse failure, so the world document is never put at risk.
+_EVOLUTION_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "world_prompt": {"type": "STRING"},
+        "evolution_summary": {"type": "STRING"},
+        "entities": {"type": "ARRAY", "items": {"type": "STRING"}},
+    },
+    "required": ["world_prompt"],
+}
+
+
+def _filter_entities(entities: List[str]) -> List[str]:
+    """Drop generic scenery / names and order characters + threats first.
+
+    Shared by the dedicated extractor and the single-call evolution path so both
+    produce an identically filtered, deduped, priority-sorted list (max 7)."""
+    filtered = [
+        e for e in (entities or [])
+        if e and e.lower() not in [
+            "jason", "you", "player", "the facility", "tension", "air", "none",
+            "entities: none", "entities", "wall", "ground", "sand", "rock",
+            "dust", "smoke", "concrete", "metal",
+        ]
+        and len(e.split()) >= 1
+        and not e.lower().startswith("entities:")
+    ]
+    character_keywords = ["guard", "figure", "person", "silhouette", "human",
+                          "scientist", "soldier", "creature", "mutant",
+                          "infected", "patrol", "armed"]
+
+    def entity_priority(entity: str) -> int:
+        el = entity.lower()
+        if any(k in el for k in character_keywords):
+            return 0
+        elif len(entity.split()) > 2:
+            return 1
+        return 2
+
+    filtered.sort(key=entity_priority)
+    return list(dict.fromkeys(filtered))[:7]
+
+
 def evolve_world_state(
     dispatches: List[Dict],
     consequence_summary: str,
@@ -219,7 +266,10 @@ STRUCTURE (maintain these sections):
 Write the NEW world_prompt (500-650 words) that reflects everything up to this moment.
 End on a complete sentence.
 
-RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EVOLVED STATE.
+RETURN ONE JSON OBJECT with these fields and nothing else:
+  "world_prompt": the FULL evolved world state (500-650 words of prose, ending on a complete sentence). This is the living document every other prompt reads — write it exactly as you would the standalone state, just placed in this field.
+  "evolution_summary": ONE tense, atmospheric sentence (15-25 words) for the player describing the single most significant change this turn. No labels, no prefix, just the sentence.
+  "entities": a list of the significant NEW physical entities introduced this turn — people/characters first, then creatures/threats, then major objects/landmarks. Empty list if none. Exclude generic scenery (wall, ground, sand, rock, dust, smoke, concrete, metal).
 """
 
     # Call LLM to evolve world prompt
@@ -239,8 +289,13 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
                     # a "1200-1500 words" ask the reply was cut off mid-word
                     # every turn, so the world document permanently ended in a
                     # half-sentence ("...agitated by") that every downstream
-                    # prompt then read.
-                    "maxOutputTokens": 1100
+                    # prompt then read. Raised further here because this one call
+                    # now also carries the summary + entities in the same JSON.
+                    "maxOutputTokens": 1400,
+                    # Single-call evolution: world_prompt + summary + entities in
+                    # one structured response instead of three sequential calls.
+                    "responseMimeType": "application/json",
+                    "responseSchema": _EVOLUTION_RESPONSE_SCHEMA,
                 }
             },
             timeout=20
@@ -251,7 +306,36 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
             return {"world_prompt": old_world_prompt, "evolution_summary": ""}
         
         result = response.json()
-        new_world_prompt = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        _raw = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        # Parse the combined JSON defensively. On ANY failure, treat the raw text
+        # as the world prose (legacy behavior) and let the two helper calls below
+        # fill summary + entities — so the world document is never regressed by
+        # this optimization, and we never pay for a second rewrite call.
+        _structured_summary = None
+        _structured_entities = None
+        if _raw.startswith("```"):
+            _fence = _raw.split("\n")
+            if _fence and _fence[0].startswith("```"):
+                _fence = _fence[1:]
+            if _fence and _fence[-1].strip() == "```":
+                _fence = _fence[:-1]
+            _raw = "\n".join(_fence).strip()
+        try:
+            _data = json.loads(_raw)
+            new_world_prompt = (_data.get("world_prompt") or "").strip()
+            if isinstance(_data.get("evolution_summary"), str):
+                _structured_summary = _data["evolution_summary"].strip()
+            if isinstance(_data.get("entities"), list):
+                _structured_entities = [str(e).strip() for e in _data["entities"] if str(e).strip()]
+            if not new_world_prompt:
+                # Valid JSON but no usable world_prompt — fall back to raw prose.
+                new_world_prompt = _raw
+                _structured_summary = None
+                _structured_entities = None
+        except Exception:
+            # Not JSON (older behavior / a plain-prose reply) — use it as-is and
+            # let the dedicated summary + entity calls run below.
+            new_world_prompt = _raw
         new_world_prompt = _trim_to_sentence(new_world_prompt)
 
         if len(new_world_prompt) < 800:
@@ -280,14 +364,20 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
         print(f"[WORLD EVOLUTION V3] Evolution failed: {e}")
         return {"world_prompt": old_world_prompt, "evolution_summary": ""}
     
-    # Generate evolution summary (player-facing, 15-25 words)
-    evolution_summary = _generate_evolution_summary(
-        old_world=old_world_prompt,
-        new_world=new_world_prompt,
-        consequence=consequence_summary,
-        vision=vision_description,
-        api_key=api_key
-    )
+    # Player-facing summary: reuse the one the single evolution call already
+    # produced. Only fall back to the dedicated summarizer (an extra round-trip)
+    # when the combined call did not return a usable summary.
+    if _structured_summary:
+        evolution_summary = _structured_summary
+        print(f"[EVOLUTION SUMMARY] From combined call: {evolution_summary}")
+    else:
+        evolution_summary = _generate_evolution_summary(
+            old_world=old_world_prompt,
+            new_world=new_world_prompt,
+            consequence=consequence_summary,
+            vision=vision_description,
+            api_key=api_key
+        )
     
     # Update state with new world prompt
     state["world_prompt"] = new_world_prompt
@@ -304,13 +394,20 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
             existing = existing[-10:]
         state["recent_events"] = existing
     
-    # One extraction over both channels. These were two calls, and while the
-    # narrative and the caption were the same string it was the same request
-    # twice a turn for the same answer.
-    entity_source = "\n".join(
-        dict.fromkeys(t for t in (consequence_summary, vision_description) if t)
-    )
-    new_entities = _extract_entities_from_text(entity_source, api_key=api_key)
+    # Entities: reuse the ones the single evolution call already named (run
+    # through the same filter the dedicated extractor uses, so scenery / names
+    # are dropped identically). Only fall back to the extractor (an extra round-
+    # trip) when the combined call did not return an entities list.
+    if _structured_entities is not None:
+        new_entities = _filter_entities(_structured_entities)
+    else:
+        # One extraction over both channels. These were two calls, and while the
+        # narrative and the caption were the same string it was the same request
+        # twice a turn for the same answer.
+        entity_source = "\n".join(
+            dict.fromkeys(t for t in (consequence_summary, vision_description) if t)
+        )
+        new_entities = _extract_entities_from_text(entity_source, api_key=api_key)
     
     if new_entities:
         state["seen_elements"].extend(new_entities)
@@ -508,36 +605,10 @@ Return ONLY the entities or "NONE":"""
             if entities_str.upper() == "NONE" or not entities_str:
                 return []
             
-            # Split by comma
+            # Split by comma, then filter/prioritize/dedupe with the shared
+            # helper (also used by the single-call evolution path).
             entities = [e.strip() for e in entities_str.split(',') if e.strip()]
-            
-            # Filter out non-entities and malformed responses
-            filtered = [
-                e for e in entities
-                if e.lower() not in ["jason", "you", "player", "the facility", "tension", "air", "none", "entities: none", "entities", "wall", "ground", "sand", "rock", "dust", "smoke", "concrete", "metal"]
-                and len(e.split()) >= 1  # Allow single-word for characters like "guard", "figure", "creature"
-                and not e.lower().startswith("entities:")  # Remove label prefix
-            ]
-            
-            # CRITICAL: Boost priority for character/threat words
-            character_keywords = ["guard", "figure", "person", "silhouette", "human", "scientist", "soldier", "creature", "mutant", "infected", "patrol", "armed"]
-            
-            # Sort: characters/threats first, then objects
-            def entity_priority(entity: str) -> int:
-                entity_lower = entity.lower()
-                # Highest priority: contains character/threat keywords
-                if any(keyword in entity_lower for keyword in character_keywords):
-                    return 0
-                # Medium priority: multi-word (more specific)
-                elif len(entity.split()) > 2:
-                    return 1
-                # Lower priority: generic single/double word
-                else:
-                    return 2
-            
-            filtered.sort(key=entity_priority)
-            
-            return list(dict.fromkeys(filtered))[:7]  # Unique, max 7, characters first
+            return _filter_entities(entities)
         
     except Exception as e:
         print(f"[ENTITY EXTRACTION] Failed: {e}")
