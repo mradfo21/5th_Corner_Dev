@@ -17,6 +17,7 @@ so the Moment can still be prototyped and tested without a network.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -223,6 +224,127 @@ _OPTICAL_BOXES = (
 )
 
 
+SHOTLIST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "subjects": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["subjects"],
+}
+
+SHOTLIST_INSTRUCTIONS = (
+    "You are the second-unit photographer on a 1993 analog-horror film, shooting "
+    "the cold open. Read the world bible below and answer one question: what are "
+    "the FOUR photographs that open this story?\n"
+    "\n"
+    "They are not establishing shots of scenery. Each one is a specific physical "
+    "thing, standing in this place right now, that tells the audience something "
+    "happened here and something is still wrong. Together they should set up the "
+    "mystery at the centre of this world and make a viewer need to know the rest "
+    "— evidence, aftermath, scale, wrongness — without explaining any of it.\n"
+    "\n"
+    "Rules, all of them hard:\n"
+    "- NOBODY is in any of these photographs. No people, no bodies, no figures.\n"
+    "- Only things that would physically be here in 1993, in this landscape. No "
+    "creatures, no visible supernatural events, no glowing anomalies. The dread "
+    "is in ordinary objects that are wrong.\n"
+    "- Specific and photographable. 'A hand-painted evacuation notice bolted over "
+    "a company sign' is a shot. 'A sense of unease' is not.\n"
+    "- Each of the four is a DIFFERENT subject at a DIFFERENT scale. Do not give "
+    "four shots of the same thing.\n"
+    "- Do not name the goal outright and do not show it reached.\n"
+    "\n"
+    "The four roles, in order — match each subject to its role:\n"
+    "1. THE WIDEST VIEW: the scale of the place and what has been done to it.\n"
+    "2. A MACRO DETAIL: one small worn or marked object, filling the frame.\n"
+    "3. A BUILT THING, STANDING EMPTY: architecture as portrait, frontal, nobody.\n"
+    "4. WHAT WAS LEFT BEHIND: the evidence that this was abandoned in a hurry.\n"
+    "\n"
+    "Answer with exactly four subjects, one per role, in that order. Each is one "
+    "sentence, at most 25 words, describing only what the camera sees."
+)
+
+
+def mystery_shotlist(session_id: str = "default", *, goal: str = "") -> List[str]:
+    """Four photographs, chosen from this world's own lore.
+
+    The montage used to be four fixed generic briefs — widest view, macro detail,
+    architectural wide, leftovers. Compositionally that worked and conceptually it
+    was empty: nothing in the instruction was about THIS story, so the renders came
+    back handsome and inert, a stock desert with a fence.
+
+    Meanwhile the world bible is 9,000 words with a real mystery in it — thousands
+    dead in an industrial accident, military raids hunting company mercenaries, and
+    a black hole buried miles under an acid mine. The opening had never seen a line
+    of it. This asks for the four shots that set that up.
+
+    The compositional roles are kept, because those are what made the frames good;
+    only the subjects come from the lore. Never fatal: on any failure the caller
+    falls back to the static briefs and the montage still renders.
+    """
+    import engine
+
+    try:
+        st = engine._load_state(session_id) or {}
+    except Exception:
+        st = {}
+
+    bible = ""
+    try:
+        import prompts_store
+        bible = str(prompts_store.PROMPTS.get("world_initial_state") or "")
+    except Exception:
+        bible = ""
+    if not bible.strip():
+        bible = str(st.get("world_prompt") or "")
+    if len(bible.strip()) < 400:
+        # Nothing to read; the static briefs are no worse than a guess.
+        print("[CUTSCENE] no world bible to draw a shotlist from — using the "
+              "built-in establishing briefs", flush=True)
+        return []
+
+    place = ""
+    try:
+        import game_identity
+        place = game_identity.place_summary() or ""
+    except Exception:
+        place = ""
+
+    prompt = (
+        f"{SHOTLIST_INSTRUCTIONS}\n\n"
+        f"WORLD BIBLE:\n{bible[:6000]}\n\n"
+        f"THE PLACE THIS OPENS IN: {place or '(see the bible)'}\n"
+        + (f"WHAT THE PLAYER IS HERE FOR (do not show it reached): {goal}\n"
+           if goal else "")
+    )
+
+    try:
+        raw = engine._ask(prompt, temp=1.0, tokens=420, use_lore=False,
+                          response_schema=SHOTLIST_SCHEMA)
+    except Exception:
+        logging.exception("[CUTSCENE] shotlist ask failed")
+        return []
+
+    subjects: List[str] = []
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        for item in (data.get("subjects") or []):
+            text = str(item or "").strip()
+            if text:
+                subjects.append(text.rstrip(". ") + ".")
+    except Exception:
+        logging.exception("[CUTSCENE] shotlist did not parse")
+        return []
+
+    if len(subjects) < 4:
+        print(f"[CUTSCENE] shotlist returned {len(subjects)} subject(s), need 4 — "
+              f"using the built-in establishing briefs", flush=True)
+        return []
+    for i, s in enumerate(subjects[:4], start=1):
+        print(f"[CUTSCENE] shot {i}: {s[:110]}", flush=True)
+    return subjects[:4]
+
+
 def _identity_plates() -> List[str]:
     """The character sheet's reference plates, for montages that draw a person.
 
@@ -368,6 +490,21 @@ def optical_montage(
     return shots
 
 
+# How each panel of the opening is FRAMED, independent of what it is OF. The
+# subjects come from the lore (see mystery_shotlist); these keep the scale varied
+# so four lore-driven shots do not all come back as the same wide.
+_ROLE_FRAMING = {
+    1: "Shoot it as the widest view the place affords — full depth and scale "
+       "running away from the lens, held as a plate.",
+    2: "Shoot it as a tight, patient macro — filling the frame, shallow focus, "
+       "abstracted by how close the lens is. Not a wide.",
+    3: "Shoot it as a static, symmetrical, frontal wide — architecture as "
+       "portrait, deadpan, the emptiness part of the subject.",
+    4: "Shoot it low and close on the ground it sits on — objects and dirt, "
+       "the frame of somewhere left in a hurry.",
+}
+
+
 def build_cutscene_prompt(
     mood: str = DEFAULT_MOOD,
     *,
@@ -376,6 +513,7 @@ def build_cutscene_prompt(
     name: str = "",
     goal: str = "",
     plate_role: str = "anchor",
+    shotlist: Optional[List[str]] = None,
 ) -> str:
     """One 2×2 grid instruction. Place-locked. No captions, no borders.
 
@@ -488,8 +626,22 @@ def build_cutscene_prompt(
     # put the character in the top-right and a signage detail in the bottom-right,
     # and because the bottom-right panel is the one handed to the game as its
     # opening frame, the run would have started on a close-up of a sign.
+    #
+    # A `shotlist` replaces the SUBJECT of each panel with something drawn from
+    # this world's own lore, and keeps the role. The static briefs make good
+    # compositions and say nothing about the story: handsome, inert, a stock
+    # desert with a fence. The roles are what was worth keeping.
     for i, (_cam, label, instruction) in enumerate(pack["shots"], start=1):
-        bits.append(f"Panel {i} — {_cell_name(i)} ({label}): {instruction}.")
+        subject = ""
+        if shotlist and i <= len(shotlist):
+            subject = str(shotlist[i - 1] or "").strip()
+        if subject:
+            bits.append(
+                f"Panel {i} — {_cell_name(i)} ({label}): {subject} "
+                f"{_ROLE_FRAMING.get(i, '')} NO PEOPLE in this panel."
+            )
+        else:
+            bits.append(f"Panel {i} — {_cell_name(i)} ({label}): {instruction}.")
     if opening:
         bits.append(
             "PANEL PLACEMENT IS NOT INTERCHANGEABLE. Each instruction belongs to "
@@ -657,9 +809,18 @@ def generate_shots(
     if want_gemini:
         try:
             from gemini_image_utils import generate_gemini_img2img
+            # Only the opening reads the lore for its subjects. A restage has a
+            # beat in front of it already; it does not need inventing.
+            shotlist = []
+            if plate_role == "destination":
+                try:
+                    shotlist = mystery_shotlist(session_id, goal=goal)
+                except Exception:
+                    logging.exception("[CUTSCENE] shotlist failed; using briefs")
+                    shotlist = []
             prompt = build_cutscene_prompt(
                 mood, shot_brief=shot_brief, setting=setting, name=name,
-                goal=goal, plate_role=plate_role,
+                goal=goal, plate_role=plate_role, shotlist=shotlist,
             )
             tod = ""
             try:

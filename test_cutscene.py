@@ -439,6 +439,62 @@ class TestApproachMood(_Isolated):
         self.assertEqual(anchor.get("identity_paths"), [str(plate)],
                          "a restage must hold the cast it is restaging")
 
+    def test_a_shotlist_replaces_the_subjects_and_keeps_the_roles(self):
+        """The compositions were good and the ideas were not.
+
+        Four fixed generic briefs — widest view, macro, architectural wide,
+        leftovers — make handsome inert frames, because nothing in them is about
+        this story. The world bible is 9,000 words with a real mystery in it and
+        the opening had never read a line. Subjects now come from the lore; the
+        roles stay, because the roles are what made the frames good.
+        """
+        subjects = [
+            "A hand-painted evacuation notice bolted over a company sign.",
+            "A dosimeter badge clipped to a nail, its window gone black.",
+            "A row of shower stalls open to the sky, tiles still numbered.",
+            "Boots and coveralls left in a heap where they were stepped out of.",
+        ]
+        text = cutscene.build_cutscene_prompt(
+            "approach", plate_role="destination", shotlist=subjects)
+
+        for i, subject in enumerate(subjects, start=1):
+            self.assertIn(subject, text, f"subject {i} missing")
+            cell = cutscene._cell_name(i)
+            # Subject and its cell have to be in the same instruction.
+            panel = text[text.index(f"Panel {i} — "):]
+            panel = panel[:panel.index("NO PEOPLE") + 9]
+            self.assertIn(cell, panel, f"panel {i} lost its cell")
+            self.assertIn(subject, panel, f"panel {i} lost its subject")
+
+        # The framing roles survive, so four lore subjects do not all come back
+        # as the same wide.
+        for phrase in ("widest view the place affords", "tight, patient macro",
+                       "static, symmetrical, frontal wide", "low and close on the ground"):
+            self.assertIn(phrase, text, phrase)
+
+        # And no shotlist means the static briefs still run.
+        plain = cutscene.build_cutscene_prompt("approach", plate_role="destination")
+        self.assertIn("The widest, emptiest view this place affords", plain)
+        self.assertNotIn(subjects[0], plain)
+
+    def test_the_shotlist_asks_for_evidence_not_atmosphere(self):
+        """What makes the difference is that each shot is a physical thing."""
+        text = cutscene.SHOTLIST_INSTRUCTIONS
+        self.assertIn("NOBODY is in any of these photographs", text)
+        self.assertIn("no glowing anomalies", text)
+        self.assertIn("DIFFERENT subject at a DIFFERENT scale", text)
+        self.assertIn("Do not name the goal outright", text)
+        # Four roles, matching the four panels.
+        for role in ("THE WIDEST VIEW", "A MACRO DETAIL", "A BUILT THING",
+                     "WHAT WAS LEFT BEHIND"):
+            self.assertIn(role, text, role)
+
+    def test_a_world_with_no_bible_falls_back_instead_of_guessing(self):
+        """An empty lore slot must not produce four invented shots."""
+        with patch.object(engine, "_load_state", return_value={"world_prompt": ""}), \
+             patch("prompts_store.PROMPTS", {"world_initial_state": "too short"}):
+            self.assertEqual(cutscene.mystery_shotlist("t"), [])
+
     def test_the_opening_is_graded_for_dread_not_for_landscape_photography(self):
         """4K came back as lavender-dusk travel photography.
 
