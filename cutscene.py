@@ -673,33 +673,6 @@ def generate_shots(
             "label": shot["label"],
         })
 
-    # The opening ends on the plate itself, as a fifth beat.
-    #
-    # This is the frame the run continues from: _finish_opening_montage takes
-    # shots[-1] and writes it into history as the opening handoff, and turn one
-    # does img2img off it. Asking the model for that composition did not work —
-    # the panel came back as a front-facing portrait, then a side-on medium, with
-    # the wardrobe drifting — and a wrong frame there is not a cosmetic problem,
-    # it is the seed for every later frame in the run.
-    #
-    # The plate is already the right composition, drawn by the pipeline that
-    # knows the follow-cam rules and locked to the character reference. Ending on
-    # it makes the montage-to-play cut exact by construction rather than by
-    # persuasion, and it costs nothing: the file already exists.
-    #
-    # Note this does NOT undo the earlier decision that the plate must not open
-    # the run (see _stage_opening_montage, which keeps it out of the feed). The
-    # objection there was to the FIRST thing a player sees being a frame nobody
-    # shot for this run. Arriving on it after four photographs of the empty place
-    # is the opposite: it is the shot the montage has been withholding.
-    if plate_role == "destination" and payload_shots:
-        payload_shots.append({
-            "url": _to_web(source_path, session_id),
-            "path": str(source_path),
-            "camera": "threshold",
-            "label": "The place, as you find it",
-        })
-
     return {
         "source": used,
         "mood": mood,
@@ -786,6 +759,49 @@ def play_for_session(
     except Exception:
         logging.exception("[CUTSCENE] generate_shots failed")
         return {"ok": False, "error": "generate_failed", "shots": []}
+    # The opening ends on the plate itself, as a final beat.
+    #
+    # This is the frame the run continues from: _finish_opening_montage takes
+    # shots[-1] and writes it into history as the opening handoff, and turn one
+    # does img2img off it. Asking the model to draw that composition did not work
+    # — the panel came back as a front-facing portrait, then a side-on medium,
+    # with the wardrobe drifting — and a wrong frame there is not cosmetic, it is
+    # the seed for every later frame in the run. The plate is already the right
+    # composition, drawn by the pipeline that knows the follow-cam rules and
+    # locked to the character reference, so the cut is exact by construction.
+    #
+    # This does NOT undo the earlier decision that the plate must not OPEN the run
+    # (see _stage_opening_montage, which keeps it out of the feed). The objection
+    # there was to the first thing a player sees being a frame nobody shot for
+    # this run; arriving on it after four photographs of the empty place is the
+    # opposite — it is the shot the montage has been withholding.
+    #
+    # Built here rather than in generate_shots because only this layer knows the
+    # plate's real web URL. A World frame lives in worlds/, not in the session's
+    # images/, so `_to_web` maps it to /images/world.frame.png, which 404s — and
+    # since this beat's url becomes current_image_url, that 404 was handed to turn
+    # one and the run opened on a black screen with the client retrying the
+    # missing file four times. The staged url is the one the route can serve.
+    if mood == "approach" and generated.get("shots"):
+        # _stage_opening_montage leaves the plate's servable URL in
+        # current_image_url on purpose ("so a status poll has something true to
+        # report"), which makes it the one url here known to resolve.
+        try:
+            staged_url = str((engine.get_state(session_id) or {})
+                             .get("current_image_url") or "").strip()
+        except Exception:
+            staged_url = ""
+        if staged_url:
+            generated["shots"] = list(generated["shots"]) + [{
+                "url": staged_url,
+                "path": str(plate),
+                "camera": "threshold",
+                "label": "The place, as you find it",
+            }]
+        else:
+            logging.warning("[CUTSCENE] no servable plate url; the montage will "
+                            "end on a generated panel instead")
+
     play_id = cutscene_id or ("play-" + uuid.uuid4().hex[:8])
     payload = {
         "ok": True,
