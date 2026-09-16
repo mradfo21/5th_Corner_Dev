@@ -6627,6 +6627,7 @@
         wrap.appendChild(warn);
       });
 
+      wrap.appendChild(makeBlockRedraw(block));
       wrap.appendChild(makeBlockClear(block));
 
       if (minimal && block.id === "player_character") {
@@ -6761,6 +6762,67 @@
         wrap.appendChild(pane);
       });
       return wrap;
+    }
+
+    // Draft this whole sheet from the world, rather than one field at a time.
+    //
+    // A per-field DRAFT already existed for the level goal, through its own
+    // endpoint. Every other field had nothing: a sheet could only be drafted as a
+    // side effect of attaching a reference plate, so a world written in words kept
+    // whatever the schema gained and filled none of it — the level had no goal,
+    // and the camera's lens and notes could not be filled by any path at all,
+    // because every route was gated on supporting images and a camera has no
+    // photograph to read.
+    function makeBlockRedraw(block) {
+      const row = document.createElement("div");
+      row.className = "we-cast-row we-block-redraw";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "we-btn we-btn-ghost";
+      btn.dataset.action = "redraw-block";
+      btn.dataset.block = block.id;
+      btn.textContent = "RE-DRAW";
+      const noun = block.id === "player_character" ? "character"
+                 : block.id === "setting_reference" ? "level"
+                 : "camera";
+      btn.title = "Write this " + noun + " again from the world"
+                + (block.supports_images ? " and its reference plate" : "");
+      btn.addEventListener("click", async () => {
+        if (btn.disabled) return;
+        btn.disabled = true;
+        const was = btn.textContent;
+        btn.textContent = "…";
+        try {
+          // overwrite: this is a RE-draw. The author asked for a new answer, not
+          // for the gaps in the old one to be topped up.
+          const { ok, data } = await weFetch("POST", "/api/admin/studio/regenerate",
+                                             { block: block.id, overwrite: true });
+          const payload = (data || {}).data || {};
+          if (!ok) throw new Error(((data || {}).error) || "couldn't re-draw");
+          ((payload.lines) || []).forEach((line) => {
+            try { console.log("[cast redraw]", line); } catch (_) {}
+          });
+          const filled = (((payload.report || {}).blocks || {})[block.id] || {}).filled || {};
+          const names = Object.keys(filled);
+          if (names.length) {
+            setSaveStatus("saved", "Re-drew " + names.join(", "));
+            // The whole payload, not just the spec: applyIdentityPayload also
+            // takes the compiled preview and re-steers the live camera, which a
+            // re-drawn camera sheet needs or the video keeps the old seed.
+            applyIdentityPayload(payload);
+          } else {
+            setSaveStatus("error", "Nothing to draw from");
+          }
+        } catch (err) {
+          console.warn("[cast] re-draw failed:", err);
+          setSaveStatus("error", err.message || "Couldn't re-draw");
+        } finally {
+          btn.disabled = false;
+          btn.textContent = was;
+        }
+      });
+      row.appendChild(btn);
+      return row;
     }
 
     function makeBlockClear(block) {
