@@ -382,16 +382,24 @@ def start_run(page, log):
 
     t0 = time.time()
     black = 0
+    held = 0
     while time.time() - t0 < TURN_TIMEOUT:
         time.sleep(1.5)
         s = page.evaluate(STATE)
         if s["prose"] and not s["gated"]:
             log(f">>> turn 1 playable after {time.time() - t0:.1f}s"
-                f"{f' ({black} black samples while loading)' if black else ''}")
+                + (f" ({black} black samples while loading)" if black else "")
+                + (f" [{held} of them the opening blackout, by design]" if held else ""))
             return True
         m, d = analyse(page.screenshot())
         if is_black(m, d):
             black += 1
+            # The opening is SUPPOSED to be black. PLAY fades down and holds it
+            # until there is a picture to fade up to, so counting those samples
+            # as a fault would file the intended behaviour as the bug — and a
+            # harness that cries wolf about its own feature gets ignored.
+            if "opening-blackout" in (s.get("cls") or ""):
+                held += 1
     log(f"!! no playable turn after {TURN_TIMEOUT}s")
     snap(page, "start_FAILED.png")
     return False
@@ -820,8 +828,16 @@ def main():
             return
 
         # Rotate the verbs a player would actually use.
+        #
+        # CAMP is deliberately absent. The hub reduction removed it from play
+        # along with SCAN's button and PLAY ("the choice stack IS the turn
+        # interface now"), and #camp-btn is hidden with !important at the end of
+        # standalone.css. The server still has /api/camp/enter, but nothing in
+        # the UI can reach it, so driving it here only ever produced a click
+        # timeout filed as a game failure. `camp_is_still_unreachable` below
+        # watches for the button coming back instead.
         plan = ["choice", "choice", "scan_move", "photo", "scan_interact",
-                "encounter", "act", "camp"]
+                "encounter", "act"]
 
         for turn in range(1, TURNS + 1):
             s = page.evaluate(STATE)
@@ -858,21 +874,21 @@ def main():
             elif action == "encounter":
                 did = do_encounter(page, log, findings)
             elif action == "act":
+                # ACT is not a hub button any more. The hub reduction made the
+                # choice stack the entire turn interface: the last row, labelled
+                # "Custom", opens the same free-will input that #free-will-btn
+                # used to. That button is now `display: none !important`
+                # (standalone.css, end of file), so clicking it waits out the
+                # timeout and files the *game* as broken for a UI change.
                 try:
-                    page.click("#free-will-btn", timeout=8000)
-                    time.sleep(1)
-                    page.fill("#custom-input, #free-will-input, textarea",
-                              "Search the ground for tracks", timeout=8000)
+                    page.click(".choice-btn-custom", timeout=8000)
+                    page.wait_for_selector("#custom-input", state="visible", timeout=8000)
+                    typed = "Search the ground for tracks"
+                    page.fill("#custom-input", typed, timeout=8000)
                     page.click("#custom-submit", timeout=8000)
-                    did = "ACT: search the ground for tracks"
+                    did = f"ACT (typed): {typed}"
                 except Exception as e:
-                    log(f"    ACT failed: {a(str(e))[:80]}")
-            elif action == "camp":
-                try:
-                    page.click("#camp-btn", timeout=8000)
-                    did = "CAMP"
-                except Exception as e:
-                    log(f"    CAMP failed: {a(str(e))[:80]}")
+                    log(f"    ACT failed: {a(str(e))[:120]}")
 
             if not did:
                 findings.append(f"turn {turn}: could not commit a '{action}' action")
@@ -965,6 +981,28 @@ def main():
                     f"changed (continuity {score:.2f}) - the world did not "
                     f"actually take the player anywhere"
                 )
+
+        # CAMP was removed from the UI on purpose, so its absence is correct and
+        # must not be reported as a fault. What IS worth knowing is the reverse:
+        # if the button comes back, the plan above should drive it again. This
+        # keeps the removal a recorded decision rather than something a future
+        # run rediscovers as a mystery.
+        try:
+            camp_reachable = page.evaluate(
+                """() => {
+                  const b = document.getElementById('camp-btn');
+                  if (!b) return false;
+                  const cs = getComputedStyle(b);
+                  return cs.display !== 'none' && cs.visibility !== 'hidden'
+                         && parseFloat(cs.opacity || '1') > 0.05;
+                }""")
+            if camp_reachable:
+                findings.append(
+                    "CAMP is reachable again (#camp-btn is visible) - it was "
+                    "removed by the hub reduction and the turn plan no longer "
+                    "drives it, so this feature is now going untested")
+        except Exception:
+            pass
 
         log("\n================ SUMMARY ================")
         if findings:

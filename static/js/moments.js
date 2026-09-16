@@ -55,6 +55,9 @@
   function nameplate() { return $("moment-nameplate"); }
   function nameplateName() { return $("moment-nameplate-name"); }
   function nameplateSub() { return $("moment-nameplate-sub"); }
+  function titleCardEl() { return $("moment-title-card"); }
+  function titleCardName() { return $("moment-title-card-name"); }
+  function titleCardGoal() { return $("moment-title-card-goal"); }
 
   function prefersReducedMotion() {
     try {
@@ -224,6 +227,7 @@
       nameplate().classList.remove("moment-nameplate-in");
       nameplate().classList.add("hidden");
     }
+    setTitleCard("");
     clearPortrait();
     clearScene();
     clearChoices();
@@ -403,10 +407,32 @@
     if (nameplateSub() && sub != null) nameplateSub().textContent = String(sub);
   }
 
+  // The title card over the black hold. Pass no name to take it down — a Moment
+  // that shows a picture must clear this, or the level's name sits over the
+  // first shot of its own montage.
+  function setTitleCard(name, goal) {
+    const card = titleCardEl();
+    if (!card) return;
+    if (!name) {
+      card.classList.remove("moment-title-card-in");
+      card.classList.add("hidden");
+      return;
+    }
+    if (titleCardName()) titleCardName().textContent = String(name);
+    if (titleCardGoal()) titleCardGoal().textContent = String(goal || "");
+    card.classList.remove("hidden");
+    void card.offsetWidth;
+    card.classList.add("moment-title-card-in");
+  }
+
   function setPortrait(url) {
     const p = portraitEl();
     const img = portraitImg();
     if (!p || !img || !url) return;
+    // A nested pop hides the portrait frame on its way back down (see pop's
+    // nested branch), so the Moment underneath re-asserting its own close-up
+    // has to un-hide it or the plate loads into an invisible element.
+    p.classList.remove("hidden");
     img.onload = () => {
       // Crossfade: the shimmer fades OUT (opacity transition on .developing
       // removal) at the same time the photo fades IN (opacity transition on
@@ -720,6 +746,7 @@
     current,
     topType,
     setNameplate,
+    setTitleCard,
     setPortrait,
     clearPortrait,
     setScene,

@@ -59,23 +59,28 @@ MOODS: Dict[str, Dict[str, Any]] = {
     # it, so the plate is where the montage is heading rather than where the
     # camera stands (see ``plate_role`` in build_cutscene_prompt). The goal stays
     # unreached in all four: the point is to make the player want to walk to it.
+    #
+    # The wording is deliberately distance-neutral — "the approach", never "from
+    # outside" or "open ground". An indoor level also gets an approach (down the
+    # length of the space toward the far door), and naming the outdoors here
+    # contradicted the indoor/outdoor clause the prompt adds below it.
     "approach": {
         "label": "Approach",
         "hint": "Arriving at a level, with what you came for still in the distance.",
         "shots": (
             ("establish", "Establishing wide",
-             "extreme wide establishing shot of this whole place seen from OUTSIDE it, "
-             "the destination small and far off in the distance, the ground between "
-             "here and there readable"),
+             "extreme wide establishing shot taking in the whole approach to this "
+             "place, the destination small and far off at the end of it, the "
+             "distance between here and there readable"),
             ("approach", "The approach",
-             "from behind and further back, the walk in toward this place, the "
-             "destination ahead in frame and still a long way off"),
+             "from behind and well back, the walk in toward the destination — it is "
+             "ahead in frame and still a long way off"),
             ("distant", "The goal, distant",
-             "long lens across the distance onto the destination itself — small in "
-             "frame, unreached, nothing between the camera and it but open ground"),
+             "long lens down the length of the approach onto the destination itself "
+             "— small in frame, unreached, the distance still to be crossed readable"),
             ("threshold", "Threshold",
-             "at the edge of this place looking in, the way forward open — a settled, "
-             "held composition, the frame the story starts from"),
+             "arrived at the edge of it, looking in, the way forward open — a "
+             "settled, held composition, the frame the story starts from"),
         ),
     },
     "arrival": {
@@ -307,10 +312,10 @@ def build_cutscene_prompt(
             "PLACE LOCK — HARD. The reference photograph is this place as it "
             "looks once you are standing in it: keep its location, architecture, "
             "materials, ground, sky, light, and the people and wardrobe already "
-            "in it. But the camera has NOT ARRIVED YET. All four shots are "
-            "further out than the reference, looking toward it across open "
-            "distance. Do not reproduce the reference's framing in any panel, "
-            "and do not invent a different place."
+            "in it. But the camera has NOT ARRIVED YET. All four shots sit "
+            "FURTHER BACK than the reference and look toward it across the "
+            "distance still to be crossed. Do not reproduce the reference's "
+            "framing in any panel, and do not invent a different place."
         )
     else:
         bits.append(
@@ -322,7 +327,7 @@ def build_cutscene_prompt(
         bits.append(
             f"WHAT THE PLAYER CAME HERE FOR: {goal.rstrip('. ')}. It is visible "
             "in these shots and is NOT REACHED in any of them — keep it far off, "
-            "small in frame, across ground the player still has to cross. Never "
+            "small in frame, across distance the player still has to cross. Never "
             "cut to it up close, never show it entered or opened."
         )
     if (setting or "").lower().startswith("outdoor"):
@@ -363,6 +368,32 @@ def _to_web(path: Path, session_id: str) -> str:
     except Exception:
         pass
     return "/images/" + path.name
+
+
+def environment_type(session_id: str = "default") -> str:
+    """"indoor-…" / "outdoor-…" for the place this session is in right now.
+
+    This decides the indoor/outdoor clause in the grid prompt, and it used to be
+    read from ``setting_reference.setting`` — a field that has never existed on
+    the Level sheet, so it was always "" and the clause never fired. Nothing
+    stopped an indoor level's montage from being drawn under an open sky.
+
+    Vision already labels every turn's environment as ``setting_type``, so walk
+    the history back for it and fall back to classifying the render base, the
+    same way the world drift does.
+    """
+    import engine
+
+    try:
+        for entry in reversed(engine._load_history(session_id) or []):
+            label = str(entry.get("setting_type") or "").strip()
+            if label:
+                return label
+        st = engine._load_state(session_id) or {}
+        return engine.classify_setting(st.get("current_render_base") or "") or ""
+    except Exception:
+        logging.exception("[CUTSCENE] environment lookup failed")
+        return ""
 
 
 def resolve_source_path(
@@ -556,6 +587,16 @@ def play_for_session(
             if not dest_world:
                 dest_world = _outgoing_world_id(cutscene_id)
 
+    # A montage staged by the server (the level's opening) already knows its
+    # plate as a file. Prefer it: that plate is a World frame, whose web URL is
+    # /api/worlds/<slug>/frame, and resolving that back to a path is something
+    # resolve_source_path cannot do — so routing it through the client would
+    # leave the opening with no reference at all.
+    staged = engine.get_state(session_id) or {}
+    staged = staged.get("pending_cutscene") or {}
+    if staged.get("cutscene_id") == cutscene_id:
+        source_url = str(staged.get("source_path") or "") or source_url
+
     plate = resolve_source_path(
         session_id,
         source_url=source_url,
@@ -602,7 +643,15 @@ def play_for_session(
             st = engine._load_state(session_id) or {}
             if node:
                 st["experience_cutscene_id"] = play_id
+            # MERGED onto what is already pending, not replacing it. The opening
+            # montage is stamped at reset with the fields only reset knows — that
+            # it IS the opening, its goal line, its prologue — and generating the
+            # shots must not wipe them, or the hand-off back to turn one has no
+            # idea it is the one that owns the parked choice slate.
+            prev = st.get("pending_cutscene") or {}
+            keep = prev if prev.get("cutscene_id") == play_id else {}
             st["pending_cutscene"] = {
+                **keep,
                 "cutscene_id": play_id,
                 "name": payload["name"],
                 "mood": mood,
@@ -614,6 +663,13 @@ def play_for_session(
                 "graph": bool(node),
             }
             engine._save_state(st, session_id)
+        # Saving to disk is not enough. The module-global `state` mirror still
+        # holds the copy from BEFORE the shots existed, and the next request that
+        # persists it — a status poll, a feed poll — writes that copy straight
+        # back over this one. Nothing noticed while the shots were only ever read
+        # from this function's own HTTP response; the opening montage reads them
+        # back on a later request to find the frame it ended on, and got none.
+        engine._sync_ambient_state(st, session_id)
     except Exception:
         logging.exception("[CUTSCENE] failed to stamp pending_cutscene")
     return payload

@@ -93,6 +93,60 @@ INTERACT needs that ceremony with choices where the dialogue goes.
    new Moment and assert the scene after exit is byte-identical to the scene
    before — that is the regression that matters.
 
+**Done — the close-up, and what you do in it.** The dive lands on a generated
+plate of the object and offers three answers instead of a single `✕`:
+
+* **SPEAK** nests a Conversation Moment on the close-up already on screen. It
+  is live from the moment the dive opens, because it is the thing worth doing
+  while the INTERACT turn draws — that wait was always the justification for
+  the dive, and a slate where everything is greyed out turns it back into a
+  progress bar. Hanging up returns to the dive via the Moment's `resume` hook.
+* **ATTACK** points the encounter system at this object: `/api/encounter/begin`
+  takes a `subject`, which skips `roll_encounter_kind` and tells the plate the
+  thing is ALREADY in the photograph, so the fight does not arrive as a
+  stranger standing next to it.
+* **LEAVE** is the old `✕`.
+
+ATTACK and LEAVE are both on the slate **locked** until the INTERACT turn is
+done. That is not politeness about a spinner — both of them consume that
+frame. LEAVE walks out onto it, and ATTACK hands it to the encounter as the
+img2img plate the confrontation is staged in, which is also why the fight
+cannot race the turn. Once the fight resolves, the encounter's own aftermath
+turn regenerates the scene, so the INTERACT frame stops being the image the
+player returns to and becomes the one the fight was staged from.
+
+### What "done" means, and why it is not just "a frame painted"
+
+The dive's whole state machine hangs on one predicate, and getting it wrong
+strands the player in a close-up:
+
+* the usual signal is `onNextScenePainted` — `setScene` announcing that the new
+  still has actually **decoded**, plus `!state.processing` so a frame that
+  lands before the choices do still waits for them;
+* but a turn can finish having drawn nothing. The still gets content-filtered
+  (`scene_image` with no `image_url`), image generation is off, the send 402s,
+  or the turn watchdog gives up. Gated purely on paint, the dive then sat for
+  its full three-minute hold-out while the world behind it had already moved on
+  and put fresh choices on the wheel. So the fallback is `Ceremony.isActive()`,
+  which stays true across the guide-image wait — after the prose and choices
+  have landed — and is cleared by every ending, because they all funnel through
+  `hideVeil` → `Ceremony.reset`;
+* and the dive has to be **told** a turn went out at all (`armTurn`), because
+  `makeChoice` refuses one outright mid-cutscene. That is why
+  `openInteractMoment` hands its controls back synchronously: the press
+  dispatches the turn on the next line.
+
+Three more things the dive owns, each of which was a way to get stuck:
+`Moments.pop` can **refuse** while another Moment is mid-choreography, so the
+dive only retires once the Moment is really gone; picking SPEAK cancels a
+pending Esc-leave, which would otherwise eject the player the instant they hung
+up; and the run ending pops the dive, since `enterGameOver` closes a
+conversation but knows nothing about the Moment stack.
+
+Both dives also pull in half as hard now (`CLOSEUP_ZOOM`): a crop tight on the
+detection box shared almost no pixels with the frame it came from, so the cut
+read as a new location rather than a look at something in this one.
+
 ## Watch for
 
 The same bug class that caused the encounter conclusion issues: a Moment

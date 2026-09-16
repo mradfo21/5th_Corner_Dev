@@ -1114,7 +1114,7 @@ class TestEditorDots(EditorHarness):
             "back at the root should close the editor")
 
     def test_a_window_carries_the_essentials_and_nothing_to_read(self):
-        """Four fields for a place. No switch, no ⓘ, no advanced disclosure.
+        """Five fields for a place. No switch, no ⓘ, no advanced disclosure.
         The compiled prompt stays visible — hiding it is how a save looked dead."""
         self._open_ring()
         self._tap("dot:level")
@@ -1124,7 +1124,8 @@ class TestEditorDots(EditorHarness):
         self.assertEqual(
             self.page.eval_on_selector_all(
                 "#eg-sheet-body .we-cast-label", "els => els.map(e => e.textContent)"),
-            ["Name", "What it is", "Landmarks", "Opening shot"])
+            ["Name", "What it is", "What you're here for", "Landmarks",
+             "Opening shot"])
         body = "#eg-sheet-body "
         self.assertEqual(self.page.eval_on_selector_all(body + ".we-info", "e => e.length"), 0)
         self.assertEqual(self.page.eval_on_selector_all(body + ".we-more", "e => e.length"), 0)

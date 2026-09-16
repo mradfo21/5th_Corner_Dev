@@ -5015,6 +5015,43 @@ html.is-mobile.is-portrait #moment-scene-img {
   text-shadow: 0 1px 6px rgba(0,0,0,0.8);
 }
 
+/* ---------- Title card ---------- */
+/* Held over black while a level's opening montage generates. Centred between
+   the letterbox bars rather than tucked in the nameplate's corner: for those
+   few seconds this IS the screen, not an annotation on top of one. */
+#moment-title-card {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  width: min(680px, 78vw);
+  text-align: center;
+  font-family: 'Share Tech Mono', monospace;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.9s ease 0.3s;
+}
+#moment-title-card.moment-title-card-in { opacity: 1; }
+#moment-title-card.hidden { display: none; }
+#moment-title-card-name {
+  font-size: clamp(22px, 4.4vw, 40px);
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: #ffe7bf;
+  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.9);
+}
+#moment-title-card-goal {
+  margin: 18px auto 0;
+  max-width: 46ch;
+  font-size: clamp(11px, 1.5vw, 14px);
+  line-height: 1.7;
+  letter-spacing: 0.1em;
+  color: rgba(255, 210, 160, 0.62);
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.9);
+}
+#moment-title-card-goal:empty { display: none; }
+
 #moment-notify {
   position: absolute;
   top: calc(11vh + 16px);
@@ -5602,12 +5639,16 @@ body.moment-interact .moment-choice:focus {
   color: #eafff2;
 }
 /* The dive's slate is set over the frame, so a locked row cannot fall back to
-   the base chip's panel — it would be the only box on screen. */
+   the base chip's panel — it would be the only box on screen. Without the
+   panel there is also no backdrop to dim against, so the base 0.42 dropped
+   this text to roughly a third of an alpha over a lit close-up and the player
+   could not read what they were waiting for. Lean on the shadow instead. */
 body.moment-interact .moment-choice-locked,
 body.moment-interact .moment-choice-locked:hover,
 body.moment-interact .moment-choice-locked:focus {
   background: none;
   border: none;
+  opacity: 0.66;
   color: rgba(234, 255, 244, 0.82);
 }
 body.moment-interact .moment-choice-num { display: none; }
@@ -5774,6 +5815,7 @@ body.moment-conversation #talk-float-who {
 #moment-portrait.living #moment-portrait-img,
 #moment-portrait-shimmer,
 #moment-nameplate,
+#moment-title-card,
 .moment-notify-chip,
 #moment-scene,
 #moment-scene-img,
@@ -12740,6 +12782,16 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
 }
 #world-editor .we-cast-row { margin-top: 13px; }
 #world-editor .we-block-clear { margin-top: 16px; }
+/* DRAFT — under the field it writes rather than beside the label, because it
+   replaces the whole value and must not read as part of the label row. */
+#world-editor .we-lore-draft {
+  display: inline-block;
+  margin-top: 7px;
+  padding: 5px 11px;
+  font-size: calc(10px * var(--we-fs));
+  letter-spacing: 0.16em;
+}
+#world-editor .we-lore-draft:disabled { opacity: 0.5; cursor: default; }
 #world-editor .we-cast-label {
   display: block;
   font-size: calc(10px * var(--we-fs));
@@ -14784,3 +14836,42 @@ body.world-editor-on:not(.mode-watch) #objectives-hud {
 #free-will-btn,
 #scan-btn,
 #camp-btn { display: none !important; }
+
+/* ==========================================================================
+   Opening blackout — the run starts like a cut in a film.
+   Press PLAY and the screen goes to black and STAYS there, with nothing on it,
+   until the first picture is genuinely ready; then it fades up. Previously the
+   loader's progress bar ticked over an empty frame, which made the opening beat
+   of the game look like a fault. Declared last so nothing earlier in the file
+   can win on source order.
+   ========================================================================== */
+#opening-blackout {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  /* Under the BUG button (9000) so a bad opening can still be reported, and
+     over everything else, including the letterbox and the encounter flare. */
+  z-index: 8500;
+  transition: opacity 620ms ease;
+}
+body.opening-blackout #opening-blackout {
+  opacity: 1;
+  /* Swallow clicks while black: input during the hold belongs to nothing yet. */
+  pointer-events: auto;
+}
+/* Hold the black EMPTY. The ceremony, the veil, the prose and the choice stack
+   all have their own show rules and would otherwise sit on top of it. */
+body.opening-blackout #ceremony,
+body.opening-blackout #processing-veil,
+body.opening-blackout #veil,
+body.opening-blackout #narrator-bar,
+body.opening-blackout #choices-container,
+body.opening-blackout #action-wheel,
+body.opening-blackout #prose-feed,
+body.opening-blackout #vhs-timecode,
+body.opening-blackout #encounter-debug-btn {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}

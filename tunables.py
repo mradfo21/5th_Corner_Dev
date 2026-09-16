@@ -141,6 +141,30 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
         "help": "Milliseconds each frame stays on screen. 4 frames at 420ms is "
                 "under two seconds of motion per turn.",
     },
+    # ── Cutscene ──────────────────────────────────────────────────────────
+    # The other half of the grammar: a flipbook is one camera with time moving,
+    # a cutscene is four cameras on one moment with time held. Both come from a
+    # single generation; what differs is whether cuts are allowed and how long
+    # you get to look. These two knobs are the opening beat of a level.
+    "intro_cutscene": {
+        "kind": "bool",
+        "label": "Open on a montage",
+        "default": True,
+        "help": "Start a level with an establishing montage — arriving, with "
+                "what you came for in the distance — instead of cutting "
+                "straight to the cached first frame. One generation.",
+    },
+    "cutscene_hold_ms": {
+        "kind": "number",
+        "label": "Shot hold",
+        "min": 800,
+        "max": 8000,
+        "step": 100,
+        "default": 4000,
+        "help": "Milliseconds each cutscene shot stays on screen. Much longer "
+                "than a flipbook frame on purpose: these are photographs to "
+                "look at, not in-betweens.",
+    },
     "default_voice_id": {
         "kind": "voice",
         "label": "Default voice",
@@ -277,6 +301,12 @@ def _live(name: str, spec: Dict[str, Any]) -> Any:
         if name == "flipbook_frame_ms":
             import engine
             return getattr(engine, "FLIPBOOK_FRAME_MS", spec.get("default"))
+        if name == "intro_cutscene":
+            import engine
+            return getattr(engine, "INTRO_CUTSCENE", spec.get("default"))
+        if name == "cutscene_hold_ms":
+            import cutscene
+            return getattr(cutscene, "HOLD_MS", spec.get("default"))
         if name == "default_voice_id":
             import engine
             return engine._default_voice_id()
@@ -339,6 +369,12 @@ def _apply_one(name: str, value: Any) -> None:
     elif name == "flipbook_frame_ms":
         import engine
         engine.FLIPBOOK_FRAME_MS = int(value)
+    elif name == "intro_cutscene":
+        import engine
+        engine.INTRO_CUTSCENE = bool(value)
+    elif name == "cutscene_hold_ms":
+        import cutscene
+        cutscene.HOLD_MS = int(value)
     elif name == "narrator_voice_id":
         import engine
         engine.ELEVENLABS_NARRATOR_VOICE_ID = value

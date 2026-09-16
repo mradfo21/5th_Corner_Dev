@@ -1309,6 +1309,14 @@ FLIPBOOK_ENABLED  = False
 FLIPBOOK_FRAMES   = flipbook.DEFAULT_FRAMES
 FLIPBOOK_FRAME_MS = flipbook.DEFAULT_FRAME_MS
 
+# ── Opening montage ───────────────────────────────────────────────────────────
+# Whether a level opens on an establishing montage (cutscene.py, "approach"
+# mood) rather than cutting straight to the World's cached first frame. Its own
+# knob, and on by default, unlike FLIPBOOK_ENABLED: the case for one generation
+# at the top of a level is much stronger than for one on every turn, because
+# this is the beat that has to make somebody want to play.
+INTRO_CUTSCENE = True
+
 
 def flipbook_settings(st: Optional[dict] = None) -> dict:
     """Whether this turn draws a flipbook, and at what shape.
@@ -1423,6 +1431,8 @@ def apply_experience_mode(mode: str, session_id: str = "default",
 
 
 def _cutscene_feed_item(info: dict) -> dict:
+    import cutscene as _cutscene
+
     dest = (info or {}).get("to") or {}
     pending = (info or {}).get("cutscene") or {}
     name = dest.get("name") or pending.get("name") or "Cutscene"
@@ -1436,7 +1446,11 @@ def _cutscene_feed_item(info: dict) -> dict:
             "status": pending.get("status") or "pending",
             "from_world": ((info or {}).get("from") or {}).get("id"),
             "shots": pending.get("shots") or [],
-            "duration_ms": pending.get("duration_ms") or 1600,
+            "duration_ms": pending.get("duration_ms") or int(_cutscene.HOLD_MS),
+            # The opening montage carries its own title card copy, rather than
+            # leaving the client to guess at one from whatever is painted.
+            "opening": bool(pending.get("opening")),
+            "goal": pending.get("goal") or "",
         },
     )
 
@@ -6957,6 +6971,12 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
         # anchor QUALITY on it while spatial state follows the live frame.
         primary_guide_image_path = None
         live_capture_this = False
+        # Is the newest reference the frame the opening handed over — the intro
+        # cutscene's last shot, or the opening plate? That frame is the
+        # establishing shot of the place the player is standing in, so the first
+        # generated frame has to continue from its pixels even when the choice
+        # reads as a hard cut. See the hard_transition branch below.
+        opening_handoff_ref = False
         
         if frame_idx > 0 and _hist:
             last_imgs = []
@@ -6991,6 +7011,9 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                         is_live,
                     ))
                     print(f"[IMG2IMG COLLECT]   -> Added to reference list (total: {len(last_imgs)})")
+                    if len(last_imgs) == 1 and entry.get("cached_opening"):
+                        opening_handoff_ref = True
+                        print(f"[IMG2IMG COLLECT]   -> this is the OPENING HANDOFF frame")
                 
                 # CRITICAL: The reference buffer must RESET at a location change —
                 # whether or not that boundary frame produced a usable image.
@@ -7313,16 +7336,33 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                     # without giving the model a composition to copy. Falls
                     # back to no reference at all (the proven-safe behavior)
                     # if the swatch can't be built for any reason.
-                    swatch_path = make_style_swatch(prev_img_paths_list[0], output_dir=img_dir)
-                    if swatch_path:
-                        ref_images_to_use = [swatch_path]
-                        use_style_swatch = True
-                        print(f"[IMG GENERATION] Hard transition - using a blurred color/light "
-                              f"swatch (no legible composition to copy) instead of no reference")
+                    #
+                    # EXCEPT straight out of the opening. The intro cutscene's
+                    # last shot is not "the previous location" — it is the
+                    # establishing shot of the ground the player is standing on,
+                    # and the first playable frame is the continuation of it.
+                    # Blurring it to a swatch meant the run visibly began
+                    # somewhere other than where the cutscene had just put you:
+                    # a montage of a chain-link fence under a mesa, then a first
+                    # frame that shares only its palette. The first choice out of
+                    # an opening is nearly always a "hard" verb (climb, cut
+                    # through, approach), so this fired almost every run.
+                    if opening_handoff_ref:
+                        ref_images_to_use = prev_img_paths_list[:1]
+                        print(f"[IMG GENERATION] Hard transition, but the reference IS the "
+                              f"opening handoff frame - keeping its pixels so the first "
+                              f"playable frame continues the cutscene it came out of")
                     else:
-                        ref_images_to_use = []
-                        print(f"[IMG GENERATION] Hard transition - swatch build failed, falling back "
-                              f"to NO reference image (forces text-to-image)")
+                        swatch_path = make_style_swatch(prev_img_paths_list[0], output_dir=img_dir)
+                        if swatch_path:
+                            ref_images_to_use = [swatch_path]
+                            use_style_swatch = True
+                            print(f"[IMG GENERATION] Hard transition - using a blurred color/light "
+                                  f"swatch (no legible composition to copy) instead of no reference")
+                        else:
+                            ref_images_to_use = []
+                            print(f"[IMG GENERATION] Hard transition - swatch build failed, falling back "
+                                  f"to NO reference image (forces text-to-image)")
                 else:
                     ref_images_to_use = prev_img_paths_list[:1]  # ONLY most recent for strongest continuity
                     print(f"[IMG GENERATION] Normal transition - using 1 reference image (most recent frame)")
@@ -9428,6 +9468,144 @@ def _apply_cached_opening_frame(
     # first place.
     return False
 
+
+def _open_on_montage(new_state: dict, opening_rec: dict) -> bool:
+    """Whether this run should open on an establishing montage.
+
+    Needs a cached World frame, because the montage is drawn FROM one — it is
+    the level's look, light and cast, and the place the four shots are heading
+    toward. With no plate there is nothing to establish toward, so the run falls
+    back to rendering its own opening still, which is what it did before.
+    """
+    if not INTRO_CUTSCENE or not IMAGE_ENABLED:
+        return False
+    if not (opening_rec or {}).get("url"):
+        return False
+    # An authored Cutscene node on the start of the graph is somebody's
+    # deliberate opening. Don't stack a second montage in front of it.
+    return not str((new_state or {}).get("experience_cutscene_id") or "").strip()
+
+
+def _stage_opening_montage(
+    session_id: str,
+    new_state: dict,
+    intro_items: list,
+    opening_rec: dict,
+) -> list:
+    """Open the run on the level's approach montage instead of the cached plate.
+
+    The plate does not go into the feed. It is passed to the montage as the
+    reference it establishes toward (``source_url``) and left in
+    ``current_image_url`` so a status poll has something true to report, but the
+    player never looks at it: what the editor rendered is a preview of where the
+    level ends up, and opening on it made the first thing in every run a picture
+    nobody had shot for that run.
+
+    The opening choice slate is pulled OUT of the feed and parked in
+    ``pending_opening_choices``. Verbs sitting under a montage are a prompt to
+    act during a beat the player is supposed to watch; the montage hands them
+    back when it finishes (see _finish_opening_montage).
+    """
+    import uuid
+
+    import cutscene as _cutscene
+
+    shot = game_identity.establishing_shot()
+    slate = next((it for it in intro_items
+                  if (it or {}).get("type") == "player_choice_prompt"), None)
+    if slate:
+        intro_items = [it for it in intro_items if it is not slate]
+        new_state["pending_opening_choices"] = slate
+
+    new_state["current_image_url"] = opening_rec.get("url") or ""
+    new_state["pending_cutscene"] = {
+        "cutscene_id": "open-" + uuid.uuid4().hex[:8],
+        "name": shot["title"],
+        "mood": "approach",
+        "status": "pending",
+        "opening": True,
+        "goal": shot["goal"],
+        "prologue": shot["prologue"],
+        # The plate as a FILE, kept server-side and deliberately not put on the
+        # feed item. A World frame's web URL is /api/worlds/<slug>/frame, and
+        # _resolve_image_path only understands /images/<name> and absolute
+        # paths — so a plate that went out to the browser and came back as a URL
+        # resolved to nothing and the montage failed to develop.
+        "source_path": opening_rec.get("path") or "",
+        "duration_ms": int(_cutscene.HOLD_MS),
+        "graph": False,
+    }
+    intro_items.append(_cutscene_feed_item({
+        "cutscene": new_state["pending_cutscene"],
+        "from": {},
+    }))
+    print(f"[OPENING] establishing montage for {shot['title']!r} "
+          f"toward {shot['goal'] or '(no goal authored)'!r}", flush=True)
+    return intro_items
+
+
+def _finish_opening_montage(st: dict, session_id: str) -> dict:
+    """Hand the run over from the opening montage to turn one.
+
+    The montage's LAST shot becomes the frame the run plays from. That matters
+    beyond presentation: history[0] is the img2img reference for turn 1 and what
+    SCAN and the vision pass read, so anchoring it on the plate the montage
+    walked away from would make turn 1 continue from a composition the player
+    never saw. The approach mood's fourth shot is written as a settled, held
+    frame precisely so it can carry that job.
+
+    Returns the fields api_cutscene_complete puts on the wire.
+    """
+    pending = st.get("pending_cutscene") or {}
+    shots = [s for s in (pending.get("shots") or []) if (s or {}).get("url")]
+    last = shots[-1] if shots else {}
+    st["pending_cutscene"] = None
+    st["experience_cutscene_id"] = ""
+
+    web = last.get("url") or st.get("current_image_url") or ""
+    img_path = last.get("path") or ""
+    if web:
+        st["current_image_url"] = web
+        tape = [f for f in (st.get("tape_frames") or []) if isinstance(f, str)]
+        if not tape or tape[-1] != web:
+            tape.append(web)
+        st["tape_frames"] = tape[-400:]
+
+    if img_path and os.path.exists(img_path):
+        hist = _load_history(session_id)
+        if not hist:
+            visual = st.get("current_image_prompt") or pending.get("goal") or ""
+            hist.append({
+                "choice": "Initialize Simulation",
+                "dispatch": pending.get("prologue") or "",
+                "vision_dispatch": pending.get("prologue") or "",
+                "world_prompt": st.get("world_prompt") or "",
+                "image": img_path,
+                "image_url": img_path,
+                "analysis_image": img_path,
+                "guide_image": img_path,
+                "image_prompt": visual,
+                "hard_transition": True,
+                "cached_opening": True,
+            })
+            _save_history(hist, session_id)
+            _sync_ambient_history(hist, session_id)
+            _spawn_cached_opening_vision(session_id, img_path)
+
+    # The real opening slate, generated at reset and parked while the montage
+    # played. Falling back to "Look around" here would throw away three choices
+    # that were already written for this level.
+    choices_item = st.pop("pending_opening_choices", None)
+    if not choices_item:
+        choices_item = _structure_choices_for_feed(
+            ["Look around"], "You've arrived. What's your first move?",
+            image_url=web,
+        )
+    _feed_append(st, choices_item)
+    st["choices"] = choices_item.get("choices")
+    return {"image_url": web, "choices": choices_item,
+            "to_world": st.get("experience_world_id") or ""}
+
 # --- Internal Reset Logic --- (Moved from api_reset for reusability)
 def _perform_game_reset() -> List[Dict[str, Any]]:
     global state, history, _last_image_path, _next_feed_item_id
@@ -9551,12 +9729,18 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
             frame_path=opening_rec.get("path") or None)
         logging.info(f"_perform_game_reset: initial_items from generate_intro_turn_feed_items (IDs): {[item['id'] for item in initial_items if item]}")
 
-        # Cached first frame is the load time. If this World already has a
-        # still, put it in the reset payload so Play / Watch paint immediately
-        # instead of sitting on a black screen until intro gen returns.
-        need_intro_spawn = _apply_cached_opening_frame(
-            SID, new_state, initial_items, intro_image_kwargs,
-            resolved=(opening_slug, opening_rec))
+        # How the level starts. Given a cached World frame the run opens on its
+        # establishing montage and the frame is demoted to that montage's
+        # reference; otherwise the cached frame is the load time, painting
+        # immediately so Play / Watch don't sit on black until intro gen returns.
+        if _open_on_montage(new_state, opening_rec):
+            need_intro_spawn = False
+            initial_items = _stage_opening_montage(
+                SID, new_state, initial_items, opening_rec)
+        else:
+            need_intro_spawn = _apply_cached_opening_frame(
+                SID, new_state, initial_items, intro_image_kwargs,
+                resolved=(opening_slug, opening_rec))
 
         if new_state.get("experience_cutscene_id"):
             # Opening is the montage — don't leave intro verbs under it.
@@ -13030,6 +13214,16 @@ def api_cutscene_complete():
     sid = _resolve_request_session_id()
     with WORLD_STATE_LOCK:
         st = _load_state(sid) or {}
+        # The opening montage is not a graph node — it has no incoming World and
+        # no outgoing edge, so complete_cutscene has nothing to follow and would
+        # fall through to a bare "Look around". Check it before that runs, while
+        # pending_cutscene still holds the shots.
+        if (st.get("pending_cutscene") or {}).get("opening"):
+            out = {"ok": True, "kind": "opening"}
+            out.update(_finish_opening_montage(st, sid))
+            _save_state(st, sid)
+            _sync_ambient_state(st, sid)
+            return jsonify(out)
         info = complete_cutscene(st, sid)
         out = {"ok": True, "kind": (info or {}).get("kind") or "resume"}
         if info and info.get("kind") == "cutscene":

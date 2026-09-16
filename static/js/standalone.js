@@ -2017,8 +2017,24 @@
     document.body.classList.add("awaiting-first-scene");
     state.bootGateHeld = true;
     state.bootTurnLanded = false;
+    armBootGateCeiling();
+  }
+
+  function armBootGateCeiling() {
     clearTimeout(state.bootGateTimer);
     state.bootGateTimer = setTimeout(() => {
+      // A Moment owning the screen is not a stall, and an opening montage runs
+      // well past this ceiling on purpose — four shots held for four seconds
+      // each is sixteen seconds of playback before the generation that made
+      // them. Firing here would put the rail and danger bar up over the middle
+      // of it. Wait it out instead; the gate releases when the montage hands
+      // off to turn one.
+      try {
+        if (window.Moments && Moments.isActive && Moments.isActive()) {
+          armBootGateCeiling();
+          return;
+        }
+      } catch (_) {}
       console.warn("[standalone] boot gate released on timeout — waited for " +
                    "scene=" + state.sceneVisible + " turn=" + state.bootTurnLanded);
       releaseBootGate(true);
@@ -2050,11 +2066,58 @@
     // The new frame is genuinely on screen now, so release anything waiting to
     // hand off to it before the realtime gate below can return early.
     flushScenePaintedWaiters();
+    // A painted scene is a picture worth fading up to. On a run that opens with
+    // a cutscene the first shot gets there first; this covers the plain start.
+    try { OpeningFade.ready("scene painted"); } catch (_) {}
     try {
       if (typeof scanInRealtime === "function" && scanInRealtime()) return;
     } catch (_) {}
     markSceneVisible();
   }
+
+  // ── OPENING BLACKOUT ──────────────────────────────────────────────────────
+  // Starting a run is the moment the game has to feel like a film, and it was
+  // the moment it felt most broken: PLAY put a progress bar over an empty frame
+  // and ticked through "Guide image rendering" while the player watched nothing
+  // happen. Every stage of the opening was visible except the one that matters.
+  //
+  // So the opening is a cut instead. Fade to black, hold it with nothing on it,
+  // and fade up only when there is genuinely a picture to fade up to — the
+  // cutscene's first shot if there is one, otherwise the first painted scene.
+  const OpeningFade = (function () {
+    // Never trap anyone in the dark. If neither a cutscene shot nor a scene ever
+    // paints, lift the black anyway and let whatever state the game is in be
+    // visible — a broken screen you can see beats a black one you cannot.
+    const CEILING_MS = 40000;
+    let holding = false;
+    let ceiling = 0;
+
+    function begin() {
+      holding = true;
+      document.body.classList.add("opening-blackout");
+      clearTimeout(ceiling);
+      ceiling = setTimeout(() => {
+        if (holding) {
+          try { console.warn("[opening] nothing painted in time; lifting the black"); } catch (_) {}
+          ready("timeout");
+        }
+      }, CEILING_MS);
+    }
+
+    // `reason` is only for the log; the first caller wins and the rest are
+    // no-ops, because the fade up must happen once.
+    function ready(reason) {
+      if (!holding) return;
+      holding = false;
+      clearTimeout(ceiling);
+      try { console.log("[opening] fading up on " + (reason || "?")); } catch (_) {}
+      document.body.classList.remove("opening-blackout");
+    }
+
+    function isHolding() { return holding; }
+
+    return { begin: begin, ready: ready, isHolding: isHolding };
+  })();
 
   // One-shot subscribers for "the next scene image is actually painted".
   // INTERACT's close-up hands off on this beat instead of polling for the turn
@@ -6471,8 +6534,47 @@
       if (!isLong) {
         input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
       }
-      if (minimal) return castRow([castLabel(field.label), input]);
-      return castRow([castLabelWithHelp(field.label, field.help), input]);
+      const cells = minimal
+        ? [castLabel(field.label), input]
+        : [castLabelWithHelp(field.label, field.help), input];
+      if (field.fillable_from_lore) cells.push(loreDraftBtn(blockId, field, input, opts));
+      return castRow(cells);
+    }
+
+    // "Draft from lore" — for the one field a reference plate can't answer. The
+    // draft lands IN the input rather than being saved for you: it is a starting
+    // sentence to edit, and the field it fills decides what the level's opening
+    // montage establishes toward.
+    function loreDraftBtn(blockId, field, input, opts) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "we-btn we-btn-ghost we-lore-draft";
+      b.textContent = "DRAFT";
+      b.title = "Write this from the Experience lore";
+      b.addEventListener("click", async () => {
+        if (b.disabled) return;
+        b.disabled = true;
+        const was = b.textContent;
+        b.textContent = "…";
+        try {
+          // No slug: the goal is drawn from the Experience bible, which is the
+          // whole story's, not one World's.
+          const { ok, data } = await weFetch("POST", "/api/admin/studio/identity/goal", {});
+          const draft = ((data || {}).data || {}).goal || "";
+          if (!ok || !draft) {
+            throw new Error(((data || {}).error) || "nothing to draft from");
+          }
+          input.value = draft;
+          saveIdentityField(blockId, field, draft, opts);
+        } catch (err) {
+          console.warn("[cast] lore draft failed:", err);
+          setSaveStatus("error", err.message || "Couldn't draft that");
+        } finally {
+          b.disabled = false;
+          b.textContent = was;
+        }
+      });
+      return b;
     }
 
     function makeCastBlock(block, opts) {
@@ -15962,6 +16064,10 @@
       try { SceneAudio.reset(); } catch (_) {} // silence the prior run's bed
       Sound.start(); // new tape / game begins
       try { Haptics.strong(); } catch (_) {}
+      // Black first, before anything else in the reset can draw. Everything the
+      // old opening showed the player — the progress bar, the empty frame, the
+      // prose arriving before the picture — happens behind this now.
+      OpeningFade.begin();
       Ceremony.abort(); // cancel any mid-turn pipeline from the prior run
       cancelMoveTransition(); // drop any pending MOVE TO fade so a restart during a trip doesn't dim the fresh run
       // Restart runs the SAME gamified generation pipeline as a normal turn: the
@@ -16455,22 +16561,60 @@
   // both dives (SPEAK and INTERACT) read as a cut to somewhere else rather
   // than a look at something in THIS place. Half the magnification keeps the
   // subject's surroundings in the shot, which is the continuity the jump needs.
-  const CLOSEUP_ZOOM = 0.5;
+  // 0.5 here meant "crop twice the box", and it compounded with the 1.24x that
+  // subjectNormBox's default padding already applies: the crop came out 2.48x
+  // the detection in each dimension, so the subject was about a sixth of the
+  // pixels handed to img2img. That is how INTERACT on a truck came back as a
+  // close-up of the monitor beside it — the model refined whatever dominated
+  // the crop, and it was not the thing that was clicked. 0.8 (a 1.55x crop,
+  // subject ~40% of the area) keeps the surroundings the dive needs for
+  // continuity while leaving no doubt what the subject is.
+  const CLOSEUP_ZOOM = 0.8;
 
   // Widen a crop box about its own centre so the effective magnification is
   // CLOSEUP_ZOOM of the tight framing, clamped back inside the frame.
-  function relaxCloseUpBox(box) {
+  //
+  // `others` is the rest of this scan's detections. Widening is given up rather
+  // than allowed to pull a DIFFERENT tagged object into the crop: context is
+  // worth having, but not at the price of generating the wrong subject.
+  function relaxCloseUpBox(box, others) {
     if (!box || !(CLOSEUP_ZOOM > 0) || CLOSEUP_ZOOM >= 1) return box;
     const cx = box.x + box.w / 2;
     const cy = box.y + box.h / 2;
-    const w = Math.min(1, box.w / CLOSEUP_ZOOM);
-    const h = Math.min(1, box.h / CLOSEUP_ZOOM);
-    return {
-      x: Math.max(0, Math.min(1 - w, cx - w / 2)),
-      y: Math.max(0, Math.min(1 - h, cy - h / 2)),
-      w: w,
-      h: h,
+
+    const widen = (zoom) => {
+      const w = Math.min(1, box.w / zoom);
+      const h = Math.min(1, box.h / zoom);
+      return {
+        x: Math.max(0, Math.min(1 - w, cx - w / 2)),
+        y: Math.max(0, Math.min(1 - h, cy - h / 2)),
+        w: w,
+        h: h,
+      };
     };
+
+    const holdsAStranger = (candidate) => {
+      if (!Array.isArray(others) || !others.length) return false;
+      const inside = (b, x, y) => x >= b.x && x <= b.x + b.w
+                               && y >= b.y && y <= b.y + b.h;
+      return others.some((o) => {
+        if (!o) return false;
+        const ox = Number(o.cx), oy = Number(o.cy);
+        if (!isFinite(ox) || !isFinite(oy)) return false;
+        // Already in the tight box? Then it overlaps the subject and excluding
+        // it is neither possible nor desirable.
+        if (inside(box, ox, oy)) return false;
+        return inside(candidate, ox, oy);
+      });
+    };
+
+    // Largest widening that keeps the crop honest. Ends at 1.0, which is the
+    // tight box — always acceptable, because it is exactly the thing clicked.
+    for (const zoom of [CLOSEUP_ZOOM, 0.85, 0.9, 0.95, 1.0]) {
+      const candidate = widen(zoom);
+      if (zoom >= 1 || !holdsAStranger(candidate)) return candidate;
+    }
+    return widen(1.0);
   }
 
   // SCAN detections are {cx, cy, w, h} in 0..1 source space (center + size).
@@ -19756,20 +19900,37 @@
   function reconcileScanTags(objects, tapped) {
     if (!el.scanTags) return;
     objects = capScanObjectsForDevice(objects, tapped && tapped.label);
+    // Identity has to include WHERE the thing is, not just what it is called.
+    // The server keeps two detections that share a label but sit apart
+    // (_normalize_detections dedupes on label plus a coarse position), so a
+    // scan legitimately returns e.g. two "cylindrical metal tank". Keyed on the
+    // label alone, both collapsed into one tag whose _obj was overwritten by
+    // whichever came last: the tag sat over one tank carrying the other's box,
+    // and INTERACT then cropped the wrong one. Same coarse grid as the server.
+    const tagKey = (obj) => {
+      const cx = Number(obj && obj.cx), cy = Number(obj && obj.cy);
+      const where = (isFinite(cx) && isFinite(cy))
+        ? `@${Math.round(cx * 5)},${Math.round(cy * 5)}` : "";
+      return String((obj && obj.label) || "") + where;
+    };
     const existing = new Map();
     Array.from(el.scanTags.children).forEach((t) => {
-      if (t._label) existing.set(t._label, t);
+      if (t._key) existing.set(t._key, t);
+      else if (t._label) existing.set(t._label, t);
     });
     const nextLabels = new Set();
     objects.forEach((obj, i) => {
-      nextLabels.add(obj.label);
-      let tag = existing.get(obj.label);
+      const key = tagKey(obj);
+      nextLabels.add(key);
+      let tag = existing.get(key);
       if (tag) {
         tag._obj = obj;
+        tag._key = key;
         tag.classList.remove("leaving");
         positionScanTag(tag); // CSS transitions the move
       } else {
         tag = buildScanTag(obj);
+        tag._key = key;
         tag.style.setProperty("--twk", (i * 70) + "ms");
         el.scanTags.appendChild(tag);
         positionScanTag(tag);
@@ -19781,8 +19942,8 @@
       tag.classList.toggle("targeted", !!tapped && obj.label === tapped.label);
     });
     // Retire tags no longer detected (but keep one being actively poked).
-    existing.forEach((tag, label) => {
-      if (nextLabels.has(label)) return;
+    existing.forEach((tag, key) => {
+      if (nextLabels.has(key)) return;
       if (tag === state.scanTagActing) return;
       tag.classList.add("leaving");
       setTimeout(() => {
@@ -20177,11 +20338,16 @@
     const moveTarget = action.id === "move" ? obj.label : null;
     // MOVE commits and waits behind the normal ceremony. INTERACT dives in
     // first (see openInteractMoment) and rides the same turn underneath.
-    if (action.id === "interact" && window.Moments &&
-        typeof window.Moments.push === "function") {
-      openInteractMoment(obj);
-    }
+    const dive = (action.id === "interact" && window.Moments &&
+                  typeof window.Moments.push === "function")
+      ? openInteractMoment(obj)
+      : null;
     makeChoice(phrase, null, { source, moveTarget, subject: obj.label });
+    // Everything the dive's exits wait for is that turn, so it has to know one
+    // is coming. makeChoice can refuse outright (mid-cutscene, a send that
+    // 402s), and a dive waiting on a turn that was never dispatched would sit
+    // locked until its hold-out expired.
+    if (dive) dive.armTurn(state.awaitingResolution);
   }
 
   // ------------------------------------------------------------------
@@ -21634,8 +21800,11 @@
           });
           if (entry && entry.aborted) return true;
           if (res && res.image_url) {
-            if (dive) dive.closeUpUrl = res.image_url;
-            window.Moments.setPortrait(res.image_url);
+            // Through the dive, not straight at the chrome: by the time a
+            // close-up lands the player may already be inside a nested SPEAK,
+            // and the dive is what knows not to paint over it.
+            if (dive) { dive.closeUpUrl = res.image_url; dive.render(); }
+            else window.Moments.setPortrait(res.image_url);
           } else console.warn("[interact] no close-up:", (res && res.reason) || "unknown");
         } catch (err) {
           console.warn("[interact] close-up failed:", err);
@@ -21670,21 +21839,53 @@
   // armed before the close-up starts generating — the turn can otherwise land
   // during that fetch and the dive would miss the only beat it waits for.
   function createInteractDive(obj) {
-    // Never trap the player in a close-up, even if no frame ever paints.
+    // Never trap the player in a close-up, even if the turn goes silent.
     const HOLD_MAX_MS = 180000;
     const started = Date.now();
     let scenePainted = false;
     let wantsOut = false;
     let settledSeen = false;
+    let exiting = false;
     let done = false;
+    // Whether an INTERACT turn actually went out behind this dive, told to us
+    // by the press once makeChoice has had its say (see commitScanAction).
+    let turnArmed = false;
+    let turnExpected = false;
 
     const dive = { closeUpUrl: null, referenceFrame: null };
 
-    // "The scene this dive came from has been redrawn and the turn is over."
-    // Both exits hang on it: LEAVE walks out onto that frame, and ATTACK hands
-    // it to the encounter as the plate the confrontation is staged in.
+    // The turn is over, however it ended. Ceremony tracks the whole pipeline
+    // INCLUDING the wait for the still — it stays active while the frame
+    // renders, after the prose and choices have already landed — and every
+    // ending clears it: a clean resolve, a filtered image, an error beat, the
+    // turn watchdog, a refused send (hideVeil calls Ceremony.reset).
+    function turnOver() {
+      try { if (Ceremony.isActive && Ceremony.isActive()) return false; } catch (_) {}
+      return !state.awaitingResolution && !state.processing;
+    }
+
+    // "There is something to leave onto, and the turn behind this dive is
+    // finished." Both exits hang on it: LEAVE walks out onto that frame, and
+    // ATTACK hands it to the encounter as the plate the fight is staged in.
+    //
+    // Painting is the usual signal, but it cannot be the only one. A turn whose
+    // image is content-filtered, or one the watchdog gives up on, ends with no
+    // new frame at all — and a dive watching only for paint sat locked for its
+    // full three-minute hold-out while the world behind it had already moved on
+    // and put fresh choices on the wheel.
     function settled() {
-      return scenePainted && !state.processing;
+      if (!turnArmed) return false;
+      if (!turnExpected) return true;
+      return scenePainted ? !state.processing : turnOver();
+    }
+
+    // makeChoice refuses a turn outright in some states (mid-cutscene, a send
+    // that 402s). A dive waiting on a turn that was never dispatched has
+    // nothing coming, so it opens straight onto its full slate.
+    function armTurn(dispatched) {
+      turnArmed = true;
+      turnExpected = !!dispatched;
+      sync();
     }
 
     function retire() {
@@ -21696,22 +21897,33 @@
     function popMoment() {
       try {
         if (window.Moments.topType && window.Moments.topType() === "interact") {
-          return window.Moments.pop();
+          return Promise.resolve(window.Moments.pop());
         }
       } catch (_) {}
       return Promise.resolve(null);
     }
 
+    // Leave the dive for good. The pop can be REFUSED — Moments drops it while
+    // another Moment is mid-choreography — and a dive that retired itself
+    // anyway would leave the player on a close-up whose slate no longer does
+    // anything. Retire only once the Moment is actually gone.
+    async function exitDive() {
+      if (done || exiting) return false;
+      exiting = true;
+      try { await popMoment(); } catch (e) { console.warn("[interact] pop failed:", e); }
+      exiting = false;
+      if (onTop()) { apply(); return false; }
+      retire();
+      return true;
+    }
+
     function leave() {
-      if (done) return;
-      if (settled()) { retire(); popMoment(); return; }
+      if (done || exiting) return;
+      if (settled()) { exitDive(); return; }
       // The changed scene is still developing. Say so instead of popping onto
       // the frame they were trying to leave.
       wantsOut = true;
-      try {
-        window.Moments.setNameplate(obj.label || "\u2014", "stepping back\u2026");
-      } catch (_) {}
-      render();
+      apply();
     }
 
     // ATTACK aims the encounter system at THIS object instead of letting it
@@ -21723,22 +21935,30 @@
     // when the fight resolves, which is why ATTACK waits for the turn to be
     // over rather than racing it.
     async function attack() {
-      if (done || !settled()) return;
-      retire();
-      await popMoment();
+      if (done || exiting || !settled()) return;
+      if (!(await exitDive())) return;
       let fired = false;
       try {
         fired = await Encounter.start({ subject: obj });
       } catch (e) {
         console.warn("[interact] attack failed:", e);
       }
+      // The encounter refuses to open in states the dive cannot see (a coin-op
+      // pause, a fight already running). The player is back in the scene either
+      // way, so say the swing went nowhere rather than leaving it unexplained.
       if (!fired) showRendererToast("The " + (obj.label || "thing") + " doesn\u2019t answer.");
     }
 
-    // Hand Talk the close-up that is already on screen so the conversation
-    // opens on this plate instead of generating (and paying for) a second one.
+    // SPEAK nests a Conversation Moment on top of the dive. Handing Talk the
+    // close-up already on screen pins it as the conversation's opening plate,
+    // so the dive reads as continuing rather than cutting to a shimmer while
+    // Talk develops its own (correctly person-framed) portrait behind it.
     function speak() {
-      if (done) return;
+      if (done || exiting || state.gameOver) return;
+      // Choosing to talk is choosing to stay. Without this, an Esc that landed
+      // while the frame was still developing stayed pending underneath the
+      // conversation and ejected the player the instant they hung up.
+      wantsOut = false;
       try {
         Talk.start(Object.assign({}, obj, {
           speaks: true,
@@ -21765,10 +21985,35 @@
       ];
     }
 
-    function render() {
-      if (done) return;
+    // A nested SPEAK owns the screen while it is open. The dive keeps tracking
+    // the turn underneath, but must not paint over the conversation — it
+    // redraws when the conversation pops and hands the Moment back (resume).
+    function onTop() {
+      try {
+        return !(window.Moments.topType && window.Moments.topType() !== "interact");
+      } catch (_) { return true; }
+    }
+
+    // What the nameplate says about the world behind the close-up. A turn that
+    // ended without drawing anything must not claim the scene changed — the
+    // player is about to walk out onto the frame they came in on.
+    function status() {
+      if (wantsOut) return "stepping back\u2026";
+      if (!settled()) return "reaching out\u2026";
+      return scenePainted ? "the scene has changed" : "nothing here moved";
+    }
+
+    // Put the dive back on screen as it should currently look: its close-up,
+    // its status, and the slate with the right things live on it. Safe to call
+    // repeatedly — it is the one path that redraws, so the turn landing, a
+    // conversation ending and the first render all go through it.
+    function apply() {
+      if (done || exiting || !onTop()) return;
+      if (wantsOut && settled()) { exitDive(); return; }
+      const url = dive.closeUpUrl || dive.referenceFrame;
+      if (url) { try { window.Moments.setPortrait(url); } catch (_) {} }
+      try { window.Moments.setNameplate(obj.label || "\u2014", status()); } catch (_) {}
       if (!window.Moments || typeof window.Moments.setChoices !== "function") return;
-      if (window.Moments.topType && window.Moments.topType() !== "interact") return;
       try {
         window.Moments.setChoices(slate(), (item) => {
           if (item && typeof item.act === "function") item.act();
@@ -21784,73 +22029,71 @@
       const now = settled();
       if (now === settledSeen) return;
       settledSeen = now;
-      if (now && wantsOut) { retire(); popMoment(); return; }
-      restore();
-    }
-
-    function restore() {
-      if (done) return;
-      const url = dive.closeUpUrl || dive.referenceFrame;
-      if (url) { try { window.Moments.setPortrait(url); } catch (_) {} }
-      try {
-        window.Moments.setNameplate(
-          obj.label || "\u2014",
-          wantsOut ? "stepping back\u2026" : (settled() ? "the scene has changed" : "reaching out\u2026"),
-        );
-      } catch (_) {}
-      render();
+      apply();
     }
 
     onNextScenePainted(() => { scenePainted = true; sync(); });
 
     const tick = setInterval(() => {
-      if (done) return;
+      if (done || exiting) return;
+      // The run ending is not something to sit through in a close-up. Nothing
+      // on the slate works any more — Encounter and Talk both refuse a dead run
+      // — and the death overlay is coming up behind the letterbox. Get out of
+      // its way. enterGameOver closes a conversation but knows nothing about
+      // the Moment stack, so this is the dive's own business.
+      if (state.gameOver) { exitDive(); return; }
       sync();
       // The hold-out only applies to a dive the player is actually sitting in.
       // Popping it from under an open conversation would tear the Moment stack.
-      if (Date.now() - started > HOLD_MAX_MS &&
-          window.Moments.topType && window.Moments.topType() === "interact") {
-        retire();
-        popMoment();
-      }
+      if (Date.now() - started > HOLD_MAX_MS && onTop()) exitDive();
     }, 1000);
 
-    dive.render = render;
-    dive.restore = restore;
+    dive.render = apply;
+    dive.restore = apply;
     dive.leave = leave;
+    dive.armTurn = armTurn;
     dive.cancel = retire;
     return dive;
   }
 
-  // Holds the dive open until the turn it was issued alongside resolves.
-  async function openInteractMoment(obj) {
+  // Open the dive and hand its controls straight back, SYNCHRONOUSLY: the
+  // caller dispatches the turn on the next line and has to be able to tell the
+  // dive whether one actually went out. The Moment itself is pushed in the
+  // background — waiting on it would mean waiting on the close-up to generate.
+  function openInteractMoment(obj) {
     // Crop the object's own pixels NOW, before Moments.push letterboxes and
     // dims the scene — the same discipline TALK follows. This crop is the
     // likeness the close-up is generated from; without it the portrait
     // endpoint has nothing to work from and returns no_crop.
     let referenceFrame = null;
     try {
-      const box = relaxCloseUpBox(subjectNormBox(obj));
+      // Pass the rest of the scan so the widening cannot annex a neighbouring
+      // tagged object and generate that instead of this one.
+      const box = relaxCloseUpBox(subjectNormBox(obj),
+                                  (state.scanObjects || []).filter((o) => o !== obj));
       if (box) referenceFrame = captureSceneRegion(box, 768);
     } catch (_) {}
     const dive = createInteractDive(obj);
     dive.referenceFrame = referenceFrame;
-    let pushed = null;
-    try {
-      pushed = await window.Moments.push("interact", {
-        subject: obj,
-        reference_image: referenceFrame,
-        dive: dive,
-      });
-    } catch (e) {
-      console.warn("[interact] moment push failed:", e);
-    }
-    // push() answers null without ever calling enter() when the shared chrome
-    // is missing or another Moment is mid-choreography. Retire the dive rather
-    // than leave its poll ticking against a Moment that was never opened.
-    if (!pushed && !(window.Moments.topType && window.Moments.topType() === "interact")) {
-      dive.cancel();
-    }
+    (async () => {
+      let pushed = null;
+      try {
+        pushed = await window.Moments.push("interact", {
+          subject: obj,
+          reference_image: referenceFrame,
+          dive: dive,
+        });
+      } catch (e) {
+        console.warn("[interact] moment push failed:", e);
+      }
+      // push() answers null without ever calling enter() when the shared chrome
+      // is missing or another Moment is mid-choreography. Retire the dive rather
+      // than leave its poll ticking against a Moment that was never opened.
+      if (!pushed && !(window.Moments.topType && window.Moments.topType() === "interact")) {
+        dive.cancel();
+      }
+    })();
+    return dive;
   }
 
   // ------------------------------------------------------------------
@@ -22981,6 +23224,12 @@
         if (!reduced()) img.classList.add("cutscene-ken");
       }
       try { window.Moments.setScene(url); } catch (_) {}
+      // The cutscene's first shot is the picture the opening black was waiting
+      // for. Fading up here rather than when the montage was merely *requested*
+      // is the whole point: the player sees black, then a photograph.
+      if (i === 0) {
+        try { OpeningFade.ready("cutscene shot 1"); } catch (_) {}
+      }
     }
 
     function scheduleNext() {
@@ -23112,6 +23361,18 @@
       shots = Array.isArray(lastPayload.shots) ? lastPayload.shots.slice() : [];
       if (!shots.length) {
         try { window.Moments.setNameplate(lastPayload.name || "CUTSCENE", "developing…"); } catch (_) {}
+        // A level's opening announces itself over the black hold while its
+        // montage generates. Every other cutscene interrupts a run already on
+        // screen and gets the nameplate alone.
+        if (lastPayload.opening) {
+          try {
+            window.Moments.setTitleCard(lastPayload.name || "", lastPayload.goal || "");
+          } catch (_) {}
+          // The boot ceremony's progress bar is not in the Moments HUD list, so
+          // it would sit lit across the bottom of the title card and every shot.
+          // The montage IS this run's loading state; nothing else should say so.
+          try { Ceremony.hideUI(); } catch (_) {}
+        }
         let res = null;
         const playBody = {
           cutscene_id: lastPayload.cutscene_id || "",
@@ -23119,6 +23380,10 @@
           name: lastPayload.name || "",
           offline: !!lastPayload.offline,
           demo: !!lastPayload.demo,
+          // Whatever is currently on screen is what an ordinary cutscene
+          // restages. The level's opening has nothing on screen yet and does not
+          // need this: the server staged that montage and kept its plate as a
+          // file, because a World frame's URL cannot be resolved back to one.
           source_url: plateUrl(),
         };
         try {
@@ -23170,6 +23435,9 @@
         return false;
       }
       index = -1;
+      // The card comes down before the first shot goes up, or the level's name
+      // is burned across the middle of its own establishing wide.
+      try { window.Moments.setTitleCard(""); } catch (_) {}
       if (reduced() && shots.length) showShot(shots.length - 1);
       else showShot(0);
       try {
@@ -23189,7 +23457,14 @@
 
     async function play(opts) {
       opts = opts || {};
-      if (playing || completing || generating || state.processing || state.gameOver) return false;
+      if (playing || completing || generating || state.gameOver) return false;
+      // A cutscene must not cut across a generation already in flight. A level's
+      // OPENING is the exception, and has to be: reset holds state.processing for
+      // the whole boot (Ceremony.begin sets it, and only a choice prompt clears
+      // it), while the opening's choice slate is deliberately parked until this
+      // montage finishes. Waiting for "not processing" here would mean the
+      // montage never plays and the run opens on nothing at all.
+      if (state.processing && !opts.opening) return false;
       if (menuOpen()) return false;
       if (window.Moments && window.Moments.isActive && window.Moments.isActive()) return false;
       if (!window.Moments || typeof window.Moments.push !== "function") {
@@ -23206,6 +23481,8 @@
           offline: !!opts.offline,
           demo: !!opts.demo,
           graph: !!opts.graph,
+          opening: !!opts.opening,
+          goal: opts.goal || "",
           label: opts.name || "CUTSCENE",
           sub: opts.mood || "montage",
         });
@@ -23226,6 +23503,8 @@
         cutscene_id: meta.cutscene_id || "",
         shots: meta.shots || [],
         duration_ms: meta.duration_ms,
+        opening: !!meta.opening,
+        goal: meta.goal || "",
         graph: true,
       };
       if (menuOpen()) {
