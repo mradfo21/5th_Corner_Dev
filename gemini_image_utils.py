@@ -97,6 +97,29 @@ def resolve_model() -> str:
     return GEMINI_FLASH_IMAGE
 
 
+# A frame the player cannot see is a failed frame, whatever the prose said.
+#
+# Observed: a turn moved the player into a drainage culvert and the render came
+# back 88% near-black (mean luma 10 of 255). The run did not stop — it carried on
+# generating from that frame — and the damage was not only that nobody could see
+# it: SCAN found no objects in it, so the next turn could not be committed at all.
+# A dark scene is the point of this game; an unreadable one is a bug.
+#
+# Stated as a build-level rule rather than in the world's own art direction,
+# because it holds for every world and no author should have to remember it.
+LEGIBILITY_RULE = (
+    "\n\nEXPOSURE — THIS FRAME MUST BE READABLE:\n"
+    "Dark, low-light and night are welcome; an unreadable frame is not. Whatever "
+    "the scene is, expose it so a viewer can see what and where it is: keep a "
+    "practical light source, a sky, an opening, a reflection or a bounce in shot, "
+    "and keep the subject and the space separable from the background. "
+    "NOT a black frame. NOT a nearly black frame. NOT an underexposed murk with "
+    "no legible geometry. If the described place would truly be pitch dark, light "
+    "it the way a 1993 film crew would have — available practical light, a torch, "
+    "a doorway, a work lamp — rather than delivering darkness."
+)
+
+
 def resolve_image_size() -> str:
     """Output resolution, clamped to what the selected model actually offers."""
     try:
@@ -359,6 +382,7 @@ def generate_with_gemini(
     # (see prompts_store.render_image_template) so the world only has to be
     # directed in one place.
     structured_prompt = prompts_store.render_image_template("gemini_text_to_image_instructions", prompt)
+    structured_prompt = structured_prompt + LEGIBILITY_RULE
     
     # Inject time/weather/mood if provided
     if time_of_day:
@@ -1074,6 +1098,7 @@ def generate_gemini_img2img(
         else "gemini_image_to_image_instructions"
     )
     structured_prompt = prompts_store.render_image_template(template_key, prompt)
+    structured_prompt = structured_prompt + LEGIBILITY_RULE
     
     # Inject time/weather/mood if provided
     if time_of_day:

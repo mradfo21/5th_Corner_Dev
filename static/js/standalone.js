@@ -23241,13 +23241,23 @@
         void img.offsetWidth;
         if (!reduced()) img.classList.add("cutscene-ken");
       }
-      try { window.Moments.setScene(url); } catch (_) {}
       // The cutscene's first shot is the picture the opening black was waiting
-      // for. Fading up here rather than when the montage was merely *requested*
-      // is the whole point: the player sees black, then a photograph.
-      if (i === 0) {
-        try { OpeningFade.ready("cutscene shot 1"); } catch (_) {}
+      // for — but "waiting for the picture" has to mean DECODED, not "its src has
+      // been assigned". Lifting the black on the assignment faded up onto an
+      // empty element and the run still opened on black: the same class of
+      // mistake markScenePainted exists to avoid. setScene's onReady fires after
+      // load (and after an error, so a shot that cannot decode does not hold the
+      // screen black — the montage moves on regardless, so the fade must too).
+      const lift = (i === 0)
+        ? () => { try { OpeningFade.ready("cutscene shot 1 painted"); } catch (_) {} }
+        : null;
+      try {
+        window.Moments.setScene(url, lift);
+      } catch (_) {
+        if (lift) lift();
       }
+      // setScene bails without calling back when it has no url or no element.
+      if (lift && !url) lift();
     }
 
     function scheduleNext() {
