@@ -18,6 +18,7 @@ from flask_cors import CORS
 import engine
 import ai_provider_manager
 import bug_report
+import replay_cache
 import render_jobs
 import scene_audio
 import coinop
@@ -194,6 +195,37 @@ _ensure_watchdog()
 # carry the log without knowing where stderr was pointed. Must happen at import,
 # before the first turn prints anything worth having.
 bug_report.install_log_tap()
+
+# Remember what every model call returned, so a verification run can be replayed
+# for free and -- the point -- deterministically. Recording does not change what
+# play does; replay is opt-in via SOMEWHERE_REPLAY=replay. Installed here because
+# the seams have to be wrapped before the first turn calls them.
+replay_cache.install()
+
+
+@app.route('/api/replay/stats', methods=['GET'])
+def api_replay_stats():
+    """Hit rate for this process, plus what has been recorded.
+
+    A harness reads `deterministic` to know whether the run it just did proves
+    anything: a single miss means part of that run was freshly generated and
+    would come back differently next time.
+    """
+    try:
+        return jsonify({"ok": True, "stats": replay_cache.stats(),
+                        "library": replay_cache.library()})
+    except Exception as e:
+        return error_response("Failed to read replay stats", str(e))
+
+
+@app.route('/api/replay/reset', methods=['POST'])
+def api_replay_reset():
+    """Zero the counters so one run's hit rate is not confused with another's."""
+    try:
+        replay_cache.reset_stats()
+        return jsonify({"ok": True, "stats": replay_cache.stats()})
+    except Exception as e:
+        return error_response("Failed to reset replay stats", str(e))
 
 
 @app.route('/api/bug/capture', methods=['POST'])
@@ -3410,6 +3442,43 @@ def admin_studio_identity_put():
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to save the cast sheet", str(e))
+
+
+@app.route('/api/admin/studio/identity/goal', methods=['POST'])
+def admin_studio_identity_goal():
+    """Draft the Level sheet's "what you're here for" from the Experience lore.
+
+    The other Level fields can be read off a plate (see the reference upload
+    above), but a goal cannot: an image can say what a place looks like, never
+    what you came there for. That only exists in the fiction, so this reads the
+    Experience bible instead.
+
+    Returns the draft WITHOUT saving it. The author sees it in the field and
+    keeps, edits or discards it — a goal quietly written into the sheet would
+    change what the opening montage establishes toward with nobody agreeing to it.
+    """
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import game_identity
+        body = request.get_json(silent=True) or {}
+        lore = str(body.get('lore') or '')
+        if not lore:
+            try:
+                import experience_store
+                lore = experience_store.lore_brief(str(body.get('slug') or ''))
+            except Exception:
+                traceback.print_exc()
+        goal = game_identity.draft_level_goal(
+            lore=lore, world_prompt=str(body.get('world_prompt') or ''))
+        if not goal:
+            return error_response(
+                "Nothing to draft from yet — name the level or write its lore first.",
+                code=400)
+        return jsonify(success_response({"goal": goal}, "Goal drafted"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to draft a goal", str(e))
 
 
 @app.route('/api/admin/studio/identity/reset', methods=['POST'])

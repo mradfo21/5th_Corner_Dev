@@ -92,6 +92,8 @@ test_*.py
 !test_somewhere_snapshot.py
 !test_encounter.py
 !test_bug_report.py
+!test_interact_dive_options.py
+!test_replay_cache.py
 
 # Turn-thread scratch markers (swept at runtime; see _sweep_thread_signals)
 thread_signal_*.tmp
