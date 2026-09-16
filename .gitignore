@@ -91,6 +91,7 @@ test_*.py
 !test_world_frames.py
 !test_somewhere_snapshot.py
 !test_encounter.py
+!test_bug_report.py
 
 # Turn-thread scratch markers (swept at runtime; see _sweep_thread_signals)
 thread_signal_*.tmp

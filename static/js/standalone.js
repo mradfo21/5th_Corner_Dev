@@ -6,6 +6,39 @@
 (function () {
   "use strict";
 
+  // ── Client errors, kept so a bug capture can carry them ──────────────────
+  // A JS error mid-turn leaves the UI half-built: the picture is there, the
+  // choices never arrive, and it reads to the player as a freeze with no clue
+  // as to why. Until now those errors only existed in a devtools console
+  // nobody had open, so a report said "it froze" and the cause was gone.
+  // Installed at the very top, before any other init, because the errors worth
+  // catching are the early ones. (A *syntax* error in this file cannot be
+  // caught from inside it — that is what check_js_syntax.py is for.)
+  const CLIENT_ERRORS = [];
+  function recordClientError(message, source, line, stack) {
+    try {
+      if (CLIENT_ERRORS.length >= 40) return;   // bounded; the first ones matter
+      CLIENT_ERRORS.push({
+        at: new Date().toISOString(),
+        message: String(message || "unknown error").slice(0, 400),
+        source: String(source || "").slice(0, 200),
+        line: line || null,
+        stack: String(stack || "").slice(0, 1200),
+      });
+    } catch (_) {}
+  }
+  try {
+    window.addEventListener("error", (e) => {
+      recordClientError(e && e.message, e && e.filename, e && e.lineno,
+                        e && e.error && e.error.stack);
+    });
+    window.addEventListener("unhandledrejection", (e) => {
+      const r = e && e.reason;
+      recordClientError("unhandled rejection: " + ((r && r.message) || r),
+                        "", null, r && r.stack);
+    });
+  } catch (_) {}
+
   const POLL_INTERVAL_MS = 1500;
   const STATUS_INTERVAL_MS = 4000;
   const FAST_POLL_INTERVAL_MS = 800; // used right after a choice, while waiting for the turn to resolve
@@ -16416,6 +16449,30 @@
     return Math.round(Math.min(640, Math.max(280, Math.min(window.innerWidth, window.innerHeight) * 0.52)));
   }
 
+  // How much of the pull-in toward a detection's bounding box a close-up
+  // actually takes. Cropping tight on the box magnified the subject so hard
+  // that the plate shared almost no pixels with the frame it came from, and
+  // both dives (SPEAK and INTERACT) read as a cut to somewhere else rather
+  // than a look at something in THIS place. Half the magnification keeps the
+  // subject's surroundings in the shot, which is the continuity the jump needs.
+  const CLOSEUP_ZOOM = 0.5;
+
+  // Widen a crop box about its own centre so the effective magnification is
+  // CLOSEUP_ZOOM of the tight framing, clamped back inside the frame.
+  function relaxCloseUpBox(box) {
+    if (!box || !(CLOSEUP_ZOOM > 0) || CLOSEUP_ZOOM >= 1) return box;
+    const cx = box.x + box.w / 2;
+    const cy = box.y + box.h / 2;
+    const w = Math.min(1, box.w / CLOSEUP_ZOOM);
+    const h = Math.min(1, box.h / CLOSEUP_ZOOM);
+    return {
+      x: Math.max(0, Math.min(1 - w, cx - w / 2)),
+      y: Math.max(0, Math.min(1 - h, cy - h / 2)),
+      w: w,
+      h: h,
+    };
+  }
+
   // SCAN detections are {cx, cy, w, h} in 0..1 source space (center + size).
   // Convert to a padded {x, y, w, h} crop box so portrait img2img uses the
   // actual pixels of the tagged figure, not the whole plate.
@@ -16425,12 +16482,12 @@
     const box = subjectNormBox(obj, 0.22);
     if (!box) return null;
     const extraTop = Math.min(box.y, box.h * 0.5);
-    return {
+    return relaxCloseUpBox({
       x: box.x,
       y: box.y - extraTop,
       w: box.w,
       h: Math.min(1 - (box.y - extraTop), box.h + extraTop),
-    };
+    });
   }
 
   function subjectNormBox(obj, pad) {
@@ -20160,6 +20217,221 @@
   // diagnosable in the field. Toggle with the DEBUG rail button or the "D" key;
   // add ?agentdebug to the URL to open it on load.
   // ------------------------------------------------------------------
+  // ── BUG CAPTURE ───────────────────────────────────────────────────────────
+  // One press freezes everything needed to act on "this looks wrong": the frame
+  // on screen, the layer stack that was drawing it, the prose and choices that
+  // were offered, and any errors the client swallowed. The server adds the state
+  // and the log tail and writes it all to bugs/<timestamp>/.
+  //
+  // Why the client has to describe the screen at all, rather than the server
+  // reconstructing it: the two disagree, and the disagreement IS the bug. The
+  // server thinks it sent a picture; the player is looking at black. Only the
+  // client can say which layer was on top, and a screenshot cannot — the
+  // WebView2 video surface never appears in one.
+  const BugReport = (function () {
+    // Everything that has ever been found sitting on top of the still. Ordering
+    // matters only for readability; `covering` is computed per element.
+    const LAYERS = ["#reactor-video", "#reactor-freeze", "#sceneA", "#sceneB",
+                    "#moment-scene", "#moment-overlay", "#processing-veil",
+                    "#encounter-ceremony", "#capture-cinema", "#death-overlay",
+                    "#scene-flash", "#scene-glitch"];
+    let busy = false;
+
+    function describeLayer(sel, intendedSel) {
+      const n = document.querySelector(sel);
+      if (!n) return { sel: sel, missing: true };
+      const cs = getComputedStyle(n);
+      const r = n.getBoundingClientRect();
+      const opacity = parseFloat(cs.opacity || "1");
+      const shown = cs.display !== "none" && cs.visibility !== "hidden" && opacity > 0.05;
+      const fills = r.width > window.innerWidth * 0.9 && r.height > window.innerHeight * 0.9;
+      // The active scene layer is SUPPOSED to be opaque and full-bleed — it is
+      // the picture. Flagging it as "covering" turns every capture into a false
+      // alarm, and a report that cries wolf is worse than no report.
+      const intended = sel === intendedSel;
+      const out = {
+        sel: sel,
+        cls: n.className,
+        hidden: n.classList.contains("hidden"),
+        z: cs.zIndex,
+        op: cs.opacity,
+        disp: cs.display,
+        vis: cs.visibility,
+        bg: cs.backgroundColor,
+        rect: [Math.round(r.width), Math.round(r.height)],
+        intended: intended,
+        // "Covering" is the finding that matters: something other than the
+        // picture, shown, full-bleed and opaque, sitting on top of it.
+        covering: !intended && shown && fills && opacity > 0.95,
+      };
+      if (n.tagName === "VIDEO") {
+        out.hasStream = !!n.srcObject;
+        out.readyState = n.readyState;
+        out.paused = n.paused;
+        out.vw = n.videoWidth;
+        out.vh = n.videoHeight;
+      }
+      return out;
+    }
+
+    function activeScene() {
+      // The layer actually on screen, not whichever one was written last: the
+      // A/B pair double-buffers, so the inactive one often holds a newer frame
+      // the player has never seen.
+      if (document.querySelector("#sceneB.scene-active")) return "#sceneB";
+      return "#sceneA";
+    }
+
+    function sceneUrl() {
+      const active = document.querySelector(activeScene());
+      if (!active) return "";
+      const bg = getComputedStyle(active).backgroundImage || "";
+      const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
+      return m ? m[1] : "";
+    }
+
+    // The exact pixels on screen, as a data URL.
+    //
+    // Asking the server to find the file behind the URL does not work in
+    // general: a scene can be a generated frame under /images/, an authored
+    // world plate from /api/worlds/<id>/frame, or a moment portrait, and each
+    // would need its own resolver — the first version of this guessed wrong and
+    // reported a frame the player had never seen. Re-fetching the URL the layer
+    // is actually using cannot be wrong, and it comes from cache.
+    function sceneBytes() {
+      let url = "";
+      try { url = sceneUrl(); } catch (_) { return Promise.resolve(null); }
+      if (!url || url.indexOf("data:") === 0) return Promise.resolve(url || null);
+      return fetch(url)
+        .then((r) => (r.ok ? r.blob() : null))
+        .then((blob) => new Promise((resolve) => {
+          if (!blob || blob.size > 8000000) return resolve(null);
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || "") || null);
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(blob);
+        }))
+        .catch(() => null);
+    }
+
+    function gather() {
+      const out = { errors: CLIENT_ERRORS.slice(-20) };
+      try {
+        out.cls = document.body.className;
+        out.turnActive = document.body.classList.contains("turn-active");
+        out.gated = document.body.classList.contains("awaiting-first-scene");
+        out.mode = (window.Renderer || {}).mode || null;
+        out.viewport = window.innerWidth + "x" + window.innerHeight;
+        out.url = location.href;
+      } catch (_) {}
+      try { out.sceneUrl = sceneUrl(); } catch (_) {}
+      try {
+        const mi = document.getElementById("moment-scene-img");
+        if (mi && mi.src) out.momentImage = mi.src;
+      } catch (_) {}
+      try {
+        const intended = activeScene();
+        out.activeScene = intended;
+        out.layers = LAYERS.map((sel) => describeLayer(sel, intended));
+      } catch (_) {}
+      try {
+        const feed = document.querySelector("#prose-feed");
+        out.prose = feed ? (feed.innerText || "").trim().slice(-4000) : "";
+      } catch (_) {}
+      try {
+        // Encounters run their own choice system; when one is open its buttons
+        // are the real offer and the turn wheel behind it is stale.
+        const moment = Array.from(document.querySelectorAll("#moment-choices .moment-choice"));
+        const wheel = Array.from(document.querySelectorAll(".choice-btn:not(.choice-btn-custom)"));
+        const source = moment.length ? moment : wheel;
+        out.choicesFrom = moment.length ? "encounter" : "turn wheel";
+        out.choices = source.map((n) => (n.dataset.choiceText || n.innerText || "")
+                                        .trim().replace(/\s+/g, " ").slice(0, 160));
+      } catch (_) {}
+      try {
+        out.tags = Array.from(document.querySelectorAll(".scan-tag")).map((n) => ({
+          label: (n._label || n.innerText || "").trim().replace(/\s+/g, " ").slice(0, 48),
+          open: n.classList.contains("acting"),
+        }));
+      } catch (_) {}
+      return out;
+    }
+
+    function flash(text, bad) {
+      const btn = document.getElementById("bug-capture-btn");
+      if (!btn) return;
+      btn.textContent = text;
+      btn.classList.toggle("bug-capture-failed", !!bad);
+      btn.classList.add("bug-capture-flash");
+      window.setTimeout(() => {
+        btn.textContent = "BUG";
+        btn.classList.remove("bug-capture-flash", "bug-capture-failed");
+      }, bad ? 4000 : 2600);
+    }
+
+    // `note` is optional on purpose. The button has to be press-and-forget or it
+    // will not get pressed in the middle of the moment worth reporting; a note
+    // can be added to the folder afterwards.
+    function send(note) {
+      if (busy) return;
+      busy = true;
+      const btn = document.getElementById("bug-capture-btn");
+      if (btn) { btn.disabled = true; btn.textContent = "..."; }
+      // The pixels are fetched before the post so the report carries the frame
+      // the player was looking at even when the URL is one the server cannot
+      // resolve back to a file. A null just means the server falls back.
+      // postJSON stamps the session id (header and body) and throws on a bad
+      // status, so a failed capture lands in the catch rather than pretending.
+      sceneBytes()
+        .then((frameDataUrl) => postJSON("/api/bug/capture", {
+          note: note || "",
+          screen: gather(),
+          frame_data_url: frameDataUrl || "",
+        }))
+        .then((d) => {
+          if (d && d.ok) {
+            flash("SAVED " + String(d.id || "").slice(-6), false);
+            try { AgentLog.push("ok", "bug captured", d.relative_path); } catch (_) {}
+            try { console.log("[bug] captured to " + d.relative_path, d.verdicts || []); } catch (_) {}
+          } else {
+            flash("FAILED", true);
+            try { console.warn("[bug] capture failed", d); } catch (_) {}
+          }
+        })
+        .catch((err) => {
+          flash("FAILED", true);
+          try { console.warn("[bug] capture failed", err); } catch (_) {}
+        })
+        .then(() => {
+          busy = false;
+          if (btn) btn.disabled = false;
+        });
+    }
+
+    function init() {
+      const btn = document.getElementById("bug-capture-btn");
+      if (btn) {
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          send("");
+        });
+      }
+      // Shift+B as well as the button: during a moment the pointer is often
+      // busy and the interesting states are the ones you cannot click through.
+      window.addEventListener("keydown", (e) => {
+        if (!e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+        if (String(e.key || "").toLowerCase() !== "b") return;
+        const t = e.target;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+        e.preventDefault();
+        send("");
+      });
+    }
+
+    return { init: init, send: send, gather: gather };
+  })();
+
   const AgentLog = (function () {
     const MAX = 300;
     function visible() {
@@ -21322,16 +21594,20 @@
   // of a progress bar. And because the turn is the soft/img2img path, popping
   // the Moment hands the player back their OWN scene, changed by what they
   // just did — not a cut to somewhere new the way MOVE is.
+  //
+  // The close-up is a place to ACT, not a slide to look at: SPEAK, ATTACK and
+  // LEAVE. SPEAK is live immediately — it is the thing worth doing while the
+  // turn draws. The other two both need the frame that turn is still making
+  // (LEAVE walks out onto it; ATTACK stages the confrontation off it), so they
+  // sit on the slate locked until it paints rather than appearing out of
+  // nowhere or promising a scene that does not exist.
   // ------------------------------------------------------------------
-  // Set while a dive is open: asks to leave, and lands on the regenerated
-  // scene once it exists. Shared by the ✕ row and the Esc handler.
-  let interactExit = null;
-
   (function registerInteractMoment() {
     if (!window.Moments || typeof window.Moments.register !== "function") return;
     window.Moments.register("interact", {
       async enter(payload, entry) {
         const subj = (payload && payload.subject) || {};
+        const dive = payload && payload.dive;
         try {
           window.Moments.setNameplate(subj.label || "\u2014", "reaching out\u2026");
         } catch (_) {}
@@ -21341,6 +21617,7 @@
         if (ref) {
           try { window.Moments.setPortrait(ref); } catch (_) {}
         }
+        if (dive) dive.render();
         try {
           const res = await postJSON("/api/talk/portrait", {
             // Pass the detection whole: it carries cx/cy/w/h, so the server
@@ -21356,25 +21633,194 @@
             reference_cropped: ref ? true : undefined,
           });
           if (entry && entry.aborted) return true;
-          if (res && res.image_url) window.Moments.setPortrait(res.image_url);
-          else console.warn("[interact] no close-up:", (res && res.reason) || "unknown");
+          if (res && res.image_url) {
+            if (dive) dive.closeUpUrl = res.image_url;
+            window.Moments.setPortrait(res.image_url);
+          } else console.warn("[interact] no close-up:", (res && res.reason) || "unknown");
         } catch (err) {
           console.warn("[interact] close-up failed:", err);
         }
+        return true;
+      },
+      // SPEAK nests a Conversation Moment on top of this one, and a nested pop
+      // clears the portrait and the slate on its way out (see Moments.pop).
+      // Redraw both so hanging up returns to the same close-up, still holding
+      // its options, rather than to a blank letterbox.
+      async resume(entry) {
+        const dive = entry && entry.payload && entry.payload.dive;
+        if (dive) dive.restore();
         return true;
       },
       async exit() {
         try { window.Moments.clearChoices(); } catch (_) {}
         return true;
       },
-      // Esc is the keyboard version of the ✕: ask to leave, which lands on the
+      // Esc is the keyboard version of LEAVE: ask to go, which lands on the
       // regenerated scene rather than dumping the player out where they were.
-      onEsc() {
-        if (interactExit) interactExit();
+      onEsc(entry) {
+        const dive = entry && entry.payload && entry.payload.dive;
+        if (dive) dive.leave();
         return true;
       },
     });
   })();
+
+  // The live state of one dive: what the player may do in it, and when.
+  // Created before the Moment is pushed so the scene-painted subscription is
+  // armed before the close-up starts generating — the turn can otherwise land
+  // during that fetch and the dive would miss the only beat it waits for.
+  function createInteractDive(obj) {
+    // Never trap the player in a close-up, even if no frame ever paints.
+    const HOLD_MAX_MS = 180000;
+    const started = Date.now();
+    let scenePainted = false;
+    let wantsOut = false;
+    let settledSeen = false;
+    let done = false;
+
+    const dive = { closeUpUrl: null, referenceFrame: null };
+
+    // "The scene this dive came from has been redrawn and the turn is over."
+    // Both exits hang on it: LEAVE walks out onto that frame, and ATTACK hands
+    // it to the encounter as the plate the confrontation is staged in.
+    function settled() {
+      return scenePainted && !state.processing;
+    }
+
+    function retire() {
+      if (done) return;
+      done = true;
+      clearInterval(tick);
+    }
+
+    function popMoment() {
+      try {
+        if (window.Moments.topType && window.Moments.topType() === "interact") {
+          return window.Moments.pop();
+        }
+      } catch (_) {}
+      return Promise.resolve(null);
+    }
+
+    function leave() {
+      if (done) return;
+      if (settled()) { retire(); popMoment(); return; }
+      // The changed scene is still developing. Say so instead of popping onto
+      // the frame they were trying to leave.
+      wantsOut = true;
+      try {
+        window.Moments.setNameplate(obj.label || "\u2014", "stepping back\u2026");
+      } catch (_) {}
+      render();
+    }
+
+    // ATTACK aims the encounter system at THIS object instead of letting it
+    // roll for an antagonist. Leaving the dive first is not just a UI order:
+    // an encounter cannot open under a Moment, and its plate is img2img off
+    // whatever is on screen — so the frame the INTERACT turn just drew becomes
+    // the place the fight happens. That frame stops being the image the player
+    // returns to; the encounter's own aftermath turn regenerates the scene
+    // when the fight resolves, which is why ATTACK waits for the turn to be
+    // over rather than racing it.
+    async function attack() {
+      if (done || !settled()) return;
+      retire();
+      await popMoment();
+      let fired = false;
+      try {
+        fired = await Encounter.start({ subject: obj });
+      } catch (e) {
+        console.warn("[interact] attack failed:", e);
+      }
+      if (!fired) showRendererToast("The " + (obj.label || "thing") + " doesn\u2019t answer.");
+    }
+
+    // Hand Talk the close-up that is already on screen so the conversation
+    // opens on this plate instead of generating (and paying for) a second one.
+    function speak() {
+      if (done) return;
+      try {
+        Talk.start(Object.assign({}, obj, {
+          speaks: true,
+          reference_image: dive.closeUpUrl || dive.referenceFrame || undefined,
+        }));
+      } catch (e) {
+        console.warn("[interact] speak failed:", e);
+      }
+    }
+
+    function slate() {
+      const locked = !settled();
+      const waiting = "\u2003\u00b7\u2003the scene is still developing";
+      return [
+        { label: "SPEAK", act: speak },
+        { label: locked ? "ATTACK" + waiting : "ATTACK", locked: locked, act: attack },
+        {
+          label: wantsOut
+            ? "LEAVING\u2003\u00b7\u2003waiting for the scene"
+            : (locked ? "LEAVE" + waiting : "LEAVE"),
+          locked: locked,
+          act: leave,
+        },
+      ];
+    }
+
+    function render() {
+      if (done) return;
+      if (!window.Moments || typeof window.Moments.setChoices !== "function") return;
+      if (window.Moments.topType && window.Moments.topType() !== "interact") return;
+      try {
+        window.Moments.setChoices(slate(), (item) => {
+          if (item && typeof item.act === "function") item.act();
+        }, {});
+      } catch (_) {}
+    }
+
+    // The turn landing is the one event that changes what this slate offers.
+    // Polled as well as subscribed because the frame paints a beat before the
+    // turn finishes processing, and both have to be true.
+    function sync() {
+      if (done) return;
+      const now = settled();
+      if (now === settledSeen) return;
+      settledSeen = now;
+      if (now && wantsOut) { retire(); popMoment(); return; }
+      restore();
+    }
+
+    function restore() {
+      if (done) return;
+      const url = dive.closeUpUrl || dive.referenceFrame;
+      if (url) { try { window.Moments.setPortrait(url); } catch (_) {} }
+      try {
+        window.Moments.setNameplate(
+          obj.label || "\u2014",
+          wantsOut ? "stepping back\u2026" : (settled() ? "the scene has changed" : "reaching out\u2026"),
+        );
+      } catch (_) {}
+      render();
+    }
+
+    onNextScenePainted(() => { scenePainted = true; sync(); });
+
+    const tick = setInterval(() => {
+      if (done) return;
+      sync();
+      // The hold-out only applies to a dive the player is actually sitting in.
+      // Popping it from under an open conversation would tear the Moment stack.
+      if (Date.now() - started > HOLD_MAX_MS &&
+          window.Moments.topType && window.Moments.topType() === "interact") {
+        retire();
+        popMoment();
+      }
+    }, 1000);
+
+    dive.render = render;
+    dive.restore = restore;
+    dive.leave = leave;
+    dive.cancel = retire;
+    return dive;
+  }
 
   // Holds the dive open until the turn it was issued alongside resolves.
   async function openInteractMoment(obj) {
@@ -21384,78 +21830,27 @@
     // endpoint has nothing to work from and returns no_crop.
     let referenceFrame = null;
     try {
-      const box = subjectNormBox(obj);
+      const box = relaxCloseUpBox(subjectNormBox(obj));
       if (box) referenceFrame = captureSceneRegion(box, 768);
     } catch (_) {}
+    const dive = createInteractDive(obj);
+    dive.referenceFrame = referenceFrame;
+    let pushed = null;
     try {
-      await window.Moments.push("interact", {
+      pushed = await window.Moments.push("interact", {
         subject: obj,
         reference_image: referenceFrame,
+        dive: dive,
       });
     } catch (e) {
       console.warn("[interact] moment push failed:", e);
-      return;
     }
-    // The dive no longer pops itself the instant the turn settles. Leaving is
-    // the player's call, and the whole point of the verb is that they walk out
-    // into the scene they just changed — so an exit asked for before that frame
-    // exists WAITS for it, and hands off to it on the beat it paints.
-    let scenePainted = false;
-    let wantsOut = false;
-    let done = false;
-
-    const pop = () => {
-      if (done) return;
-      done = true;
-      interactExit = null;
-      clearInterval(tick);
-      try {
-        if (window.Moments.topType && window.Moments.topType() === "interact") {
-          window.Moments.pop();
-        }
-      } catch (_) {}
-    };
-
-    const requestExit = () => {
-      if (done) return;
-      wantsOut = true;
-      if (scenePainted) { pop(); return; }
-      // The changed scene is still developing. Say so instead of popping onto
-      // the frame they were trying to leave.
-      try {
-        window.Moments.setNameplate(obj.label || "\u2014", "stepping back\u2026");
-        window.Moments.clearChoices();
-      } catch (_) {}
-    };
-    interactExit = requestExit;
-
-    onNextScenePainted(() => {
-      scenePainted = true;
-      if (wantsOut) { pop(); return; }
-      // Only offer the way out once the frame it leads to actually exists.
-      // Offered earlier, the ✕ promised a scene that was not drawn yet.
-      showInteractExit(obj);
-    });
-
-    // Never trap the player in a close-up, even if no frame ever paints.
-    const HOLD_MAX_MS = 180000;
-    const started = Date.now();
-    const tick = setInterval(() => {
-      if (Date.now() - started > HOLD_MAX_MS) pop();
-    }, 1000);
-  }
-
-  // The way out of a dive. Offered immediately — a close-up you cannot leave is
-  // a trap — and wired to the same exit that waits for the regenerated frame.
-  function showInteractExit(obj) {
-    if (!window.Moments || typeof window.Moments.setChoices !== "function") return;
-    try {
-      window.Moments.setChoices(
-        [{ label: "\u2715\u2003Back to the scene", text: "leave" }],
-        () => { if (interactExit) interactExit(); },
-        {},
-      );
-    } catch (_) {}
+    // push() answers null without ever calling enter() when the shared chrome
+    // is missing or another Moment is mid-choreography. Retire the dive rather
+    // than leave its poll ticking against a Moment that was never opened.
+    if (!pushed && !(window.Moments.topType && window.Moments.topType() === "interact")) {
+      dive.cancel();
+    }
   }
 
   // ------------------------------------------------------------------
@@ -21472,6 +21867,9 @@
     let choices = [];
     let plateUrl = null;
     let pinnedFrame = null;
+    // Set only when the player aimed this fight at something they were already
+    // looking at (INTERACT -> ATTACK); null for every rolled encounter.
+    let forcedSubject = null;
     let aftermath = null;
     let rollTimer = null;
     let travelAcc = 0;
@@ -22115,6 +22513,13 @@
       if (!window.Moments || typeof window.Moments.push !== "function") return false;
 
       pinnedFrame = captureFullFrame();
+      // A confrontation the player PICKED (attacking a scanned object from its
+      // close-up) names its own antagonist; the travel clock's encounters roll
+      // for one. Either way the brief still dresses it into this photograph.
+      forcedSubject = (opts.subject && opts.subject.label) ? {
+        label: String(opts.subject.label),
+        kind: String(opts.subject.kind || ""),
+      } : null;
       resolving = false;
       finishing = false;
       brief = null;
@@ -22166,6 +22571,7 @@
           frame: pinnedFrame,
           force: !!(payload && payload.demo),
           demo: !!(payload && payload.demo),
+          subject: forcedSubject || undefined,
         });
       } catch (err) {
         console.warn("[encounter] begin failed:", err);
@@ -25454,6 +25860,7 @@
       });
     }
     AgentLog.init();
+    BugReport.init();
     Movement.init();
     // Independent of the joystick element: mouse look and the CONTROLS switch
     // must come up even on layouts without a #move-pad.

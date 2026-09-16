@@ -345,6 +345,7 @@ SETTING_DEFAULTS: Dict[str, Any] = {
     "enabled": False,
     "name": "",
     "summary": "",
+    "goal": "",
     "era": "",
     "palette": "",
     "landmarks": "",
@@ -594,12 +595,13 @@ def strip_follow_cam_prose(text: str, spec: Optional[Dict[str, Any]] = None) -> 
 # excludes reference_images: deleting a plate calls save_spec too, and a delete
 # must never enable anything.
 _INTENT_FIELDS = ("name", "role", "appearance", "wardrobe", "signature_gear",
-                  "demeanor", "backstory", "summary", "era", "palette",
+                  "demeanor", "backstory", "summary", "goal", "era", "palette",
                   "landmarks", "opening_shot")
 # Level copy that must compile even if the leftover off-switch is still down.
 # SOMEWHERE ships Level-off so the Horizon bible owns the place; typing into
 # the sheet is the opt-in, same as Character.
-_SETTING_COPY_FIELDS = ("name", "summary", "landmarks", "opening_shot", "era", "palette")
+_SETTING_COPY_FIELDS = ("name", "summary", "goal", "landmarks", "opening_shot",
+                        "era", "palette")
 
 
 def save_spec(partial: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -755,6 +757,14 @@ IDENTITY_SCHEMA: List[Dict[str, Any]] = [
              "placeholder": "The Kettle Yard"},
             {"id": "summary", "label": "What it is", "type": "longtext", "tier": TIER_ESSENTIAL,
              "placeholder": "A flooded shipbreaking yard on a tidal flat, half the hulls still standing."},
+            # The one thing the opening montage needs that nothing else carried:
+            # somewhere to point the camera. Written as a PLACE you can see from
+            # outside, not a verb — the establishing shots put it on the horizon,
+            # unreached, which is the whole hook. Draftable from the lore.
+            {"id": "goal", "label": "What you're here for", "type": "longtext",
+             "tier": TIER_ESSENTIAL, "fillable_from_lore": True,
+             "placeholder": "The pump house with the red door, where the yard's manifests are still bolted to the wall.",
+             "help": "The thing you came to reach. The opening shots show it in the distance, so name something visible."},
             # "…that must recur" explained the prompt mechanism (these get
             # re-injected every turn so the place stays the same place). That's
             # our problem, not the author's; the placeholder shows what to write.
@@ -1092,7 +1102,8 @@ def setting_enabled(spec: Optional[Dict[str, Any]] = None) -> bool:
     setting = spec[SETTING_KEY]
     if not setting.get("enabled"):
         return False
-    return any(setting.get(f) for f in ("name", "summary", "landmarks", "opening_shot"))
+    return any(setting.get(f) for f in ("name", "summary", "goal", "landmarks",
+                                        "opening_shot"))
 
 
 def setting_authored(spec: Optional[Dict[str, Any]] = None) -> bool:
@@ -1215,7 +1226,8 @@ def is_shipped_setting(spec: Optional[Dict[str, Any]] = None) -> bool:
     setting = spec[SETTING_KEY]
     if setting.get("reference_images"):
         return False
-    if any(str(setting.get(f) or "").strip() for f in ("landmarks", "opening_shot", "era", "palette")):
+    if any(str(setting.get(f) or "").strip()
+           for f in ("goal", "landmarks", "opening_shot", "era", "palette")):
         return False
     name = _norm_field(setting.get("name"))
     summary = _norm_field(setting.get("summary"))
@@ -2089,6 +2101,119 @@ def opening_shot(spec: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, st
     if not vision_bits:
         return None
     return {"prologue": prologue, "vision": " ".join(vision_bits)}
+
+
+def level_goal(spec: Optional[Dict[str, Any]] = None, fallback: bool = True) -> str:
+    """The thing the player came to this level to reach.
+
+    ``fallback`` walks back to the landmarks and then the summary, because the
+    opening montage always needs SOMETHING to put on the horizon: a level whose
+    Goal was never filled in still has to establish toward something, and the
+    landmark list is the next most concrete thing on the sheet. Pass
+    ``fallback=False`` to ask the narrower question of whether a goal was
+    actually authored.
+    """
+    setting = authored_setting(spec)
+    goal = (setting.get("goal") or "").strip()
+    if goal or not fallback:
+        return goal
+    landmarks = (setting.get("landmarks") or "").strip()
+    if landmarks:
+        # Landmarks are written as a list of the whole space. Only the first one
+        # is a destination; the rest are the geography either side of the walk.
+        return re.split(r"[.,;]", landmarks)[0].strip()
+    return (setting.get("summary") or "").strip()
+
+
+def establishing_shot(spec: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """The level's opening montage — arriving, with the goal still out of reach.
+
+    Sibling to :func:`opening_shot`, and deliberately not a replacement for it.
+    ``opening_shot`` describes the frame the level has ARRIVED at: it is what
+    the editor renders as the World's cached plate, and that plate is the look
+    reference this montage is drawn from. This describes the shots BEFORE it —
+    the approach, with the goal a shape in the distance nobody has reached yet.
+
+    Never returns None. An unauthored level still opens on a montage; it just
+    establishes the place generically instead of naming it.
+    """
+    spec = spec or get_spec()
+    setting = authored_setting(spec)
+    place = (setting.get("name") or "").strip()
+    goal = level_goal(spec)
+
+    approach = (
+        f"{display_name(spec)} is arriving on foot, small in frame, "
+        f"seen from outside — not yet inside the space"
+        if shows_character(spec)
+        else "The approach is on foot, from outside the space — the way in is "
+             "ahead and has not been taken yet"
+    )
+
+    anchors: List[str] = []
+    if setting.get("landmarks"):
+        anchors.append(f"Visible landmarks: {setting['landmarks'].rstrip('. ')}.")
+    if setting.get("palette"):
+        anchors.append(f"Light and palette: {setting['palette'].rstrip('. ')}.")
+    if setting.get("era"):
+        anchors.append(f"{setting['era'].rstrip('. ')}.")
+
+    return {
+        "title": place or "SOMEWHERE",
+        "goal": goal,
+        "approach": approach + ".",
+        "place": " ".join(anchors),
+        "prologue": (f"You are almost at {place}." if place
+                     else "You are almost there."),
+    }
+
+
+# The goal is the one Level field with no visual answer — vision can read a
+# plate and tell you what a place looks like, but not what you came there for.
+# That has to come from the fiction, so this drafts from the Experience bible
+# instead of from an image (see infer_fields_from_image for the plate path).
+GOAL_DRAFT_MAX_TOKENS = 160
+
+
+def draft_level_goal(lore: str = "", world_prompt: str = "",
+                     spec: Optional[Dict[str, Any]] = None) -> str:
+    """Draft "what you're here for" from the lore. Does not persist.
+
+    Returns "" when there is nothing on the sheet to go on. A provider error
+    raises, same as the plate-driven fills above, so the editor can say the
+    draft failed instead of leaving the author staring at a field that silently
+    refused to fill.
+    """
+    import ai_provider_manager
+
+    setting = authored_setting(spec)
+    known = " ".join(p for p in (
+        f"Place: {setting['name']}." if setting.get("name") else "",
+        f"What it is: {setting['summary']}." if setting.get("summary") else "",
+        f"Landmarks: {setting['landmarks']}." if setting.get("landmarks") else "",
+        (lore or "").strip()[:1400],
+        (world_prompt or "").strip()[:600],
+    ) if p).strip()
+    if not known:
+        return ""
+
+    raw = ai_provider_manager.chat(
+        [{"role": "user", "content": (
+            "You are writing one line of a game level's design sheet.\n\n"
+            f"{known}\n\n"
+            "Write WHAT THE PLAYER CAME HERE TO REACH: one concrete place or "
+            "object inside this level, the thing the level is about getting "
+            "to. It has to be VISIBLE FROM A DISTANCE, because the level's "
+            "opening shots put it on the horizon before the player has "
+            "reached it. Name it and say in the same breath why it matters.\n\n"
+            "One sentence, under 25 words. No second person, no verbs of "
+            "instruction ('go to', 'find'), no markdown, no quotes. Reply "
+            "with the sentence and nothing else."
+        )}],
+        temperature=0.8,
+        max_tokens=GOAL_DRAFT_MAX_TOKENS,
+    )
+    return _clean_text(raw)
 
 
 def opening_narration(spec: Optional[Dict[str, Any]] = None) -> Optional[str]:

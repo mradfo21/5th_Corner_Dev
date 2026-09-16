@@ -2517,8 +2517,14 @@ def cinematic_composition(action: bool = False) -> str:
 
 
 def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
-                                 setting: str = "") -> str:
-    """Cinematic restage of THIS place with the new character and danger visible."""
+                                 setting: str = "", target: Optional[dict] = None) -> str:
+    """Cinematic restage of THIS place with the new character and danger visible.
+
+    ``target`` marks a fight the player aimed at something already in the
+    reference frame. "ADD the new character" is the wrong instruction for that
+    — it draws a second copy of the thing, or a stranger beside it. What the
+    plate wants is the same object, turned on the player.
+    """
     brief = normalize_encounter_brief(brief)
     char = brief["character"]
     bits = []
@@ -2561,16 +2567,30 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
         bits.append(authored.strip())
 
     outdoor = is_outdoor(setting, brief.get("place_hold") or "")
+    aimed = _clip((target or {}).get("label") if isinstance(target, dict) else target, "", 60)
     if img2img:
-        bits.append(
+        place_lock = (
             "PLACE LOCK — HARD. The reference is the frame the player is "
             "looking at right now, and this is the next exposure on that "
             "same roll. Keep the same location, architecture, materials, "
             "ground, sky, and light — and the same camera: same height, "
-            "same angle, same distance, same focal length. ADD the new "
-            "character and danger INTO this photograph. Do not restage it, "
-            "do not change the place, do not teleport."
+            "same angle, same distance, same focal length. "
         )
+        if aimed:
+            place_lock += (
+                f"The {aimed} is ALREADY in this photograph — do not add a "
+                f"second one and do not put a stranger next to it. The player "
+                f"has just struck it, and this is the exposure where it comes "
+                f"back at them: the same {aimed}, in the same spot, now "
+                f"moving, open, upright, turned on the camera. Do not restage "
+                f"the place, do not teleport."
+            )
+        else:
+            place_lock += (
+                "ADD the new character and danger INTO this photograph. "
+                "Do not restage it, do not change the place, do not teleport."
+            )
+        bits.append(place_lock)
         if outdoor:
             bits.append(
                 "This frame is OUTDOORS. The result MUST stay outdoors. "
@@ -2872,8 +2892,16 @@ def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
 
 
 def build_encounter_brief(session_id: str = "default", image_path: Optional[str] = None,
-                          place_hold: str = "", vision: Optional[dict] = None) -> dict:
-    """Ask the model for a character + danger grounded on the current frame."""
+                          place_hold: str = "", vision: Optional[dict] = None,
+                          target: Optional[dict] = None) -> dict:
+    """Ask the model for a character + danger grounded on the current frame.
+
+    ``target`` is the one case where the encounter is not a roll: the player
+    walked up to something they could already see and swung at it. What
+    arrives is then not a question — it is that thing, already in the
+    photograph — so the roster draw is skipped and the brief's only job is to
+    say who this thing turns out to be once it fights back.
+    """
     import engine
     st = {}
     try:
@@ -2897,16 +2925,31 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
     # model's job is to dress that into this photograph and give it a reason to
     # be here — not to choose the thing, because asked to choose it always chose
     # the same thing.
-    rolled = roll_encounter_kind(session_id)
-    roll_line = (
-        f"THIS ENCOUNTER IS: {rolled}\n"
-        "That is the roll for this turn, not a suggestion and not a menu: what "
-        "arrives IS that. Everything else you write serves it — the label names "
-        "this thing, the look is this thing's body, the motive is what THIS "
-        "thing wants from the player. Do not substitute a person for it because "
-        "a person is easier to photograph.\n\n"
-        if rolled else ""
-    )
+    aimed = _clip((target or {}).get("label") if isinstance(target, dict) else target, "", 60)
+    if aimed:
+        rolled = aimed
+        roll_line = (
+            f"THE PLAYER HAS JUST ATTACKED: {aimed}\n"
+            "That thing is already in the attached photograph, where they were "
+            "standing, and they went for it. It is the encounter — do not roll "
+            "up a stranger who happens to be nearby, and do not move the fight "
+            "to a different target. The label names THIS thing, the look is the "
+            f"{aimed} as the photograph shows it, and the danger is what it "
+            "does back now that it has been hit. If it was inert a second ago, "
+            "this is the moment it stops being inert: something was inside it, "
+            "behind it, or it was never what it looked like.\n\n"
+        )
+    else:
+        rolled = roll_encounter_kind(session_id)
+        roll_line = (
+            f"THIS ENCOUNTER IS: {rolled}\n"
+            "That is the roll for this turn, not a suggestion and not a menu: what "
+            "arrives IS that. Everything else you write serves it — the label names "
+            "this thing, the look is this thing's body, the motive is what THIS "
+            "thing wants from the player. Do not substitute a person for it because "
+            "a person is easier to photograph.\n\n"
+            if rolled else ""
+        )
     prompt = (
         f"{instructions}\n\n{roll_line}{lore or ('WORLD (trim): ' + world)}\n\n"
         f"SETTING: {setting or 'read it off the attached photograph'}\n"
@@ -3408,6 +3451,11 @@ def api_begin():
     set_look_session(session_id)
     force = bool(data.get("force") or data.get("demo"))
     reference_b64 = data.get("frame") or data.get("reference_image") or ""
+    # A fight the player aimed at something they had already scanned and dived
+    # into, rather than one the travel clock rolled. Overrides the roster draw.
+    target = data.get("subject") if isinstance(data.get("subject"), dict) else None
+    if target and not str(target.get("label") or "").strip():
+        target = None
 
     st = engine._load_state(session_id) or {}
     ok, reason = encounter_can_roll(st, force=force)
@@ -3440,10 +3488,12 @@ def api_begin():
         session_id, image_path=ref_path,
         place_hold=place.get("place_hold") or "",
         vision=place,
+        target=target,
     )
     prompt = build_encounter_plate_prompt(
         brief, img2img=bool(ref_path),
         setting=place.get("setting") or "",
+        target=target,
     )
 
     image_path = None
@@ -3508,15 +3558,21 @@ def api_begin():
                             )
                         except Exception:
                             pass
+                        retry_suffix = (
+                            f" The {target['label']} fills this frame, close and "
+                            f"coming at the player. This is the confrontation, "
+                            f"not an empty place. Keep the player as the "
+                            f"character-sheet person."
+                        ) if target else (
+                            " The new character is already standing in this "
+                            "frame, large, facing the player. This is the "
+                            "confrontation, not an empty place. "
+                            "Keep the player as the character-sheet person. "
+                            "The other person is a stranger in different clothes "
+                            "— not a second copy of the player."
+                        )
                         retry_path = generate_gemini_img2img(
-                            prompt=prompt + (
-                                " The new character is already standing in this "
-                                "frame, large, facing the player. This is the "
-                                "confrontation, not an empty place. "
-                                "Keep the player as the character-sheet person. "
-                                "The other person is a stranger in different clothes "
-                                "— not a second copy of the player."
-                            ),
+                            prompt=prompt + retry_suffix,
                             caption=f"encounter_{label}_retry",
                             reference_image_path=ref_path,
                             strength=ENCOUNTER_PLATE_RETRY_STRENGTH,

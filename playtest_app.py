@@ -518,8 +518,13 @@ class DiveWatch:
             findings.append(f"turn {turn}: the dive closed itself - the player "
                             f"never got to leave it")
             return
+        # The dive's slate is SPEAK / ATTACK / LEAVE, and only LEAVE goes back
+        # to the scene. It is locked (disabled) until the INTERACT turn's frame
+        # has painted, which is exactly the wait this check is about — so poll
+        # for it to come live rather than clicking whatever is at the top.
+        leave = "#moment-choices .moment-choice:not(.moment-choice-locked):has-text('LEAVE')"
         try:
-            page.click("#moment-choices .moment-choice", timeout=8000)
+            page.click(leave, timeout=45000)
         except Exception as exc:
             findings.append(f"turn {turn}: no way out of the dive "
                             f"({a(str(exc))[:60]})")

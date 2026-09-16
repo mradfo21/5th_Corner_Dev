@@ -17,6 +17,7 @@ from flask import Flask, request, jsonify, send_file, make_response, render_temp
 from flask_cors import CORS
 import engine
 import ai_provider_manager
+import bug_report
 import render_jobs
 import scene_audio
 import coinop
@@ -188,6 +189,48 @@ def api_diag_stacks():
 
 
 _ensure_watchdog()
+
+# Start keeping the tail of everything the server prints, so a bug capture can
+# carry the log without knowing where stderr was pointed. Must happen at import,
+# before the first turn prints anything worth having.
+bug_report.install_log_tap()
+
+
+@app.route('/api/bug/capture', methods=['POST'])
+def api_bug_capture():
+    """Freeze the evidence for "this looks wrong" into one folder.
+
+    The player presses a button; this writes the frame that was on screen, the
+    layer stack drawing it, the state that produced it and the tail of the log
+    into bugs/<timestamp>/. The situation cannot be reached again by playing --
+    the world is generated fresh every run -- so capturing at the moment of the
+    complaint is the only way a report stays actionable.
+
+    Deliberately forgiving about its input: a capture is worth having even when
+    the client could only tell us half of what it sees.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        result = bug_report.capture(
+            session_id=data.get('session_id') or 'default',
+            screen=data.get('screen') if isinstance(data.get('screen'), dict) else {},
+            note=str(data.get('note') or ''),
+            frame_data_url=str(data.get('frame_data_url') or ''),
+        )
+        return jsonify(result), (200 if result.get('ok') else 500)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to capture the bug", str(e))
+
+
+@app.route('/api/bug/list', methods=['GET'])
+def api_bug_list():
+    """Captures newest first, so a session's reports can be found without ls."""
+    try:
+        return jsonify({"ok": True, "bugs": bug_report.recent()})
+    except Exception as e:
+        return error_response("Failed to list bug captures", str(e))
+
 
 # Optional flask-sock (live TALK websocket). Never let its absence break boot.
 try:

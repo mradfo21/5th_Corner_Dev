@@ -556,9 +556,14 @@
     list.forEach((item, idx) => {
       const label = typeof item === "string" ? item : (item && item.label) || "";
       if (!label) return;
+      // `locked` is an option that EXISTS but cannot be taken yet — the dive's
+      // way out before the scene it leads to has been drawn. Hiding it instead
+      // would make the slate jump around as options appear; showing it live
+      // would promise a frame that isn't there.
+      const locked = !!(item && typeof item === "object" && item.locked);
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "moment-choice";
+      btn.className = "moment-choice" + (locked ? " moment-choice-locked" : "");
       const num = document.createElement("span");
       num.className = "moment-choice-num";
       num.textContent = String(idx + 1);
@@ -567,6 +572,12 @@
       body.textContent = label;
       btn.appendChild(num);
       btn.appendChild(body);
+      if (locked) {
+        btn.disabled = true;
+        btn.setAttribute("aria-disabled", "true");
+        box.appendChild(btn);
+        return;
+      }
       btn.addEventListener("mouseenter", () => playSound("choiceHover"));
       btn.addEventListener("focus", () => playSound("choiceHover"));
       btn.addEventListener("click", () => {

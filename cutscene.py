@@ -54,6 +54,30 @@ MOODS: Dict[str, Dict[str, Any]] = {
              "dutch or low angle, the remaining threat or the empty space it left"),
         ),
     },
+    # The opening of a level. Unlike every other mood here, this one is NOT a
+    # restaging of the moment the plate shows — it is the shots that come BEFORE
+    # it, so the plate is where the montage is heading rather than where the
+    # camera stands (see ``plate_role`` in build_cutscene_prompt). The goal stays
+    # unreached in all four: the point is to make the player want to walk to it.
+    "approach": {
+        "label": "Approach",
+        "hint": "Arriving at a level, with what you came for still in the distance.",
+        "shots": (
+            ("establish", "Establishing wide",
+             "extreme wide establishing shot of this whole place seen from OUTSIDE it, "
+             "the destination small and far off in the distance, the ground between "
+             "here and there readable"),
+            ("approach", "The approach",
+             "from behind and further back, the walk in toward this place, the "
+             "destination ahead in frame and still a long way off"),
+            ("distant", "The goal, distant",
+             "long lens across the distance onto the destination itself — small in "
+             "frame, unreached, nothing between the camera and it but open ground"),
+            ("threshold", "Threshold",
+             "at the edge of this place looking in, the way forward open — a settled, "
+             "held composition, the frame the story starts from"),
+        ),
+    },
     "arrival": {
         "label": "Arrival",
         "hint": "Landing in a new space.",
@@ -99,7 +123,16 @@ MOODS: Dict[str, Dict[str, Any]] = {
 }
 MOOD_IDS = tuple(MOODS.keys())
 DEFAULT_MOOD = "threshold"
-DEFAULT_DURATION_MS = 1600
+
+# How long each shot holds. This is where the cutscene grammar parts ways with
+# the flipbook's: a flipbook panel is one frame of motion and flicks past in
+# under half a second, but these are four different cameras on one moment and
+# each is a photograph you are meant to look at. At 1600ms the montage read as a
+# slideshow on fast-forward — nobody had time to see what a shot was of before
+# it cut. Four seconds is a held shot. Overridden by the cutscene_hold_ms
+# tunable (see tunables.py), which is why nothing reads the constant directly.
+DEFAULT_DURATION_MS = 4000
+HOLD_MS = DEFAULT_DURATION_MS
 GRID_COLS = 2
 GRID_ROWS = 2
 
@@ -232,8 +265,21 @@ def build_cutscene_prompt(
     shot_brief: str = "",
     setting: str = "",
     name: str = "",
+    goal: str = "",
+    plate_role: str = "anchor",
 ) -> str:
-    """One 2×2 grid instruction. Place-locked. No captions, no borders."""
+    """One 2×2 grid instruction. Place-locked. No captions, no borders.
+
+    ``plate_role`` says what the reference photograph IS to this montage:
+
+    · ``anchor`` — the camera is standing in it. Every shot is another angle on
+      the moment the plate shows. This is what restaging a beat wants.
+    · ``destination`` — the montage is heading TOWARD it and has not arrived.
+      The plate is the look, the light and the cast, but not the framing; the
+      shots are further out than it. The level's opening needs this, and given
+      the anchor wording ("the current photograph of this exact place") the
+      model otherwise redraws the plate four times from where it already stands.
+    """
     mood = normalize_mood(mood)
     pack = MOODS[mood]
     bits: List[str] = []
@@ -256,11 +302,29 @@ def build_cutscene_prompt(
         "Reading order left-to-right, top-to-bottom. Each panel is a different "
         "cinematic camera on the SAME moment and the SAME place."
     )
-    bits.append(
-        "PLACE LOCK — HARD. The reference is the current photograph of this "
-        "exact place. Keep the same location, architecture, materials, ground, "
-        "sky, and light. Do not teleport. Do not invent a new set."
-    )
+    if plate_role == "destination":
+        bits.append(
+            "PLACE LOCK — HARD. The reference photograph is this place as it "
+            "looks once you are standing in it: keep its location, architecture, "
+            "materials, ground, sky, light, and the people and wardrobe already "
+            "in it. But the camera has NOT ARRIVED YET. All four shots are "
+            "further out than the reference, looking toward it across open "
+            "distance. Do not reproduce the reference's framing in any panel, "
+            "and do not invent a different place."
+        )
+    else:
+        bits.append(
+            "PLACE LOCK — HARD. The reference is the current photograph of this "
+            "exact place. Keep the same location, architecture, materials, ground, "
+            "sky, and light. Do not teleport. Do not invent a new set."
+        )
+    if goal:
+        bits.append(
+            f"WHAT THE PLAYER CAME HERE FOR: {goal.rstrip('. ')}. It is visible "
+            "in these shots and is NOT REACHED in any of them — keep it far off, "
+            "small in frame, across ground the player still has to cross. Never "
+            "cut to it up close, never show it entered or opened."
+        )
     if (setting or "").lower().startswith("outdoor"):
         bits.append("This frame is OUTDOORS. Stay outdoors. Same sky, same ground.")
     elif (setting or "").lower().startswith("indoor"):
@@ -354,6 +418,8 @@ def generate_shots(
     name: str = "",
     shot_brief: str = "",
     setting: str = "",
+    goal: str = "",
+    plate_role: str = "anchor",
     offline: bool = False,
     output_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -392,6 +458,7 @@ def generate_shots(
             from gemini_image_utils import generate_gemini_img2img
             prompt = build_cutscene_prompt(
                 mood, shot_brief=shot_brief, setting=setting, name=name,
+                goal=goal, plate_role=plate_role,
             )
             tod = ""
             try:
@@ -450,7 +517,7 @@ def generate_shots(
         "name": name or "",
         "shots": payload_shots,
         "grid_url": _to_web(grid_path, session_id) if grid_path else "",
-        "duration_ms": DEFAULT_DURATION_MS,
+        "duration_ms": int(HOLD_MS or DEFAULT_DURATION_MS),
         "elapsed_ms": int((time.time() - t0) * 1000),
         "source_plate": _to_web(source_path, session_id),
     }
@@ -498,13 +565,12 @@ def play_for_session(
     if plate is None:
         return {"ok": False, "error": "no_plate", "shots": []}
 
-    setting = ""
+    goal = ""
     try:
         import game_identity
-        spec = game_identity.get_spec() or {}
-        setting = str((spec.get("setting_reference") or {}).get("setting") or "")
+        goal = game_identity.level_goal()
     except Exception:
-        setting = ""
+        logging.exception("[CUTSCENE] level goal lookup failed")
 
     try:
         generated = generate_shots(
@@ -513,7 +579,9 @@ def play_for_session(
             mood=mood,
             name=name,
             shot_brief=shot_brief,
-            setting=setting,
+            setting=environment_type(session_id),
+            goal=goal,
+            plate_role="destination" if mood == "approach" else "anchor",
             offline=offline,
         )
     except Exception:

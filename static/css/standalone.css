@@ -5094,6 +5094,20 @@ html.is-mobile.is-portrait #moment-scene-img {
   outline: none;
   transform: translateX(-2px);
 }
+/* An option that is on the slate but cannot be taken yet (the dive's ATTACK
+   and LEAVE before the scene they lead to has been drawn). It stays in place
+   and stays readable — the point is to show what is coming, not to grey it
+   into an unreadable smear — but it does not light up under the cursor. */
+.moment-choice-locked,
+.moment-choice-locked:hover,
+.moment-choice-locked:focus {
+  opacity: 0.42;
+  cursor: default;
+  background: rgba(12, 10, 16, 0.78);
+  border-color: rgba(255, 205, 140, 0.18);
+  transform: none;
+}
+
 /* Choices carry a number span for keyboard commit; only the encounter slate
    shows it. A conversation pill reading "1 ASK ABOUT THE FENCE" is noise. */
 .moment-choice-num { display: none; }
@@ -5133,6 +5147,51 @@ body.start-menu-on #encounter-debug-btn,
 body.game-over #encounter-debug-btn {
   display: none;
 }
+
+/* Bug capture. Sits directly under the ENCOUNTER button in the same top-right
+   cabinet readout, and stays there through moments, encounters and the death
+   overlay — the states worth reporting are the ones that hide everything else.
+   Only the start menu hides it, where there is nothing yet to report. */
+#bug-capture-btn {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 53px);
+  right: calc(env(safe-area-inset-right, 0px) + 16px);
+  z-index: 9000;   /* above the letterbox and the veil, or it cannot be pressed */
+  pointer-events: auto;
+  min-width: 68px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 214, 120, 0.45);
+  border-radius: 2px;
+  background: rgba(10, 9, 6, 0.78);
+  color: rgba(255, 214, 120, 0.85);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 140ms ease, border-color 140ms ease;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+#bug-capture-btn:hover,
+#bug-capture-btn:focus {
+  opacity: 1;
+  border-color: rgba(255, 214, 120, 0.9);
+  outline: none;
+}
+#bug-capture-btn:active { transform: scale(0.96); }
+#bug-capture-btn:disabled { opacity: 0.3; pointer-events: none; }
+#bug-capture-btn.bug-capture-flash {
+  opacity: 1;
+  color: #d8ffd0;
+  border-color: rgba(150, 255, 140, 0.9);
+  background: rgba(8, 24, 8, 0.9);
+}
+#bug-capture-btn.bug-capture-failed {
+  color: #ffc4bc;
+  border-color: rgba(255, 120, 100, 0.9);
+  background: rgba(30, 8, 6, 0.92);
+}
+body.start-menu-on #bug-capture-btn { display: none; }
 body.moment-encounter #action-wheel,
 body.moment-encounter #verb-bar,
 body.moment-encounter #custom-form,
@@ -5541,6 +5600,15 @@ body.moment-interact .moment-choice:hover,
 body.moment-interact .moment-choice:focus {
   background: none;
   color: #eafff2;
+}
+/* The dive's slate is set over the frame, so a locked row cannot fall back to
+   the base chip's panel — it would be the only box on screen. */
+body.moment-interact .moment-choice-locked,
+body.moment-interact .moment-choice-locked:hover,
+body.moment-interact .moment-choice-locked:focus {
+  background: none;
+  border: none;
+  color: rgba(234, 255, 244, 0.82);
 }
 body.moment-interact .moment-choice-num { display: none; }
 

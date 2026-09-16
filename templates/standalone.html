@@ -815,6 +815,12 @@
   <button id="encounter-debug-btn" type="button" title="Debug — fire an encounter now (Shift+N)">
     ENCOUNTER
   </button>
+  <!-- Bug capture. Unlike the ENCOUNTER button this deliberately stays visible
+       through moments, encounters and death: those are exactly when the screen
+       goes wrong, and a report you cannot file while looking at the fault is
+       no use at all. -->
+  <button id="bug-capture-btn" type="button"
+          title="Capture this screen as a bug report (Shift+B)">BUG</button>
   <div id="moment-overlay" class="hidden" aria-hidden="true">
     <div class="moment-letterbox moment-letterbox-top" aria-hidden="true"></div>
     <div class="moment-letterbox moment-letterbox-bottom" aria-hidden="true"></div>
