@@ -505,13 +505,14 @@ class TestGeneratingAFlipbookTurn(unittest.TestCase):
             return str(grid)
         self.gemini.generate_gemini_img2img = fake
 
-    def _generate(self, st=None, frames=4):
+    def _generate(self, st=None, frames=4, refs=None, ref_is_anchor=False):
         return self.engine._flipbook_generate(
             prompt_str="A ridge at dusk.", caption="ridge", choice="Move forward",
             dispatch="You crest the ridge.", world_prompt="", time_of_day="dusk",
             img_dir=self.tmp, session_id=self.SESSION,
             st=dict({"flipbook_mode": True, "flipbook_frames": frames}, **(st or {})),
-            refs=[])
+            refs=refs if refs is not None else [],
+            ref_is_anchor=ref_is_anchor)
 
     def test_it_returns_the_sequence_and_the_still_is_the_last_frame(self):
         self._model_returns_a_grid()
@@ -548,6 +549,42 @@ class TestGeneratingAFlipbookTurn(unittest.TestCase):
         self._model_returns_a_grid()
         self._generate(st={"flipbook_last_frame": str(anchor)})
         self.assertEqual(self.calls[-1]["reference_image_path"][0], str(anchor))
+
+    def test_an_anchored_caller_is_not_handed_the_last_turns_opening_frame(self):
+        """The reported "it warped me back in time".
+
+        An anchored caller (the encounter plate) has said its own frame is the
+        truth. `prev_last` was already excluded for it; `prev_first` was not, so a
+        confrontation staged straight after the player set a truck on fire got a
+        clean photograph of that truck NOT on fire, from one panel before the
+        flames. The model believed the photograph: the encounter opened on the
+        pre-fire scene, and the antagonist the brief had written never made it
+        into the frame because two of the three references showed an empty place.
+        """
+        anchor = self.tmp / "captured.png"
+        stale_first = self.tmp / "before_the_fire_f01.png"
+        stale_last = self.tmp / "after_the_fire_f04.png"
+        for p in (anchor, stale_first, stale_last):
+            _grid(width=32, height=32, path=p)
+        self._model_returns_a_grid()
+
+        self._generate(st={"flipbook_first_frame": str(stale_first),
+                           "flipbook_last_frame": str(stale_last)},
+                       refs=[str(anchor)], ref_is_anchor=True)
+
+        refs = self.calls[-1]["reference_image_path"]
+        self.assertEqual(refs[0], str(anchor), "the caller's frame must lead")
+        self.assertNotIn(str(stale_first), refs,
+                         "the previous sequence's opening frame is time travel here")
+        self.assertNotIn(str(stale_last), refs)
+
+    def test_an_ordinary_turn_still_gets_the_opening_frame_as_context(self):
+        """It is only wrong for an anchored caller; a normal turn wants the width."""
+        stale_first = self.tmp / "turn_open_f01.png"
+        _grid(width=32, height=32, path=stale_first)
+        self._model_returns_a_grid()
+        self._generate(st={"flipbook_first_frame": str(stale_first)})
+        self.assertIn(str(stale_first), self.calls[-1]["reference_image_path"])
 
     def test_it_leaves_the_anchors_the_next_turn_needs(self):
         self._model_returns_a_grid()

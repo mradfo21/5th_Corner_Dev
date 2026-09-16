@@ -6770,7 +6770,19 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
         # First flipbook turn of a run: the still the game is already showing is
         # the spatial anchor, otherwise panel 1 starts somewhere new.
         flipbook_refs.append(refs[0])
-    if prev_first and os.path.exists(prev_first):
+    # `prev_first` is the wider scene as the LAST sequence opened — useful context
+    # for an ordinary turn, and time travel for an anchored one.
+    #
+    # An anchored caller has already said "my frame is the truth"; the guard above
+    # was written for exactly that and then only applied to prev_last. prev_first
+    # kept going in underneath it, so a confrontation staged right after the player
+    # set a truck on fire was handed a clean photograph of that truck NOT on fire,
+    # taken one panel before the flames. The model believed the photograph: the
+    # encounter opened on the pre-fire scene, the burning truck was gone, and the
+    # antagonist the brief had written never made it into the frame, because two
+    # of its three references showed a place with nobody in it. Reported as "it
+    # warped me back in time".
+    if prev_first and os.path.exists(prev_first) and not anchor:
         flipbook_refs.append(prev_first)
     if prev_grid and os.path.exists(prev_grid) and len(flipbook_refs) < 2:
         flipbook_refs.append(prev_grid)
