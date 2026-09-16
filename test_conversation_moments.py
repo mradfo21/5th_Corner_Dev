@@ -223,6 +223,37 @@ def test_build_portrait_prompt_img2img_uses_the_crop():
     assert "turn the camera" not in prompt
 
 
+def test_the_close_up_is_told_about_the_wide_reference():
+    """The crop says WHAT the subject is; the wide says WHERE it is.
+
+    Generated from the crop alone, the model had nothing to build a background
+    out of, so it invented one and the dive read as a cut to another location
+    rather than a close look at something in this place. The second reference
+    fixes that only if the prompt names it — told just about "the crop", the
+    model treated the wide as another subject and sometimes drew that instead.
+    """
+    for kind in ("person", "object"):
+        ctx = {
+            "subject": {"label": "Kane" if kind == "person" else "truck door",
+                        "kind": kind, "speaks": kind == "person"},
+            "situation": {"scene": "a flooded yard", "time_of_day": "dusk",
+                          "location": "yard"},
+        }
+        wide = engine.build_portrait_prompt(ctx, img2img=True, with_wide=True)
+        low = wide.lower()
+        assert "first reference" in low, kind
+        assert "second reference" in low, kind
+        assert "wide shot" in low, kind
+        # It is context, not the composition to copy.
+        assert "not the subject" in low, kind
+        assert ("framing must not" in low) or ("must not be reproduced" in low), kind
+
+        # And without a wide frame the prompt must not promise one.
+        alone = engine.build_portrait_prompt(ctx, img2img=True).lower()
+        assert "second reference" not in alone, kind
+        assert "softly out of focus" in alone, kind
+
+
 def test_talk_subject_is_figure_for_beings_not_machines():
     assert engine._talk_subject_is_figure({"label": "Kane", "kind": "person"})
     assert engine._talk_subject_is_figure({"label": "guard", "kind": "character"})

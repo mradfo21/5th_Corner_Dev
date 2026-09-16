@@ -11514,7 +11514,8 @@ def _talk_opening_line(label: str, kind: str, situation: dict, persona_prompt: s
         return fallback
 
 
-def build_portrait_prompt(context: dict, img2img: bool = False) -> str:
+def build_portrait_prompt(context: dict, img2img: bool = False,
+                          with_wide: bool = False) -> str:
     """Compose a cinematic medium-shot portrait prompt for a Conversation Moment.
 
     Reuses the same talk context (subject, scene, time of day) the persona was
@@ -11551,24 +11552,54 @@ def build_portrait_prompt(context: dict, img2img: bool = False) -> str:
     }.get(kind, "a figure the investigator has encountered")
 
     if img2img:
+        # Two references are supplied when `with_wide`: [0] the subject's own
+        # crop, [1] the whole frame it was standing in. Naming them separately
+        # matters — told only about "the crop", the model treated the second
+        # picture as another subject and sometimes drew the wide scene instead of
+        # the close-up.
+        first = ("The FIRST reference is a close crop of" if with_wide
+                 else "The reference is a close crop of")
         if not is_figure:
             bits = [
-                f"The reference is a close crop of the '{label}' — {kind_look} — taken from the live video frame.",
+                f"{first} the '{label}' — {kind_look} — taken from the live video frame.",
                 "Keep this exact object: same shape, materials, wear, markings, and the light falling on it.",
                 "Cinematic close-up, the object filling the frame, sharp and clearly lit,",
-                "the surrounding environment from the crop softly out of focus behind it.",
-                "Do not invent a person. Do not add a face, figure, or human. Do not replace the object.",
             ]
+            if with_wide:
+                bits += [
+                    "The SECOND reference is the WIDE SHOT of the place this object "
+                    "is in. It is not the subject and must not be reproduced as the "
+                    "composition — use it only for what lies around and behind the "
+                    "object: the same location, the same structures, the same "
+                    "ground and sky, the same light and palette. Build the "
+                    "background out of THAT place, softly out of focus, so this "
+                    "reads as a close look at something here rather than a cut "
+                    "somewhere else.",
+                ]
+            else:
+                bits.append("the surrounding environment from the crop softly out of focus behind it.")
+            bits.append("Do not invent a person. Do not add a face, figure, or human. Do not replace the object.")
         else:
             # A crop of the SCAN bounding box is supplied — that IS the person, not
             # a wide plate we have to invent a face into.
             bits = [
-                f"The reference is a close crop of the '{label}' — {kind_look} — taken from the current frame.",
+                f"{first} the '{label}' — {kind_look} — taken from the current frame.",
                 "Keep this exact person: same face, hair, clothes, build, and the light falling on them.",
                 "Cinematic medium shot, mid-torso up, this same figure sharp and clearly lit,",
-                "the surrounding environment from the crop softly out of focus behind them.",
-                "Do not invent a different person. Do not replace their face.",
             ]
+            if with_wide:
+                bits += [
+                    "The SECOND reference is the WIDE SHOT of the place this person "
+                    "is standing in. It is not the subject and its framing must not "
+                    "be copied — use it only for what lies around and behind them: "
+                    "the same location, the same structures, the same ground and "
+                    "sky, the same light and palette. Build the background out of "
+                    "THAT place, softly out of focus, so this reads as a close look "
+                    "at somebody here rather than a cut somewhere else.",
+                ]
+            else:
+                bits.append("the surrounding environment from the crop softly out of focus behind them.")
+            bits.append("Do not invent a different person. Do not replace their face.")
         setting = ", ".join([b for b in [loc, tod] if b])
         if setting:
             bits.append(f"Setting: {setting}.")
@@ -11821,6 +11852,52 @@ def _crop_image_to_norm_box(path: str, box: Dict[str, float]) -> Optional[str]:
         return path
 
 
+def _current_frame_path(session_id: str = "default") -> Optional[str]:
+    """The whole frame the player is looking at, as a file on disk.
+
+    Used as the SECOND reference for a close-up: the crop says what the subject
+    is, this says where it is. A close-up generated from the crop alone had no
+    idea what surrounded it and invented a background, so diving on a truck door
+    could return that door somewhere else entirely.
+
+    Prefers the last painted flipbook panel over history, because on a flipbook
+    turn the panel is what is actually on screen. Never returns a `_small`
+    downsample or a crop; those are derived files, not the view.
+    """
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        st = {}
+
+    candidates = [st.get("flipbook_last_frame")]
+    try:
+        for entry in reversed(_load_history(session_id) or []):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("choice") == "__encounter_resolve__":
+                continue
+            candidates.append(entry.get("guide_image") or entry.get("image"))
+            if len(candidates) > 4:
+                break
+    except Exception:
+        pass
+    candidates.append(st.get("current_image_url"))
+
+    for raw in candidates:
+        if not raw:
+            continue
+        name = os.path.basename(str(raw))
+        if name.endswith("_small.png") or name.startswith("portrait_ref_"):
+            continue
+        try:
+            resolved = _resolve_image_path(str(raw), session_id)
+        except Exception:
+            continue
+        if resolved and Path(resolved).is_file():
+            return str(resolved)
+    return None
+
+
 def _save_portrait_reference(frame_b64: str, session_id: str = "default") -> Optional[str]:
     """Decode a client-captured scene frame (data URL) to a file for img2img.
 
@@ -11942,7 +12019,13 @@ def api_talk_portrait():
                 "subject": context["subject"],
             })
 
-        prompt = build_portrait_prompt(context, img2img=True)
+        # Resolved before the prompt is built, because the prompt has to describe
+        # the references it is actually being handed.
+        wide_ref = _current_frame_path(session_id)
+        if wide_ref and str(wide_ref) == str(ref_path):
+            wide_ref = None
+        prompt = build_portrait_prompt(context, img2img=True,
+                                       with_wide=bool(wide_ref))
         is_figure = _talk_subject_is_figure(context["subject"])
         tod = ""
         try:
@@ -11957,12 +12040,29 @@ def api_talk_portrait():
                 spend = int(_PORTRAIT_SPEND.get(session_id, 0))
             if spend < CONVERSATION_PORTRAIT_BUDGET:
                 t0 = time.time()
+                # Two references, in this order: the subject's own pixels first,
+                # then the whole frame it was standing in.
+                #
+                # The crop alone gave a close-up that looked like the right thing
+                # and lived nowhere — the model had no idea what surrounded it, so
+                # it invented a background, and the dive read as a cut to another
+                # location instead of a look at something in THIS place. The wide
+                # frame carries the light, the palette, the weather and the
+                # architecture behind the subject. Crop leads because Gemini
+                # weights the first reference most and identity has to win: the
+                # wide is context, not the subject, and the prompt says so.
+                refs_for_portrait = [str(ref_path)]
+                if wide_ref:
+                    refs_for_portrait.append(str(wide_ref))
+                    print(f"[TALK PORTRAIT] crop + wide "
+                          f"({os.path.basename(str(wide_ref))}) so the close-up "
+                          f"stays in this place", flush=True)
                 try:
                     from gemini_image_utils import generate_gemini_img2img
                     image_path = generate_gemini_img2img(
                         prompt=prompt,
                         caption=f"talk_portrait_{_companion_slug(label)}",
-                        reference_image_path=str(ref_path),
+                        reference_image_path=refs_for_portrait,
                         strength=0.58,
                         world_prompt=None,
                         time_of_day=tod,
