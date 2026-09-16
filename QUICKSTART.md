@@ -1,170 +1,118 @@
-# ⚡ QUICKSTART - Get Running in 5 Minutes
+# Quickstart
 
-This is the fastest way to get SOMEWHERE StoryGen running locally.
+Two ways in. Pick the one that matches what you want to do.
 
----
+## Just play it
 
-## 1️⃣ Prerequisites
+Double-click **`PLAY.bat`**.
 
-- ✅ Python 3.11+ installed (`python --version`)
-- ✅ Discord Bot created ([Get token here](https://discord.com/developers/applications))
-- ✅ Gemini API key ([Get key here](https://aistudio.google.com/app/apikey))
+That opens the game in a borderless fullscreen window with no browser around it.
+Press `F11` to leave fullscreen, `Alt+F4` to quit. First launch takes a few
+seconds while the engine warms; you get a title card, not a white screen.
 
----
+From a terminal, the same thing:
 
-## 2️⃣ Discord Bot Setup (2 minutes)
-
-1. Go to https://discord.com/developers/applications
-2. Click **"New Application"** → Name it → **Create**
-3. Go to **Bot** tab → Click **"Reset Token"** → Copy token
-4. Enable **MESSAGE CONTENT INTENT** (scroll down, toggle ON)
-5. Go to **OAuth2 → URL Generator**:
-   - Scopes: `bot`
-   - Permissions: `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`
-6. Copy generated URL → Paste in browser → Invite bot to your server
-
----
-
-## 3️⃣ Gemini API Setup (1 minute)
-
-1. Go to https://aistudio.google.com/app/apikey
-2. Click **"Create API key"**
-3. Copy the key
-4. ✅ Ensure these models are enabled:
-   - `gemini-2.0-flash-exp`
-   - `imagen-3.0-generate-001`
-   - `imagen-3.0-capability-001`
-
----
-
-## 4️⃣ Install & Run (2 minutes)
-
-### Windows:
 ```bash
-# Clone repo
-git clone https://github.com/yourusername/somewhere-storygen.git
-cd somewhere-storygen
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Set environment variables
-$env:DISCORD_TOKEN="your_discord_bot_token_here"
-$env:GEMINI_API_KEY="your_gemini_api_key_here"
-
-# Run bot
-python bot.py
+python play.py              # fullscreen, real models
+python play.py --windowed   # a normal resizable window
+python play.py --mock       # fully offline: no API keys, no network, instant
+python play.py --browser    # skip the native window, use your browser
 ```
 
-### Mac/Linux:
+If no API key is set, it falls back to mock mode automatically rather than
+hanging on failed calls, so it always boots into *something* playable.
+
+## Build the standalone app
+
+Produces a folder you can move to another machine, with Python and every
+dependency inside it. No install required on the target.
+
 ```bash
-# Clone repo
-git clone https://github.com/yourusername/somewhere-storygen.git
-cd somewhere-storygen
-
-# Install dependencies
-pip3 install -r requirements.txt
-
-# Set environment variables
-export DISCORD_TOKEN="your_discord_bot_token_here"
-export GEMINI_API_KEY="your_gemini_api_key_here"
-
-# Run bot
-python3 bot.py
+python tools/build_exe.py --clean --run
 ```
 
----
+Output is `dist/SOMEWHERE/`. **Ship the whole folder, not just the `.exe`** —
+the interpreter, the libraries and the game's content all live beside it. Around
+530 MB and a few minutes to build; mediapipe and OpenCV are most of the weight,
+and both are needed because the SCAN tool runs its detector on-device.
 
-## 5️⃣ Verify It's Working
+What is allowed in that folder (and what must never be) is listed in
+`tools/ship_layout.py`. Walkthrough: **[docs/operations/SHIPPING.md](docs/operations/SHIPPING.md)**.
 
-You should see in terminal:
+Saved games land in `dist/SOMEWHERE/sessions/`. A windowed build has no console,
+so anything it prints goes to `dist/SOMEWHERE/logs/somewhere.log`.
+
+## Set up API keys
+
+Without keys the game runs in mock mode: the loop works, the prose is canned and
+no images are generated. It says so on startup rather than looking live and
+failing every turn. For the real thing, make a `.env`:
+
 ```
-[STARTUP] Resetting game state (fresh simulation)...
-[STARTUP] Game state cleared. Starting fresh.
-BOT | Logged in as SOMEWHERE#8805
+GEMINI_API_KEY=...
 ```
 
-In Discord:
-- Bot should post intro message with **▶️ PLAY** button
-- Click PLAY → Game starts!
+`OPENAI_API_KEY` and `ANTHROPIC_API_KEY` work too — which provider is actually
+used is set in `ai_config.json`, or per-run with `python play.py --backend gemini`.
 
----
+It is looked for in these places, first one wins:
 
-## 🎮 Playing the Game
+1. beside `play.py` (or beside `SOMEWHERE.exe` in a build)
+2. the folder you launched from
+3. up to three directories above — so a build in `dist/SOMEWHERE` finds the
+   repo's `.env` without anyone copying secrets into a shippable folder
+4. `%APPDATA%\SOMEWHERE\.env` — where an installed copy should keep it
 
-1. **Click PLAY** to start
-2. You'll see:
-   - 🖼️ First-person POV image
-   - 📍 Narrative dispatch
-   - 🔘 4 choice buttons
-3. **Pick a choice** within 15 seconds
-4. Watch the story unfold!
+**A packaged build launched from Explorer inherits none of your shell's
+environment.** If `GEMINI_API_KEY` is only exported in your terminal, the app
+works when you start it from that terminal and runs offline when you
+double-click it. The `.env` file is what makes both cases work; the build drops
+a `.env.example` beside the exe as a reminder.
 
-### Controls:
-- 🔘 **Choice 1-4** - Pick an option
-- ⚡ **Custom Action** - Type your own action
-- 🔄 **Restart** - New game (saves VHS tape)
-- 🤖 **Auto** - Enable AI autopilot
-- 🎨 **HD** - Toggle quality (Flash/Pro)
-- ℹ️ **Info** - Game rules
+## Develop against it
 
----
+`run_local.py` is the bare server with no window. The end-to-end suites spawn it
+as a subprocess, so its flags are load-bearing — leave them alone.
 
-## ⚠️ Troubleshooting
+```bash
+python run_local.py --mock --no-browser --port 5001
+python -m unittest test_standalone_e2e test_providers
+```
 
-### "Bot doesn't connect"
-- Check DISCORD_TOKEN is correct
-- Check you set environment variable correctly
-- Try printing: `echo $env:DISCORD_TOKEN` (Windows) or `echo $DISCORD_TOKEN` (Mac/Linux)
+## Housekeeping
 
-### "Bot connects but doesn't post intro"
-- Check bot has permissions in Discord channel
-- Check MESSAGE CONTENT INTENT is enabled in Developer Portal
-- Try mentioning bot: `@YourBot`
+Renders and playthroughs generate a lot of disk. The videos and transcripts are
+the deliverable; the frame stills are not, and each MP4 already contains every
+frame in order.
 
-### "Image generation fails"
-- Check GEMINI_API_KEY is correct
-- Check Gemini API key has Imagen access
-- Try toggling HD mode OFF (Flash is more stable)
+```bash
+python tools/clean_artifacts.py            # show what would go
+python tools/clean_artifacts.py --apply    # sweep it
+```
 
-### "Rate limit errors"
-- You're making too many requests
-- Wait 1 minute and try again
-- Use Flash mode (faster rate limits)
+## Where things are
 
----
+| Path | What |
+|---|---|
+| `play.py`, `PLAY.bat` | Play the game |
+| `tools/build_exe.py` | Build the standalone app |
+| `api.py`, `engine.py` | The server and the simulation |
+| `templates/`, `static/` | The UI |
+| `prompts/` | The prompt layers the narrator uses |
+| `sessions/` | Saved playthroughs |
+| `playtest_results/` | Render output |
+| `docs/plans/` | Designs not yet built |
+| `docs/reference/` | How the subsystems work |
+| `docs/operations/` | Deploying, testing, resetting |
 
-## 💡 Tips
+## When it will not start
 
-- **First playthrough?** Use Flash mode (HD OFF) for faster responses
-- **Want quality?** Toggle HD ON for photorealistic images
-- **Going AFK?** Enable Auto mode and watch the AI play
-- **Died?** Check your VHS tape GIF in the channel!
-- **Stuck?** Press Restart to begin fresh
+Read `logs/somewhere.log` first — the packaged build writes everything there,
+including tracebacks that would otherwise vanish with the window.
 
----
-
-## 📖 Next Steps
-
-- **Understand the system:** Read [AGENT_GUIDE.md](AGENT_GUIDE.md)
-- **Deploy to cloud:** Read [DEPLOYMENT.md](DEPLOYMENT.md)
-- **Modify gameplay:** Edit `prompts/simulation_prompts.json`
-
----
-
-## 🆘 Still Stuck?
-
-Check the logs:
-- Terminal output for errors
-- `logs/error.log` for exceptions
-- `logs/world_evolution.log` for state updates
-
-Common fixes:
-- Restart bot: Kill terminal → Run `python bot.py` again
-- Clear state: Delete `world_state.json`, `history.json`
-- Fresh install: Delete `__pycache__` folder → Reinstall dependencies
-
----
-
-**You're ready! Click PLAY and survive. 🎮📼**
-
+- **Port already taken** — it picks a free port automatically; pass `--port` to
+  force one.
+- **No window, no error** — pywebview is missing. `pip install pywebview`, or run
+  with `--browser`.
+- **Boots but no images** — that is mock mode. Check that your key is in `.env`
+  and that `ai_config.json` names a provider you have a key for.

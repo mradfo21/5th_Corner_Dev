@@ -1,298 +1,159 @@
-# 🎮 SOMEWHERE STORYGEN
+# SOMEWHERE
 
-**An AI-driven first-person survival horror game that runs in Discord**
-
-Every scene is generated in real-time by AI. Every choice matters. Death is permanent. The world evolves based on your actions.
+An AI-driven first-person survival horror game. Every frame is generated as you
+play; nothing is pre-drawn. You are a photojournalist in 1993, at the fence of a
+quarantined facility in the Four Corners desert, and the world reacts to what you
+actually do.
 
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
-![Discord.py](https://img.shields.io/badge/discord.py-2.0+-blue.svg)
-![Gemini](https://img.shields.io/badge/Gemini-2.0-orange.svg)
+![Gemini](https://img.shields.io/badge/images-Nano%20Banana-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
----
+## Play it
 
-## 🌟 Features
-
-- 🖼️ **Photorealistic AI-Generated Scenes** - Every image created in real-time with Google Gemini Imagen
-- 📖 **Dynamic Narrative** - Story evolves based on your choices, powered by Gemini 2.0 Flash
-- ⚡ **Real Consequences** - Fair but tense gameplay where risky choices have real outcomes
-- ⏱️ **Timeout Penalties** - Hesitate too long and the world punishes you
-- 🎬 **Death Replays** - Every run saved as a VHS tape GIF
-- 🤖 **Auto-Play Mode** - Watch the AI play itself
-- 🎨 **HD Toggle** - Switch between fast/quality image generation
-- 🎬 **Cast & Camera** - Play as your own character, in your own level, from first or third person — with reference images the renderer actually uses ([docs](CAST_AND_CAMERA.md))
-
----
-
-## 🎯 How It Works
-
-```
-Player sees image → Reads dispatch → Makes choice → Consequence calculated → World evolves → New image generated → Repeat
-```
-
-- **4 choices per turn** - Always varied, never generic
-- **15-second countdown** - Choose quickly or face brutal consequences
-- **Vision-grounded choices** - Options based on what's actually visible in the scene
-- **Persistent world state** - Location, health, inventory, environment all tracked
-- **Fair difficulty** - Normal movement is safe, reckless actions are punished
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Python 3.11+
-- Discord Bot Token ([Get one here](https://discord.com/developers/applications))
-- Google Gemini API Key ([Get one here](https://aistudio.google.com/app/apikey))
-
-### Installation
+Double-click **`PLAY.bat`**, or:
 
 ```bash
-# 1. Clone repository
-git clone https://github.com/yourusername/somewhere-storygen.git
-cd somewhere-storygen
-
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Set environment variables
-export DISCORD_TOKEN="your_discord_bot_token"
-export GEMINI_API_KEY="your_gemini_api_key"
-
-# 4. Run bot
-python bot.py
+python play.py            # fullscreen, no browser chrome
+python play.py --mock     # fully offline, no API keys needed
 ```
 
-### Discord Setup
+To build a standalone app you can move to another machine:
 
-1. Enable **MESSAGE CONTENT INTENT** in Discord Developer Portal
-2. Invite bot with permissions: `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`
-3. Bot will post intro message when it connects
-
----
-
-## 📖 Documentation
-
-- **[AGENT_GUIDE.md](AGENT_GUIDE.md)** - Comprehensive technical guide for developers
-- **[CLOUD_AGENT_TESTING.md](CLOUD_AGENT_TESTING.md)** - Run and play the game fully offline/locally (no API keys, no Render) so it can actually be tested — by you or by an AI agent — instead of only by poking the deployed site
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Cloud deployment instructions (Render, Railway, AWS, Docker)
-
----
-
-## 🎮 Gameplay
-
-### Core Loop
-
-1. **See** - AI generates photorealistic first-person image
-2. **Read** - Narrative dispatch describes your situation
-3. **Choose** - Pick from 4 varied choices (or type custom action)
-4. **Survive** - Face consequences, adapt to evolving world
-
-### Game Mechanics
-
-- **Health System** - Injuries accumulate, death is permanent
-- **Inventory** - Pick up and use items
-- **Environment** - World evolves based on time and actions
-- **NPCs** - Characters remember your actions
-- **Timeout Penalties** - Hesitation has severe consequences
-
-### Controls
-
-- 🔘 **Choice Buttons** - Pick from 4 AI-generated options
-- ⚡ **Custom Action** - Type your own action
-- 🔄 **Restart** - Start new game (saves VHS tape)
-- 🤖 **Auto-Play** - Enable AI auto-pilot
-- 🎨 **HD Toggle** - Switch between quality/speed
-- ℹ️ **Info** - View game rules
-
----
-
-## 🏗️ Architecture
-
-```
-bot.py                          # Discord bot, UI, game orchestration
-engine.py                       # Game engine, turn processing
-choices.py                      # AI choice generation
-gemini_image_utils.py           # Image generation pipeline
-evolve_prompt_file.py           # World state evolution
-prompts/simulation_prompts.json # All LLM prompts (core game logic)
-config.json                     # API keys and model configs
+```bash
+python tools/build_exe.py --clean --run   # -> dist/SOMEWHERE/
 ```
 
-### Key Technologies
+Full setup, keys and troubleshooting: **[QUICKSTART.md](QUICKSTART.md)**.
 
-- **Discord.py** - Bot framework
-- **Google Gemini 2.0 Flash** - Text generation
-- **Google Imagen 3** - Image generation (text-to-image + img2img)
-- **Pillow (PIL)** - Image processing, GIF creation
-- **asyncio** - Async task management
-
----
-
-## 🎨 Prompt Engineering
-
-This game is **prompt-driven** - 80% of behavior is controlled by LLM prompts in `prompts/simulation_prompts.json`.
-
-Four prompts do the redirecting. Edit these and the game changes:
-
-- `world_initial_state` - What kind of place this is
-- `action_consequence_instructions` - How an action becomes what happened
-- `player_choice_generation_instructions` - What you're even offered to do
-- `image_art_direction` - What every frame looks like
-
-The rest of the file is mechanical rulebooks (camera physics, negative prompt,
-the two image templates, the between-turn bulletin) plus the **cast sheet** —
-who you play as, the level, and where the camera sits, which is a structured
-spec rather than prose (see `CAST_AND_CAMERA.md`). Both editors show the four
-above and fold the rulebooks behind one disclosure.
-
-Every key in that file is read by a live code path and editable in both
-editors — `prompts_store.unwired_keys()` is asserted empty by the test suite,
-so a prompt you can save but that changes nothing can't accumulate again.
-
----
-
-## 💰 Cost Estimates
-
-**Per 30-turn game (Flash mode):**
-- Text generation: ~$0.05
-- Image generation: ~$1.20
-- **Total: ~$1.25**
-
-**Monthly (10 games/day):**
-- ~$375/month in API costs
-- Hosting: $0-10/month (Render free tier available)
-
----
-
-## 🔧 Configuration
-
-Edit `prompts/simulation_prompts.json` to modify:
-- Difficulty (consequence severity)
-- Image style (negative prompts, art direction)
-- Choice variety (types of options offered)
-- World behavior (environment evolution rules)
-
-Edit `bot.py` constants:
-- `AUTO_PLAY_DELAY` - Time between auto-play choices (default: 45s)
-- `COUNTDOWN_DURATION` - Timeout penalty timer (default: 15s)
-- `HD_MODE_ENABLED` - Default image quality
-
----
-
-## 🐛 Troubleshooting
-
-### Bot doesn't start
-- Check `DISCORD_TOKEN` is set correctly
-- Check `GEMINI_API_KEY` is valid
-- Enable MESSAGE CONTENT INTENT in Discord Developer Portal
-
-### Image generation fails
-- Ensure Gemini API key has Imagen access
-- Check for rate limits (429 errors)
-- Use Flash mode if hitting safety filters
-
-### Choices seem stale/out of date
-- Choices are generated from current image + dispatch only
-- If desync occurs, restart game
-
-See [AGENT_GUIDE.md](AGENT_GUIDE.md) for detailed troubleshooting.
-
----
-
-## 📊 Features in Detail
-
-### Image Generation Pipeline
-
-- **Text-to-Image** for intro shot
-- **Image-to-Image** for all subsequent turns (visual continuity)
-- **Dynamic reference images** (1 for action, 2 for stationary)
-- **Safety filter bypass** via prompt sanitization
-- **Anti-border/anti-person instructions** for consistent POV
-
-### Consequence System
-
-- **Fair but tense** - Normal movement is safe, risky choices punished
-- **Deadly consequences** for negative outcomes or hesitation
-- **Structured death determination** via JSON response
-- **Medical terminology** to bypass AI safety filters
-
-### Death Replay System
-
-- Tracks all high-res images during run
-- Creates GIF on death or restart
-- 500ms per frame (2x speed)
-- Saved to `tapes/` with timestamp
-
----
-
-## 🚀 Deployment
-
-Deploy to **Render** (recommended):
-
-1. Connect GitHub repo to Render
-2. Set environment variables: `DISCORD_TOKEN`, `GEMINI_API_KEY`
-3. Deploy as **Worker** (not Web Service)
-4. `render.yaml` already configured
-
-See [DEPLOYMENT.md](DEPLOYMENT.md) for full instructions.
-
----
-
-## 🤝 Contributing
-
-This is a personal project, but feedback and suggestions are welcome!
-
-**Want to modify the game?**
-1. Read [AGENT_GUIDE.md](AGENT_GUIDE.md) first
-2. Most changes are in `prompts/simulation_prompts.json`
-3. Test thoroughly by actually playing
-
----
-
-## 📜 License
-
-MIT License - Feel free to fork and modify for personal use.
-
----
-
-## 🎬 Example Gameplay
+## The loop
 
 ```
-[Image: Desert facility exterior, chain-link fence, dust storm approaching]
-
-📍 DISPATCH:
-Outside near the fence. The dust storm is getting closer. You can see a maintenance 
-shed 20 meters away, but the wind is picking up. Your throat is dry.
-
-CHOICES:
-1. 🏃 Sprint to the maintenance shed before the storm hits
-2. 🔍 Search along the fence line for another entrance
-3. 🛡️ Take cover behind a concrete barrier and wait it out
-4. 📞 Try the emergency radio on your belt
-
-[15 second countdown begins...]
+see the frame -> read the beat -> act -> the world answers -> a new frame
 ```
 
----
+Each turn you get a generated image, a paragraph of what just happened, and a
+fresh slate of choices written against what is actually visible in the picture,
+not against a script. Three ways to act:
 
-## 🔗 Links
+- **MOVE** — go to something the detector found in the frame. The camera travels.
+- **SCAN** — point at an object on screen and interact with that specific thing.
+- **TALK** — speak to someone who is present.
 
-- **Discord Developer Portal**: https://discord.com/developers/applications
-- **Google AI Studio**: https://aistudio.google.com/app/apikey
-- **Render Deployment**: https://render.com
+Underneath, a handful of dials move: `threat` climbs monotonically as the story
+escalates, `chaos` spikes and decays with what happens to you, the clock advances
+with the phase, and injuries persist. Scenes are img2img continuations of the
+last frame unless you do something that genuinely changes where you are, which is
+what keeps a run looking like one place rather than a slideshow.
 
----
+## Render mode
 
-## 🙏 Acknowledgments
+The **RENDER** button in the rail runs an unattended playthrough on the heavy
+models and hands back the footage. Pick the turn count, the image model
+(including Nano Banana Pro at up to 4K), the text model, and whether it plays
+MOVE-driven or straight choices. It takes over the renderer for the duration and
+gives it back when it finishes.
 
-- **Google Gemini** for powerful multimodal AI
-- **Discord.py** for excellent bot framework
-- **Pillow** for image processing
-- Built with curiosity and playfulness 🎮
+Output is browsable in the same panel: a turn-by-turn reviewer with the frame,
+the prose and the dials, plus MP4 flipbooks of the scene, scan and result passes,
+and a zip of the lot.
 
----
+Renders are not cheap in time or disk — a 60-turn run on Pro at 2K is about 40
+minutes and a gigabyte of stills. Sweep them with:
 
-**Ready to survive? Deploy the bot and start your story. 📼🔥**
+```bash
+python tools/clean_artifacts.py --apply
+```
 
+That keeps the videos and transcripts and drops the stills, which costs nothing
+real because each MP4 already contains every frame in order.
+
+## It is mostly prompts
+
+80% of the behaviour lives in `prompts/simulation_prompts.json`. Four keys do the
+redirecting — edit these and the game changes:
+
+- `world_initial_state` — what kind of place this is
+- `action_consequence_instructions` — how an action becomes what happened
+- `player_choice_generation_instructions` — what you are even offered to do
+- `image_art_direction` — what every frame looks like
+
+The rest is mechanical rulebooks (camera physics, negative prompt, the two image
+templates, the between-turn bulletin) plus the **cast sheet** — who you play as,
+the level, and where the camera sits — which is a structured spec rather than
+prose (see [docs/reference/CAST_AND_CAMERA.md](docs/reference/CAST_AND_CAMERA.md)).
+Both editors surface the four above and fold the rulebooks behind one disclosure.
+
+Every key in that file is read by a live code path and editable in both editors.
+`prompts_store.unwired_keys()` is asserted empty by the test suite, so a prompt
+you can save but that changes nothing cannot accumulate again.
+
+## Layout
+
+What a **player** gets is `dist/SOMEWHERE/` — the folder `tools/build_exe.py`
+writes. What this **repo** is is that game plus the studio that made it.
+
+```
+# Product (double-click, then ship the folder)
+play.py  PLAY.bat        the game
+RUN.bat                  windowed + console, for looking at logs
+tools/build_exe.py       -> dist/SOMEWHERE/
+tools/ship_layout.py     the only list of what may go in that folder
+worlds/somewhere.json    the shipped Horizon World
+experiences/somewhere.json
+prompts/                 factory defaults; live file is rebuilt on stamp
+templates/  static/      the UI
+models/                  on-device SCAN weights
+
+# Runtime on this machine (never ship)
+sessions/  experiences/.active  worlds/new-level.json  .env
+
+# Studio / engine (same process as Play; do not relocate)
+api.py  engine.py  experience_store.py  worlds_store.py  ...
+
+# Dev
+tools/                   smoke the exe, sweep artefacts, playtests
+docs/operations/SHIPPING.md
+```
+
+Do not move `engine.py` into a package. Every module finds its data with
+`Path(__file__).parent`; that is also why the packaged layout is flat.
+
+What goes in a build is listed once in `tools/ship_layout.py`. Author Worlds,
+this machine's Experience pointer, and `simulation_prompts.json` are rebuilt
+from the SOMEWHERE snapshot at stamp time so a folder you copy to another
+computer is the Horizon demo, not yesterday's New Level.
+
+## Providers
+
+Text, vision and images each route through `ai_provider_manager`, so swapping
+models is a config change in `ai_config.json` rather than a code change. Gemini,
+OpenAI and Anthropic are wired for text; Gemini, Krea, fal and Reactor for
+images. The catalogue in `ai_config.json` is what the render form offers.
+
+With no key set, everything falls back to a mock backend that runs the whole loop
+offline in milliseconds — which is how the test suite stays fast and how the game
+still boots on a machine with no credentials.
+
+## Testing
+
+```bash
+python -m unittest test_standalone_e2e test_providers test_render_mode
+python run_full_playtests.py            # the full battery
+python tools/smoke_exe.py               # prove the packaged build is playable
+```
+
+The end-to-end suites boot a real server as a subprocess in mock mode, so they
+exercise the actual HTTP paths without spending anything.
+
+## Documentation
+
+- **[QUICKSTART.md](QUICKSTART.md)** — get it running
+- **[AGENT_GUIDE.md](AGENT_GUIDE.md)** — technical guide for working on it
+- **[CHANGELOG.md](CHANGELOG.md)** — what changed and why
+- **[docs/operations/SHIPPING.md](docs/operations/SHIPPING.md)** — the player folder
+- **[docs/operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md)** — cloud deployment
+
+## License
+
+MIT.

@@ -1,34 +1,42 @@
-# COIN-OP MVP — go-to-market setup
+# COIN-OP — cabinet setup
 
-The arcade "insert coin" money loop. Ships dark by default; turning it on
+They feed the machine. We take Stripe once per drop. Credits spend 1:1
+with turns. That is the business model.
+
+Ships dark until `FEATURE_COINOP` + Stripe keys are set. Turning it on
 takes ~10 minutes of Stripe dashboard + env vars.
 
-**What it does today:** two payment loops on the same Stripe SKU.
+**What they see:** a COIN tile on the start menu. Balance, three packs,
+INSERT. Same packs on death and when the meter hits zero.
 
-* **Death continue** — when the player dies, they see an "Insert Coin —
-  Continue" button in green next to the red "RESTART SIMULATION". Click →
-  redirected to Stripe Checkout → pay (default \$0.99) → redirected back →
-  server verifies with Stripe → engine revives them on the same run.
-* **Arcade credit meter** *(new — see §11)* — always-visible top-right
-  chip showing remaining credits + total spent. Every turn spends 1 credit.
-  When the meter hits zero the world freezes with an "INSERT COIN" pause
-  overlay. Same button, same one-click flow, same Stripe SKU — server
-  decides revive-vs-topup from actual player state. Deploy dark first,
-  then flip `COINOP_CREDIT_GATING=1` when you're ready.
+| Pack | Price | Credits | Role |
+|---|---:|---:|---|
+| COIN | \$1.99 | 20 | Small drop |
+| ROLL | \$4.99 | 80 | The usual — default |
+| BUCKET | \$9.99 | 200 | Best value |
+
+One Stripe fee per INSERT. A \$0.99 single charge leaked a third to
+Stripe (2.9% + \$0.30). The roll keeps ~91% of the dollar.
+
+**What the loops do:**
+
+* **Start-menu machine** — they add money before (or between) runs.
+  Checkout returns to the cabinet so they see the credits land.
+* **Death continue** — same packs, revive on the current run.
+* **Credit meter** — every turn spends 1 credit. At zero the world
+  pauses on INSERT COIN. Same packs. Gating is **on** whenever the
+  machine is live; set `COINOP_CREDIT_GATING=0` to sell only death
+  continues.
 
 **Ship-it checklist for the first real dollar:**
 
 1. Complete §1 (Stripe account setup) once.
-2. Set the three required env vars in §2 with your **live** `sk_live_...`
-   / `pk_live_...` keys.
-3. Redeploy. That's it — the button appears on death and the game keeps
-   working exactly as before for anyone who doesn't click it.
-4. **(Optional, do next)** flip `COINOP_CREDIT_GATING=1` to turn on the
-   arcade meter for continuous monetization, not just deaths.
+2. Set `FEATURE_COINOP=1` plus live `sk_live_...` / `pk_live_...`.
+3. Redeploy. COIN lights up. PLAY still works if they never open it.
 
-**What it does NOT do (yet):** no credit packs, no saved cards, no Apple/Google
-Pay one-tap, no PayPal Micropayments, no crypto rails. Those are all in the
-plan (`COIN_OP_MONETIZATION_PLAN.md`).
+**What it does NOT do (yet):** no saved cards, no Apple/Google Pay
+one-tap inside our CRT, no PayPal / crypto rails. Hosted Stripe
+Checkout is the slot — simple payments, they stay in control.
 
 ---
 
@@ -61,14 +69,14 @@ or your local `.env` for dev).
 | `STRIPE_SECRET_KEY` | **yes** | — | `sk_test_...` or `sk_live_...`. |
 | `STRIPE_PUBLISHABLE_KEY` | **yes** | — | `pk_test_...` or `pk_live_...`. |
 | `STRIPE_WEBHOOK_SECRET` | no | — | `whsec_...`. Enables `/webhook/stripe`. MVP works without it. |
-| `COINOP_CONTINUE_PRICE_CENTS` | no | `99` | Cents charged per continue. Min \$0.50 (Stripe minimum). |
+| `COINOP_CONTINUE_PRICE_CENTS` | no | `99` | Legacy fallback only. Live prices live in `coinop.PACKS` (\$1.99 / \$4.99 / \$9.99). |
 | `COINOP_CONTINUE_CURRENCY` | no | `usd` | ISO-4217. Lowercase. |
-| `COINOP_CONTINUE_LABEL` | no | `Insert Coin — Continue` | Text on the button. |
-| `COINOP_PRODUCT_NAME` | no | `SOMEWHERE — Continue` | Line-item name shown to the buyer on the Stripe page + receipt. |
+| `COINOP_CONTINUE_LABEL` | no | `Insert Coin — Continue` | Fallback label if a pack is missing. |
+| `COINOP_PRODUCT_NAME` | no | `SOMEWHERE — Continue` | Fallback Stripe line-item name. Packs name themselves. |
 | `PUBLIC_BASE_URL` | no | *(derived from request)* | Set if your server sits behind a proxy / load balancer that doesn't preserve `Host`. e.g. `https://somewhere.example.com`. |
-| `COINOP_CREDIT_GATING` | no | `0` | Set to `1` to enable the arcade credit meter (see §11). Off by default so the paid death-continue flow ships independently. |
+| `COINOP_CREDIT_GATING` | no | `1` | Default ON when the machine is live. Set `0` to sell only death continues. |
 | `COINOP_FREE_STARTING_CREDITS` | no | `10` | Free credits granted the first time a session's balance is checked (only fires when gating is on). Enough to fall in love with the game before the first "insert coin" prompt. |
-| `COINOP_CREDITS_PER_COIN` | no | `20` | Credits granted per successful checkout — paid, comp, or test-mode. |
+| `COINOP_CREDITS_PER_COIN` | no | `20` | Fallback credits if a checkout has no pack id. Packs override this. |
 
 **If any of `FEATURE_COINOP`, `STRIPE_SECRET_KEY`, or `STRIPE_PUBLISHABLE_KEY`
 is missing, the feature stays fully dark** — the client's `/api/coinop/config`
@@ -123,15 +131,17 @@ per-mode branching or configuration is required.
    {
      "enabled": true,
      "publishable_key": "pk_test_...",
-     "price_cents": 99,
-     "currency": "usd",
-     "label": "Insert Coin — Continue",
-     "display_price": "$0.99 "
+     "default_pack": "roll",
+     "packs": [
+       {"id": "coin", "credits": 20, "display_price": "$1.99"},
+       {"id": "roll", "credits": 80, "display_price": "$4.99", "usual": true},
+       {"id": "bucket", "credits": 200, "display_price": "$9.99"}
+     ]
    }
    ```
 3. Open `/play?session=test1` in your browser and get the player killed.
-4. In the death overlay, the green **Insert Coin — Continue ($0.99)** button
-   should be visible above the red RESTART button.
+4. On the start menu, open **COIN** — or die and pick a pack on the death
+   overlay. ROLL is selected by default.
 5. Click it → you land on Stripe Checkout.
 6. Use Stripe's test card: `4242 4242 4242 4242`, any future expiry, any CVC,
    any zip.
@@ -139,8 +149,8 @@ per-mode branching or configuration is required.
    the death overlay should dismiss within a second or two, with new choices
    rendered under a *"A coin drops. The transmission stutters back to life."*
    line.
-8. In the Stripe dashboard **Payments** view you should see the \$0.99 test
-   charge with `game_session_id: test1` in the metadata.
+8. In the Stripe dashboard **Payments** view you should see the pack charge
+   (\$4.99 for a ROLL) with `game_session_id` + `pack` in the metadata.
 
 Try the negative paths too:
 - **Cancel** on the Stripe page → returns with `?coinop=cancel` → status text
@@ -161,8 +171,8 @@ Try the negative paths too:
 3. (If using webhooks) create the endpoint again in live mode; copy the new
    `whsec_...` signing secret.
 4. Update env vars on the server. Restart.
-5. Run the end-to-end test again with a real card for \$0.99 (you can refund
-   yourself from the dashboard).
+5. Run the end-to-end test again with a real card for a ROLL (\$4.99 — you
+   can refund yourself from the dashboard).
 6. Watch the first live payment land. That's the entire launch.
 
 ---
@@ -174,7 +184,7 @@ Try the negative paths too:
   MVP volume; the effect of a revive is small and unrewinding it would be
   disruptive. Track this manually until we build a proper revocation flow.
 - **Chargebacks:** Stripe emails you. \$15 fee per dispute + the disputed
-  amount. At \$0.99/continue this is painful — one dispute wipes ~15 sales.
+  amount. At pack prices this is still painful — one dispute wipes several drops.
   Enable **Stripe Radar** (on by default on standard pricing) and add a
   simple rule: block > 5 attempts per hour per IP.
 - **Disputes / support:** put a support email in the Stripe dashboard's
@@ -306,7 +316,7 @@ The `?comp=` param is honored by every entry point: `/`, `/lobby`, `/play`,
 
 ---
 
-## 11. Arcade credit economy (`COINOP_CREDIT_GATING=1`)
+## 11. Arcade credit economy (on by default)
 
 The paid death-continue MVP is orthogonal to a second, richer mechanic —
 the **coin meter**. When gating is on:
@@ -323,10 +333,9 @@ the **coin meter**. When gating is on:
   responds `HTTP 402` with `{"needs_coin": true, "balance": 0}` and does
   NOT process the turn — the client pops the **INSERT COIN** pause overlay
   and freezes the world visually until a top-up lands.
-- Every successful checkout (paid Stripe, comp code, or test-mode) grants
-  `COINOP_CREDITS_PER_COIN` (default: 20) credits — same pack size across
-  all three payment paths. Paid credits accrue toward the "SPENT $X.XX"
-  subtitle on the HUD; comp/starter credits do not.
+- Every successful checkout grants the **selected pack** (COIN 20 / ROLL
+  80 / BUCKET 200). Comp and test-mode mint the same pack for free. Paid
+  cents accrue toward the "SPENT $X.XX" subtitle; comps do not.
 
 ### What the player sees
 
@@ -377,16 +386,9 @@ dismisses, meter reads `◉ 05 · $0.00`, game resumes.
 
 ### Deploy sequencing
 
-Turning on the meter is a **behavior change**, not just a UI reveal.
-Ship it separately from the paid death-continue MVP:
-
-1. Deploy with `FEATURE_COINOP=1` and `COINOP_CREDIT_GATING=0` (default).
-   You get the death-continue flow, no meter, no gating. Zero change to
-   the normal player experience.
-2. Once payments are proven and the arcade meter feels good in a preview
-   deploy, flip `COINOP_CREDIT_GATING=1` on the production env vars.
-   All active sessions get the free starter on their next turn; new
-   sessions get it on their first.
+The meter is **on** whenever the machine is live. That is the product:
+they add money, they play, they add more. To sell only death continues,
+set `COINOP_CREDIT_GATING=0`.
 
 ---
 
@@ -397,10 +399,8 @@ See `COIN_OP_MONETIZATION_PLAN.md` for the full roadmap. Nearest wins:
 1. **Express Checkout Element (Apple Pay / Google Pay / Link)** — replace
    the redirect-to-Stripe-Checkout with an in-widget one-tap flow. Massive
    mobile conversion lift.
-2. **Credit packs** — sell 5 continues at \$4.99 to drop the effective per-
-   continue fee from ~33% to ~9%.
-3. **Saved cards** — one-tap continues for returning users after the first
-   purchase.
+2. **Saved cards** — one-tap continues for returning users after the first
+   purchase. Packs already ship (COIN / ROLL / BUCKET).
 4. **PayPal Micropayments as a second rail** — the only card-adjacent rail
    where a true \$0.50 charge is viable (~23% fee vs Stripe's 33% at \$0.99).
 5. **USDC-on-Solana** rail (via Helio) — the only rail where a real 50-cent

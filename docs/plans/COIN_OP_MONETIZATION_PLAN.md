@@ -1,7 +1,9 @@
 # 🎰 COIN-OP MONETIZATION PLAN
 ### "Insert Coin to Continue" — an 80s-arcade micro-payment system for SOMEWHERE
 
-**Status:** Proposal / research plan (not yet implemented)
+**Status:** Research landed. Packs (COIN / ROLL / BUCKET) + start-menu
+cabinet + credit gating now ship in `coinop.py`. Hosted Checkout stays
+the slot; Express Checkout / saved cards remain next.
 **Author:** cloud agent research pass
 **Related code:** `engine.py` (death detection), `templates/standalone.html` (`#death-overlay`), `static/js/standalone.js` (`enterGameOver`), `api.py` (Flask routes)
 

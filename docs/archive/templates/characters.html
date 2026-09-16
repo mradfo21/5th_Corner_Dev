@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Known Characters</title>
+  <style>
+    body {
+      font-family: 'Georgia', serif;
+      background-color: #f4f4f4;
+      color: #333;
+      margin: 2em auto;
+      max-width: 800px;
+      padding: 1em 2em;
+      border-radius: 10px;
+      background: white;
+      box-shadow: 0 0 20px rgba(0,0,0,0.1);
+    }
+
+    h2 {
+      text-align: center;
+      font-size: 2em;
+      margin-bottom: 0.5em;
+      border-bottom: 2px solid #ccc;
+      padding-bottom: 0.3em;
+    }
+
+    .character {
+      margin-bottom: 1em;
+      padding: 0.5em 0.8em;
+      border-left: 4px solid #666;
+      background-color: #fafafa;
+    }
+
+    .name {
+      font-weight: bold;
+      font-size: 1.1em;
+    }
+
+    .desc {
+      margin-top: 0.2em;
+      font-style: italic;
+    }
+
+    a {
+      display: block;
+      text-align: center;
+      margin-top: 2em;
+      text-decoration: none;
+      color: #0077cc;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .highlight-box {
+      background: #fffbe6;
+      color: #b85c00;
+      border: 2px solid #ffbb33;
+      border-radius: 6px;
+      margin: 0.5em 0;
+      padding: 0.5em 0.8em;
+      font-weight: bold;
+      font-size: 1.05em;
+      box-shadow: 0 2px 8px #ffbb3340;
+      animation: pulse-fade 1.1s cubic-bezier(0.4,0,0.2,1);
+      transition: background 0.3s, color 0.3s, border 0.3s, opacity 0.3s;
+    }
+    @keyframes pulse-fade {
+      0% { background: #fffbe6; color: #b85c00; border-color: #ffbb33; opacity: 0.2; }
+      30% { background: #ffbb33; color: #222; border-color: #ffbb33; opacity: 1; }
+      60% { background: #fffbe6; color: #b85c00; border-color: #ffbb33; opacity: 1; }
+      100% { background: #fffbe6; color: #b85c00; border-color: #ffbb33; opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Known Characters</h2>
+
+  {% for line in characters.splitlines() if '–' in line %}
+    {% set name, desc = line.split('–', 1) %}
+    {% set highlight = 'danger' in desc.lower() or 'alliance' in desc.lower() or 'mutation' in desc.lower() or 'critical' in desc.lower() or 'warning' in desc.lower() or 'leader' in desc.lower() or 'artifact' in desc.lower() or 'ancient' in desc.lower() or 'hostile' in desc.lower() or 'rumor' in desc.lower() or 'evidence' in desc.lower() or 'injury' in desc.lower() or 'chaos' in desc.lower() or 'rescue' in desc.lower() or 'betrayal' in desc.lower() %}
+    <div class="character{% if highlight %} highlight-box{% endif %}">
+      <div class="name">{% if highlight %}⚠️ {% endif %}{{ name.strip() }}</div>
+      <div class="desc">{{ desc.strip() }}</div>
+    </div>
+  {% endfor %}
+
+  <a href="/">← Back to Timeline</a>
+
+</body>
+</html>

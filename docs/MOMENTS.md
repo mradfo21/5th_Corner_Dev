@@ -4,9 +4,13 @@ A **Moment** is a full-screen cinematic interaction layered on top of the live
 world. The underlay scene is **paused, not destroyed**, so exiting a Moment
 restores the exact place the player left — instantly.
 
-Conversation (TALK → cinematic dialogue) is the shipped Moment type. Camp is a
-**playable level** (hard-cut via `/api/camp/enter` + `Renderer.applyScene`), not
-a Moment — so PHOTO / SCAN / ACT stay live around the fire.
+Conversation (TALK → cinematic dialogue) is a shipped Moment type. Encounter
+is the other: a generated character + danger interrupt that restages this
+place as a confrontation plate, offers three actions, and **does not** restore
+the paused world — if you survive, the aftermath is the scene you walk back
+into. Camp is a **playable level** (hard-cut via `/api/camp/enter` +
+`Renderer.applyScene`), not a Moment — so PHOTO / SCAN / ACT stay live around
+the fire.
 
 ## Architecture
 
@@ -64,6 +68,95 @@ await window.Moments.push("interrogation", { subject, stakes: "…" });
 Leaving a conversation resumes the paused world (see above) rather than
 generating anything — the player lands back on the exact frame they left with
 the world moving again. This is the fast, seamless feel; no "load" on exit.
+
+## Encounter (interrupt → aftermath)
+
+## Cutscene (4-shot montage)
+
+`Moments.register("cutscene", { transition: "fade" })` — a revived flipbook:
+one 2×2 Gemini restage of the current plate (or an optical 4-crop fallback),
+played as a letterboxed montage. A **Cutscene** is also a first-class
+Experience-graph node, so a run can stitch World A → Cutscene → World B.
+
+- Graph hop stamps `pending_cutscene` and a `cutscene` feed item. The client
+  POSTs `/api/cutscene/play` to generate shots, then `/api/cutscene/complete`
+  to follow the outgoing `immediate` edge.
+- Programmatic: `Cutscene.play({ mood, offline })` or `?cutscene_demo=1` /
+  **Shift+K**. Moods: threshold, aftermath, arrival, departure, encounter.
+- Esc / space / click skip or advance. Reduced motion holds the last shot.
+
+Server: `cutscene.py`, `/api/cutscene/play`, `/api/cutscene/complete`.
+Prototype: `python prototype_cutscene.py --offline [plate.png]`.
+
+`Moments.register("encounter", { transition: "develop" })` — **not** Talk's
+VCR glitch. Hitch the live frame, slam a full-screen **ENCOUNTER** flare,
+then **hold black** while the confrontation plate generates (never paint
+the live-frame grab — that read as a screen capture). Develop the plate of
+**this** place (outdoor stays outdoor) with the **authored player** locked
+from the character sheet plus a new challenger. Slam three interrupt bars
+tagged `confront` / `evade` / `use` — every bar is about **the figure in
+the plate**, not the landscape.
+
+Resolve is ceremonial. A pick **holds black**, slams **COMMIT**, then
+`POST /api/encounter/resolve` returns a **new generated still of the verb**
+(bodies in motion, same two people). That still develops from black. A
+**SURVIVED / HURT / CLEAR / DEAD** verdict flares over it, then the
+consequence line. **Every pick** then runs the same
+`_process_turn_background` pipeline as MOVE TO or a typed `/api/choose`
+(`source: "encounter"`, skip image): `advance_story_dynamics` +
+`advance_turn_image_fast` write the consequence. Survive / wounded stay
+locked and build the next slate from that engine dispatch. Escape / die
+release and run the turn in the background. There is no parallel
+encounter narrator. Do not also POST `/api/choose`.
+
+Lanes are data. The server owns survive / escape / wounded / die from
+lane + stance + kind + `player_state.condition`. The consequence LLM writes
+that beat; it does not flip `player_alive`. Escape is getting clear **in
+this place** — it is not Talk's restore of the paused explore frame, and
+Esc during the Moment attempts the evade bar. Wounded is a condition flag,
+not HP (`DAMAGE_SYSTEM_ENABLED` stays off).
+
+Exit applies the escape still with `hard_transition` **before** the overlay
+comes down, then `resumeUnderlay()` reveals the modified world. Death pops
+without restaging (`survived: false`). Demo: `Shift+N` or `?encounter_demo=1`.
+Server: `/api/encounter/begin`, `/api/encounter/resolve`, `/api/encounter/travel`
+(walking time counts down a distance clock; looking around does not).
+
+## Encounter sound design
+
+Three layers, in priority order. Missing files fall through; the synth
+always plays last so a silent key still has a ceremony.
+
+| Layer | Where | What |
+|-------|--------|------|
+| Designer WAV / MP3 | `static/audio/encounter/<stem>.wav` | Authored one-shots. Stems listed in `static/audio/encounter/cues.json`. |
+| Stock stinger | `assets/music/stock/sting_encounter_*.mp3` served as `/audio/…` | ElevenLabs one-shots, warmed in the background. Catalog in `scene_audio.STOCK_STINGERS`. |
+| Synth + pulse | `Sound` mixer family `encounter` | Built-in Web Audio cues + heartbeat. Mute the family from the sound panel. |
+
+**Music + ambience.** Hitch starts a generic confrontation bed
+(`SceneAudio.scoreEncounter`, `/api/scene_audio` `mode: "encounter"`) so
+the wait for the plate is not silent. When the brief lands the client
+re-scores with `music_prompt` (`stance — kind — label — danger — stakes`).
+Hostile / desperate / opportunistic / creature change BPM and mood.
+Survive leaves that bed off so the aftermath scene can `SceneAudio.score()`
+the new walkable world. Abort restores the paused explore bed.
+
+**Timeline**
+
+| Beat | Cue | Also |
+|------|-----|------|
+| Hitch (~520ms) | `encounterHitch` | heartbeat 76, generic Lyria + tense ambience, duck 0.22 |
+| Title flare (~840ms) | `encounterTitle` | the stinger + haptics |
+| Letterbox | `encounterEnter` | Moments `enterSound` |
+| Plate + choices | `encounterLock` + `encounterStance(stance)` | pulse 84 / 96 / 68 / 62 (creature), stance-colored bed |
+| Hover / pick | `encounterChoiceHover` / `encounterChoiceSelect` | remapped from Moments `choiceHover` |
+| Commit | `encounterResolve` + **COMMIT** flare | hold black, pulse 108 |
+| Action plate | develop from black | the verb, same two people |
+| Verdict | `encounterSurvive` / `encounterDie` | **SURVIVED / HURT / CLEAR / DEAD** over the still |
+| Survive / wounded | stay locked | same turn pipeline as choose + new slate |
+| Escape | `encounterSurvive` | `endEncounter({ restore: false })` + aftermath score |
+| Die | `encounterDie` | heartbeat stop |
+| Abort / pop | `encounterExit` | restore explore bed |
 
 ## Camp (playable level)
 
@@ -159,30 +252,19 @@ notes[], trust }`. This is additive metadata — it does **not** mutate
 `history` / `feed_log`. Future trust / relationship Moments can read and
 extend this record.
 
-## Portrait animation (world-model) + fast return
+## Portrait (crop still) + optional world-model animation
 
-The character is **animated by the world model** using the single Reactor
-session, with a fast, resume-like exit — best of both:
+The speak-screen likeness is the **SCAN bounding-box crop** of the person
+you clicked, pinned immediately and persisted as their companion plate
+(no Gemini img2img — that path invented the player). The CSS
+**living-portrait** treatment (breathing + grain + orb-linked rim light)
+is the default animation.
 
-- **Enter:** show the cinematic img2img still immediately, then
-  `animateCharacter()` saves the current world's id (`getWorldId()`), scene, and
-  a **live env frame grab** (guide PNGs get swept and 404 later), **re-anchors
-  the session onto the portrait** (`applyScene({prompt, imageUrl})` via the
-  facade, so `Renderer.lastScene` is untouched), and mirrors the live feed into
-  `#moment-portrait-video` (`Moments.setPortraitStream`, revealed when
-  `isShowing()`), crossfading over the still. The character moves/breathes with
-  the world model.
-- **Exit:** `restoreWorldAfterConversation()` fades over the character, then
-  reopens the ORIGINAL world by id with **`attach_world`** (which **stops** the
-  character travel first — attaching while still travelling left the stream
-  stuck on the person with the HUD back). Prefers the captured env frame over a
-  swept guide URL. If attach fails, falls back to a hard-transition rebuild
-  (prompt + frame, or prompt-only). Dead guide URLs no longer retry forever
-  every 1.5s.
-
-So the character animates live during the conversation, and returning to the
-world is a fast freeze-still-then-live reveal rather than a slow regeneration.
-The CSS **living-portrait** treatment (breathing + grain + orb-linked rim light)
-is the always-on baseline for the still and the fallback under reduced-motion /
-still-image mode / if the character feed never goes live. Opt out of world-model
-animation with `window.__CONVERSATION_ANIMATE__ = false`.
+World-model re-anchor is **off** by default. The live session is a
+third-person player follow-cam; `animateCharacter()` used to `applyScene`
+the portrait and then `setPortraitStream(#reactor-video)` the moment
+`isShowing()` was true — which it already was for the env world — so the
+conversation frame showed the **player**, not the tagged subject. Opt in
+with `window.__CONVERSATION_ANIMATE__ = true` (then enter still saves the
+env world id + a live frame grab, re-anchors, and exit restores via
+`attach_world` / rebuild).
