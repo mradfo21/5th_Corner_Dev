@@ -1257,6 +1257,63 @@ def api_scene_audio():
                         "pending_sfx": False, "reason": "error", "details": str(e)})
 
 
+@app.route('/api/action_foley', methods=['POST'])
+def api_action_foley():
+    """The sound of one player action, from the choice text that names it.
+
+    The client asks for every choice the moment the slate renders and plays the
+    matching one on click, so by then it is a cache hit. A miss is reported
+    `pending` rather than waited on — see scene_audio.action_foley.
+    """
+    try:
+        body = request.get_json(silent=True) or {}
+        action = (body.get("action") or "").strip()
+        session_id = body.get("session") or "default"
+        result = scene_audio.action_foley(action, session_id=session_id)
+        if not result:
+            if not scene_audio.action_foley_enabled():
+                why = "off"
+            elif not scene_audio.is_available():
+                why = scene_audio.unavailable_reason() or "unavailable"
+            else:
+                why = "no_action"
+            return jsonify({"url": None, "pending": False, "reason": why})
+        return jsonify(result)
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"url": None, "pending": False, "reason": "error",
+                        "details": str(e)})
+
+
+@app.route('/api/consequence_audio', methods=['POST'])
+def api_consequence_audio():
+    """The bed the flipbook plays over, from the consequence prose.
+
+    Asked for the moment the consequence lands — five pipeline steps before the
+    picture — so the clip is on disk by the time the frames it runs under
+    exist. A miss is reported `pending` rather than waited on, exactly like
+    action foley; see scene_audio.consequence_bed.
+    """
+    try:
+        body = request.get_json(silent=True) or {}
+        text = (body.get("text") or "").strip()
+        session_id = body.get("session") or "default"
+        result = scene_audio.consequence_bed(text, session_id=session_id)
+        if not result:
+            if not scene_audio.consequence_bed_enabled():
+                why = "off"
+            elif not scene_audio.is_available():
+                why = scene_audio.unavailable_reason() or "unavailable"
+            else:
+                why = "no_text"
+            return jsonify({"url": None, "pending": False, "reason": why})
+        return jsonify(result)
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"url": None, "pending": False, "reason": "error",
+                        "details": str(e)})
+
+
 @app.route('/audio/<filename>', methods=['GET'])
 def serve_scene_audio(filename):
     """Serve generated scene audio (mirrors /images session fallback)."""
@@ -1538,6 +1595,12 @@ def api_status():
             "renderer": getattr(engine, "SCENE_RENDERER", "image"),
             "current_image_prompt": s.get("current_image_prompt", ""),
             "current_render_prompt": s.get("current_render_prompt", ""),
+            # What vision READ off the frame that rendered — not what the image
+            # model was asked to draw. The scene audio is scored from this: it
+            # is the only text in the system that describes the picture the
+            # player is looking at, with no camera or film-stock language in it
+            # for a sound model to choke on.
+            "current_vision": s.get("current_vision", ""),
             # Free stills the start menu can warm — last run frame, or the
             # authored level plate. Never triggers generation.
             "current_image_url": s.get("current_image_url") or None,
@@ -4663,7 +4726,6 @@ def api_music_get():
     """What is scoring the game: a loop you chose, or the per-scene generator."""
     try:
         scene_audio.kick_stock_warmup()
-        scene_audio.kick_menu_preview()
         loop = scene_audio.custom_loop()
         return jsonify({"data": {
             "loop": loop,

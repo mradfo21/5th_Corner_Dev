@@ -65,20 +65,64 @@ class TestLoopWiring(unittest.TestCase):
         self.assertNotIn("_spawn_scene_choices_reground", after_choices)
         self.assertIn("img_path", src[image_at:choices_at + 400])
 
-    def test_choices_attach_the_frame_and_vision_runs_in_parallel(self):
-        # The slate is grounded on the attached frame (image_url=analysis_img_url),
-        # and the vision READ runs on a background thread in PARALLEL with the
-        # choice call rather than as a serial pre-pass — then is joined before the
-        # history entry (next turn's spatial anchor) is written.
+    def test_the_slate_waits_for_the_frame_and_for_the_read_of_it(self):
+        """The slate does not run until there is a frame to run it off.
+
+        This used to assert the opposite — that the vision read overlapped the
+        choice call — on the reasoning that the slate has the picture attached
+        and so does not need the vision TEXT. bugs/20260917_153517 is that
+        reasoning failing: choices came back at 15:35:11 and the read of the same
+        frame completed at 15:35:11, after them, so the slate ran with
+        `image_description=""` and its only scene text was the cumulative entity
+        list — which still held "rusted truck" two turns after the player vaulted
+        the fence and left it on the far side. It offered the truck.
+        """
         src = inspect.getsource(engine._advance_turn_choices_deferred_impl)
-        self.assertIn("image_url=analysis_img_url", src)
-        self.assertIn("_vision_thread", src)
         start_at = src.index("_vision_thread.start()")
+        frame_wait_at = src.index("_await_frame_on_disk(analysis_img_url")
+        absorb_at = src.index("_absorb_vision(\n                CHOICE_VISION_WAIT")
         choices_at = src.index("next_choices = generate_choices(")
-        join_at = src.index("_vision_thread.join")
         hist_at = src.index("history_entry = {")
-        self.assertLess(start_at, choices_at)
-        self.assertLess(join_at, hist_at)
+
+        # Started early so the read overlaps the render bookkeeping, but WAITED
+        # ON before the slate is written.
+        self.assertLess(start_at, frame_wait_at)
+        self.assertLess(frame_wait_at, absorb_at)
+        self.assertLess(absorb_at, choices_at)
+        self.assertLess(choices_at, hist_at)
+
+    def test_the_slate_is_handed_what_the_frame_actually_shows(self):
+        """`image_description=""` was the bug. The read is in hand by the time the
+        slate runs, so it goes in — with the spatial compass, which is the line
+        that makes an option about somewhere the player has left obviously wrong."""
+        src = inspect.getsource(engine._advance_turn_choices_deferred_impl)
+        # The generate_choices CALL, not the whole function: the comment above it
+        # quotes the old `image_description=""` to explain what went wrong.
+        call = src.split("next_choices = generate_choices(", 1)[1].split("\n        )", 1)[0]
+        self.assertIn("image_description=scene_text_for_slate", call)
+        self.assertNotIn('image_description=""', call)
+        # The compass is part of that text, not just the prose description.
+        scene_text = src.split("scene_text_for_slate = ", 1)[1][:400]
+        self.assertIn("_spatial_compass_turn", scene_text)
+
+    def test_a_frame_that_never_arrives_does_not_wedge_the_turn(self):
+        """Both waits are bounded, and a slate is still produced. A player left
+        looking at a picture with no buttons is worse than an imperfect slate."""
+        self.assertGreater(engine.CHOICE_FRAME_WAIT, 0)
+        self.assertGreater(engine.CHOICE_VISION_WAIT, 0)
+        # The player feels this one, so it must not be the 35s history budget.
+        self.assertLess(engine.CHOICE_VISION_WAIT, engine.VISION_JOIN_TIMEOUT)
+
+    def test_a_truncated_frame_is_not_treated_as_readable(self):
+        """A file that exists but is still being written attaches as a corrupt
+        image, which is worse than waiting for it."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = Path(tmp) / "half-written.png"
+            empty.write_bytes(b"")
+            self.assertEqual(engine._await_frame_on_disk(str(empty), 0.2), "")
+            empty.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+            self.assertTrue(engine._await_frame_on_disk(str(empty), 0.2))
 
     def test_evolve_input_is_the_narrative_not_the_dummy_diff(self):
         # The evolve prompt has separate CONSEQUENCE OF ACTION and VISION

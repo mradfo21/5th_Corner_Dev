@@ -314,10 +314,12 @@ class TestTheClientTakesTheChange(unittest.TestCase):
 
     def test_a_level_plate_does_not_become_the_scene(self):
         """Uploading a reference used to setScene the raw plate. The plate is
-        input to a re-render; the viewport has to wait for the generated shot."""
+        input to a re-render; the viewport has to wait for the generated shot
+        — which the author now asks for with GENERATE (see
+        test_editing_saves_but_never_draws), so the upload only saves."""
         upload = self.app.split("function uploadPlate", 1)[1].split("async function deletePlate", 1)[0]
         self.assertNotIn("setScene(plateUrl", upload)
-        self.assertIn("persistAndRender", upload)
+        self.assertIn("persistEditingWorld()", upload)
         self.assertIn("skipResteer", upload)
         self.assertIn("reading the image", upload)
         self.assertNotIn("willFill", upload)
@@ -536,25 +538,33 @@ class TestTheClientTakesTheChange(unittest.TestCase):
                           "static", "css", "standalone.css").read_text(
                               encoding="utf-8"))
 
-    def test_the_desk_can_reset_a_world_picture(self):
-        """SAVE only renders when the design changed. REDRAW dirties the
-        cached first frame on purpose so you can redraw the same World."""
+    def test_the_desk_can_generate_a_world_picture(self):
+        """GENERATE is the ONLY thing in the editor that draws.
+
+        It used to be called REDRAW and it was not the only one: every
+        identity field save, every plate upload / delete / clear, APPLY and
+        SAVE all ran persistAndRender, so the editor kept drawing a character
+        the author was still halfway through writing — and each draw resolved
+        to a different half-finished person.
+        """
         self.assertIn('id="we-reset"', self.html)
         self.assertIn('id="we-picture-bar"', self.html)
-        redraw = self.html.split('id="we-reset"', 1)[1].split("</button>", 1)[0]
-        self.assertIn(">REDRAW", redraw)
-        self.assertNotIn(">RESET", redraw)
+        generate = self.html.split('id="we-reset"', 1)[1].split("</button>", 1)[0]
+        self.assertIn(">GENERATE", generate)
+        self.assertNotIn(">REDRAW", generate)
+        self.assertNotIn(">RESET", generate)
         self.assertIn("async function resetWorldPicture", self.app)
         self.assertIn("async function flushPendingWorldEdits", self.app)
         self.assertIn("data-identity-field", self.app)
         self.assertIn("skipPersist: true", self.app)
-        redraw = self.app.split("async function resetWorldPicture", 1)[1]
-        redraw = redraw.split("async function persistAndRender", 1)[0]
-        self.assertIn("flushPendingWorldEdits()", redraw)
-        self.assertIn("await persistWorld(wid)", redraw)
-        self.assertNotIn("catch (_) {}", redraw)
-        self.assertIn("/api/admin/studio/worlds/frames/reset", redraw)
-        self.assertIn("keepLiveExperience._url", redraw)
+        generate = self.app.split("async function resetWorldPicture", 1)[1]
+        generate = generate.split("    // Art direction lives in the prompt file", 1)[0]
+        self.assertIn("flushPendingWorldEdits()", generate)
+        self.assertIn("await persistWorld(wid)", generate)
+        self.assertNotIn("catch (_) {}", generate)
+        self.assertIn("/api/admin/studio/worlds/frames/reset", generate)
+        self.assertIn("keepLiveExperience._url", generate)
+        self.assertIn("applySheetToLiveScene()", generate)
         api = Path(__file__).parent.joinpath("api.py").read_text(encoding="utf-8")
         reset = api.split("def admin_studio_world_frames_reset", 1)[1][:900]
         self.assertIn("persist_world_snapshot", reset)
@@ -566,6 +576,25 @@ class TestTheClientTakesTheChange(unittest.TestCase):
             "a render started before the World was cached used yesterday's sheet")
         card = self.graph.split("function sheetWorldNode", 1)[1].split("\n  function ", 1)[0]
         self.assertIn("B.resetWorldPicture", card)
+
+    def test_editing_saves_but_never_draws(self):
+        """The author's complaint, pinned: "make the editor stop drawing and
+        generating WHILE I'm editing it"."""
+        for fn, end in (
+            ("async function saveIdentity", "async function clearIdentityBlock"),
+            ("async function clearIdentityBlock", "    function uploadPlate"),
+            ("    function uploadPlate", "async function deletePlate"),
+            ("async function deletePlate", "    // ── Worlds tab"),
+            ("async function flushSave", "    function anyFrameBusy"),
+            ("async function applyLive", "async function saveAndRestart"),
+        ):
+            body = self.app.split(fn, 1)[1].split(end, 1)[0]
+            # The call, not the word — these bodies carry comments naming the
+            # function they used to call and why they no longer do.
+            self.assertNotIn("persistAndRender(", body,
+                             f"{fn.strip()} must save, not draw")
+            self.assertNotIn("kickWorldFrame(", body,
+                             f"{fn.strip()} must save, not draw")
 
     def test_the_desk_can_roll_back_to_app_defaults(self):
         """RESET sits with REDRAW / SAVE and writes the shipped prompt file,
@@ -636,12 +665,16 @@ class TestTheClientTakesTheChange(unittest.TestCase):
             persp,
         )
 
-    def test_the_menu_reuses_a_preview_it_already_has(self):
-        """Generating a title sample on every LEAVE re-billed Lyria for a
-        track that was already on disk."""
+    def test_the_title_bed_is_only_a_track_you_locked(self):
+        """The menu played the editor's audition sample, and generated one if
+        there wasn't one. An audition is not a decision: "horror action score"
+        typed into the direction box became ten seconds of clanking metal
+        looping under the main menu, which no control in the game turned off.
+        The editor already tells you it is "silent until you set one"."""
         menu = self.app.split("async enterMenu()", 1)[1].split("leaveMenu()", 1)[0]
-        self.assertIn("menu_preview", menu)
-        self.assertIn("audioUnlocked", menu)
+        self.assertIn("menu_loop", menu)
+        self.assertNotIn("menu_preview", menu)
+        self.assertNotIn("/api/music/preview", menu)
         leave = self.app.split("leaveMenu()", 1)[1].split("endConversation()", 1)[0]
         self.assertIn("bumpToken()", leave)
 

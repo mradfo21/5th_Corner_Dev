@@ -895,6 +895,118 @@ class TestAFightActuallyEnds(unittest.TestCase):
                for _ in range(80)}
         self.assertIn("down", got)
 
+    def test_pressing_the_same_verb_converges(self):
+        """A flat per-round chance has a long tail, and a playtest sat in it:
+        "crush his skull with boot" landed four times running, the prose said
+        the skull yielded and the player was standing over him, and the state
+        machine still said `staggered` with the Moment still open. However good
+        the individual beats are, a fight that does not answer reads as broken.
+        """
+        rng = random.Random(99)
+        unsettled = 0
+        for _ in range(3000):
+            enemy, cond = "ready", "ok"
+            for n in range(1, 5):
+                r = encounter.roll_encounter_outcome(
+                    "confront", stance="hostile", kind="person", condition=cond,
+                    fate="NORMAL", enemy_state=enemy, round_no=n, rng=rng)
+                enemy, cond = r["enemy_state"], r["condition"]
+                if encounter.encounter_releases(r["outcome"], {"enemy_state": enemy}):
+                    break
+            else:
+                unsettled += 1
+        # Was ~1 fight in 10 before the per-round gain; the harness caps its
+        # encounter probe at four exchanges and filed every one of those.
+        self.assertLess(unsettled / 3000.0, 0.04,
+                        f"{unsettled}/3000 fights still open after four "
+                        f"committed confronts")
+
+    def test_the_first_exchange_gets_the_base_odds(self):
+        """The gain is for pressing an advantage, not for swinging once."""
+        for base in (encounter.CONFRONT_STAGGER_CHANCE,
+                     encounter.CONFRONT_DOWN_CHANCE):
+            with self.subTest(base=base):
+                self.assertAlmostEqual(encounter._settle_chance(base, 1), base)
+
+    def test_two_committed_verbs_usually_finish_a_fight(self):
+        """What advance_enemy_state's docstring has always promised. At the
+        old 0.55/0.62 it happened about a third of the time, so the prose ran
+        away from the state machine: a playtest landed a crate to the face and
+        two skulls against monitors and the man was still `ready`."""
+        rng = random.Random(2024)
+        finished = 0
+        trials = 3000
+        for _ in range(trials):
+            enemy, cond = "ready", "ok"
+            for n in (1, 2):
+                r = encounter.roll_encounter_outcome(
+                    "confront", stance="hostile", kind="person", condition=cond,
+                    fate="NORMAL", enemy_state=enemy, round_no=n, rng=rng)
+                enemy, cond = r["enemy_state"], r["condition"]
+                if encounter.encounter_releases(r["outcome"], {"enemy_state": enemy}):
+                    finished += 1
+                    break
+        self.assertGreater(finished / trials, 0.6,
+                           f"only {finished}/{trials} fights ended in two verbs")
+
+    def test_the_gain_is_capped(self):
+        self.assertLessEqual(encounter._settle_chance(0.62, 50),
+                             encounter.ENEMY_STATE_MAX_CHANCE)
+
+
+class TestAFightKnowsWhatWorldItIsIn(unittest.TestCase):
+    """An encounter is the one beat that does not render through
+    engine._gen_image_impl, so it never saw summarize_world_prompt_for_image.
+    It came back not merely somewhere else but in a different FILM: a playtest
+    cut from a dusk red-mesa scrapyard on 1993 stock into a damp conifer forest
+    under flat grey daylight, with every lock in the prompt satisfied.
+    """
+
+    GLOSS = "muted 1993 desert thriller, amber and rust tones, oppressive haze"
+
+    def _brief(self):
+        return {
+            "character": {"label": "A man in field jacket", "kind": "person",
+                          "stance": "opportunistic", "look": "a man in a field jacket"},
+            "place_hold": "the rusted truck chassis and the scorched gravel",
+        }
+
+    def test_the_resolve_carries_the_look_of_the_run(self):
+        p = encounter.build_encounter_resolve_prompt(
+            self._brief(), "Crush his skull with boot.", "confront", "survive",
+            setting="outdoor", world_flavor=self.GLOSS)
+        self.assertIn("amber and rust", p)
+        self.assertIn("same film", p)
+
+    def test_the_standoff_plate_carries_it_too(self):
+        p = encounter.build_encounter_plate_prompt(
+            self._brief(), img2img=True, setting="outdoor",
+            world_flavor=self.GLOSS)
+        self.assertIn("amber and rust", p)
+
+    def test_the_fight_still_holds_its_own_location(self):
+        p = encounter.build_encounter_resolve_prompt(
+            self._brief(), "Shove him back", "confront", "survive",
+            setting="outdoor", world_flavor=self.GLOSS)
+        self.assertIn("stays in the location it started in", p)
+
+    def test_it_does_not_tell_the_world_which_places_it_may_contain(self):
+        """The bible's biome absolutes were eased on purpose — the world is
+        free to range somewhere strange between scenes. This line is about
+        holding ONE fight together, not about fencing the world in."""
+        p = encounter.build_encounter_resolve_prompt(
+            self._brief(), "Shove him back", "confront", "survive",
+            setting="outdoor", world_flavor=self.GLOSS)
+        for banned in ("biome", "desert only", "must belong to that world"):
+            self.assertNotIn(banned, p.lower())
+
+    def test_no_gloss_adds_no_line(self):
+        p = encounter.build_encounter_resolve_prompt(
+            self._brief(), "Shove him back", "confront", "survive",
+            setting="outdoor", world_flavor="")
+        self.assertNotIn("same film", p)
+        self.assertNotIn("WORLD —", p)
+
 
 class TestTheCameraStopsFollowingThemWhenItIsOver(unittest.TestCase):
     """Breaking away was followed by turns of the camera trailing the person

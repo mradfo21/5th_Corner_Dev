@@ -17,6 +17,7 @@ name it, switch between them in seconds.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -25,7 +26,10 @@ from typing import Any, Dict, List
 import prompts_store
 
 ROOT = Path(__file__).parent.resolve()
-WORLDS_DIR = ROOT / "worlds"
+import authoring_sandbox as _sandbox
+_sandbox.guard()  # before the path below is computed — see authoring_sandbox
+# Overridable so a test run writes to a copy — see prompts_store.PROMPTS_PATH.
+WORLDS_DIR = Path(os.getenv("SOMEWHERE_WORLDS_DIR") or (ROOT / "worlds"))
 HARNESS_PATH = ROOT / "prompts" / "harness.generic.json"
 
 
@@ -131,6 +135,70 @@ def load_world(slug: str) -> Dict[str, Any]:
     if fields:
         prompts_store.save_prompts_bulk(fields)
     return {"slug": _slug(slug), "name": data.get("name", slug), "applied": len(fields)}
+
+
+# THE CAST IS THE RUN'S, NOT THE ROOM'S.
+#
+# Every World froze its own copy of `player_character`, and binding one writes
+# that copy over the live sheet. So a character recast in the editor only ever
+# lived in whichever World was snapshotted afterwards: `somewhere` and `yard`
+# still held the shipped Jason with no plate while `world` held the authored
+# photojournalist with one — and an Experience that hops World A -> B swapped
+# protagonist mid-run. Reported as "sometimes I see Kelsey for a frame, then
+# Jason from the editor", and as "it worked, sometimes".
+#
+# Snapshotting still wins over unsaved scratch (that is deliberate — see
+# test_a_saved_look_survives_the_play_reset). What changes is the SCOPE of the
+# save: a World is a place, the person walking through it belongs to the run,
+# so saving the cast saves it into every room at once.
+CAST_KEYS = ("player_character",)
+
+
+def patch_world_prompts(slug: str, fields: Dict[str, Any]) -> bool:
+    """Overwrite a few prompt keys inside a stored World, leaving the rest.
+
+    Not `save_world`: that captures the whole live prompt file, which would
+    overwrite every other World's own place with this one's.
+    """
+    if not fields:
+        return False
+    path = WORLDS_DIR / f"{_slug(slug)}.json"
+    if not path.exists():
+        return False
+    try:
+        data = _read_world(slug)
+    except KeyError:
+        return False
+    prompts = data.get("prompts")
+    if not isinstance(prompts, dict):
+        return False
+    if all(prompts.get(k) == v for k, v in fields.items()):
+        return False
+    prompts.update(fields)
+    data["prompts"] = prompts
+    data["updated"] = time.time()
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    return True
+
+
+def sync_cast_to_worlds(slugs: List[str]) -> int:
+    """Write the live cast sheet into each of these Worlds. Returns how many
+    actually changed."""
+    live = dict(prompts_store.PROMPTS)
+    fields = {k: live[k] for k in CAST_KEYS if k in live}
+    if not fields:
+        return 0
+    changed = 0
+    for slug in slugs or []:
+        if not slug:
+            continue
+        try:
+            if patch_world_prompts(slug, fields):
+                changed += 1
+        except (OSError, ValueError):
+            continue
+    return changed
 
 
 def delete_world(slug: str) -> bool:

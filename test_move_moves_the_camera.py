@@ -92,6 +92,51 @@ class OnePromptSaysOneThing(unittest.TestCase):
                                  "the prompt tells the camera to move and to stay")
 
 
+class TheFirstMoveOutOfTheOpeningActuallyMoves(unittest.TestCase):
+    """A hard cut normally ships a blurred swatch, so there is no framing to
+    copy and nothing had to forbid copying it. Straight out of the opening
+    montage the reference is a LEGIBLE frame on purpose — the establishing shot
+    the player is standing in — and with nothing forbidding it the model
+    reproduced that composition and called it a move. The client harness put a
+    number on it: "Sprint toward the rusted factory" came back at 0.96
+    continuity with the frame before it, and reported that the world had not
+    taken the player anywhere.
+    """
+
+    NEEDLE = "Do not reproduce the reference framing."
+    MOVE = "Sprint toward the rusted factory"
+    STAY = "Examine the rusted padlock"
+
+    def _prompt(self, choice, hard=True, holds=True):
+        return engine.build_image_prompt(
+            player_choice=choice, dispatch="A scene.",
+            hard_transition=hard, holds_reference_frame=holds, **REFERENCE)
+
+    def test_the_first_move_is_told_the_vantage_travelled(self):
+        p = self._prompt(self.MOVE)
+        self.assertIn(self.NEEDLE, p)
+        self.assertIn("NEW vantage", p)
+
+    def test_it_still_holds_the_place_it_came_out_of(self):
+        """The reference is kept for a reason — blurring it to a swatch is what
+        made a run visibly begin somewhere other than where the cutscene put
+        you. This line moves the camera WITHIN that place, it does not license
+        a new one."""
+        p = self._prompt(self.MOVE)
+        self.assertIn("same place", p.lower())
+        self.assertIn("same light", p.lower())
+
+    def test_a_first_turn_that_does_not_travel_is_left_alone(self):
+        self.assertNotIn(self.NEEDLE, self._prompt(self.STAY))
+
+    def test_an_ordinary_hard_cut_is_left_alone(self):
+        """That path ships a swatch; there is no framing to forbid copying."""
+        self.assertNotIn(self.NEEDLE, self._prompt(self.MOVE, holds=False))
+
+    def test_a_soft_turn_is_left_alone(self):
+        self.assertNotIn(self.NEEDLE, self._prompt(self.MOVE, hard=False))
+
+
 class EachKindOfTurnGetsItsOwnInstruction(unittest.TestCase):
 
     def test_walking_to_something_crosses_the_space(self):

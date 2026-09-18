@@ -111,6 +111,53 @@ class TestClothingClauseLabels(unittest.TestCase):
         self.assertIn("them", blob)
 
 
+class TestTheRelabelKeepsTheFrames(unittest.TestCase):
+    """The standoff arrived frozen on its last panel while the play-out moved.
+
+    Both plates are generated as a 2x2 grid and both put the frames on the
+    brief as `_sequence`, but only the ENTER path runs `align_brief_to_plate`
+    — and that rebuilds the brief through `normalize_encounter_brief`, which
+    keeps a fixed set of fields and drops everything else. The frames were on
+    disk and never asked for: the server log for a fight shows f01-f04 fetched
+    for the resolve and only f04 for the standoff.
+    """
+
+    SEQ = {"frames": ["/images/p_f01.png", "/images/p_f02.png",
+                      "/images/p_f03.png", "/images/p_f04.png"],
+           "frame_ms": 420}
+
+    def _brief(self):
+        return {
+            "character": {"label": "A man in dusty", "look": "a man in a dusty shirt",
+                          "stance": "hostile", "kind": "person"},
+            "danger": "he is aiming a pistol at you",
+            "stakes": "If you hesitate you will not walk away clean.",
+            "plate_seen": "a man in a dusty long-sleeved shirt aims a handgun",
+            "_sequence": self.SEQ,
+        }
+
+    def test_the_frames_survive_the_relabel(self):
+        out = encounter.align_brief_to_plate(
+            self._brief(), {"description": "a man in a dusty shirt aims a handgun"})
+        self.assertEqual(out.get("_sequence"), self.SEQ,
+                         "the relabel aligns the WORDS to the plate; it must not "
+                         "throw away the plate's own frames")
+
+    def test_the_frames_survive_the_no_vision_early_return(self):
+        # `align_brief_to_plate` returns early when there is nothing seen, and
+        # that return is a different code path through ground_danger_to_visible.
+        brief = self._brief()
+        brief.pop("plate_seen")
+        out = encounter.align_brief_to_plate(brief, None)
+        self.assertEqual(out.get("_sequence"), self.SEQ)
+
+    def test_a_still_plate_is_unaffected(self):
+        brief = self._brief()
+        brief.pop("_sequence")
+        out = encounter.align_brief_to_plate(brief, None)
+        self.assertNotIn("_sequence", out)
+
+
 class TestStakesAfterVerb(unittest.TestCase):
     def test_stakes_name_the_verb_not_the_sludge(self):
         brief = {

@@ -1,4 +1,776 @@
+# 🔧 CHANGELOG - September 17, 2026
+
+## ✅ FIXED: you could not call your character Jason Fleece
+
+"Why? This is the character's name." Correct, and the engine had no way to
+know it. `authored_character` blanked Name / Role / Look whenever they matched
+the shipped protagonist and a character plate existed, so a sheet reading
+"Jason Fleece" compiled as "the player character" — the plate drew him, the
+prose refused to name him, and nothing on screen explained the disagreement.
+
+That blanking was covering a different bug, and says so in its own comment:
+the upload used to skip filling a field that already had text, so a photograph
+of a woman still compiled as "Jason Fleece, adult man". That skip is gone as of
+today — an overwriting draft clears what it could not read, so a new plate
+cannot leave the previous person's name behind. Nothing is left to compensate
+for, and the heuristic could never do the one thing it needed to: tell a
+leftover default from a name somebody typed.
+
+Name / Role / Look are the three fields the minimal editor SHOWS. A field you
+can see and edit is your choice, whatever it happens to say. The leftover drop
+stays for `pronouns` / `wardrobe` / `signature_gear`, which are hidden and
+genuinely are not.
+
+`authored_setting` still carries the same shape for the Level sheet (naming a
+level "SOMEWHERE" has the same problem). Left alone for now — nobody has hit
+it, and it is a separate blast radius.
+
+## ✅ FIXED: the drafted character wore the editor's own example
+
+Reported as "my character appeared as an orange jump suit for a frame or two,
+then Jason — where is the orange drift coming from?" It was coming from
+`game_identity.py`, one line:
+
+```python
+hint = field.get("placeholder") or field.get("help") or ""
+lines.append(f'- "{fid}": {field["label"]}' + (f" — {hint}" if hint else ""))
+```
+
+The autofill prompt handed the model each field's **placeholder** as the hint,
+so the request for a wardrobe was literally `- "wardrobe": Wardrobe — Patched
+orange dive suit, mismatched boots, canvas satchel.` A model shown an example
+where the answer goes returns the example. Five of the eight character fields
+on the reporter's sheet were verbatim placeholders:
+
+| field | value | source |
+|---|---|---|
+| wardrobe | Patched orange dive suit, mismatched boots, canvas satchel. | placeholder |
+| signature_gear | Dented Nikon F3, sodium lamp | placeholder |
+| pronouns | she/her | placeholder |
+| demeanor | Dry, unflappable, talks to herself | placeholder |
+| backstory | Came back for the sister who never filed a flight plan. | placeholder |
+
+All five are `tier: advanced` and hidden in the minimal editor, so the author
+was watching an orange dive suit walk around their game with no field on screen
+that said so. It also accounts for the `she/her` on a sheet whose Look says
+"*his* mouth", and for "You carry Dented Nikon F3, sodium lamp" turning up in
+the turn prose — neither was a leftover from an earlier recast, which is what
+the entry below first supposed.
+
+`help` describes a field; a placeholder is UI furniture. The key list now
+carries `help` only, any example shown is labelled as a shape to avoid, and
+`_drop_placeholder_echoes` discards a drafted value that is the example back —
+because a model told not to copy one still will, most often when it cannot read
+the answer off the picture, which is exactly when the echo is most convincing.
+Comparison ignores case, spacing and a welded-on full stop.
+
+The live sheet and the one World snapshot carrying the same five values were
+cleaned. `test_no_shipped_sheet_wears_a_placeholder` walks the prompt file and
+every World so a cleaned sheet cannot be restored by binding a stale World.
+
+## ✅ FIXED: editing the character drew a different person every few frames
+
+Reported as "I changed the character, uploaded a photo of our hero, it worked
+*sometimes* — sometimes I'd see Kelsey for a frame, then Jason from the
+editor". Three causes, and the live sheet had all three at once:
+
+```
+name        Jason Fleece          <- the shipped default
+pronouns    she/her               <- the editor's placeholder, echoed back
+appearance  blue "press" flak jacket … *his* mouth
+wardrobe    Patched orange dive suit, mismatched boots, canvas satchel.
+                                  ^ the editor's placeholder, echoed back
+```
+
+(Where the placeholders came from is its own entry, below — it is the single
+cause of every hidden field on that sheet, not the leftover recast first
+suspected here.)
+
+**The upload part-filled instead of recasting.** `attach_reference_and_fill`
+wrote only the fields vision could answer off the photo; everything else stayed
+behind from whoever was on the sheet before. Vision never returns a *name*, so
+the name stayed shipped. Most of the rest (`pronouns`, `wardrobe`,
+`signature_gear`) are `tier: advanced` and invisible in the minimal editor, so
+the author could not see what they were still carrying — the wardrobe above is
+verbatim the field's own placeholder string, saved as a value. Every prompt
+then described one person in two outfits and two genders, and the image model
+picked differently per frame. An overwriting draft now **clears** what it could
+not read: a blank field is visibly missing, a stale one silently lies. The
+plate is also wired even when vision reads nothing off it — that was `if
+filled:`, so an unreadable photo attached nothing and looked like it worked.
+
+**The leftover-scrubber could not see it.** `authored_character` drops hidden
+fields that still match a *shipped* value; `she/her` is not `he/him`, so it read
+as author intent. And because `name` still matched the shipped Jason,
+`drop_shipped_leftovers` blanked it and `display_name()` returned "the player
+character" — the plate drew the hero while the prose called them nobody, which
+is exactly what the cast lock in the play log says. Both are now reported in
+`wiring_notes`, so the editor says so instead of the author guessing.
+
+**Each World froze its own copy of the cast.** `somewhere` and `yard` held the
+shipped Jason with no plate; `world` held the authored photojournalist with
+one. Binding a World writes its snapshot over the live sheet, so an Experience
+that hops World A → B changed protagonist mid-run, and a recast only survived
+in whichever World happened to be open. Snapshotting still beats unsaved
+scratch — that is deliberate, see `test_a_saved_look_survives_the_play_reset` —
+but the SCOPE of the save was wrong. A World is a place; the person walking
+through it belongs to the run. `persist_world_snapshot` now syncs the cast into
+every World in the Experience (`worlds_store.sync_cast_to_worlds`).
+
+## ✅ CHANGED: only GENERATE draws, and REDRAW is now called GENERATE
+
+The editor drew constantly while you were still typing. Every identity field
+save ran `persistAndRender({ resetFrame: true })` — re-rendering the World's
+frame *and* restaging the live scene — and so did every plate upload, delete
+and clear, plus APPLY and SAVE. So a character edit was drawn once per field,
+each time from a different half-written person, which is most of why the recast
+above looked so unstable.
+
+Editing now writes and nothing else; `GENERATE` is the only thing in the editor
+that renders a frame or pushes the sheet at the live scene. SAVE saves.
+`test_editing_saves_but_never_draws` pins all six paths.
+
+## ✅ FIXED: the standoff plate arrived frozen on its last panel
+
+Reported as "the flipbook doesn't play during encounters, I just see the final
+frame". Half right, and the half tells you where it is: the *play-out* animated
+fine, the *standoff* never did. `bugs/20260917_183327/server_log.txt` has the
+proof in one line each — `..._encounter_resolve_..._f01/f02/f03/f04.png` all
+fetched, `..._encounter_..._flipbook_f04.png` fetched alone.
+
+Both plates are drawn as one 2×2 grid and both hang the frames on the brief as
+`_sequence`. Only the ENTER path then calls `align_brief_to_plate`, which opens
+with `separate_cast(normalize_encounter_brief(brief))` — and normalize rebuilds
+the brief from a fixed set of fields, so anything it has not heard of is
+dropped. (It already carries an `enemy_state` preservation note for the same
+reason; this is the second thing to fall down that hole.) `sequence` therefore
+came back null, `playPlateFrames` took its `frames.length < 2` fallback, and
+`setScene(plate_url)` painted the last panel — because the last panel *is* the
+plate, by `sequence_from_grid`'s contract.
+
+The relabel aligns the WORDS to the photograph, so the photograph now comes
+through it untouched. Three tests cover it, including the no-vision early
+return, which is a different path out of the same function.
+
+Verified live: the standoff paints f01 → f02 → f03 → f04 at ~400ms and holds.
+
+## ✅ FIXED: walking out of an encounter handed back explore verbs instantly
+
+Surviving a confrontation is meant to read as three beats — the result, the
+world catching up, then a decision. It read as one. The moment the overlay
+popped, a slate of choices was already on screen.
+
+Two separate things put it there. The pre-fight slate was never cleared: the
+`.choice-btn`s from the turn before the interrupt sat in the DOM the whole
+fight, hidden only by `body.moment-encounter #choices-container { opacity: 0 }`,
+so popping the Moment revealed them. And when the aftermath turn beat the
+client's own verdict ceremony — it takes ~17s end to end and the ceremony is
+~6s — its `player_choice_prompt` was rendered *behind* the letterbox, while its
+`scene_image` was dropped on the floor, because `renderItem` refuses to restage
+the picture while a Moment owns the screen. The player walked out of a fight
+onto a slate generated from a frame they were never shown.
+
+`Aftermath` (standalone.js) sequences the exit instead. A committed verb arms
+it; the frame the turn draws is held rather than discarded; and the exit clears
+the stale slate, plays the result for a beat, lands the held frame, and only
+then paints the choices.
+
+The first cut of this gated the prompt *item* in `renderItem`, which is the
+wrong place: a gate that never opens there leaves `state.processing` true and
+the run soft-locked, and it did. The gate is now in `renderChoices` only, so the
+prompt item always renders in full — ceremony completes, `state.processing`
+clears, every input path opens — and the single thing withheld is the painting
+of the buttons, on an 8s timer, with `force: true` on both recovery slates. The
+worst this can now do is show the slate early.
+
+Verified on the app harness: overlay down at +0.0s on the resolve still with an
+empty slate, aftermath frame at +10.2s, choices at +13.8s. A full 7-turn run
+after it reports no client console errors and commits an ordinary typed action
+on the turn following the fight.
+
+## ✅ CHANGED: the narrator clipped its own last word, and only knew one sentence
+
+Two unrelated complaints, both in the narrator.
+
+The tail of every line was cut. `speakSegment` ended the ElevenLabs session on
+`onModeChange → "listening"`, and that mode means the agent has finished
+*generating*, not that the browser has finished *playing* — there is still audio
+in the output node, and `endSession()` tears it down. It now waits for the
+output analyser to go quiet (420ms of silence, 6s ceiling, a flat 900ms grace on
+a build with no analyser) before wrapping the segment.
+
+The other is the brief, not the model. `narrator_direction` ordered "ONE LINE OF
+HISTORY, AND NOTHING ELSE … one fact: what was done here, who did it, what year,
+what they called it", and got exactly that, five times running: permits signed
+in 1974, permits signed in the same office, the catch ponds dug in seventy-three,
+the perimeter surveyed in 1991. The voice was reciting its own brief. It now
+alternates — a fact, then a question *about* that fact, asked into the tape and
+left hanging — reading the `ALREADY SAID THIS RUN` block to know which it did
+last, so no server state was needed. `Never a riddle. Never a question.` is gone
+with it. Written to both prompt files **and** the twelve World snapshots that
+carry frozen copies, because the live prompt file is a scratch pad a Play
+overwrites (see `TestTheBoundWorldsCarryTheShippedVoice`).
+
+---
+
 # 🔧 CHANGELOG - September 15, 2026
+
+## ✅ FIXED: a reference plate that was not on disk still counted as a plate
+
+The shipped Character sheet named `character_54a7f7d76882` in
+`player_character.reference_images`, and no such file existed anywhere in the
+repo. `identity_reference_paths(include_character=True)` returned `[]` while
+`shows_character()` returned `True` — the game believed it had a photograph to
+lock the protagonist's look to, and had none.
+
+The image call was never the problem: `reference_path` has always returned None
+for a missing file, so nothing was attached. What was wrong is that the functions
+which REASON about the sheet asked whether `reference_images` was non-empty, which
+is a different question:
+
+- `character_enabled` reported an "image-only character" with no image, so a sheet
+  with every text field blank would have compiled to nothing describing anybody.
+- `is_shipped_cast` reported a recast on the strength of a dead id.
+- `drop_shipped_leftovers` was willing to blank `name`, `role` and `appearance` in
+  the belief that a plate would supply them. Nothing would have.
+
+`live_reference_ids()` now filters ids to the ones whose files exist, and those
+three call sites use it. A missing plate is no plate. `wiring_notes` also reports
+it — `"N character reference plate(s) are missing from disk (…), so nothing is
+locking your character's look and it will drift between frames"` — because silence
+is what let this sit there: a dead id looks exactly like a working one until the
+look starts wandering.
+
+The dead id is cleared from the live sheet and from both World snapshots that had
+frozen a copy (`worlds/somewhere.json`, `worlds/world.json`). Same id on both,
+which is how it probably orphaned: the sheet was edited from Jason Fleece to
+Kelsey Rowe by hand and the `reference_images` entry came along for the ride.
+
+One existing test was passing for the wrong reason —
+`test_a_plate_does_not_compile_leftover_jason_name_or_look` staged its plate as a
+bare id with no file, which is the exact thing that is no longer trusted. It now
+calls `save_reference` so the plate is real, which is what its own docstring
+("Upload used to skip fill…") always meant. Two tests added for the other
+direction: a dead plate leaves the written sheet alone, and a dead plate is
+reported to the author.
+
+Wardrobe held across all ten turns of the verification run (denim jacket, dark
+trousers, camera in hand) where the previous run drifted olive jacket → teal
+jumpsuit → teal jumpsuit with red gloves. One run against one run is not proof of
+causation — image models vary — but the trap is gone either way.
+
+### Playtest ledger for the day
+
+Four runs against the real server, `--config .env`, backend gemini:
+
+| turns | seed | result |
+|---|---|---|
+| 8 | default | 14/14 |
+| 12 | 7 | 14/14 |
+| 10 | 3 | 13/14 — the forced-encounter probe did not engage on turn 5 |
+| 6 | 3 (encounter-heavy plan) | 14/14 |
+
+The one failure is a flaky probe rather than a broken mechanic: the same session
+rolled and resolved encounters (`rolled kind: A disoriented former driller…`, then
+an `encounter_resolve_…` frame, then a coyote), and the same seed passes when the
+plan forces more encounters. Worth a look, but it is the harness's grip on the
+turn, not the encounter itself.
+
+## ✅ FIXED: a lost `opening` stamp cost the run its first playable frame
+
+Reported as "it completely just failed live, it just defaulted to the default
+image". `bugs/20260917_155759` has the whole failure in two lines:
+
+```
+15:57:36  [OPENING] /api/cutscene/play staged id='open-d99401e3' opening=None shots=4
+15:57:52  [OPENING] /api/cutscene/complete sees id='' opening=None shots=0
+```
+
+The montage itself was fine — four shots written, a 2.9MB grid rendered in 23s,
+all four panels served to the browser. What failed is the hand-off. Both
+`/api/cutscene/play` and `/api/cutscene/complete` gate on
+`pending_cutscene["opening"]`: play reads it to start rendering the first playable
+frame behind the montage, and complete reads it to hand the run over to turn one.
+With it falsy, neither happened — no establishing beat, no hand-off, the boot gate
+(`awaiting-first-scene`) never lifted, and the client sat on
+`sceneUrl: /api/worlds/world/frame`, the World's cached frame. That is the
+"default image". The opening prose then repeated three times over it.
+
+`_stage_opening_montage` does set `opening: True`. The stamp was lost because
+`cutscene.play_for_session` only *inherited* it, from `prev` — and `prev` was
+empty, because `pending_cutscene` had already been wiped from the persisted state
+by the stale module-global `state` mirror that the code comment 30 lines below
+warns about, written back by one of the ~50 status/feed polls in the 50 seconds
+between the reset and the play. Both `keep` branches missed even though the client
+had echoed the staged `open-…` id correctly.
+
+The stamp is now DERIVED rather than inherited. `play_for_session` already knew
+this was the opening — it computes exactly that at the top to decide whether it
+may render without a plate — and then threw the value away. The opening montage is
+the one the SERVER stages, so it is identifiable from the request alone: mood
+`approach`, no graph node behind it. That removes the dependency on a write that
+can be lost. A graph cutscene with the same mood is still not the opening, so it
+does not start an establishing render nobody asked for.
+
+Verified against the real app rather than in a unit test — two `playtest.py` runs
+(8 and 12 turns) through the same `/api/*` the browser uses, all 14 mechanical
+checks passing, 0 findings, 0 server tracebacks:
+
+```
+BEFORE  play staged id='open-d99401e3' opening=None shots=4
+        complete sees id=''            opening=None shots=0
+AFTER   play staged id='open-6897d697' opening=True shots=4
+        rendering the first playable frame while open-6897d697 plays
+        complete sees id='open-6897d697' opening=True shots=4
+        establishing beat settled in 8.7s behind the montage (ready)
+        the player arrives in the place they just watched (4 frame(s))
+```
+
+The same runs confirm the choice-slate fix from earlier today on real turns: every
+`[VISION] Spatial compass` now precedes its `[CHOICES RAW LLM OUTPUT]`, and the
+options map to directions the compass actually reports — "Ahead: Rusted tanks ~2m.
+Left: Open sandy terrain and distant fence ~15m" produced "Slide along the rusted
+tanks / Sprint toward the distant fence / Vault over the sandy ridge". Neither new
+gate warning fired on any turn.
+
+### Note for anyone running the game locally
+
+`run_local.py` only reads `.env` when you pass `--config`. Without it,
+`keys_store.load_into_environ()` finds no `GEMINI_API_KEY`, and the server starts
+in **mock mode** — `Backend: mock`, `LLM_ENABLED / IMAGE_ENABLED` forced False —
+while still reporting `status: healthy` on `/api/health`. A playtest against that
+server passes every check while testing none of the real generation path. The real
+invocation is:
+
+```
+python run_local.py --port 5001 --no-browser --config .env
+```
+
+## ✅ CHANGED: the narrator was on ElevenLabs' latency model at full speed
+
+Reported as "it sounds terrible, he speaks WAY too fast". Both halves were a
+single hardcoded value nobody playing the game could reach.
+
+**The model.** `ELEVENLABS_TTS_MODEL` shipped as `eleven_turbo_v2_5` with the
+comment "turbo is low-latency and great for realtime narration", and was never
+revisited — one env var, one place in the repo. ElevenLabs' own model reference
+now lists it as *"first generation low-latency model (outclassed by Flash
+models)"* and says to use Flash instead *"in all use cases"*. So not only was it
+not the expressive choice, it is not even the current latency choice. Their
+lineup, for the record: `eleven_v3` is *"our most emotionally rich, expressive
+speech synthesis model"*, `eleven_multilingual_v2` is *"our most lifelike model
+with rich emotional expression"* and the one they recommend for long-form
+narration, and the flash models buy ~75ms at a documented cost in quality
+headroom. The narrator is a short pre-generated line played back on demand, not
+a live conversation, so it can afford the slower model. Default is now
+`eleven_v3`.
+
+**The pace.** `cast.narrator.speed` in voices.json was `0.98`. ElevenLabs' speed
+setting runs from 0.7 (slowest) to 1.2 (fastest) around a default of 1.0 — so
+0.98 was a 2% slowdown, which is to say none. Now 0.85. This interacts with the
+narrator direction rewritten earlier today: that brief asks for ONE short
+sentence, and a single clipped declarative gives the model almost no punctuation
+to pace against, so the shortest lines were the fastest-read ones.
+
+Both are `tunables` knobs now (`tts_model`, `narrator_speed`), because which
+model and what pace are judgements about how the game SOUNDS and should be
+A/B-able in the editor in seconds rather than needing a redeploy to try. The
+speed is clamped to the API's documented 0.7–1.2 and falls back to 0.85 on
+garbage; the model is an enum, so a typo is rejected rather than 422-ing at
+synthesis time. `resolve_cast("narrator")` now overrides the cast sheet's `speed`
+the same way it already overrode `voice_id`, and for the same reason.
+
+One caveat worth knowing before dialling: ElevenLabs' prompting guide says v3
+takes its pacing from **audio tags** rather than the speed setting. The `speed`
+field is documented on the generic `voice_settings` object with no model
+exclusion, so it should still apply — but this was not verified against a live
+key. If v3 still reads too fast, `eleven_multilingual_v2` is the model where the
+speed dial is definitely honoured, and it is one dropdown away.
+
+## ✅ FIXED: the choice slate no longer runs before there is a frame to run it off
+
+Reported as "why does the image drift from the choices?" — the picture showed
+Kelsey sprinting into a basin of rusted tanks and pipes, and the game offered
+"Sprint toward the rusted truck". The truck was two turns behind her, on the far
+side of a fence she had already vaulted. The drift is the other way round from how
+it looks: the image was right and the buttons were stale.
+
+`bugs/20260917_153517` has it in four lines:
+
+```
+15:35:09  [SCENE IMG] scene appended ... _f04.png
+15:35:09  [VISION] Analyzing _f04.png ...
+15:35:11  [CHOICES RAW LLM OUTPUT] 'Sprint toward the rusted truck / ...'
+15:35:11  [VISION] Analysis complete: Ahead: Rusted industrial tanks and pipes
+          ~10m. Left: Chain-link fence ~2m.
+```
+
+The vision read and the choice call were launched together on purpose, to take
+the read off the turn's critical path. The justification was that the slate has
+the FRAME attached, so it does not need the vision TEXT. The frame is indeed
+attached — but the slate was called with `image_description=""`, so the only
+scene text it had was `grounded_entities(state)`, and that list is a run-long
+accumulation that never expires. On the captured turn it still held `rusted
+truck`, `Black pickup`, `Guard` and `rusted door`. A picture is stronger grounding
+than a caption; it is not stronger than a caption plus an entity list pulling the
+other way.
+
+So the slate now waits for two things, both bounded:
+
+- **The frame has to be readable.** `_await_frame_on_disk` blocks until the path
+  resolves to a non-empty file (`CHOICE_FRAME_WAIT`, 5s). A path that failed to
+  attach used to degrade the slate to text-only and announce it in a log line
+  nobody reads: `[CHOICES ERROR] Image file not found`. A file that exists but is
+  still being written is rejected too — it attaches as a truncated image, which is
+  worse than waiting for it.
+- **The read of that frame has to land.** `CHOICE_VISION_WAIT` (20s, deliberately
+  tighter than the 35s `VISION_JOIN_TIMEOUT`, because this is the wait a player
+  feels before the buttons appear). What comes back goes into
+  `{image_description}` together with the spatial compass — "Ahead: rusted tanks
+  ~10m. Left: chain-link fence ~2m." is the line that makes an option about
+  somewhere the player has left obviously wrong.
+
+Both waits expiring is survivable and says so in the log: the slate is still
+generated, because a player looking at a picture with no buttons is worse than an
+imperfect slate. `_absorb_vision` is idempotent, so the history entry's later join
+is free when the slate has already waited, and still happens on the two paths that
+did not wait — the pregenerated-choices fast path, and a slate whose budget expired.
+
+**This costs latency.** The vision call is back in front of the slate rather than
+hidden underneath it, so `phase2_ms` is now roughly `vision_ms + choices_ms`
+instead of the larger of the two. That is the price of the buttons describing the
+picture on screen, and the timing comment in the return block no longer claims an
+overlap that is gone.
+
+Not fixed here, and still worth doing: `seen_elements` is the underlying reason a
+truck two locations back was available to name at all, and the reground that
+writes `current_observed_vision` never ran on this path (zero `[OBSERVE]` lines in
+1,200 log lines, which is why that field and `situation_summary` were both null at
+turn 11, with `scene_objects_turn` still `-1`). There are also three
+`[WinError 5] Access is denied: state.json.tmp -> state.json` retries in the same
+capture, which is a Windows file-replace lock worth chasing separately.
+
+## ✅ ADDED: the authoring sandbox no longer depends on which test runner you use
+
+`conftest.py` sandboxed prompts, worlds, experiences and `tunables.json` as a
+**pytest** fixture. Every test module in this repo documents itself as
+`python3 -m unittest <module> -v`, and unittest does not load conftest.py. So the
+documented way to run the suite was the one way the guard could not see.
+
+That cost real data today. A `python -m unittest` run of the editor e2e suites
+wrote `prompts/harness.generic.json` over the live prompt file and over
+`worlds/world.json` — taking the 9,670-character Horizon world document and the
+Four Corners Level sheet with it — and blanked `tunables.json`, which dropped
+Flipbook to its schema default of off and turned every animated turn into a still
+with no error anywhere. `tunables.json` is gitignored, so there was nothing to
+restore it from.
+
+The logic moved into `authoring_sandbox.py` and now engages on **import of any
+authoring store**, which happens long before anything writes. `prompts_store`,
+`worlds_store`, `experience_store` and `tunables` each call
+`authoring_sandbox.guard()` before computing their paths; it is idempotent, so
+whichever is imported first arms all of them. Both channels are still covered:
+module attributes for this interpreter, and `SOMEWHERE_*` environment variables for
+the Playwright suites that launch the app in a subprocess. It announces itself:
+`[SANDBOX] authoring data redirected to ... The real prompts, worlds, experiences
+and tunables are not writable from here.`
+
+Detection is "a test framework is already in `sys.modules`". That is safe because a
+runner imports its framework before the test module that imports us, and the app
+imports neither — `import engine` pulls in no `unittest`, no `pytest`. If that ever
+stops being true a real player would silently get a sandbox and their edits would
+stop persisting, so `test_authoring_sandbox` pins it from a clean subprocess, in
+both directions: the app writes to the real files, and a test run does not.
+
+`conftest.py` is now a thin wrapper that adds the one thing the import-time guard
+cannot — an explicit release at the end of a pytest session. Verified by re-running
+the exact suites that caused the damage: all seven authoring files byte-identical
+afterwards.
+
+## ✅ CHANGED: the narrator says one line of history instead of captioning the frame
+
+The narrator is the only voice that gets the world bible prepended to its call
+(`_ask(use_lore=True)`), and it was spending that on a description of the
+photograph the player is already looking at. The old `narrator_direction` asked
+for two or three sentences: one held image from the current scene, with one
+buried piece of the background allowed to sit beside it. In practice the image
+won every time, because the image was in front of it and the history was not.
+
+Now the whole line is the history. One short sentence, one fact out of the
+HISTORICAL BACKGROUND — what was done here, who did it, what year, what they
+called it — chosen by where the player is standing, and explicitly *not* a
+caption of the frame. The brief also tells it to go one step further in than
+last time, so the run reads as the world opening up rather than being narrated
+back at the player. `{avoid}` (the lines already spoken this run) is what keeps
+that from looping.
+
+Everything else about the voice is unchanged: same tape-recorder register, same
+"state it and stop", same ban on riddles, questions and warnings, same
+one-fact-per-line leash against an info-dump. All seven placeholders still
+render, so the authored path does not silently fall back to the shipped voice.
+
+The new text went into `prompts/simulation_prompts.json`, its `.defaults.json`,
+**and all 14 bound World snapshots in `worlds/`** — a World snapshot carries its
+own frozen copy and `worlds_store.load_world` writes it over the live file, so
+editing the prompt file alone would have been restored to the old voice by the
+next Play. `test_narrator_grounding.TestTheBoundWorldsCarryTheShippedVoice`
+exists for exactly that trap.
+
+## ✅ CHANGED: the bible is read at boot, says what it found, and is no longer stood in for
+
+The lore was already reaching every narrative prompt — `_ask(use_lore=True)` runs
+`apply_lore_to_prompt` on the way out — so it was not a plumbing problem. It was
+a *visibility* problem, and a substitution problem.
+
+**It announces itself now.** `experience_store.boot_report()` runs during engine
+init and prints one line: how many characters of bible the run carries, split
+into notes and documents, or a loud EMPTY / DISABLED when there is none. Every
+other subsystem says what it loaded at boot — the ElevenLabs key, the image
+provider, local vision — and the single highest-leverage text input in the game
+was the one that said nothing. That silence is the entire reason a Lore node
+holding 266 characters of camera direction looked identical to a working one.
+
+**The silent fallback is gone.** `_resolve_lore` used to notice an empty Lore
+node and quietly substitute the start World's `world_initial_state` as the bible,
+tagged `source: "world"`. That document is mostly direction for the model — *"Never
+depict forests"*, *"Do not reference sound-based cues"*, *"escalate to full
+horror"* — and it was arriving under the HISTORICAL BACKGROUND heading, which is
+to say it was handed to the narrator as facts it happened to know about the
+place. Worse, it made an unauthored Experience read as authored: the graph's Lore
+well showed full and `lore_brief()` returned thousands of characters for as long
+as there was a world document. Empty means empty now, and the boot log says so.
+
+**The bible leads the world document.** `with_lore` appended it; the author's
+account of the place therefore sat last, beneath ~9,700 characters of
+instructions, in the position a model weights least. `apply_lore_to_prompt` has
+always prepended — the two agree now. One knock-on worth knowing: the
+`_WORLD_PROMPT_CAP` trim in `evolve_prompt_file` cuts from the end, so what it
+drops is now the tail of the per-turn evolved direction rather than the tail of
+the bible. That is the right way round — the direction is rewritten every turn,
+the bible is the source of truth — and the warning now names how much it cut.
+
+**Truncation is no longer silent.** `_LORE_BRIEF_CAP` cut the brief mid-sentence
+and appended an ellipsis without a word in the log. The author's last page is the
+one most likely to hold the deepest lore, and it was the one being thrown away.
+
+**It is cached, against the files rather than a clock.** The brief was read
+several times per turn — `apply_lore_to_prompt` plus `lore_already_in` to dedupe
+— and each read was a disk read and a full normalize of the Experience document.
+`_lore_snapshot` caches it behind a fingerprint of the Experience JSON and every
+uploaded lore file by size and mtime, so an author editing lore in the editor
+still sees the very next turn change with no restart and no polling. The cast
+sheet is applied outside the cache, because `game_identity.recast` renames the
+protagonist inside the bible and the sheet changes without any lore file
+changing.
+
+## ✅ ADDED: the Lore node actually holds the Horizon bible now
+
+The narrator change above is inert without this, and the Lore node was holding
+camera direction instead of history: `experience_store.lore_brief()` returned
+266 characters reading *"A playable place in third person. The camera follows a
+person through space…"*, which is `harness.generic.json` content that had been
+written over the author's lore. So the one call in the game with a bible
+attached had a bible about camera framing, and `camera_perspective.mode` already
+says `third_person` anyway — nothing was lost by replacing it.
+
+The bible is drawn from the world document that was already there rather than
+invented: the acid-leach method and the uranium/brine catch ponds, the deep dig
+and The Gate, the "mysterious industrial accident" and the red biome that came up
+out of it, the paperwork coverup, the military quarantine and who it is actually
+hunting, and who else is still inside the wire. It is written as a list of
+discrete datable facts on purpose — the narrator takes exactly one per line, so
+a timeline is worth more to it than prose. 3,668 characters against a 6,000
+`_LORE_BRIEF_CAP`, so it arrives whole rather than truncated mid-sentence.
+
+Two dates are authored rather than sourced (the ponds in the seventies, the deep
+dig in 1989); everything else traces to `world_initial_state`. The text names no
+protagonist, so `game_identity.recast` has nothing to get wrong when the cast
+sheet changes.
+
+## ✅ CHANGED: the narrator is recast to `BPHgzPeL1G2rrfAX2uyx`
+
+`voices.json` in all three places that name the narrator — `narrator_voice`, the
+`Narrator` roster entry, and `cast.narrator.voice_id` — plus the persisted
+`narrator_voice_id` tunable, which is the editor's pick and beats voices.json at
+runtime. Changing only the file would have left the old voice reading the game
+on any install that had ever touched the Narrator picker.
+
+`test_voice_design` no longer hardcodes the retired id when it checks that a
+leftover stock id cannot outrank a library voice named "Narrator"; it reads
+`VOICES_CONFIG["narrator_voice"]`, so recasting the narrator does not quietly
+invert that test's premise.
+
+## ✅ CHANGED: the opening is two renders now — the montage, then the idle
+
+The boot was doing three image renders and only two of them were the game.
+
+1. **The plate.** A whole render, text-to-image with no reference at all. Not
+   gameplay: it existed so renders 2 and 3 had something to point at, plus it
+   flashed for one beat on the end of the montage.
+2. **The montage.** The four cold-open photographs. img2img off the plate.
+3. **The idle.** The first playable frame, which turn one continues from.
+   img2img off the plate plus a montage panel.
+
+Renders 1 and 3 were the same picture drawn twice. Render 1 invented the scene
+from scratch; render 3 redrew that composition as an animation and *that* is
+what the player plays from. And because render 1 was an unanchored guess made
+before anything else existed, it was free to disagree with the montage about
+where the level even was. On 2026-09-17 it did: a plate of an indoor storeroom,
+a montage of an open-pit mine, an idle beat that followed the montage outdoors,
+and an opening choice slate — written from the plate — offering "Smash the CRT
+screen glass" to a player standing on a ridge. Reported as "it flashes a weird
+single frame, THEN the correct one".
+
+The sequencing was also backwards. The plate was drawn first and the montage
+drawn from it, so a from-scratch guess dictated the place. The montage goes
+first now:
+
+- `cutscene.generate_shots(None, ...)` renders the grid as **text-to-image**
+  when there is no plate, which is the opening's case. It establishes the
+  place, from `mystery_shotlist` reading the world bible and from the Level
+  sheet. `generate_with_gemini` gained the `image_size` override the img2img
+  path already had, because a 2×2 sliced into four panels needs the pixels.
+- `build_cutscene_prompt(..., has_reference=False)` drops every PLACE LOCK
+  clause. They all describe an attached photograph, and emitting one with
+  nothing attached sends the model looking for an image it cannot see.
+- The fifth "plate" beat is gone. Four panels, then the idle.
+- `_generate_opening_establishing` anchors on the montage's own widest panel
+  and puts the character into it, with the character sheet as the identity
+  lock. `_flipbook_establishing_block` gained the clause that does that — the
+  montage panels are unpeopled by instruction, so somebody has to be added, and
+  that was the plate's one real job.
+- `_opening_idle_still` is the floor: flipbook off, or a grid that will not
+  split, still yields one frame with the protagonist in it. Without the plate
+  behind it a failed idle would otherwise hand turn one a landscape.
+- `_open_on_montage` no longer asks the frame cache for permission, which is
+  what silently deleted the opening whenever the cache was unusable.
+
+## ✅ FIXED: the opening choice slate described somewhere the player was not
+
+Same report. On the montage path the slate is written during reset, when the
+run has not rendered a single frame, so it is drafted from the level's prose.
+Then the player arrives somewhere the prose only half-described.
+
+`_spawn_cached_opening_vision` takes a `slate_id` now and regrounds the slate on
+the frame the run actually landed on, off the same vision call that already
+grounds `history[0]` — one look, both jobs. Deliberately not routed through
+`_spawn_observe_reground`, which does this for an ordinary turn: that one writes
+`hist[-1]` unguarded, which is right mid-turn and wrong here, where the player
+may already have taken turn one by the time it lands.
+
+## ✅ FIXED: the real Level sheet is restored where a reset actually reads it
+
+`[WORLD] SETTING IS HOLLOW: '(unnamed)'` was not cosmetic: `opening_shot`,
+`place_summary`, `establishing_shot` and the montage's shotlist all read that
+sheet, and when it is blank they each independently free-associate over a
+nine-thousand-word bible that describes corridors AND mesas. The opening
+montage duly announced itself as `'SOMEWHERE' toward '(no goal authored)'`.
+
+Restoring `prompts/simulation_prompts.json` did not fix it, and a live playtest
+showed why: `apply_experience_start` reinstalls the START WORLD's snapshot
+(`worlds/<slug>.json` → `prompts`) over the live prompt file on **every reset**.
+A sheet restored only into the live file is wiped before the first render.
+`tools/restore_level_to_world.py` writes it into both, so the two agree and a
+reset is idempotent. The montage now opens on `'the Four Corners fence'`.
+
+### Reverted: drafting the sheet on the boot path
+
+A first attempt put `_ensure_level_sheet_is_filled` in `_perform_game_reset`,
+which made a live LLM call at reset and **persisted** its answer into the prompt
+file. Handed the Four Corners bible it invented "The Kettle Yard — a flooded
+shipbreaking yard on a tidal flat", wrote that over the authoring data, and the
+montage was drawn of it. Model-invented content must never silently replace
+something a person typed. The capability stays, explicit only, behind
+`tools/draft_identity_sheets.py --apply`; the boot's job is to *say* the sheet
+is blank, not to answer for the author.
+
+## ✅ FIXED: the opening's first playable frame could vanish silently
+
+Found by running the real harness (`playtest_app.py` over CDP, per
+`docs/operations/TESTING_USE_THIS.md`) instead of trusting green unit tests.
+With the plate deleted, the boot log showed the montage rendering and then:
+
+```
+[IMG LOG] frame_idx: 1
+[IMG GENERATION] USING TEXT-TO-IMAGE MODE (NO STYLE ANCHOR)
+[IMG GENERATION] NO REFERENCE IMAGES IN HISTORY
+```
+
+Turn one was drawing its own first frame from nothing, in a different place,
+and the slate was the bare `Look around` fallback. The idle beat never fired
+and **nothing said so** — the early return was silent, and `log_error` writes to
+stderr, which is a different file from the app's stdout log.
+
+Three changes, so it cannot happen quietly again:
+
+- `play_for_session` no longer loses the `opening` stamp to a `cutscene_id`
+  mismatch. That one field is what both `/api/cutscene/play` and
+  `/api/cutscene/complete` read; losing it cost the run its first playable
+  frame *and* its authored slate. An opening montage with no shots yet is
+  unambiguous, so it is kept regardless of the id.
+- `_finish_opening_montage` now renders the idle beat **inline** if the
+  prefetch did not deliver one and the panels are on disk. Slower, and the
+  point is that it cannot be skipped: the montage the player just watched is
+  the input to the frame they arrive on, always.
+- Every decision point on that path prints what it saw.
+
+## ✅ FIXED: the opening montage was full of people
+
+Its brief bans figures in capitals in all four panels, and a live run came back
+with a figure at the fence and two front-facing portraits of a man holding a
+camera. `build_cutscene_prompt` opened with `world_anchor(include_character=
+True)`, which spent its first sentences describing exactly what the panels must
+not contain. While the montage was img2img off a place-locked plate that
+contradiction mostly lost; as text-to-image it won outright. The opening now
+asks for the anchor without the cast. A restage still carries it — that is the
+one mood where the cast has to be held across the four angles.
+
+## ✅ FIXED: the opening waited for the montage to end before it started rendering the game
+
+The opening montage is roughly twenty seconds of held shots, and for all twenty
+of them the server did nothing. Only once the player had watched the last shot
+out did `/api/cutscene/complete` begin the establishing flipbook — the first
+playable frame, a ~15s render that turn one's img2img continues from — so the
+opening went *watch, then wait*, with a hold on the final shot at exactly the
+moment the player is ready to play.
+
+It now starts the instant the montage starts playing. `/api/cutscene/play` ends
+by spawning `_spawn_opening_establishing`, which is the earliest the beat *can*
+be drawn: the montage's own panels are among its references
+(`_montage_place_refs`), so the render needs the grid that call just produced.
+`/api/cutscene/complete` collects it with `_take_opening_establishing` instead
+of rendering, and by then it is normally already sitting there.
+
+If it lands early it is held; if the player skips the montage the hand-off waits
+on it (turn one cannot continue from a frame that does not exist yet); if there
+is no prefetch for this run at all — an Esc'd montage, a client that never
+called `/api/cutscene/play` — the hand-off renders inline exactly as before. The
+existing stale-run guard is unchanged and still decides, by `cutscene_id` under
+the state lock, whether a beat that finished while a reset landed is allowed to
+install. Nothing is written to shared state from the thread (`write_state=False`
+was already how this render worked).
+
+## ✅ CHANGED: the opening idle — the character does something now
+
+The establishing beat's brief said "stands still, taking in the scene. Same
+pose, same spot," and it got precisely that: a figure rocking a few pixels back
+and forth for eight seconds, which is the first thing a player ever sees of the
+person they are playing.
+
+`_flipbook_establishing_block` now asks for an idle animation — the beat a game
+holds on while it waits for input. Weight settles onto one leg, a hand goes over
+the gear they are already carrying, and the head comes up at something far off:
+dust lifting on the horizon, a stain in the light, birds coming off something
+too distant to read. It grows a touch per panel, is never identified, and never
+leaves the deep distance, so the opening has a threat in it without placing a
+monster the turn loop never staged.
+
+What did not change is why the block exists. The camera, the framing, the lens
+and the feet are still pinned — the last panel is turn one's img2img anchor, and
+the whole point of this block over `_flipbook_action_block` is that an opening
+must not walk the player out of the frame the montage established. First-person
+worlds get the version they can actually show: the breath settling, then the
+player's own hands over their kit.
 
 ## ✅ FIXED: the frosted box behind the encounter text was a backdrop-filter with no background
 

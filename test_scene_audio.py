@@ -1,6 +1,9 @@
 """Offline tests for ElevenLabs scene music + world SFX (no network)."""
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import scene_audio
 
 
@@ -353,27 +356,402 @@ def test_encounter_designer_urls_ignore_json():
     assert all(not str(k).endswith(".json") for k in urls)
 
 
-def test_kick_menu_preview_is_background_and_skips_without_direction(monkeypatch, tmp_path):
-    import threading
-    _clear_mock(monkeypatch)
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk_" + "b" * 40)
-    monkeypatch.setattr(scene_audio, "ELEVENLABS_API_KEY", "sk_" + "b" * 40)
-    monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
-    monkeypatch.setattr(scene_audio, "_MENU_DIRECTION_PATH", tmp_path / "menu_direction.json")
-    monkeypatch.setattr(scene_audio, "_MENU_WARMUP_STARTED", False)
-    called = []
-    ready = threading.Event()
+def test_nothing_generates_a_title_bed_behind_your_back():
+    """Reading what is scoring the game must not commission new audio.
 
-    def fake_preview(*a, **k):
-        called.append(1)
-        ready.set()
-        return {"url": "/audio/x"}
+    /api/music used to warm a 10-second sample off the menu direction text, and
+    the title screen played it. Writing "horror action score" in the editor and
+    never locking anything therefore put ten seconds of clanking metal on loop
+    under the main menu — billed, unasked for, and with no control that turned
+    it off. The title bed is the LOCKED track now, so there is nothing for a GET
+    to warm.
+    """
+    src = Path(scene_audio.__file__).read_text(encoding="utf-8")
+    assert "def kick_menu_preview" not in src
+    api_src = (Path(scene_audio.__file__).parent / "api.py").read_text(encoding="utf-8")
+    assert "kick_menu_preview" not in api_src
+    client = (Path(scene_audio.__file__).parent
+              / "static" / "js" / "standalone.js").read_text(encoding="utf-8")
+    menu = client.split("async enterMenu()", 1)[1].split("leaveMenu()", 1)[0]
+    assert "menu_loop" in menu
+    assert "menu_preview" not in menu
+    assert "/api/music/preview" not in menu
 
-    monkeypatch.setattr(scene_audio, "generate_preview", fake_preview)
-    scene_audio.kick_menu_preview()
-    assert called == []
-    scene_audio.set_menu_direction("warm analog title theme")
-    monkeypatch.setattr(scene_audio, "_MENU_WARMUP_STARTED", False)
-    scene_audio.kick_menu_preview()
-    assert ready.wait(1.0)
-    assert called
+
+def test_the_bed_lane_respects_the_api_text_limit():
+    """ElevenLabs rejects over 450 characters with a 400, not a truncation, so
+    an overlong scene descriptor made no ambience at all - silently. Both SFX
+    lanes used to clip at 500."""
+    long_scene = "a dripping flooded corridor. " * 100
+    assert len(scene_audio._scene_to_sfx_prompt(long_scene, "scene")) \
+        <= scene_audio.SFX_TEXT_MAX
+    assert scene_audio.SFX_TEXT_MAX == 450
+
+def test_two_different_scenes_get_two_different_loops():
+    """The whole point of scene ambience. If the cache key collapsed, every
+    location would share one loop and the world would sound like one room."""
+    a = scene_audio._sfx_cache_name("a flooded pump house, water to the ankles", 14)
+    b = scene_audio._sfx_cache_name("a dry scrapyard under a red mesa at dusk", 14)
+    assert a != b
+    assert a == scene_audio._sfx_cache_name(
+        "a flooded pump house, water to the ankles", 14), "must be stable"
+
+
+def test_the_loop_prompt_names_the_scene_and_asks_to_tile():
+    prompt = scene_audio._scene_to_sfx_prompt(
+        "a flooded pump house, water to the ankles", "scene").lower()
+    assert "flooded pump house" in prompt
+    assert "loop" in prompt
+    assert "no music" in prompt or "no melody" in prompt
+
+
+def test_scene_ambience_can_be_switched_off_to_stock(monkeypatch):
+    monkeypatch.setattr(scene_audio, "scene_ambience_enabled", lambda: False)
+    monkeypatch.setattr(scene_audio, "is_available", lambda: True)
+    monkeypatch.setattr(scene_audio, "stock_ambience_url", lambda kind: "/audio/stock.wav")
+    monkeypatch.setattr(scene_audio, "_kick",
+                        lambda key, fn: (_ for _ in ()).throw(
+                            AssertionError("generated a scene loop while off")))
+    url, cached, pending = scene_audio._resolve_sfx("a yard", "t", 14, "scene")
+    assert url == "/audio/stock.wav"
+    assert pending is False
+
+
+def test_a_missing_scene_loop_is_reported_pending_so_the_client_comes_back():
+    """Stock plays immediately so there is something to hear, and the scene's
+    own loop generates behind it. The client MUST keep asking or it never
+    arrives - which is exactly the bug that made every place sound alike."""
+    import types
+    kicked = []
+    real_exists = scene_audio.Path.exists
+    url, cached, pending = None, None, None
+    import unittest.mock as m
+    with m.patch.object(scene_audio, "is_available", lambda: True), \
+         m.patch.object(scene_audio, "scene_ambience_enabled", lambda: True), \
+         m.patch.object(scene_audio, "stock_ambience_url", lambda kind: "/audio/stock.wav"), \
+         m.patch.object(scene_audio, "_kick", lambda key, fn: kicked.append(key)):
+        url, cached, pending = scene_audio._resolve_sfx(
+            "a never-before-seen place %s" % id(kicked), "t", 14, "scene")
+    assert pending is True, "a miss must be pending so the client retries"
+    assert len(kicked) == 1, "and must be generating in the background"
+
+
+def test_the_client_retries_while_either_layer_is_pending():
+    """`pending_sfx && !sfx_url` was false whenever stock had been handed over,
+    so the retry stopped and the scene's own loop was never fetched."""
+    js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
+        encoding="utf-8")
+    assert "const waiting = !!(res.pending_music || res.pending_sfx);" in js
+    assert "res.pending_sfx && !res.sfx_url" not in js
+
+
+def test_ambience_is_mixed_louder_than_the_score():
+    """It is the atmosphere now. At 0.55 of a 0.12 bed it played at 0.066 gain
+    - running, and inaudible."""
+    js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
+        encoding="utf-8")
+    sfx = float(re.search(r"const SFX_BED = ([\d.]+);", js).group(1))
+    music = float(re.search(r"const MUSIC_BED = ([\d.]+);", js).group(1))
+    assert sfx > music, "the place should lead, not the score"
+    assert sfx >= 1.0, "ambience must not be attenuated below the volume preset"
+
+
+# ───────────────────────── Action foley: the player's own sound ─────────────
+
+
+def test_foley_prompt_is_short_and_concrete():
+    """The earlier attempt fed the render prompt in - camera rig, film stock,
+    "the back of the head toward the lens" - and got mush, because none of
+    that describes a sound. The choice text is four concrete words."""
+    p = scene_audio._action_foley_prompt("Sprint toward the utility truck")
+    assert "Sprint toward the utility truck" in p
+    assert len(p) <= scene_audio.SFX_TEXT_MAX
+    low = p.lower()
+    assert "foley" in low
+    assert "no music" in low and "not a loop" in low
+    for camera_noise in ("follow-cam", "film stock", "lens", "composition"):
+        assert camera_noise not in low
+
+
+def test_the_slate_numbering_is_not_part_of_the_sound():
+    assert scene_audio._clean_action("1. Kick open the truck door.") == \
+        "Kick open the truck door"
+    assert scene_audio._clean_action("  3)  Vault the fence  ") == "Vault the fence"
+
+
+def test_each_action_gets_its_own_clip():
+    a = scene_audio._foley_cache_name("Sprint toward the utility truck")
+    b = scene_audio._foley_cache_name("Vault over the chain link fence")
+    assert a != b
+    assert a == scene_audio._foley_cache_name("Sprint toward the utility truck")
+    assert a.startswith("foley_")
+
+
+def test_foley_is_short():
+    assert 0.5 <= scene_audio.ACTION_FOLEY_SECONDS <= 4.0
+
+
+def test_foley_is_not_generated_as_a_loop(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(scene_audio, "is_available", lambda: True)
+    monkeypatch.setattr(scene_audio, "_eleven_sfx",
+                        lambda prompt, secs, loop=True, session_id="d": (
+                            seen.update(loop=loop, secs=secs, prompt=prompt) or b"x"))
+    monkeypatch.setattr(scene_audio, "_kick", lambda key, fn: fn())
+    scene_audio.action_foley("Kick open the rusted door", session_id="foleytest")
+    assert seen["loop"] is False
+    assert seen["secs"] == scene_audio.ACTION_FOLEY_SECONDS
+
+
+def test_foley_can_be_switched_off(monkeypatch):
+    monkeypatch.setattr(scene_audio, "action_foley_enabled", lambda: False)
+    assert scene_audio.action_foley("Vault the fence", session_id="t") is None
+
+
+def test_an_empty_or_junk_action_makes_no_sound(monkeypatch):
+    monkeypatch.setattr(scene_audio, "is_available", lambda: True)
+    for junk in ("", "   ", "1.", "a"):
+        assert scene_audio.action_foley(junk, session_id="t") is None
+
+
+# ─────────────── Consequence bed: the sound the flipbook plays over ─────────
+
+
+def test_consequence_bed_prompt_leads_with_what_happened():
+    """Same lesson foley learned: the concrete thing first, instruction after.
+    The outcome is what the frames are drawing, so it is what the bed is of."""
+    p = scene_audio._consequence_bed_prompt(
+        "The hinges tear out of the frame and the door swings wide into the dark.")
+    assert p.startswith("The hinges tear out of the frame")
+    assert len(p) <= scene_audio.SFX_TEXT_MAX
+    low = p.lower()
+    assert "not a loop" in low
+    assert "no music" in low and "no voice" in low
+
+
+def test_long_consequence_prose_is_cut_at_a_word():
+    """A consequence is prose and can run for paragraphs. Handing all of it to
+    a sound model buys nothing and blows the 450-character API limit."""
+    long_text = "The gantry gives way and " + "steel screams against steel " * 40
+    what = scene_audio._clean_consequence(long_text)
+    assert len(what) <= scene_audio.CONSEQUENCE_TEXT_MAX
+    assert not what.endswith(" ")
+    assert what in long_text, "truncation must not invent words"
+    assert len(scene_audio._consequence_bed_prompt(long_text)) <= scene_audio.SFX_TEXT_MAX
+
+
+def test_the_consequence_sound_is_a_one_shot_not_a_loop():
+    """It looped once, holding until the next action was committed. Played
+    that way an 18-second gesture repeats under someone who is still reading,
+    and repetition is exactly what stops a sound reading as the world
+    answering. It plays through and stops; the scene ambience underneath is
+    the lane that is built to loop."""
+    seen = {}
+    monkey = scene_audio
+    orig_avail, orig_sfx, orig_kick = (
+        monkey.is_available, monkey._eleven_sfx, monkey._kick)
+    try:
+        monkey.is_available = lambda: True
+        monkey._eleven_sfx = lambda prompt, secs, loop=True, session_id="d": (
+            seen.update(loop=loop, secs=secs) or b"x")
+        monkey._kick = lambda key, fn: fn()
+        scene_audio.consequence_bed("The floor gives out beneath the crate",
+                                    session_id="bedtest")
+    finally:
+        monkey.is_available, monkey._eleven_sfx, monkey._kick = (
+            orig_avail, orig_sfx, orig_kick)
+    assert seen["loop"] is False
+    assert seen["secs"] == scene_audio.CONSEQUENCE_BED_SECONDS
+    assert "not a loop" in scene_audio._consequence_bed_prompt("The floor gives out")
+    # and the client must not loop the node or re-fire it once it has played
+    js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
+        encoding="utf-8")
+    start = js.split("function startBeat(buf, key) {", 1)[1].split("\n    }", 1)[0]
+    assert "s.loop = false;" in start
+    assert "loopable(" not in start, "seam-blending is for a loop point it no longer has"
+    assert "s.onended" in start, "a finished one-shot has to release the node"
+    assert "beatPlayed" in js
+
+
+def test_a_fragment_makes_no_bed(monkeypatch):
+    """Error strings and one-word beats are not a scene to record."""
+    monkeypatch.setattr(scene_audio, "is_available", lambda: True)
+    for junk in ("", "   ", "ok", "1.", "He runs."):
+        assert scene_audio.consequence_bed(junk, session_id="t") is None
+
+
+def test_consequence_bed_can_be_switched_off(monkeypatch):
+    monkeypatch.setattr(scene_audio, "consequence_bed_enabled", lambda: False)
+    assert scene_audio.consequence_bed(
+        "The hinges tear out of the frame and it swings wide", session_id="t") is None
+
+
+def test_the_bed_is_armed_on_the_consequence_not_on_the_picture():
+    """The whole feature rests on this ordering: the consequence lands five
+    pipeline steps before guide_image, so the clip is generated during a wait
+    the player is already having. Arm it on the picture instead and it shows
+    up after the flipbook it was supposed to play under."""
+    js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
+        encoding="utf-8")
+    assert "SceneAudio.armConsequence(" in js
+    armed_at = js.index("SceneAudio.armConsequence(")
+    assert 'Ceremony.reach("consequence")' in js[armed_at - 1600:armed_at]
+    # There is no consequence_event feed type - the dispatch prose arrives as a
+    # narrative_event. Gating on a type the engine never emits is silent death.
+    engine_src = (Path(__file__).resolve().parent / "engine.py").read_text(encoding="utf-8")
+    assert "consequence_event" not in engine_src
+    assert 'item.type === "consequence_event"' not in js
+    # started by the frames, dropped by the next commit
+    assert "SceneAudio.playConsequence(key)" in js
+    assert "SceneAudio.endConsequence()" in js
+    play = js.split("function playSceneSequence(", 1)[1].split("\n  }", 1)[0]
+    assert "playConsequence" in play
+
+
+def test_the_bed_opens_when_it_is_READY_not_when_the_picture_lands():
+    """guide_image alone is 20-40s and the ceremony has six short blips to fill
+    it with, so holding the bed for the frames left the longest silence in the
+    turn exactly where the player is doing nothing but wait. It is armed on the
+    prose and opened the moment the clip exists."""
+    js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
+        encoding="utf-8")
+    arm = js.split("armConsequence(text) {", 1)[1].split("\n      },", 1)[0]
+    assert "openBeat(url" in arm, "arming must open the bed itself"
+    # and the frames must not restart what is already running
+    play = js.split("async playConsequence(key) {", 1)[1].split("\n      },", 1)[0]
+    assert "if (beatSrc) {" in play
+
+
+def test_the_scene_bed_is_scored_from_the_frame_that_rendered():
+    """Measured: scoring off metadata.base sent ElevenLabs "seamless looping
+    environmental ambience of s grit across the pad. The place is the Four
+    Corners fence..." for a desert well pad - the pump jack, the shed and the
+    standing water sliced out by _clean_scene_text's last-240 rule, because
+    build_realtime_base puts the style anchor first and the place line last.
+    The keyword matcher then defaulted to indoor room tone. The bed is scored
+    from vision's read of the rendered frame now."""
+    js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
+        encoding="utf-8")
+    api_src = (Path(__file__).resolve().parent / "api.py").read_text(encoding="utf-8")
+    engine_src = (Path(__file__).resolve().parent / "engine.py").read_text(encoding="utf-8")
+    assert '"current_vision": s.get("current_vision", "")' in api_src
+    assert 'state["current_vision"] = vision_analysis_text' in engine_src
+    assert "s.current_vision" in js
+    # and the render base must no longer score anything
+    restage = js.split("state.lastScenePrompt = scenePrompt;", 1)[1][:600]
+    assert "SceneAudio.score(scenePrompt)" not in js
+    assert "does NOT score" in restage
+
+
+def test_a_desert_scored_from_the_render_base_came_out_indoors():
+    """The regression this replaced, kept as a live demonstration: feed the
+    render base and the scene is gone and the stock kind is wrong; feed the
+    frame description and both are right."""
+    import engine as _engine
+    visual = ("A rusted pump jack squats in the foreground, chain slapping "
+              "against its counterweight. Beyond it a collapsed equipment shed, "
+              "corrugated sheeting peeled back, standing water in the ruts. "
+              "Wind moves grit across the pad.")
+    base = _engine.build_realtime_base(visual_scene=visual, narrative="")
+    from_base = scene_audio._scene_to_sfx_prompt(base, mode="scene")
+    from_frame = scene_audio._scene_to_sfx_prompt(visual, mode="scene")
+    # the picture's audible contents survive one route and not the other
+    assert "pump jack" not in from_base and "shed" not in from_base
+    assert "pump jack" in from_frame and "shed" in from_frame
+    # and the stock bed picked underneath is outdoors rather than a room
+    assert scene_audio._ambience_kind(base) == "room", "the regression"
+    assert scene_audio._ambience_kind(visual) != "room", "the fix"
+
+
+def test_the_consequence_bed_takes_the_visual_scene_not_the_prose():
+    """It is armed before the picture exists, so it cannot use vision. The
+    visual_scene caption is the same kind of text and does exist by then."""
+    js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
+        encoding="utf-8")
+    engine_src = (Path(__file__).resolve().parent / "engine.py").read_text(encoding="utf-8")
+    assert '"visual": vision_dispatch_text' in engine_src
+    assert "SceneAudio.armConsequence((meta.visual || \"\").trim() || item.content)" in js
+
+
+def test_the_opening_of_a_run_is_not_a_consequence():
+    """Boot resolves a turn too, so awaitingResolution is true and the run's
+    scene-setting prose reaches the same branch the consequence does. Measured:
+    turn one armed a bed from "1993. You are Jason Fleece, investigative
+    photojournalist" - a setting dump with no sound in it. A bed answers
+    something the PLAYER did, so it needs a commit first."""
+    js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
+        encoding="utf-8")
+    arm = js.split("armConsequence(text) {", 1)[1].split("},", 1)[0]
+    assert "if (!beatTurnLive) return;" in arm
+    assert "if (beatArmed) return;" in arm, "one bed per turn, not one per prose beat"
+    end = js.split("endConsequence() {", 1)[1].split("},", 1)[0]
+    assert "beatTurnLive = true" in end
+    assert "beatTurnLive = false" in js.split("function abandonBeat(", 1)[1][:300]
+
+
+def test_the_bed_is_its_own_layer_and_leads_the_room():
+    """It is the event the player just caused; the ambience is the room that
+    was already there. Under foley, which answers their hand on the button."""
+    js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
+        encoding="utf-8")
+    beat = float(re.search(r"const BEAT_BED = ([\d.]+);", js).group(1))
+    sfx = float(re.search(r"const SFX_BED = ([\d.]+);", js).group(1))
+    foley = float(re.search(r"const FOLEY_LEVEL = ([\d.]+);", js).group(1))
+    assert sfx < beat < foley
+    # a stale generation must never open over the next turn
+    assert "function abandonBeat(" in js
+    assert "mine !== beatSeq" in js
+
+
+def test_the_client_prewarms_the_slate_and_plays_on_commit():
+    """A foley that lands eight seconds after the button is worse than none,
+    so every choice is asked for when the slate renders and the click is a
+    cache hit. makeChoice is the single funnel - choices, SCAN MOVE/INTERACT,
+    typed actions and camp all pass through it."""
+    js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
+        encoding="utf-8")
+    assert "SceneAudio.prewarmFoley(promptItem.choices.map" in js
+    body = js.split("async function makeChoice(", 1)[1][:2000]
+    assert "SceneAudio.foley(choiceText)" in body
+
+
+def test_generated_audio_is_loudness_normalised():
+    """Measured before this existed: a scene bed at RMS 0.007, about -43 dBFS.
+    Running, and inaudible. ElevenLabs does not normalise its output, so a
+    fixed gain is always wrong for something."""
+    js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
+        encoding="utf-8")
+    assert "function normalizeGain(buf)" in js
+    target = float(re.search(r"const TARGET_RMS = ([\d.]+);", js).group(1))
+    assert 0.05 <= target <= 0.25, "ambience wants roughly -22 dBFS"
+    # every playback path must use it
+    assert "normalizeGain(looped.buf || buf)" in js   # the beds
+    assert "mult * normalizeGain(buf)" in js          # foley
+
+
+def test_normalisation_uses_peak_as_well_as_loudness():
+    """Measured off a real ElevenLabs foley clip: rms 0.006, peak 0.060 - a raw
+    peak of -24 dBFS. The source is that quiet, so the boost needed is large,
+    and a peak term is what makes a large boost safe: it cannot by construction
+    push the clip into clipping."""
+    js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
+        encoding="utf-8")
+    assert "const PEAK_CEIL" in js
+    assert "Math.min(TARGET_RMS / rms, PEAK_CEIL / peak)" in js
+    ceiling = float(re.search(r"const GAIN_MIN = [\d.]+, GAIN_MAX = ([\d.]+);", js).group(1))
+    assert ceiling >= 20, ("a 12x ceiling was itself keeping foley inaudible - "
+                           "the clip needed ~15x")
+
+
+def test_the_foley_cap_does_not_undo_the_normalisation():
+    """The cap belongs on the multiplier applied to an ALREADY normalised clip.
+    Clamping the gain itself turned a 14.9x boost into 0.85x and the hit came
+    out quieter than the bed under it - measured peak 0.0145 against 0.169
+    once the cap moved."""
+    js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
+        encoding="utf-8")
+    body = js.split("function playFoley(", 1)[1][:1400]
+    assert "const mult = Math.min(1, musicVol * FOLEY_LEVEL * duck);" in body
+    assert "const target = mult * normalizeGain(buf);" in body
+    # the old shape must not come back
+    assert "FOLEY_MAX" not in js

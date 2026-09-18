@@ -33,14 +33,31 @@ to by this module (or the editor) — it exists purely so the editor can show
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).parent.resolve()
-PROMPTS_PATH = ROOT / "prompts" / "simulation_prompts.json"
-DEFAULTS_PATH = ROOT / "prompts" / "simulation_prompts.defaults.json"
+
+# Redirect the authoring paths BEFORE they are computed, if a test framework is
+# driving this process. This has to happen at import time and it has to happen
+# here rather than in conftest.py: conftest is a pytest fixture, and the suites
+# are documented to run under `python -m unittest`, which never loads it. See
+# authoring_sandbox for what that cost.
+import authoring_sandbox as _sandbox
+_sandbox.guard()
+
+# Overridable so a test run can be pointed at a copy. The suites drive the real
+# app — several of them in a subprocess, which no amount of in-process patching
+# reaches — and the app writes a player's edits straight back to this file, so
+# a full run used to reset the live world to the blank template with no copy
+# left to restore from.
+PROMPTS_PATH = Path(os.getenv("SOMEWHERE_PROMPTS_PATH")
+                    or (ROOT / "prompts" / "simulation_prompts.json"))
+DEFAULTS_PATH = Path(os.getenv("SOMEWHERE_PROMPTS_DEFAULTS_PATH")
+                     or (ROOT / "prompts" / "simulation_prompts.defaults.json"))
 
 _LOCK = threading.Lock()
 _MIN_RECHECK_INTERVAL = 1.0  # seconds — throttle os.stat() calls, not full reloads
@@ -546,14 +563,21 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         "tier": TIER_ADVANCED,
         "type": "longtext",
         "description": (
-            "Who the narrator is and how they speak — the single line they say "
-            "when you ask for narration. {world} is the place, {self} is your "
-            "character, {premise} the story so far, {scene} what's on screen and "
-            "{recent} the last few beats. {focus} is filled in when something "
-            "specific has to be said (a travel beat, a reveal) and is empty "
-            "otherwise, so put it where it should take precedence. {avoid} lists "
-            "the lines already spoken this run — drop it and the narrator starts "
-            "repeating itself, because nothing else tells it what it just said. "
+            "Who the narrator is and how they speak — the line they say when you "
+            "ask for narration. As shipped that line is one fact out of the "
+            "world's history, so the place opens up the further in the player "
+            "gets rather than being described back at them. {world} is the "
+            "place, {self} is your character, {premise} the story so far, {scene} "
+            "what's on screen and {recent} the last few beats. {focus} is filled "
+            "in when something specific has to be said (a travel beat, the cold "
+            "open over the opening cinematic, a reveal) and is empty otherwise, "
+            "so put it where it should take precedence. {avoid} lists the lines "
+            "already spoken this run — drop it and the narrator starts repeating "
+            "itself, because nothing else tells it what it just said. "
+            "Your Lore is already prepended to this call as HISTORICAL "
+            "BACKGROUND, so the narrator can reach into it for backstory — but "
+            "only if you let it: forbid summarising the premise and you have "
+            "also forbidden the history. "
             "Direct the VOICE here, not the content: an instruction to feel a "
             "particular way, or to want a particular thing, is an instruction to "
             "say the same line every time."

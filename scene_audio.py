@@ -20,6 +20,7 @@ files already exist) and the client stays silent on the missing layer.
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -55,6 +56,11 @@ ELEVEN_SFX_URL = "https://api.elevenlabs.io/v1/sound-generation"
 # and Eleven Music's minimum is 3s.
 DEFAULT_CLIP_SECONDS = 20
 DEFAULT_SFX_SECONDS = 14
+# ElevenLabs sound-generation rejects anything longer, with a 400 rather than
+# a truncation: "expected a maximum number of 450 characters". Both SFX lanes
+# used to clip at 500 and a long scene descriptor simply failed to make any
+# sound — silently, because a failed effect is supposed to be survivable.
+SFX_TEXT_MAX = 450
 _MUSIC_TIMEOUT_SECONDS = 90
 _SFX_TIMEOUT_SECONDS = 45
 
@@ -481,7 +487,236 @@ def _scene_to_sfx_prompt(scene_prompt: str, mode: str = "scene",
         direction = get_sfx_direction()
     if direction:
         text = f"{direction.strip()}. {text}"
-    return text[:500]
+    return text[:SFX_TEXT_MAX]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Action foley — the sound of the thing you just did
+#
+# Everything else here is a BED: loops under the scene. This is the one sound
+# tied to the PLAYER, not the place, and it exists because pressing a choice
+# made no noise beyond a UI blip — you acted and the world did not answer.
+#
+# The prompt source is the choice TEXT, and that is the whole trick. An earlier
+# attempt fed the render prompt in ("third-person follow-cam, 1993 consumer
+# colour film, the back of the head toward the lens…") and got mush, because
+# none of that describes a sound. "Sprint toward the utility truck" is four
+# concrete words a Foley model can actually record.
+#
+# Generated when the CHOICES APPEAR, not when one is clicked — they sit on
+# screen for ten or twenty seconds first, which is plenty, and a foley that
+# arrives eight seconds after the button is useless. By click time it is a
+# cache hit and plays instantly.
+# ────────────────────────────────────────────────────────────────────────────
+
+ACTION_FOLEY_SECONDS = 2.0
+_FOLEY_NUM_RE = re.compile(r"^\s*\d+\s*[.)\-:]?\s*")
+
+
+def _clean_action(action: str) -> str:
+    """The verb, without the slate's numbering or trailing punctuation."""
+    text = " ".join(str(action or "").split())
+    text = _FOLEY_NUM_RE.sub("", text)
+    return text.strip().rstrip(".!?").strip()
+
+
+def _action_foley_prompt(action: str, direction: str | None = None) -> str:
+    """Short and concrete. Long prompts are what made this sound like nothing."""
+    act = _clean_action(action)
+    if not act:
+        return ""
+    text = (
+        f"{act}. A single close-mic Foley recording of exactly that action and "
+        f"nothing else — the sounds the body, the ground and the objects make. "
+        f"Dry, close, real, recorded in the room. One take, one action, a clear "
+        f"start and a natural end. No music, no melody, no voice, no words, "
+        f"not a loop."
+    )
+    if direction is None:
+        direction = get_sfx_direction()
+    if direction:
+        text = f"{direction.strip().rstrip('. ')}. {text}"
+    return text[:SFX_TEXT_MAX]
+
+
+def _foley_cache_name(action: str) -> str:
+    prompt = _action_foley_prompt(action)
+    key = json.dumps({"p": prompt, "s": ACTION_FOLEY_SECONDS,
+                      "prov": "eleven-sfx-foley"}, sort_keys=True)
+    return "foley_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16] + ".mp3"
+
+
+def action_foley_enabled() -> bool:
+    try:
+        import engine
+        return bool(getattr(engine, "ACTION_FOLEY_ENABLED", True))
+    except Exception:
+        return True
+
+
+def action_foley(action: str, session_id: str = "default") -> dict | None:
+    """The sound of one action. {url, cached, pending} or None.
+
+    Same non-blocking contract as everything else in here: a miss is kicked to
+    the background and reported pending. The client pre-warms on the slate and
+    plays on the click, so pending should be rare by the time it matters.
+    """
+    if not action_foley_enabled() or not is_available():
+        return None
+    act = _clean_action(action)
+    if len(act) < 2:
+        return None
+
+    fname = _foley_cache_name(act)
+    fpath = _get_audio_dir(session_id) / fname
+    url = f"/audio/{fname}"
+    if fpath.exists() and fpath.stat().st_size > 32:
+        return {"url": _sessionize_url(url, session_id), "cached": True,
+                "pending": False}
+
+    prompt = _action_foley_prompt(act)
+
+    def _make():
+        try:
+            _cached_or_generate(
+                fpath,
+                lambda: _eleven_sfx(prompt, ACTION_FOLEY_SECONDS, loop=False,
+                                    session_id=session_id),
+            )
+        except Exception as e:
+            print(f"[FOLEY] {act[:40]!r} failed: {e}", flush=True)
+
+    _kick(("foley", str(fpath)), _make)
+    return {"url": _sessionize_url(url, session_id), "cached": False,
+            "pending": True}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Consequence bed — the sound of what the choice DID
+#
+# Action foley above answers the CLICK: two seconds of the verb, fired the
+# instant you press it. Then the turn renders for half a minute and the
+# flipbook plays the outcome out across four to sixteen frames — the most
+# motion this game ever puts on screen, and the only thing under it was the
+# room tone that was already playing before you chose. The beat with the most
+# to watch had the least to hear.
+#
+# This is that beat's own bed. Two things make it a different lane rather than
+# a longer foley:
+#
+#   · It is generated from the turn's VISUAL SCENE, not the choice text. Foley
+#     is the sound of what you MEANT to do; this is the shot the turn is about
+#     to draw, and those are often not the same event.
+#   · It is LONG — most of a wait, not a two-second hit — because the gap it
+#     covers is the whole image generation.
+#
+# It is deliberately NOT a loop. It was one, holding until the next action was
+# committed, and that is the version that had to be taken out: a distinctive
+# 18-second gesture repeating under a player who is reading gets annoying fast,
+# and the thing that makes a sound feel like the world answering is that it
+# happens ONCE. It plays through and stops. The scene's own ambience is
+# underneath it the whole time and is what fills the rest of the wait — that
+# lane is built to loop and is generic enough to bear it.
+#
+# Kicked the moment the consequence lands, which is five pipeline steps ahead
+# of the picture (action → consequence → world_update → world_respond →
+# actions → guide_image). The client opens it as soon as it is on disk rather
+# than holding it for the frames: guide_image alone is 20-40 seconds, the
+# ceremony has six short blips to fill that with, and that wait was the
+# longest silence in the turn. The prose the bed is made from is already on
+# screen by then, so it is not arriving early.
+#
+# Unlike foley this can never be a cache hit across turns: a consequence is
+# written fresh every time, so this is one generation per turn. That is the
+# cost of the lane and it is why it has its own switch.
+# ────────────────────────────────────────────────────────────────────────────
+
+CONSEQUENCE_BED_SECONDS = 18.0
+# The wrapper below runs ~180 characters. The prose gets the rest of the
+# budget, and a sound model does nothing useful with more of it than this.
+CONSEQUENCE_TEXT_MAX = 220
+
+
+def _clean_consequence(text: str) -> str:
+    """The outcome, trimmed to something a sound model can actually record."""
+    out = " ".join(str(text or "").split())
+    out = _FOLEY_NUM_RE.sub("", out).strip()
+    if len(out) <= CONSEQUENCE_TEXT_MAX:
+        return out.rstrip(",;:- ").strip()
+    head, sep, _tail = out[:CONSEQUENCE_TEXT_MAX].rpartition(" ")
+    return (head if sep else out[:CONSEQUENCE_TEXT_MAX]).rstrip(",;:- ").strip()
+
+
+def _consequence_bed_prompt(text: str, direction: str | None = None) -> str:
+    """Concrete first, instruction after — the same shape foley needed."""
+    what = _clean_consequence(text)
+    if not what:
+        return ""
+    out = (
+        f"{what}. One continuous recording of that moment and what it leaves "
+        f"behind — the place and the movement still in it, close and real. It "
+        f"begins, it settles, it dies away. No music, no melody, no voice, no "
+        f"words, not a loop."
+    )
+    if direction is None:
+        direction = get_sfx_direction()
+    if direction:
+        out = f"{direction.strip().rstrip('. ')}. {out}"
+    return out[:SFX_TEXT_MAX]
+
+
+def _consequence_cache_name(text: str) -> str:
+    prompt = _consequence_bed_prompt(text)
+    key = json.dumps({"p": prompt, "s": CONSEQUENCE_BED_SECONDS,
+                      "prov": "eleven-sfx-consequence"}, sort_keys=True)
+    return "beat_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16] + ".mp3"
+
+
+def consequence_bed_enabled() -> bool:
+    try:
+        import engine
+        return bool(getattr(engine, "CONSEQUENCE_BED_ENABLED", True))
+    except Exception:
+        return True
+
+
+def consequence_bed(text: str, session_id: str = "default") -> dict | None:
+    """One turn's outcome, as a single pass. {url, cached, pending} or None.
+
+    Same non-blocking contract as the rest of this module: a miss is kicked to
+    a thread and reported pending. The client arms this on the consequence and
+    starts it when the frames play, so pending should be long resolved.
+    """
+    if not consequence_bed_enabled() or not is_available():
+        return None
+    what = _clean_consequence(text)
+    # A consequence is prose. Anything this short is a fragment or an error
+    # string, and generating a bed from it produces noise with no subject.
+    if len(what) < 12:
+        return None
+
+    fname = _consequence_cache_name(what)
+    fpath = _get_audio_dir(session_id) / fname
+    url = f"/audio/{fname}"
+    if fpath.exists() and fpath.stat().st_size > 32:
+        return {"url": _sessionize_url(url, session_id), "cached": True,
+                "pending": False}
+
+    prompt = _consequence_bed_prompt(what)
+
+    def _make():
+        try:
+            _cached_or_generate(
+                fpath,
+                lambda: _eleven_sfx(prompt, CONSEQUENCE_BED_SECONDS, loop=False,
+                                    session_id=session_id),
+            )
+        except Exception as e:
+            print(f"[BEAT] {what[:40]!r} failed: {e}", flush=True)
+
+    _kick(("beat", str(fpath)), _make)
+    return {"url": _sessionize_url(url, session_id), "cached": False,
+            "pending": True}
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -585,7 +820,7 @@ def _eleven_sfx(prompt: str, seconds: float, loop: bool = True,
             headers={"xi-api-key": _api_key(), "Content-Type": "application/json"},
             params={"output_format": "mp3_44100_128"},
             json={
-                "text": (prompt or "").strip()[:500],
+                "text": (prompt or "").strip()[:SFX_TEXT_MAX],
                 "model_id": SFX_MODEL,
                 "duration_seconds": seconds,
                 "prompt_influence": 0.4,
@@ -866,8 +1101,6 @@ def set_menu_direction(prompt: str) -> str:
         json.dumps({"prompt": text}, indent=2), encoding="utf-8")
     if text != old:
         _clear_preview("menu_preview")
-        global _MENU_WARMUP_STARTED
-        _MENU_WARMUP_STARTED = False
     loop = menu_loop()
     if loop and loop.get("source") == "generated":
         clear_menu_loop()
@@ -1055,36 +1288,11 @@ def kick_stock_warmup() -> None:
                      name="stock-audio-warmup").start()
 
 
-_MENU_WARMUP_LOCK = threading.Lock()
-_MENU_WARMUP_STARTED = False
-
-
-def kick_menu_preview() -> None:
-    """Write the title-screen sample in the background so PLAY does not wait
-    on a 10s generate, and so a late preview cannot start after LEAVE.
-    """
-    global _MENU_WARMUP_STARTED
-    if not is_available():
-        return
-    if last_preview("menu_preview"):
-        return
-    prompt = get_menu_direction()
-    if not prompt:
-        return
-    with _MENU_WARMUP_LOCK:
-        if _MENU_WARMUP_STARTED:
-            return
-        _MENU_WARMUP_STARTED = True
-
-    def _go():
-        global _MENU_WARMUP_STARTED
-        try:
-            generate_preview(prompt, seconds=10, stem="menu_preview")
-        except Exception as e:
-            print(f"[SCENE AUDIO] menu preview failed: {e}", flush=True)
-            _MENU_WARMUP_STARTED = False
-
-    threading.Thread(target=_go, daemon=True, name="menu-preview-warmup").start()
+# kick_menu_preview() used to live here: /api/music warmed a 10-second sample
+# from the menu direction text so the title screen would have something to play.
+# Nothing plays it now — the title screen takes the LOCKED menu track and
+# nothing else — so warming it only spent ElevenLabs credit on audio no one
+# asked for. The editor's Play menu button still previews on demand.
 
 
 def _with_inflight(ikey, fn):
@@ -1165,6 +1373,19 @@ def _resolve_music(scene_prompt: str, session_id: str, seconds: int,
     return None, False, True
 
 
+def scene_ambience_enabled() -> bool:
+    """Whether a scene gets its OWN ambience or just the stock bed.
+
+    Off falls back to the keyword-matched stock loop, which is what every
+    scene used to end up on anyway — see the retry bug in SceneAudio.score.
+    """
+    try:
+        import engine
+        return bool(getattr(engine, "SCENE_AMBIENCE_ENABLED", True))
+    except Exception:
+        return True
+
+
 def _resolve_sfx(scene_prompt: str, session_id: str, seconds: int,
                  mode: str) -> tuple[str | None, bool, bool]:
     """Scene-specific looping ambience, falling back to a stock bed.
@@ -1176,6 +1397,8 @@ def _resolve_sfx(scene_prompt: str, session_id: str, seconds: int,
     stock = stock_ambience_url(kind)
     if mode == "conversation":
         return stock, True, False
+    if not scene_ambience_enabled():
+        return stock, bool(stock), False
     fname = _sfx_cache_name(scene_prompt, seconds, mode=mode)
     fpath = _session_audio_dir(session_id, create=False) / fname
     web_url = f"/audio/{fname}"
@@ -1199,7 +1422,14 @@ def _resolve_sfx(scene_prompt: str, session_id: str, seconds: int,
 
     _kick((session_id, fname), _go)
     if stock:
-        return stock, True, False
+        # Stock NOW so the scene is not silent, but pending=True because the
+        # scene's own loop is being made this second and the client has to come
+        # back for it. This used to claim (stock, cached=True, pending=False) —
+        # which was simply untrue, and it was the whole bug: the client had no
+        # way to learn the real loop had landed, so every location in the game
+        # played one of four keyword-matched stock beds forever while the
+        # scene-specific loops piled up on disk, generated, paid for, unheard.
+        return stock, False, True
     return None, False, True
 
 

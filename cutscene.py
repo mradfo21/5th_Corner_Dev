@@ -514,6 +514,7 @@ def build_cutscene_prompt(
     goal: str = "",
     plate_role: str = "anchor",
     shotlist: Optional[List[str]] = None,
+    has_reference: bool = True,
 ) -> str:
     """One 2×2 grid instruction. Place-locked. No captions, no borders.
 
@@ -526,24 +527,52 @@ def build_cutscene_prompt(
       shots are further out than it. The level's opening needs this, and given
       the anchor wording ("the current photograph of this exact place") the
       model otherwise redraws the plate four times from where it already stands.
+
+    ``has_reference`` is False for the opening, which now draws before anything
+    else exists. Every PLACE LOCK clause below describes a photograph that is
+    attached to the call, so emitting one with nothing attached tells the model
+    to match an image it cannot see.
     """
     mood = normalize_mood(mood)
     pack = MOODS[mood]
     bits: List[str] = []
+    setting_line = ""
+    opening = (plate_role == "destination")
     try:
         import game_identity
+        # NO CAST in the opening's anchor. Every panel of the opening montage is
+        # required to be empty of people, and `world_anchor` with the character
+        # in it spends its first sentences describing exactly what the panels
+        # must not contain — "adult man, olive field jacket, a battered 35mm
+        # stills camera on a neck strap". While the montage was img2img off a
+        # place-locked plate that contradiction mostly lost; as text-to-image it
+        # wins outright. A live run came back with a figure at the fence in
+        # panel one and two front-facing portraits of a man holding a camera in
+        # panels two and four, which is the one thing the brief bans in capitals.
+        #
+        # The character belongs to the beat AFTER this one (the idle), which
+        # does get the full cast anchor and the reference plates.
         anchor = game_identity.world_anchor(
             "1993 analog photograph, cinematic game cutscene, practical light.",
-            include_character=True,
+            include_character=not opening,
             include_vantage=False,
         )
         if anchor:
             bits.append(anchor.rstrip(". ") + ".")
+        # Only used when nothing is attached (see has_reference). With a plate
+        # in hand the photograph is a better description of the place than any
+        # sentence about it.
+        setting_line = game_identity.place_summary() or ""
+        _sheet = (game_identity.get_spec() or {}).get(
+            game_identity.SETTING_KEY) or {}
+        for _field in ("landmarks", "palette"):
+            _val = str(_sheet.get(_field) or "").strip()
+            if _val:
+                setting_line = f"{setting_line} {_val.rstrip('. ')}.".strip()
     except Exception:
         bits.append(
             "1993 analog photograph, cinematic game cutscene, practical light."
         )
-    opening = (plate_role == "destination")
     bits.append(
         "MUST be a 2×2 grid of FOUR stills. Same resolution per panel. "
         "No panel borders, numbers, captions, letterbox, HUD, or game UI. "
@@ -579,7 +608,23 @@ def build_cutscene_prompt(
             "Each panel is a different cinematic camera on the SAME moment and "
             "the SAME place."
         )
-    if plate_role == "destination":
+    if plate_role == "destination" and not has_reference:
+        # The opening draws first now — there is no plate in front of it, and a
+        # PLACE LOCK naming a reference that is not attached used to send the
+        # model looking for one. THIS render establishes the place; everything
+        # after it (the idle beat, then every turn) is locked to these panels.
+        bits.append(
+            "THIS IS THE FIRST PHOTOGRAPH OF THIS WORLD. There is no reference "
+            "image: you are establishing the place, and every later frame of "
+            "this story will be drawn from these panels. So commit. One "
+            "specific location, one consistent light, one weather — all four "
+            "panels are the same place at the same hour, photographed from "
+            "different distances. Read the location described below and shoot "
+            "THAT; do not drift to a generic version of it."
+        )
+        if setting_line:
+            bits.append(f"THE PLACE: {setting_line}")
+    elif plate_role == "destination":
         bits.append(
             "PLACE LOCK — HARD. The reference photograph is this place and this "
             "light: keep its location, architecture, materials, ground, sky, "
@@ -665,7 +710,9 @@ def build_cutscene_prompt(
         )
     bits.append(
         "A finished 1993 photograph in each panel. Empty hands, no text, "
-        "no watermarks. Preserve the people and wardrobe already in the reference."
+        "no watermarks."
+        + (" Preserve the people and wardrobe already in the reference."
+           if has_reference else "")
     )
     prompt = " ".join(bits)
     try:
@@ -764,7 +811,7 @@ def resolve_source_path(
 
 
 def generate_shots(
-    source_path: Path,
+    source_path: Optional[Path],
     *,
     session_id: str = "default",
     mood: str = DEFAULT_MOOD,
@@ -776,15 +823,28 @@ def generate_shots(
     offline: bool = False,
     output_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Produce four shot files from a source plate.
+    """Produce four shot files, from a source plate or from nothing.
+
+    ``source_path`` is None for a level's OPENING, which no longer has a plate
+    to establish toward — it IS the first render of the run. The grid then goes
+    out as text-to-image instead of img2img, which is the right call anyway: the
+    four cold-open photographs are unpeopled establishing shots of a place the
+    lore already describes, and the plate that used to seed them was itself a
+    from-scratch text-to-image guess made moments earlier. Drawing that guess
+    and then drawing FROM it was two renders where one does the job, and it let
+    the guess and the montage disagree about where the level was.
+
+    Every other mood restages a beat the player can see, and still requires its
+    plate.
 
     ``source`` on the result is ``gemini`` or ``optical``. Optical is the
-    prototype / fallback so a missing key never blocks the Moment.
+    prototype / fallback so a missing key never blocks the Moment — it needs a
+    plate to crop, so it is unavailable to the opening.
     """
     import engine
 
     mood = normalize_mood(mood)
-    source_path = Path(source_path)
+    source_path = Path(source_path) if source_path else None
     if output_dir is None:
         output_dir = Path(engine._get_image_dir(session_id))
     output_dir = Path(output_dir)
@@ -808,7 +868,8 @@ def generate_shots(
             want_gemini = False
     if want_gemini:
         try:
-            from gemini_image_utils import generate_gemini_img2img
+            from gemini_image_utils import (generate_gemini_img2img,
+                                            generate_with_gemini)
             # Only the opening reads the lore for its subjects. A restage has a
             # beat in front of it already; it does not need inventing.
             shotlist = []
@@ -821,6 +882,7 @@ def generate_shots(
             prompt = build_cutscene_prompt(
                 mood, shot_brief=shot_brief, setting=setting, name=name,
                 goal=goal, plate_role=plate_role, shotlist=shotlist,
+                has_reference=source_path is not None,
             )
             tod = ""
             try:
@@ -836,25 +898,43 @@ def generate_shots(
             # plate beat, which is already locked to her.
             identity_plates = ([] if plate_role == "destination"
                                else _identity_plates())
-            grid_file = generate_gemini_img2img(
-                prompt=prompt,
-                caption=stem + "_grid",
-                reference_image_path=str(source_path),
-                strength=0.42,
-                world_prompt=(shot_brief or "")[:200] or None,
-                time_of_day=tod,
-                hd_mode=False,
-                output_dir=output_dir,
-                is_flipbook=False,
-                include_people=True,
-                # See GRID_RENDER_SIZE: four panels sliced out of one generation
-                # need the render to be big enough that a quarter of it is still
-                # a photograph.
-                model=GRID_RENDER_MODEL,
-                image_size=GRID_RENDER_SIZE,
-                identity_paths=identity_plates or None,
-                hold_cast=True,
-            )
+            if source_path is None:
+                # The opening. No plate exists yet and none is wanted: this IS
+                # the run's first render, and the place it establishes comes
+                # from the lore (see mystery_shotlist) and the Level sheet,
+                # which engine._ensure_level_sheet_is_filled guarantees says
+                # something before we get here.
+                grid_file = generate_with_gemini(
+                    prompt=prompt,
+                    caption=stem + "_grid",
+                    world_prompt=(shot_brief or "")[:200] or None,
+                    time_of_day=tod,
+                    hd_mode=False,
+                    output_dir=output_dir,
+                    # See GRID_RENDER_SIZE.
+                    model=GRID_RENDER_MODEL,
+                    image_size=GRID_RENDER_SIZE,
+                )
+            else:
+                grid_file = generate_gemini_img2img(
+                    prompt=prompt,
+                    caption=stem + "_grid",
+                    reference_image_path=str(source_path),
+                    strength=0.42,
+                    world_prompt=(shot_brief or "")[:200] or None,
+                    time_of_day=tod,
+                    hd_mode=False,
+                    output_dir=output_dir,
+                    is_flipbook=False,
+                    include_people=True,
+                    # See GRID_RENDER_SIZE: four panels sliced out of one
+                    # generation need the render to be big enough that a
+                    # quarter of it is still a photograph.
+                    model=GRID_RENDER_MODEL,
+                    image_size=GRID_RENDER_SIZE,
+                    identity_paths=identity_plates or None,
+                    hold_cast=True,
+                )
             if grid_file and Path(grid_file).exists():
                 grid_path = Path(grid_file)
                 panels = extract_grid_panels(
@@ -874,11 +954,19 @@ def generate_shots(
         except Exception:
             logging.exception("[CUTSCENE] Gemini 2×2 failed — optical fallback")
 
-    if not shots:
+    if not shots and source_path is not None:
         shots = optical_montage(
             source_path, output_dir, stem=stem, mood=mood,
         )
         used = "optical"
+    elif not shots:
+        # The opening has no plate to crop, so there is no optical fallback for
+        # it. The caller lands the run on its own intro render instead, which
+        # is what a montage-less boot has always done.
+        print("[CUTSCENE] the opening grid did not render and there is no "
+              "plate to fall back on — this run opens without a montage",
+              flush=True)
+        used = "none"
 
     payload_shots = []
     for shot in shots:
@@ -898,7 +986,7 @@ def generate_shots(
         "grid_url": _to_web(grid_path, session_id) if grid_path else "",
         "duration_ms": int(HOLD_MS or DEFAULT_DURATION_MS),
         "elapsed_ms": int((time.time() - t0) * 1000),
-        "source_plate": _to_web(source_path, session_id),
+        "source_plate": _to_web(source_path, session_id) if source_path else "",
     }
 
 
@@ -945,13 +1033,18 @@ def play_for_session(
     if staged.get("cutscene_id") == cutscene_id:
         source_url = str(staged.get("source_path") or "") or source_url
 
+    # The level's OPENING draws first and has no plate — it IS the run's first
+    # render (see generate_shots). Every other mood restages something the
+    # player can already see, and without that photograph there is nothing to
+    # restage, so those still refuse.
+    opening = bool(staged.get("opening")) or mood == "approach"
     plate = resolve_source_path(
         session_id,
         source_url=source_url,
         source=source,
         dest_world_id=dest_world,
     )
-    if plate is None:
+    if plate is None and not opening:
         return {"ok": False, "error": "no_plate", "shots": []}
 
     goal = ""
@@ -976,54 +1069,22 @@ def play_for_session(
     except Exception:
         logging.exception("[CUTSCENE] generate_shots failed")
         return {"ok": False, "error": "generate_failed", "shots": []}
-    # The opening ends on the plate itself, as a final beat.
+    # The opening used to append the plate as a fifth and final beat, because
+    # the plate was the only gameplay-composition frame in the boot — the only
+    # one with the protagonist in it, shot the way the game shoots — and the run
+    # continued from it.
     #
-    # This is the frame the run continues from: _finish_opening_montage takes
-    # shots[-1] and writes it into history as the opening handoff, and turn one
-    # does img2img off it. Generating that shot instead was tried twice and
-    # reverted twice. First the model drew it badly — a front-facing portrait,
-    # then a side-on medium, then a stranger entirely when no character plate was
-    # passed. Then, with the identity lock in place, it drew it *correctly* and
-    # the shot still failed at its actual job: a small centred figure seen from
-    # behind, in a composition unlike any the game goes on to use, left the player
-    # unable to tell who they were. The plate IS the gameplay composition, so it
-    # is the only frame that answers "this is me".
+    # There is no plate now, and nothing is missing. The beat that follows this
+    # montage is the IDLE (engine._generate_opening_establishing): the character
+    # standing in this place, drawn by the flipbook pipeline that every turn
+    # uses, animated, and handed to turn one as its anchor. That is the frame
+    # that answers "this is me", and it is a better answer than the plate was
+    # because it moves and because the player arrives on it rather than glimpsing
+    # it for four seconds inside the montage.
     #
-    # The known cost is resolution: the plate is 1K and these panels are 4K, so
-    # the closing frame is softer than the four before it. Clarity about the
-    # protagonist beat sharpness, on the record.
-    #
-    # This does NOT undo the earlier decision that the plate must not OPEN the run
-    # (see _stage_opening_montage, which keeps it out of the feed). The objection
-    # there was to the first thing a player sees being a frame nobody shot for
-    # this run; arriving on it after four photographs of the empty place is the
-    # opposite — it is the shot the montage has been withholding.
-    #
-    # Built here rather than in generate_shots because only this layer knows the
-    # plate's real web URL. A World frame lives in worlds/, not in the session's
-    # images/, so `_to_web` maps it to /images/world.frame.png, which 404s — and
-    # since this beat's url becomes current_image_url, that 404 was handed to turn
-    # one and the run opened on a black screen with the client retrying the
-    # missing file four times. The staged url is the one the route can serve.
-    if mood == "approach" and generated.get("shots"):
-        # _stage_opening_montage leaves the plate's servable URL in
-        # current_image_url on purpose ("so a status poll has something true to
-        # report"), which makes it the one url here known to resolve.
-        try:
-            staged_url = str((engine.get_state(session_id) or {})
-                             .get("current_image_url") or "").strip()
-        except Exception:
-            staged_url = ""
-        if staged_url:
-            generated["shots"] = list(generated["shots"]) + [{
-                "url": staged_url,
-                "path": str(plate),
-                "camera": "threshold",
-                "label": "The place, as you find it",
-            }]
-        else:
-            logging.warning("[CUTSCENE] no servable plate url; the montage will "
-                            "end on a generated panel instead")
+    # What the old fifth beat actually did in practice was flash a separately
+    # rendered still that the montage had no reason to agree with — an indoor
+    # storeroom between four photographs of an open-pit mine, on 2026-09-17.
 
     play_id = cutscene_id or ("play-" + uuid.uuid4().hex[:8])
     payload = {
@@ -1046,7 +1107,51 @@ def play_for_session(
             # shots must not wipe them, or the hand-off back to turn one has no
             # idea it is the one that owns the parked choice slate.
             prev = st.get("pending_cutscene") or {}
-            keep = prev if prev.get("cutscene_id") == play_id else {}
+            # Carry the staged fields forward. Matching on cutscene_id alone was
+            # too brittle to hold the ONE field that matters: `opening` is what
+            # /api/cutscene/play reads to start the idle render and what
+            # /api/cutscene/complete reads to hand the run over, so losing it
+            # costs the run its first playable frame AND its authored slate, and
+            # the player lands on a "Look around" over a frame drawn from
+            # nothing. Any id mismatch — a client that did not echo the id, a
+            # re-play, a generated play-id — used to silently wipe it.
+            #
+            # An opening montage that has not been played yet is unambiguous:
+            # there is exactly one, it is flagged, and it has no shots. Keep it.
+            keep = {}
+            if prev.get("cutscene_id") == play_id:
+                keep = prev
+            elif prev.get("opening") and not (prev.get("shots") or []):
+                keep = prev
+                print(f"[CUTSCENE] play id {play_id!r} does not match the staged "
+                      f"{prev.get('cutscene_id')!r}, but the staged montage is "
+                      f"this run's unplayed opening — keeping its stamp",
+                      flush=True)
+            # `opening` is WRITTEN, not merely inherited from `keep`.
+            #
+            # Inheriting it was still one failure away from losing the run. On
+            # 2026-09-17 (bugs/20260917_155759) `pending_cutscene` was gone from
+            # the persisted state by the time this ran — wiped by the stale
+            # module-global mirror described below, written back by one of the
+            # ~50 status/feed polls between the reset and the play — so `prev`
+            # was empty, BOTH keep branches missed, and the stamp was lost even
+            # though the client had echoed the staged `open-…` id correctly.
+            #
+            # The hand-off then read `opening` falsy, never rendered the first
+            # playable frame, never released the boot gate, and the run sat on
+            # the World's cached frame repeating the opening prose. Reported as
+            # "it completely just failed live, it just defaulted to the default
+            # image".
+            #
+            # We do not have to inherit it, because we can tell: the opening
+            # montage is the one the SERVER stages, so it has mood "approach" and
+            # no graph node behind it. Deriving it is one fewer thing that a lost
+            # write can take with it.
+            opening_stamp = (
+                bool(keep.get("opening"))
+                or bool(staged.get("opening"))
+                or (mood == "approach" and not node)
+            )
             st["pending_cutscene"] = {
                 **keep,
                 "cutscene_id": play_id,
@@ -1058,7 +1163,12 @@ def play_for_session(
                 "duration_ms": payload["duration_ms"],
                 "source": payload["source"],
                 "graph": bool(node),
+                "opening": opening_stamp,
             }
+            if opening_stamp and not keep.get("opening"):
+                print(f"[CUTSCENE] {play_id!r} is this run's opening montage "
+                      f"(mood={mood}, graph={bool(node)}) — stamping it even "
+                      f"though the staged copy did not survive", flush=True)
             engine._save_state(st, session_id)
         # Saving to disk is not enough. The module-global `state` mirror still
         # holds the copy from BEFORE the shots existed, and the next request that

@@ -948,8 +948,10 @@ class TestTheEndpointsExist(unittest.TestCase):
         self.assertIn("/api/tape", lobby)
 
     def test_play_opens_an_experience_picker(self):
-        # PLAY is "what experience", not a co-equal Watch choice. Last-run
-        # stills sit on the picker at ~20% when a tile is selected.
+        # PLAY is "what experience", not a co-equal Watch choice. The selected
+        # tile's still fills the picker full-bleed; it used to sit at 20% over
+        # the menu's green gradient, which read as black with a tint rather
+        # than as the film you were about to start. Scrims carry legibility.
         self.assertIn('id="xp-picker"', self.html)
         self.assertIn('id="xp-play"', self.html)
         self.assertIn('id="xp-edit"', self.html)
@@ -985,7 +987,7 @@ class TestTheEndpointsExist(unittest.TestCase):
         start_css = css.split("#start-menu {", 1)[1].split("#start-menu::before", 1)[0]
         self.assertIn("overflow: clip", start_css)
         self.assertIn(".xp-stage.has-img .xp-stage-img", css)
-        self.assertIn("opacity: 0.20", css)
+        self.assertIn(".xp-stage::after", css)
         self.assertIn(".xp-dock", css)
         self.assertIn("@keyframes xp-play-glow", css)
         self.assertIn(".xp-hero", css)

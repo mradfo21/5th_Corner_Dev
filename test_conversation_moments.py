@@ -381,6 +381,8 @@ def test_talk_session_does_not_block_on_vision():
     session = src.split("def api_talk_session(", 1)[1].split("\ndef ", 1)[0]
     assert "include_vision=False" in session
     assert "_talk_opening_fallback" in session
+    assert "_is_canned_talk_fallback" in session
+    assert "or _talk_opening_fallback(_label, _kind)" not in session
     message = src.split("def api_talk_message(", 1)[1].split("\ndef ", 1)[0]
     assert "include_vision=False" in message
 

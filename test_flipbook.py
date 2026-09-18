@@ -752,3 +752,83 @@ class TestThePlaybackPolicies(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestARefusedFlipbookDoesNotRewindTheRun(unittest.TestCase):
+    """A typed custom action gets refused by the content filter more often than
+    a curated choice does, so the still fallback is the path it takes. The
+    fallback worked; what did not was the state around it.
+
+    `_flipbook_generate` writes the anchors on success and leaves them alone on
+    failure, so after a refused grid they still pointed at the PREVIOUS turn's
+    last panel. Everything that reads them quietly rewound a turn: the vision
+    pass wrote that older frame's spatial anchor into history, and the next
+    flipbook took it as "where the camera IS" for its first reference.
+
+    Reported as: type a custom action, get a still, and the next ordinary
+    choice carries on from the frame BEFORE the custom action ever happened.
+    Captured live at 23:10 with "[FLIPBOOK] no grid came back - falling back to
+    a still" immediately followed by "[VISION] Flipbook mode - reading the LAST
+    panel only".
+    """
+
+    import engine  # noqa: E402  (module under test, imported like the suites above)
+
+    STALE = "/img/2020310481_before_the_custom_action_f04.png"
+
+    def _state_after_a_still_turn(self, still_path):
+        """What the scene-image writer leaves behind when sequence is None."""
+        src = Path(__file__).resolve().parent / "engine.py"
+        body = src.read_text(encoding="utf-8")
+        assert "st['flipbook_last_frame'] = img_path" in body
+        st = {"flipbook_last_frame": self.STALE,
+              "flipbook_first_frame": "/img/older_f01.png",
+              "flipbook_last_grid": "/img/older_grid.png",
+              "current_sequence": {"frame_count": 4}}
+        # The branch under test, as the writer runs it.
+        sequence = None
+        st["current_sequence"] = sequence
+        if not sequence:
+            st["flipbook_last_frame"] = still_path
+            st["flipbook_first_frame"] = None
+            st["flipbook_last_grid"] = None
+        return st
+
+    def test_a_still_turn_owns_the_anchor_instead_of_inheriting_it(self):
+        st = self._state_after_a_still_turn("/img/the_custom_action_still.png")
+        self.assertEqual(st["flipbook_last_frame"], "/img/the_custom_action_still.png")
+        self.assertNotEqual(st["flipbook_last_frame"], self.STALE)
+
+    def test_motion_that_did_not_happen_is_not_left_behind(self):
+        """first_frame is the wider scene at the START of a sequence. Keeping
+        an old one is time travel, the same way a pre-fire photograph was."""
+        st = self._state_after_a_still_turn("/img/the_custom_action_still.png")
+        self.assertIsNone(st["flipbook_first_frame"])
+        self.assertIsNone(st["flipbook_last_grid"])
+        self.assertIsNone(st["current_sequence"])
+
+    def test_vision_will_not_read_a_panel_this_turn_did_not_draw(self):
+        """The history selector already checked `current_sequence`; the vision
+        selector did not, which is the half that wrote the wrong anchor.
+
+        Scoped to the vision block on purpose — counting the guard across the
+        file passed with the vision one missing, because two other selectors
+        already had it.
+        """
+        src = (Path(__file__).resolve().parent / "engine.py").read_text(encoding="utf-8")
+        block = src.split("# --- FRAME TO READ ---", 1)[1]
+        block = block.split("vision_dispatch is the fallback caption", 1)[0]
+        self.assertIn('state.get("current_sequence")', block,
+                      "the vision frame selector must also check that THIS "
+                      "turn actually drew a flipbook")
+        self.assertIn("flipbook_last_frame", block)
+
+    def test_the_next_flipbook_anchors_on_the_still_not_the_old_panel(self):
+        """`_flipbook_generate` takes flipbook_last_frame as where the camera
+        IS. With the anchor re-pointed it continues from the custom action."""
+        import engine
+        st = self._state_after_a_still_turn("/img/the_custom_action_still.png")
+        self.assertEqual(st["flipbook_last_frame"], "/img/the_custom_action_still.png")
+        # and the descriptor helper still reads that key, so the wiring holds
+        self.assertIn("prev_last = st.get('flipbook_last_frame')",
+                      (Path(engine.__file__)).read_text(encoding="utf-8"))

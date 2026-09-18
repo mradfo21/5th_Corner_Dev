@@ -542,13 +542,30 @@ class TestChoicesAreGroundedOnTheRenderedFrame(unittest.TestCase):
         self.assertIn("intro_frame_vision or intro_image_description", intro)
 
     def test_reset_resolves_the_opening_frame_before_building_the_slate(self):
+        """On the no-montage path the run opens on a still, so that still has
+        to exist before the slate is written from it."""
         reset = self.src.split("def _perform_game_reset(", 1)[1] \
                         .split("\ndef api_reset", 1)[0]
-        resolve_at = reset.index("_cached_opening_frame(new_state)")
-        intro_at = reset.index("initial_items, intro_image_kwargs = generate_intro_turn_feed_items(")
+        branch = reset.split("_open_on_montage(new_state)", 1)[1] \
+                      .split("else:", 1)[1]
+        resolve_at = branch.index("_cached_opening_frame(new_state)")
+        intro_at = branch.index("initial_items, intro_image_kwargs = generate_intro_turn_feed_items(")
         self.assertLess(resolve_at, intro_at,
                         "the opening still must be resolved before the intro slate")
-        self.assertIn("frame_path=opening_rec.get(\"path\")", reset)
+        self.assertIn("frame_path=opening_rec.get(\"path\")", branch)
+
+    def test_the_montage_path_regrounds_its_slate_on_the_frame_it_lands_on(self):
+        """There is deliberately no frame at reset on the montage path — the
+        montage IS the first render. So the slate is written from the level's
+        prose and has to be rewritten once the player has somewhere to stand,
+        or it describes a room they are not in (the 2026-09-17 report)."""
+        handoff = self.src.split("def _finish_opening_montage(", 1)[1] \
+                          .split("\ndef ", 1)[0]
+        self.assertIn("slate_id=choices_item.get(\"id\")", handoff)
+        append_at = handoff.index("_feed_append(st, choices_item)")
+        reground_at = handoff.index("_spawn_cached_opening_vision(")
+        self.assertLess(append_at, reground_at,
+                        "the slate needs an id before it can be revised")
 
     def test_a_cold_start_regrounds_the_slate_once_the_render_lands(self):
         # With no cached still there is nothing to look at, so the opening slate

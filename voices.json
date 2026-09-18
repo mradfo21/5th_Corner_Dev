@@ -2,7 +2,7 @@
   "_comment": "Voice registry for the TALK mechanic + narrator stream. Data-driven so new voices/characters can be added with NO code change. `id` values are ElevenLabs voice IDs. Env ELEVENLABS_VOICE_ID overrides `default_voice`; ELEVENLABS_NARRATOR_VOICE_ID overrides `narrator_voice`.",
 
   "default_voice": "cjVigY5qzO86Huf0OWal",
-  "narrator_voice": "BF8pwMTsMLfoEJTkla4e",
+  "narrator_voice": "7iNwWER0ovqC4pJZP3G7",
 
   "voices": [
     { "id": "cjVigY5qzO86Huf0OWal", "name": "Eric", "tag": "smooth, trustworthy", "gender": "male" },
@@ -16,7 +16,7 @@
     { "id": "pFZP5JQG7iQjIQuC4Bku", "name": "Lily", "tag": "velvety actress", "gender": "female" },
     { "id": "XrExE9yKIg1WjnnlVkGX", "name": "Matilda", "tag": "knowledgeable, clinical", "gender": "female" },
     { "id": "SAz9YHcvj6GT2YYXdXww", "name": "River", "tag": "neutral, synthetic", "gender": "neutral" },
-    { "id": "BF8pwMTsMLfoEJTkla4e", "name": "Narrator", "tag": "the archive voice", "gender": "male" }
+    { "id": "7iNwWER0ovqC4pJZP3G7", "name": "Narrator", "tag": "the archive voice", "gender": "male" }
   ],
 
   "by_kind": {
@@ -28,7 +28,7 @@
   },
 
   "cast": {
-    "narrator": { "voice_id": "BF8pwMTsMLfoEJTkla4e", "stability": 0.55, "speed": 0.98, "description": "The disembodied archive voice that frames the world." },
+    "narrator": { "voice_id": "7iNwWER0ovqC4pJZP3G7", "stability": 0.55, "speed": 0.85, "description": "The disembodied archive voice that frames the world." },
     "man":      { "voice_id": "cjVigY5qzO86Huf0OWal", "description": "A generic man's voice." },
     "woman":    { "voice_id": "EXAVITQu4vr4xnSDxMaL", "description": "A generic woman's voice." },
     "elder":    { "voice_id": "pqHfZKP75CvOlQylNhV4", "description": "A wise, weathered old voice." },

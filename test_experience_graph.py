@@ -112,10 +112,11 @@ class TestConditionSchema(_IsolatedGraph):
         self.assertEqual(exp["sound"]["palette"], "tape")
         self.assertEqual(exp["sound"]["muted"], [])
         self.assertTrue(exp["lore"]["enabled"])
-        # Empty Lore inherits the start World's bible so Play and the graph
-        # share it. Isolated prompts seed a quiet test place.
-        self.assertEqual(exp["lore"]["notes"], "A quiet test place.")
-        self.assertEqual(exp["lore"].get("source"), "world")
+        # A fresh Experience has no bible. This used to inherit the start World's
+        # `world_initial_state` and report it as authored lore, which made an
+        # empty Lore node impossible to tell apart from a written one.
+        self.assertEqual(exp["lore"]["notes"], "")
+        self.assertNotIn("source", exp["lore"])
         self.assertEqual(exp["lore"]["documents"], [])
 
 
@@ -620,11 +621,12 @@ class TestExperienceLore(_IsolatedGraph):
         self.assertIn("Narrate the fence.", prompt)
         self.assertEqual(xs.apply_lore_to_prompt(prompt).count("HISTORICAL BACKGROUND"), 1)
 
-    def test_empty_lore_inherits_the_start_world_bible(self):
+    def _empty_lore_over_an_authored_world(self):
         from prompts_store import PROMPTS, save_prompts_bulk
         save_prompts_bulk({
             "world_initial_state": (
-                "Horizon buried The Gate in 1987. Four Corners. Jason Fleece."
+                "Horizon buried The Gate in 1987. Four Corners. Jason Fleece. "
+                "Never depict forests. Do not reference sound-based cues."
             )
         })
         PROMPTS._mtime = None
@@ -635,11 +637,64 @@ class TestExperienceLore(_IsolatedGraph):
         exp["worlds"][0]["slug"] = "mesa"
         exp["lore"] = xs.default_lore()
         xs.save_experience(exp)
-        brief = xs.lore_brief()
-        self.assertIn("HISTORICAL BACKGROUND", brief)
-        self.assertIn("Horizon buried The Gate", brief)
-        self.assertIn("Jason Fleece", brief)
-        self.assertEqual(xs.get_lore().get("source"), "world")
+
+    def test_empty_lore_does_not_inherit_the_world_document(self):
+        """An empty node used to fall back to `world_initial_state` as the bible.
+
+        That document is mostly direction for the model, and it arrived under the
+        HISTORICAL BACKGROUND heading — so "Never depict forests" was handed to
+        the narrator as a fact about the place. It also made an empty Lore node
+        indistinguishable from an authored one, which is how the shipped node sat
+        holding camera direction without anyone seeing it.
+        """
+        self._empty_lore_over_an_authored_world()
+        self.assertEqual(xs.lore_brief(), "")
+        self.assertNotIn("source", xs.get_lore())
+        self.assertEqual(xs.with_lore("You are at the fence."),
+                         "You are at the fence.")
+
+    def test_an_empty_node_says_so_in_the_boot_log(self):
+        """Silence is what let this go unnoticed. Empty has to be loud."""
+        self._empty_lore_over_an_authored_world()
+        report = xs.boot_report()
+        self.assertIn("EMPTY", report)
+        self.assertIn("Lore node", report)
+
+    def test_the_boot_log_counts_what_it_loaded(self):
+        xs.set_lore_notes("Horizon buried The Gate in 1987.")
+        xs.add_lore_document(name="timeline.md", text="1989. The deep dig went in.")
+        report = xs.boot_report()
+        self.assertIn("HISTORICAL BACKGROUND", report)
+        self.assertIn("1 text document", report)
+        self.assertNotIn("EMPTY", report)
+
+    def test_disabled_lore_says_so_in_the_boot_log(self):
+        xs.set_lore_notes("Secret vault under the mesa.", enabled=False)
+        self.assertIn("DISABLED", xs.boot_report())
+
+    def test_the_bible_leads_the_world_document(self):
+        """The bible used to be appended, so the author's account of the place sat
+        last, under thousands of characters of model direction — the position a
+        model weights least. `apply_lore_to_prompt` always prepended; they agree."""
+        xs.set_lore_notes("Horizon buried The Gate in 1987.")
+        out = xs.with_lore("DIRECTION: never depict forests.")
+        self.assertTrue(out.startswith("HISTORICAL BACKGROUND"))
+        self.assertLess(out.index("The Gate"), out.index("never depict forests"))
+
+    def test_an_edit_is_live_on_the_next_read_despite_the_cache(self):
+        """The brief is cached because it is read several times per turn. A cache
+        an author has to restart to clear is worse than no cache at all."""
+        xs.set_lore_notes("The Gate was sealed in 1987.")
+        self.assertIn("1987", xs.lore_brief())
+        xs.set_lore_notes("The Gate was reopened in 1993.")
+        self.assertIn("1993", xs.lore_brief())
+        self.assertNotIn("1987", xs.lore_brief())
+
+    def test_a_document_added_on_disk_is_picked_up(self):
+        xs.set_lore_notes("Horizon worked the red mesa country.")
+        self.assertNotIn("deep dig", xs.lore_brief())
+        xs.add_lore_document(name="dig.md", text="1989. The deep dig went in.")
+        self.assertIn("deep dig", xs.lore_brief())
 
     def test_inline_document_feeds_the_brief(self):
         exp = xs.get_experience()

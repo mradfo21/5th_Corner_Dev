@@ -28,7 +28,12 @@ from pathlib import Path
 from typing import Any, Dict
 
 ROOT = Path(__file__).resolve().parent
-STORE = ROOT / "tunables.json"
+import authoring_sandbox as _sandbox
+_sandbox.guard()  # before the path below is computed — see authoring_sandbox
+# Overridable so a test run writes to a copy. clear() writes {} over this file,
+# and it is gitignored, so a suite that touched it took Flipbook and the frame
+# count with it and left nothing to restore from.
+STORE = Path(os.getenv("SOMEWHERE_TUNABLES_PATH") or (ROOT / "tunables.json"))
 
 _LOCK = threading.Lock()
 
@@ -146,6 +151,34 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
     # a cutscene is four cameras on one moment with time held. Both come from a
     # single generation; what differs is whether cuts are allowed and how long
     # you get to look. These two knobs are the opening beat of a level.
+    "scene_ambience": {
+        "kind": "bool",
+        "label": "Scene ambience",
+        "default": True,
+        "help": "Give each scene its own looping ambience, generated from the "
+                "prompt that drew the frame, instead of the generic stock bed "
+                "matched by keyword. ElevenLabs; ~14s a loop, cached per scene.",
+    },
+    "action_foley": {
+        "kind": "bool",
+        "label": "Action foley",
+        "default": True,
+        "help": "Play a generated Foley clip of the action you just took - "
+                "footsteps, metal, cloth - built from the choice text. "
+                "Generated when the choices appear so the click is instant. "
+                "ElevenLabs; ~2s a clip, cached per action.",
+    },
+    "consequence_bed": {
+        "kind": "bool",
+        "label": "Consequence sound",
+        "default": True,
+        "help": "Play one long sound of what your choice did, generated from "
+                "the visual scene the turn is about to draw. Kicked when the "
+                "consequence lands so it is ready before the picture is, and "
+                "it plays ONCE - it is not a loop. ElevenLabs; ~18s a clip, "
+                "and a fresh generation EVERY turn, since a consequence is "
+                "never written twice and so never gets a cache hit.",
+    },
     "intro_cutscene": {
         "kind": "bool",
         "label": "Open on a montage",
@@ -176,6 +209,45 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
         "label": "Narrator",
         "default": None,
         "help": "The voice that reads the story back to you.",
+    },
+    # ── How the narrator is SPOKEN ────────────────────────────────────────
+    # Both of these were single hardcoded values that nobody could reach: the
+    # model was one env var read once at import, and the pace lived in
+    # voices.json's cast sheet. Reported as "it sounds terrible, he speaks WAY
+    # too fast", which needed a redeploy to even try a fix.
+    "tts_model": {
+        "kind": "enum",
+        "label": "Voice model",
+        "options": [
+            "eleven_v3",
+            "eleven_v3_conversational",
+            "eleven_multilingual_v2",
+            "eleven_flash_v2_5",
+            "eleven_turbo_v2_5",
+        ],
+        "default": "eleven_multilingual_v2",
+        "help": "eleven_multilingual_v2 is the lifelike long-form narration "
+                "model and the right one for reading prose. eleven_v3 is more "
+                "expressive but it is a research preview built around audio "
+                "tags, which narration does not use - it gives more variable "
+                "results on library voices, is not optimised for voice clones, "
+                "and IGNORES the pace knob below (v3 takes pacing from audio "
+                "tags). The flash/turbo models are built for latency, not "
+                "performance - ElevenLabs lists turbo as outclassed by flash "
+                "and recommends replacing it everywhere.",
+    },
+    "narrator_speed": {
+        "kind": "number",
+        "label": "Narrator pace",
+        "default": 0.85,
+        "min": 0.7,
+        "max": 1.2,
+        "step": 0.01,
+        "help": "1.0 is the voice's own pace; 0.7 is the slowest ElevenLabs "
+                "allows and 1.2 the fastest. Extreme values cost audio quality. "
+                "Has no effect on the v3 models, which take pacing from audio "
+                "tags - this knob was set to 0.85 to fix 'he reads too fast' "
+                "while v3 was selected, so the fix was discarded in transit.",
     },
 }
 
@@ -301,6 +373,15 @@ def _live(name: str, spec: Dict[str, Any]) -> Any:
         if name == "flipbook_frame_ms":
             import engine
             return getattr(engine, "FLIPBOOK_FRAME_MS", spec.get("default"))
+        if name == "scene_ambience":
+            import engine
+            return getattr(engine, "SCENE_AMBIENCE_ENABLED", spec.get("default"))
+        if name == "action_foley":
+            import engine
+            return getattr(engine, "ACTION_FOLEY_ENABLED", spec.get("default"))
+        if name == "consequence_bed":
+            import engine
+            return getattr(engine, "CONSEQUENCE_BED_ENABLED", spec.get("default"))
         if name == "intro_cutscene":
             import engine
             return getattr(engine, "INTRO_CUTSCENE", spec.get("default"))
@@ -313,6 +394,12 @@ def _live(name: str, spec: Dict[str, Any]) -> Any:
         if name == "narrator_voice_id":
             import engine
             return engine._narrator_voice_id()
+        if name == "tts_model":
+            import engine
+            return getattr(engine, "ELEVENLABS_TTS_MODEL", spec.get("default"))
+        if name == "narrator_speed":
+            import engine
+            return engine._narrator_speed()
     except Exception:  # noqa: BLE001
         pass
     return spec.get("default")
@@ -369,6 +456,15 @@ def _apply_one(name: str, value: Any) -> None:
     elif name == "flipbook_frame_ms":
         import engine
         engine.FLIPBOOK_FRAME_MS = int(value)
+    elif name == "scene_ambience":
+        import engine
+        engine.SCENE_AMBIENCE_ENABLED = bool(value)
+    elif name == "action_foley":
+        import engine
+        engine.ACTION_FOLEY_ENABLED = bool(value)
+    elif name == "consequence_bed":
+        import engine
+        engine.CONSEQUENCE_BED_ENABLED = bool(value)
     elif name == "intro_cutscene":
         import engine
         engine.INTRO_CUTSCENE = bool(value)
@@ -381,6 +477,12 @@ def _apply_one(name: str, value: Any) -> None:
     elif name == "default_voice_id":
         import engine
         engine.ELEVENLABS_VOICE_ID = value
+    elif name == "tts_model":
+        import engine
+        engine.ELEVENLABS_TTS_MODEL = str(value)
+    elif name == "narrator_speed":
+        import engine
+        engine.NARRATOR_SPEED = float(value)
 
 
 def update(patch: Dict[str, Any]) -> Dict[str, Any]:

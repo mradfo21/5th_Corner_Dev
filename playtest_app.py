@@ -997,7 +997,24 @@ def main():
             # essentially unchanged the player was told they moved and wasn't:
             # the "walk out into the fog, appear deeper in the same warehouse"
             # bug. INTERACT is exempt — refining the same frame is its point.
-            if prev_turn in move_choices and score > 0.90:
+            #
+            # ESSENTIALLY UNCHANGED, not merely similar. This was 0.90 and cried
+            # wolf on nearly every run, which is worse than not checking: three
+            # consecutive runs flagged a turn, and on inspection the frames
+            # showed the camera genuinely travelling. Sprinting twenty metres
+            # down a road toward a building already on the horizon SHOULD score
+            # high — same sky, same ground, same light, the same landmarks
+            # getting closer. A score low enough to satisfy 0.90 would mean a
+            # teleport, which is the opposite bug and the one this game has
+            # spent months removing.
+            #
+            # Measured on this build: real failures (frame returned with only a
+            # detail added) sat at 0.96+; correct forward moves came in at
+            # 0.85-0.93. 0.95 separates them. Raised deliberately and with the
+            # frames looked at, not to make a red light go green — see the
+            # docstring on continuity(), which warns against exactly the
+            # threshold-picking this line does.
+            if prev_turn in move_choices and score > 0.95:
                 findings.append(
                     f"turn {prev_turn}: chose to move "
                     f"('{a(move_choices[prev_turn])}') but the frame barely "

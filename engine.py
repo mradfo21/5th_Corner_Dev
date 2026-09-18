@@ -330,8 +330,59 @@ except Exception as _ve:
 
 ELEVENLABS_NARRATOR_VOICE_ID = (os.getenv("ELEVENLABS_NARRATOR_VOICE_ID")
                                 or VOICES_CONFIG.get("narrator_voice") or "").strip()
-# The default TTS model: turbo is low-latency and great for realtime narration.
-ELEVENLABS_TTS_MODEL = (os.getenv("ELEVENLABS_TTS_MODEL") or "eleven_turbo_v2_5").strip()
+# The TTS model. This shipped as `eleven_turbo_v2_5` with the note "turbo is
+# low-latency and great for realtime narration", and it was never revisited —
+# ElevenLabs' own model reference now lists turbo v2.5 as "first generation
+# low-latency model (outclassed by Flash models)" and says to replace it with
+# flash "in all use cases". Neither is the expressive choice: `eleven_v3` is
+# their most emotionally rich model, and the narrator is a short pre-generated
+# line played back, not a live conversation, so it can afford the extra second.
+#
+# The `tts_model` tunable overrides this live, because picking a voice model is
+# a judgement about how the game SOUNDS and should not need a redeploy to try.
+# Narration is long-form prose read straight, with no audio tags in it, so
+# `eleven_multilingual_v2` — ElevenLabs' lifelike long-form narration model — is
+# the right tool and `eleven_v3` was the wrong one. v3 is a research preview
+# built around audio tags for emotional direction; the narrator emits none, so
+# none of what makes v3 better was ever in play. What WAS in play: the docs warn
+# that library voices "may produce more variable results compared to the v2 and
+# v2.5 models" and that voice clones are "not fully optimized" for it, and v3
+# ignores the `speed` setting outright ("Speed is not available for the Eleven
+# v3 model" — it takes pacing from audio tags instead). So the narrator was
+# being read by a preview model, at a pace the cast sheet set and the model
+# discarded. v2 supports speed, is stable across arbitrary voices, and is what
+# long-form reading is for.
+ELEVENLABS_TTS_MODEL = (os.getenv("ELEVENLABS_TTS_MODEL")
+                        or "eleven_multilingual_v2").strip()
+
+# v3 takes its pacing from audio tags and rejects the knob. Sending `speed` to
+# it is not an error the API reports — it is silently dropped, which is how a
+# "he reads too fast" fix got applied to a model that could not act on it and
+# nobody noticed for a release.
+_NO_SPEED_MODELS = ("eleven_v3", "eleven_v3_conversational")
+
+
+def _model_supports_speed(model: str = "") -> bool:
+    return (model or ELEVENLABS_TTS_MODEL or "").strip() not in _NO_SPEED_MODELS
+
+# The narrator's pace. ElevenLabs' `speed` runs 0.7 (slowest) to 1.2 (fastest)
+# around a default of 1.0. The cast sheet shipped 0.98 — a 2% slowdown, i.e.
+# none — and a narrator direction that asks for ONE short sentence gives the
+# model almost no punctuation to pace against, so the line came out clipped.
+# Overridden live by the `narrator_speed` tunable.
+NARRATOR_SPEED = float(os.getenv("NARRATOR_SPEED") or "0.85")
+
+# ElevenLabs' documented bounds for the `speed` voice setting. Outside these the
+# API rejects the request, and near them it degrades the audio.
+_SPEED_FLOOR, _SPEED_CEILING = 0.7, 1.2
+
+
+def _narrator_speed() -> float:
+    """The pace the narrator is read at, clamped to what the API accepts."""
+    try:
+        return max(_SPEED_FLOOR, min(_SPEED_CEILING, float(NARRATOR_SPEED)))
+    except (TypeError, ValueError):
+        return 0.85
 # The narrator speaks through a GENERATIVE conversational agent in the browser
 # (like TALK) so it works live with NO server key. Defaults to the same public
 # agent as TALK; override to give the narrator its own agent.
@@ -773,8 +824,10 @@ def resolve_cast(character: str) -> dict:
     because every caller resolved `cast["voice_id"] or ELEVENLABS_NARRATOR_...`
     and the shipped registry names a narrator — so the fallback was never
     reached and picking a voice in the editor did nothing at all, for ever.
-    The static entry still supplies the TTS settings (stability, speed); it
-    just no longer decides who speaks.
+    The static entry still supplies the TTS settings (stability, style); it
+    just no longer decides who speaks, and its `speed` is overridden the same
+    way for the same reason — the pace was a number in voices.json that nobody
+    playing the game could reach.
 
     Byte-identical until someone actually changes it: the global is seeded from
     voices.json's `narrator_voice`, which is that same id.
@@ -787,6 +840,7 @@ def resolve_cast(character: str) -> dict:
     entry = dict(raw) if isinstance(raw, dict) else {}
     if key == "narrator":
         entry["voice_id"] = _narrator_voice_id()
+        entry["speed"] = _narrator_speed()
     if not entry.get("voice_id"):
         entry["voice_id"] = _narrator_voice_id()
     return entry
@@ -1316,6 +1370,26 @@ FLIPBOOK_FRAME_MS = flipbook.DEFAULT_FRAME_MS
 # at the top of a level is much stronger than for one on every turn, because
 # this is the beat that has to make somebody want to play.
 INTRO_CUTSCENE = True
+
+# ── Scene ambience ────────────────────────────────────────────────────────────
+# Whether each scene gets its OWN generated looping ambience (ElevenLabs SFX,
+# ~14s, cached per scene descriptor) rather than only the stock bed matched by
+# keyword. This is the atmosphere layer — see scene_audio._resolve_sfx.
+SCENE_AMBIENCE_ENABLED = True
+
+# Whether committing an action plays a generated Foley clip of that action —
+# "Sprint toward the utility truck" becomes running footsteps on gravel. Built
+# from the choice TEXT, generated when the slate appears so the click is a
+# cache hit. See the "Action foley" section in scene_audio.py.
+ACTION_FOLEY_ENABLED = True
+
+# Whether a turn plays one long sound of what the choice actually did, built
+# from the visual scene it is about to draw. Kicked when the consequence lands,
+# five pipeline steps before the picture, so it covers the generation wait and
+# the flipbook. It plays ONCE — it looped at first and the repetition was the
+# whole problem. Unlike foley it is a fresh generation every turn, so it is the
+# most expensive audio lane. See the "Consequence bed" section in scene_audio.py.
+CONSEQUENCE_BED_ENABLED = True
 
 
 def flipbook_settings(st: Optional[dict] = None) -> dict:
@@ -2105,6 +2179,18 @@ def _load_state(session_id='default') -> dict:
 # 'default' session on disk (sessions/default/state.json), the same session
 # the feed endpoints and _perform_game_reset read and write, so in-memory
 # state and disk state no longer diverge across restarts.
+# Read the world bible once, up front, and say what it found. The lore is
+# prepended to every narrative call, so it is one of the highest-leverage inputs
+# in the game — and it was the only one that never announced itself. A Lore node
+# holding the wrong text, or nothing at all, looked exactly like a working one.
+# This also primes the cache, so the first turn does not pay for the read.
+try:
+    import experience_store as _xs_boot
+    print(f"[ENGINE INIT] {_xs_boot.boot_report()}", flush=True)
+except Exception as _lore_boot_err:
+    print(f"[ENGINE INIT] Lore could not be read ({_lore_boot_err}); "
+          f"running without it", flush=True)
+
 print("[ENGINE INIT] Initializing global state from 'default' session...", flush=True)
 try:
     state = _load_state('default')
@@ -4913,8 +4999,20 @@ def summarize_world_prompt_for_image(world_prompt: str, session_id: str = 'defau
     # improvisation a high temperature buys is exactly the hallucination
     # this function used to produce.
     tone = _ask(prompt, model="gemini", temp=0.3, tokens=32, use_lore=False)
-    if tone:
-        _VISUAL_TONE_CACHE[session_id] = tone
+    # A failed _ask returns a sentinel STRING, not an empty one — "Signal
+    # interrupted due to API error...". The narrative path has caught those
+    # since _is_failure_dispatch was written; this one never did, so the
+    # sentence went into the image prompt as the world's visual tone and, worse,
+    # into _VISUAL_TONE_CACHE — where it then described every remaining frame of
+    # the session. One transient 403 was enough to render the rest of a run
+    # "in the style of" an error message. Keep the previous gloss instead; a
+    # slightly stale tone is the whole point of the cache.
+    if _is_failure_dispatch(tone):
+        if tone:
+            print(f"[VISUAL TONE] ask failed ({str(tone)[:60]!r}) — keeping the "
+                  f"last good tone rather than describing the error", flush=True)
+        return cached or ""
+    _VISUAL_TONE_CACHE[session_id] = tone
     return tone
 
 
@@ -5720,6 +5818,7 @@ def build_image_prompt(
     prev_spatial: str = "",
     prev_setting: str = "",
     softened_move: bool = False,
+    holds_reference_frame: bool = False,
     spec: Optional[dict] = None,
 ) -> str:
     """
@@ -5910,6 +6009,22 @@ def build_image_prompt(
                 "whether this is indoors or outdoors, unless the scene says the "
                 "player actually went in or out."
             )
+        if holds_reference_frame and travelled:
+            # A hard cut normally ships a blurred swatch, so there is no framing
+            # to copy and nothing had to say so. Straight out of the opening the
+            # reference is a LEGIBLE frame on purpose — the establishing shot the
+            # player is standing in — and with nothing forbidding it the model
+            # reproduced that composition and called it a move. The harness put a
+            # number on it: "Sprint toward the rusted factory" came back at 0.96
+            # continuity, the same photograph. Keep the reference for the place,
+            # the light and the cast; say plainly that the vantage has moved.
+            camera += (
+                "\nThe reference photograph is where the camera stood a moment ago, "
+                "not where it stands now. The player has MOVED: the camera has "
+                "travelled with them, deeper into that same place. Same ground, "
+                "same light, same landmarks — a NEW vantage and a NEW distance. "
+                "Do not reproduce the reference framing."
+            )
     elif softened_move:
         # Asked to change location; the throttle declined a fresh composition.
         # It still travelled — it just travels as a continuation, not a cut.
@@ -5935,15 +6050,32 @@ def build_image_prompt(
         # the light and the landmarks are the established ones. What changes is
         # the distance — and that it changes at all is the point of MOVE TO.
         where = f" Still inside: {prev_setting}." if prev_setting else ""
+        # Both halves have to STATE the distance closed and FORBID copying the
+        # reference. This was the one movement branch that did neither, and it
+        # is the ordinary walk — the most common travelling turn in the game.
+        #
+        # The follow-cam half was worse than it reads. Its only compositional
+        # instruction, "do not fill the frame with the destination alone", is a
+        # brake with no accelerator opposite it, and the sentence that WOULD
+        # have said the camera closed the distance sat in the default
+        # `follow_lock` — which an authored camera block overrides, so on any
+        # real world it never rendered at all. Nothing in the payload asked the
+        # composition to change, while the previous frame went in as the img2img
+        # init. The client harness measured the result: "Sprint toward the
+        # utility truck" came back at 0.91 continuity, the same photograph.
         if cam["shows_body"]:
             lock = cam.get("follow_lock") or (
                 "They are on screen at the new spot — medium-wide, seen from behind"
             )
             camera = (
-                "The follow camera walked with the character to the destination. "
-                f"The place is readable around them.{where} Same place seen "
-                "from further in; do not fill the frame with the destination alone "
-                "or flip to a face-on reverse.\n"
+                "The follow camera walked with the character to the destination "
+                "and stands there now. The destination fills far more of the "
+                "frame than it did, and what stood beside the camera has slid "
+                f"out past the edges; they are on screen at the new spot.{where} "
+                "Same place seen from further in — keep the ground, the light "
+                "and the surrounding landmarks. Do not reproduce the reference "
+                "framing; do not fill the frame with the destination alone or "
+                "flip to a face-on reverse.\n"
                 f"{lock}."
             )
         else:
@@ -5952,7 +6084,7 @@ def build_image_prompt(
                 "touch. It fills far more of the frame than it did; what stood "
                 f"beside the camera has slid out past the edges.{where} Same place "
                 "seen from further in — keep the ground, the light and the "
-                "surrounding landmarks."
+                "surrounding landmarks. Do not reproduce the reference framing."
             )
     elif movement_type == 'exploration':
         camera = (
@@ -6569,8 +6701,14 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
 # first-person text below is preserved verbatim (it is the shipped default and
 # heavily tuned); the hero variants are the new branch.
 
-def _flipbook_camera_block() -> str:
-    """The flipbook grid's camera contract, written for the active perspective."""
+def _flipbook_camera_block(also_visible: str = "") -> str:
+    """The flipbook grid's camera contract, written for the active perspective.
+
+    ``also_visible`` is a second body that must survive the grid — the encounter
+    plate's stranger. The forbidden list below is written for a solo shot, so on
+    a two-shot it named only the protagonist and the model was free to satisfy
+    every rule it could see by drawing the player alone.
+    """
     cfg = game_identity.mode_config()
     rule = "═" * 63
     head = f"{rule}\n🎥 CAMERA: {cfg['camera_header']} — WIDE ANGLE\n{rule}\n\n"
@@ -6600,6 +6738,8 @@ def _flipbook_camera_block() -> str:
             f"❌ Cutting to what {who} sees instead of showing {who}\n"
             f"❌ {who} changing face, build, hair, or outfit between panels\n"
         )
+    if also_visible:
+        body += f"❌ Any panel where {also_visible} is not visible\n"
     return head + body + f"\n{rule}\n\n"
 
 
@@ -6691,6 +6831,182 @@ def _flipbook_action_block(choice: str, dispatch_preview: str, is_free_will: boo
     )
 
 
+def _flipbook_confrontation_block(other: str, look: str, beat: str,
+                                  frames: int = None) -> str:
+    """A TWO-SHOT beat: both bodies, every panel, for an encounter grid.
+
+    The ordinary action block is written for a solo protagonist — "<who> is the
+    subject of every panel", "never an empty environment shot" — and an encounter
+    is the one beat where that is the wrong cast. Handed the solo block, the model
+    satisfied every rule it could see by animating the player alone and the
+    stranger it had been asked for was never drawn.
+
+    `beat` is what the two of them are doing. The encounter callers used to leave
+    it empty, so it fell through to the caption and the grid was told to animate
+    the literal string "encounter_Horizon facility surveyor".
+    """
+    frames = flipbook.normalize_frames(frames if frames is not None else FLIPBOOK_FRAMES)
+    seconds = _flipbook_seconds(frames)
+    who = (game_identity.display_name() if game_identity.shows_character()
+           else "the player")
+    other = (other or "the other person").strip()
+    look = (look or "").strip()
+    block = (
+        "🎬🎬🎬 TWO-SHOT — A CONFRONTATION, NOT A SOLO SHOT 🎬🎬🎬\n\n"
+        f"TWO people are in this frame: {who}, and {other}.\n"
+        + (f"{other} is {look}.\n" if look else "")
+        + f"BOTH are in ALL {frames} panels. {other} is already standing there "
+        f"in panel 1 and is still there in panel {frames} — not off-screen, not "
+        f"implied, not arriving later, not left for a following shot.\n"
+        f"A panel containing only {who} is a FAILED panel.\n"
+        f"{other} is a DIFFERENT person from {who}: different face, different "
+        f"build, different clothes in different colours. Not a second copy of "
+        f"{who}, and not wearing any part of their outfit.\n\n"
+    )
+    if beat:
+        block += (
+            "WHAT THE PANELS ANIMATE:\n"
+            f">>> {beat} <<<\n"
+            f"The {frames} panels are {seconds:g} seconds of that, played between "
+            f"the two of them — {who} reacting, {other} pressing in. Both "
+            f"bodies move; neither leaves the frame.\n\n"
+        )
+    return block + "=" * 70 + "\n\n"
+
+
+def _flipbook_establishing_block(frames: int = None, *,
+                                 single: bool = False) -> str:
+    """A held ESTABLISHING beat: an IDLE, played with the camera locked off.
+
+    The action block walks the character across the panels — exactly wrong for an
+    opening, which walked the player out of the montage's frame and landed the
+    run somewhere the reference never showed. This pins the composition, so the
+    last panel is still the establishing view the player then acts from.
+
+    What it no longer pins is the character. "Stands still, same pose, same spot"
+    got precisely what it asked for and it read as nothing: a figure rocking a
+    few pixels back and forth for eight seconds, which is the first thing a
+    player ever sees of the person they are playing. The fix is the idle
+    animation a game holds on while it waits for input — weight settling, a hand
+    going over the gear, then the head coming up at something far off that has
+    not arrived. Feet planted and camera locked, but somebody alive, standing in
+    a place where something is wrong.
+
+    The reference is now the montage's own widest panel, which is DELIBERATELY
+    unpeopled — the opening montage bans figures from all four shots. So this
+    also has to ask for the character to be put INTO the photograph, in the
+    composition the game goes on to use. That used to be the separately
+    rendered plate's job, and having a second render decide where the level was
+    is exactly what made the opening incoherent.
+
+    ``single`` drops the grid language for the no-flipbook fallback, which needs
+    the same instruction as one photograph rather than four panels.
+    """
+    frames = flipbook.normalize_frames(frames if frames is not None else FLIPBOOK_FRAMES)
+    seconds = _flipbook_seconds(frames)
+    who = game_identity.display_name() if game_identity.shows_character() else ""
+    if who:
+        idle = (
+            f"· FIRST, {who} SETTLES: weight coming down onto one leg, shoulders "
+            "dropping, the stillness of somebody who has just stopped walking.\n"
+            f"· THEN {who} CHECKS THEIR GEAR: one hand going over what they are "
+            "already carrying — tightening a strap, feeling for something in a "
+            "pocket, turning a tool or a weapon over once and letting it hang. "
+            "Hands stay close to the body. Nothing new appears in them.\n"
+            f"· THEN {who} LOOKS UP AND OUT: the head lifting and turning toward "
+            "the far distance, and going still — caught by something out there.\n"
+        )
+        closing = (
+            f"{who} is standing in the same spot, planted, head up and looking off "
+            "at it"
+        )
+    else:
+        idle = (
+            "· FIRST THE BREATH SETTLES: the horizon rocking a fraction and coming "
+            "to rest, the stillness of somebody who has just stopped walking.\n"
+            "· THEN YOU CHECK YOUR GEAR: your own hands entering the bottom of the "
+            "frame over what you are already carrying — a strap, a pocket, a tool "
+            "or a weapon turned over once and lowered again. Nothing new appears "
+            "in them.\n"
+            "· THEN YOU LOOK UP AND OUT: the view lifting and settling on the far "
+            "distance, holding there.\n"
+        )
+        closing = "your hands are down and the view is settled on the far distance"
+
+    # The reference photographs are the montage, and the montage is unpeopled by
+    # instruction. Every rule below that says "as the reference" is about the
+    # PLACE; the person has to be added, and added in the composition the rest
+    # of the game shoots in, because this frame is turn one's img2img anchor.
+    cast_in = (
+        "WHO IS IN IT — THE REFERENCE PHOTOGRAPHS HAVE NOBODY IN THEM.\n"
+        f"They are photographs of the PLACE. Put {who or 'the player'} into that "
+        "place: same location, same light, same weather, same ground, same "
+        "landmarks, standing in it now.\n"
+        + (f"{who} is the subject — standing at a natural distance for a "
+           "person in this space, seen from BEHIND, reading at roughly a third "
+           "to a half of the frame height, with the place opening away beyond "
+           "them so it stays legible. Not a portrait, not a silhouette, not a "
+           "speck on the horizon.\n"
+           if who else
+           "The camera is their eyes: no body, no back, no face — only what "
+           "they can see, and their own hands when they come up.\n")
+        + "Take the wardrobe and the face from the character reference, not "
+          "from the place.\n\n"
+    )
+    if single:
+        return (
+            "🎬 THE FIRST PLAYABLE FRAME — AN IDLE, CAMERA LOCKED OFF 🎬\n\n"
+            "ONE photograph. The moment the player takes control.\n\n"
+            + cast_in +
+            "THE POSE: settled, having just stopped walking — weight on one leg, "
+            "a hand resting on the gear they already carry, head up and looking "
+            "off at something in the far distance. Alive and waiting, not posed "
+            "for the camera.\n\n"
+            "IN THE FAR DISTANCE: something is coming and has NOT arrived — a "
+            "smear of dust on the horizon, a stain in the light. Unreadable, "
+            "never identified, never closer than the deep distance.\n\n"
+            "Settled and readable: no blur, no half-finished gesture. Do NOT "
+            "introduce locations, structures, vehicles or creatures that are not "
+            "in the reference.\n\n"
+            + "=" * 70 + "\n\n"
+        )
+    return (
+        "🎬 ESTABLISHING SHOT — AN IDLE, CAMERA LOCKED OFF 🎬\n\n"
+        f"This is the opening: {seconds:g} seconds of a HELD frame with somebody "
+        "alive standing in it. NOT a journey, NOT an action, NOT a camera move.\n\n"
+        + cast_in +
+        "THE IDLE, IN ORDER ACROSS THE PANELS:\n"
+        + idle +
+        "\n"
+        "WHAT IS HAPPENING IN THE FAR DISTANCE:\n"
+        "Behind and beyond all of that, something is coming and has NOT arrived. "
+        "Across the panels it grows by a touch and stays unreadable: a smear of "
+        "dust lifting on the horizon, a stain in the light over there, birds "
+        "coming up off something too far away to see. It never gets closer than "
+        "the deep distance, it is never identified, and it never enters the "
+        "middle or the foreground. Dread, not an event.\n\n"
+        "ABSOLUTE RULES:\n"
+        f"1. All {frames} panels are the SAME framing, the SAME camera position, "
+        "the SAME lens and the SAME composition as each other — pick the shot "
+        "once and hold it. Do NOT move the camera, do NOT push in, do NOT change "
+        "the vantage, do NOT cut to a new angle between panels.\n"
+        "2. The figure does NOT walk, does NOT cross the frame, does NOT change "
+        "which way their feet point, and does NOT reach for, open, or approach "
+        "anything in the world. The feet do not move. Everything above them does.\n"
+        "3. The idle is SMALL and CONTINUOUS — each panel is the next fraction of "
+        "a second of the same unbroken moment, not three different poses cut "
+        "together. Real weight, real breath, no posing for the camera.\n"
+        f"4. The final panel is the same shot as the first, a beat later: "
+        f"{closing}. This is the frame the player will act from, so it is "
+        "settled and readable — no blur, no half-finished gesture.\n"
+        "5. Do NOT introduce new locations, structures, gates, vehicles, people or "
+        "creatures that are not already in the reference. Stay in this exact "
+        "place. The only thing that changes in the distance is weather, dust and "
+        "light.\n\n"
+        + "=" * 70 + "\n\n"
+    )
+
+
 def _flipbook_shot_block(is_free_will: bool) -> str:
     """The text-to-image flipbook's one-continuous-shot clause, per perspective."""
     if not game_identity.shows_character():
@@ -6732,6 +7048,12 @@ def _flipbook_seconds(frames: int, frame_ms: int = None) -> float:
 _FLIPBOOK_SEQUENCES: Dict[str, dict] = {}
 _FLIPBOOK_SEQ_LOCK = threading.Lock()
 
+# How long each panel of the opening ESTABLISHING flipbook holds. At the default
+# flip speed the beat flicks past right after the montage's long held shots and
+# reads as rushed; ~2.9s a frame lets the establishing scene breathe and land as
+# immersive rather than as a quick animation.
+OPENING_ESTABLISHING_FRAME_MS = int(os.getenv("OPENING_ESTABLISHING_FRAME_MS", "2900"))
+
 
 def take_flipbook_sequence(session_id: str = 'default') -> Optional[dict]:
     """The sequence from this session's last generation, once."""
@@ -6765,8 +7087,45 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
                        dispatch: str, world_prompt: str, time_of_day: str,
                        img_dir, session_id: str, st: dict,
                        refs: Optional[list] = None,
-                       ref_is_anchor: bool = False) -> Optional[dict]:
+                       ref_is_anchor: bool = False,
+                       identity_paths: Optional[list] = None,
+                       identity_seed: bool = False,
+                       spec=None,
+                       establishing: bool = False,
+                       two_shot: str = "",
+                       two_shot_look: str = "",
+                       hold_cast: bool = False,
+                       write_state: bool = True) -> Optional[dict]:
     """Draw this turn as a grid of in-betweens and split it back into frames.
+
+    establishing — an ESTABLISHING beat instead of an action. Ordinary turns
+    animate a specific action (the character performs it with their whole body,
+    walking/reaching across the panels), which is exactly wrong for the opening:
+    it walks the player out of the frame the montage just established and lands
+    the run on somewhere the plate never showed. When True the grid HOLDS the
+    reference composition and only the ambient world moves (dust, light), so the
+    last panel is still the establishing view the player then acts from.
+
+    two_shot / two_shot_look — a SECOND body that has to be in every panel: who
+    they are, and what they have on. This is not just prompt wording: it switches
+    the image call
+    itself onto its confrontation branch (`include_people`). Without it the grid
+    goes through the solo/environment branch, which attaches "a previous frame may
+    show a different person — ignore that person" and closes on "not a different
+    person than the character sheet". The flipbook was asking for an antagonist in
+    the middle of the prompt while the image layer appended an instruction against
+    one at the end, so the encounter drew four panels of the player alone.
+
+    hold_cast — the two bodies are ALREADY in the reference and must be copied out
+    of it rather than introduced (the resolve beat), matching what the resolve
+    still passes.
+
+    identity_paths — the player's character sheet / level plate from the Cast &
+    Camera editor. These ride along as EXTRA labeled references (prepended by
+    generate_gemini_img2img) so the protagonist stays the SAME PERSON across the
+    animated panels, exactly as the still path already does. Dropping them here
+    is why an uploaded character never populated a flipbook turn — and flipbook
+    is the default, so that was every turn.
 
     Runs INLINE, and that is the fix. The old implementation fired the flipbook
     off in a daemon thread beside the still and wrote the result to state for a
@@ -6801,6 +7160,15 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
     anchor = str(refs[0]) if (ref_is_anchor and refs and refs[0]) else ""
     if anchor and os.path.exists(anchor):
         flipbook_refs.append(anchor)
+        # Anything the anchored caller passed BEHIND its anchor is context it
+        # chose deliberately, and it used to be dropped on the floor — only
+        # refs[0] was ever read. The opening hands the montage's own panels
+        # through here so the first playable frame continues the place the
+        # player just watched, not only the plate that place was drawn from.
+        for extra in refs[1:]:
+            extra = str(extra or "")
+            if extra and extra != anchor and os.path.exists(extra):
+                flipbook_refs.append(extra)
     elif prev_last and os.path.exists(prev_last):
         flipbook_refs.append(prev_last)
     elif refs:
@@ -6849,22 +7217,55 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
               f"built-in {label} rules for this turn", flush=True)
         authored = ""
 
-    flipbook_prompt = game_identity.apply(
-        _flipbook_action_block(choice, dispatch_preview, is_free_will, frames)
-        + flipbook.grid_prompt(frames, seconds=_flipbook_seconds(frames, frame_ms))
-        + "\n" + _flipbook_camera_block()
-        + (authored + "\n" if authored else "")
-        + prompt_str,
-        "raw",
-    )
+    if establishing:
+        # An establishing beat HOLDS the composition. The action block, the
+        # movement camera block and any authored per-turn action prefix all push
+        # the character to walk/perform across the panels — the opposite of what
+        # an opening needs — so none of them run here.
+        flipbook_prompt = game_identity.apply(
+            _flipbook_establishing_block(frames)
+            + flipbook.grid_prompt(frames, seconds=_flipbook_seconds(frames, frame_ms))
+            + "\n" + prompt_str,
+            "raw",
+        )
+    elif two_shot:
+        # The cast staging LEADS. `prompt_str` here is the encounter plate prompt
+        # — "TWO DISTINCT PEOPLE IN A STANDOFF", "Add EXACTLY ONE new person" —
+        # and it used to sit last, under four thousand characters of solo-shot
+        # rules. Whichever of the two contradictions the model resolved first was
+        # a coin flip, and the solo rules came first, so they won.
+        flipbook_prompt = game_identity.apply(
+            _flipbook_confrontation_block(two_shot, two_shot_look,
+                                          dispatch_preview, frames)
+            + prompt_str + "\n\n"
+            + flipbook.grid_prompt(frames, seconds=_flipbook_seconds(frames, frame_ms))
+            + "\n" + _flipbook_camera_block(also_visible=two_shot),
+            "raw",
+        )
+    else:
+        flipbook_prompt = game_identity.apply(
+            _flipbook_action_block(choice, dispatch_preview, is_free_will, frames)
+            + flipbook.grid_prompt(frames, seconds=_flipbook_seconds(frames, frame_ms))
+            + "\n" + _flipbook_camera_block()
+            + (authored + "\n" if authored else "")
+            + prompt_str,
+            "raw",
+        )
 
     print(f"[FLIPBOOK] generating {label} grid ({frames} frames, "
           f"{_flipbook_seconds(frames, frame_ms):g}s) from "
-          f"{len(flipbook_refs)} reference(s)", flush=True)
+          f"{len(flipbook_refs)} reference(s)"
+          f"{f' — TWO-SHOT with {two_shot}' if two_shot else ''}", flush=True)
 
+    identity_paths = [p for p in (identity_paths or []) if p and os.path.exists(str(p))]
     grid_path = None
     try:
-        if flipbook_refs:
+        # img2img whenever there is ANYTHING to seed from — a spatial anchor OR
+        # the player's identity plates. The identity plates alone are enough to
+        # keep the character consistent on a first flipbook turn with no prior
+        # frame; falling through to text-to-image here (as the old `if
+        # flipbook_refs` gate did) is exactly what dropped the character sheet.
+        if flipbook_refs or identity_paths:
             grid_path = generate_gemini_img2img(
                 prompt=flipbook_prompt,
                 caption=f"{caption}_flipbook",
@@ -6875,6 +7276,15 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
                 output_dir=img_dir,
                 is_flipbook=True,
                 flipbook_grid=flipbook.shape_for(frames),
+                # The switch that decides how many people the image layer thinks
+                # belong in this frame. See the two_shot note in the docstring.
+                include_people=bool(two_shot),
+                hold_cast=bool(two_shot and hold_cast),
+                # Character sheet / level plate as EXTRA labeled references so the
+                # animated panels keep the SAME protagonist as the stills.
+                identity_paths=identity_paths,
+                identity_seed=bool(identity_seed and identity_paths),
+                spec=spec,
             )
         else:
             # Nothing to continue from and no guide built: a plain grid request.
@@ -6910,16 +7320,19 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
         return None
 
     # Anchors for the NEXT turn, plus the sequence itself so /api/status can
-    # report motion to a client that reconnected mid-turn.
-    with WORLD_STATE_LOCK:
-        live = _load_state(session_id)
-        live['flipbook_last_grid'] = seq['grid_path']
-        live['flipbook_first_frame'] = seq['first_path']
-        live['flipbook_last_frame'] = seq['still_path']
-        live['current_sequence'] = flipbook_web_payload(seq, session_id)
-        _save_state(live, session_id)
-    with _FLIPBOOK_SEQ_LOCK:
-        _FLIPBOOK_SEQUENCES[session_id] = seq
+    # report motion to a client that reconnected mid-turn. Skipped when the
+    # caller owns the state write (the opening establishing beat writes its
+    # anchors itself, atomically, so a re-run can't leave a stale one behind).
+    if write_state:
+        with WORLD_STATE_LOCK:
+            live = _load_state(session_id)
+            live['flipbook_last_grid'] = seq['grid_path']
+            live['flipbook_first_frame'] = seq['first_path']
+            live['flipbook_last_frame'] = seq['still_path']
+            live['current_sequence'] = flipbook_web_payload(seq, session_id)
+            _save_state(live, session_id)
+        with _FLIPBOOK_SEQ_LOCK:
+            _FLIPBOOK_SEQUENCES[session_id] = seq
     return seq
 
 
@@ -7026,6 +7439,13 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
         # generated frame has to continue from its pixels even when the choice
         # reads as a hard cut. See the hard_transition branch below.
         opening_handoff_ref = False
+        # The montage panels behind that handoff frame, when the opening left
+        # any. They are the only images in a boot drawn from the live level
+        # definition (cutscene.mystery_shotlist reads the world bible for their
+        # subjects), and with the establishing flipbook off they had no other
+        # route into the game — the handoff is the plate, and the plate is where
+        # turn one continued from. See _finish_opening_montage.
+        opening_montage_refs: List[str] = []
         
         if frame_idx > 0 and _hist:
             last_imgs = []
@@ -7063,6 +7483,13 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                     if len(last_imgs) == 1 and entry.get("cached_opening"):
                         opening_handoff_ref = True
                         print(f"[IMG2IMG COLLECT]   -> this is the OPENING HANDOFF frame")
+                        opening_montage_refs = [
+                            str(p) for p in (entry.get("montage_refs") or [])
+                            if p and os.path.exists(str(p))
+                        ]
+                        if opening_montage_refs:
+                            print(f"[IMG2IMG COLLECT]   -> {len(opening_montage_refs)} "
+                                  f"montage panel(s) ride with it")
                 
                 # CRITICAL: The reference buffer must RESET at a location change —
                 # whether or not that boundary frame produced a usable image.
@@ -7168,10 +7595,18 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
         # a render as "Background context" they became instructions, and img2img
         # continuity then carried the invention forward for the rest of the run.
         current_state = get_state(session_id)
+        # The session's own world text wins. The `world_prompt` ARGUMENT is the
+        # fallback, and until now it was dead here: a caller that renders into a
+        # session with no state behind it (world_frames._generate_paid, which
+        # draws a World's plate in a throwaway wf-<slug> session) passed the
+        # level's bible in and it reached nothing, so the plate came back with no
+        # sense of the place at all while the montage drawn from that same bible
+        # was full of it.
+        world_context = current_state.get("world_prompt", "") or world_prompt
         world_flavor = ""
-        if current_state.get("world_prompt", ""):
+        if world_context:
             world_flavor = summarize_world_prompt_for_image(
-                current_state["world_prompt"],
+                world_context,
                 session_id=session_id,
                 hard_transition=hard_transition,
                 frame_idx=frame_idx,
@@ -7191,6 +7626,10 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
             prev_spatial=prev_spatial,
             prev_setting=prev_setting,
             softened_move=softened_move,
+            # The opening handoff is the one hard cut that keeps a legible
+            # reference (see the branch that sets it), so it is the one that
+            # needs telling the vantage moved.
+            holds_reference_frame=opening_handoff_ref,
             spec=identity_spec,
         )
         
@@ -7401,6 +7840,20 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                         print(f"[IMG GENERATION] Hard transition, but the reference IS the "
                               f"opening handoff frame - keeping its pixels so the first "
                               f"playable frame continues the cutscene it came out of")
+                        # With the establishing flipbook on, the montage is
+                        # already baked into that handoff frame. With it off
+                        # there is no establishing beat at all, the handoff is
+                        # the bare plate, and the four photographs the player
+                        # just watched reached nothing. Ride them in here so the
+                        # documented order — level definition, montage, first
+                        # playable frame — holds in both modes.
+                        for extra in opening_montage_refs:
+                            if extra not in ref_images_to_use:
+                                ref_images_to_use.append(extra)
+                        if opening_montage_refs:
+                            print(f"[IMG GENERATION] + {len(opening_montage_refs)} montage "
+                                  f"panel(s) so the first frame continues the place the "
+                                  f"montage established, not just the plate")
                     else:
                         swatch_path = make_style_swatch(prev_img_paths_list[0], output_dir=img_dir)
                         if swatch_path:
@@ -7500,6 +7953,13 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                         session_id=session_id,
                         st=current_state,
                         refs=ref_images_to_use,
+                        # Same character sheet / level plate the still path uses,
+                        # so the animated panels keep YOUR protagonist. On frame 0
+                        # (nothing to continue from) seed from the plate so the
+                        # opening flipbook is your character, not a stranger.
+                        identity_paths=identity_plates,
+                        identity_seed=bool(frame_idx == 0 or hard_transition),
+                        spec=identity_spec,
                     )
                     # A flipbook that didn't come back costs quality, not the
                     # turn: fall through to the ordinary still below.
@@ -8392,6 +8852,42 @@ EVOLVE_JOIN_TIMEOUT = float(os.getenv("EVOLVE_JOIN_TIMEOUT", "25"))
 # so this only bounds a genuinely hung request; normally it is already done.
 VISION_JOIN_TIMEOUT = float(os.getenv("VISION_JOIN_TIMEOUT", "35"))
 
+# How long the choice slate waits for the frame it is supposed to be looking at
+# to exist and be non-empty on disk. Short on purpose: Phase 2 runs after the
+# render has been written, so this only covers a file that has not finished
+# flushing. It exists because a path that fails to attach did not fail loudly —
+# choices.py logged "[CHOICES ERROR] Image file not found" and generated the
+# slate from text anyway.
+CHOICE_FRAME_WAIT = float(os.getenv("CHOICE_FRAME_WAIT", "5"))
+
+# How long it then waits for the vision READ of that frame before writing the
+# slate. This is the one wait a player actually feels — buttons appear after it —
+# so it is tighter than VISION_JOIN_TIMEOUT, and expiring is survivable: the
+# frame is still attached to the call, the slate just has no scene text.
+CHOICE_VISION_WAIT = float(os.getenv("CHOICE_VISION_WAIT", "20"))
+
+
+def _await_frame_on_disk(image_url: str, budget: float) -> str:
+    """Block until the frame the slate will read is readable, or time out.
+
+    Returns the resolved path, or "" if nothing became readable. A file that
+    exists but is still being written attaches as a truncated image, which is
+    worse than waiting for it, so size has to be non-zero too.
+    """
+    if not image_url:
+        return ""
+    deadline = time.time() + max(0.0, budget)
+    while True:
+        try:
+            resolved = _resolve_image_path(str(image_url))
+            if resolved and os.path.isfile(resolved) and os.path.getsize(resolved) > 0:
+                return str(resolved)
+        except OSError:
+            pass
+        if time.time() >= deadline:
+            return ""
+        time.sleep(0.1)
+
 
 # RENAMED from advance_turn
 def _latest_history_image_path(session_id: str = "default") -> str:
@@ -8575,7 +9071,17 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 create_feed_item(
                     type="narrative_event",
                     content=dispatch_text,
-                    metadata={"source": "dispatch", "degraded": bool(p1.get("degraded"))},
+                    metadata={
+                        "source": "dispatch",
+                        "degraded": bool(p1.get("degraded")),
+                        # The visual scene this turn is about to draw. The
+                        # consequence bed is armed here, five steps before the
+                        # picture, so it cannot use vision's read of the frame
+                        # — the frame does not exist yet. This is the same KIND
+                        # of text (a description of the shot, no camera or film
+                        # language) and it is the only one available this early.
+                        "visual": vision_dispatch_text,
+                    },
                 )
             ]
 
@@ -9095,6 +9601,31 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                 # Cleared, not left behind: a client that reconnects after a
                 # still-only turn must not be handed the previous turn's frames.
                 st['current_sequence'] = sequence
+                if not sequence:
+                    # A STILL turn has to OWN the flipbook anchors, not inherit
+                    # them. `_flipbook_generate` writes these on success and
+                    # leaves them untouched when the grid is refused — so after
+                    # a blocked flipbook they still pointed at the PREVIOUS
+                    # turn's last panel, and everything that reads them
+                    # quietly rewound a turn.
+                    #
+                    # Reported as: type a custom action, get a still, and the
+                    # next ordinary choice carries on from the frame BEFORE the
+                    # custom action, as if it never happened. Two readers were
+                    # doing it — the vision pass that sets the next turn's
+                    # spatial anchor, and `_flipbook_generate` itself, which
+                    # takes `flipbook_last_frame` as "where the camera IS" for
+                    # its first reference.
+                    #
+                    # `img_path` is the frame this turn actually rendered, so it
+                    # is where the camera is now. The other two describe motion
+                    # that did not happen this turn and would be time travel:
+                    # `flipbook_first_frame` is the wider scene at the START of
+                    # a sequence, and re-using an old one is the same bug the
+                    # anchored-caller guard upstream exists to prevent.
+                    st['flipbook_last_frame'] = img_path
+                    st['flipbook_first_frame'] = None
+                    st['flipbook_last_grid'] = None
                 st['current_image_prompt'] = image_prompt
                 st['current_render_prompt'] = render_prompt
                 st['current_render_base'] = render_base
@@ -9250,7 +9781,7 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
 
 
 def _spawn_evolve_thread(session_id: str, consequence_summary: str,
-                         vision_dispatch: str) -> "threading.Thread":
+                         vision_dispatch: str, player_action: str = "") -> "threading.Thread":
     """Run world evolution on a daemon thread and RETURN the thread handle.
 
     evolve_world_state is read-only against live state; the worker merges only
@@ -9258,7 +9789,10 @@ def _spawn_evolve_thread(session_id: str, consequence_summary: str,
     a concurrent scene-image write (which touches disjoint keys the same way)
     is never clobbered. Affects only the NEXT turn's world_prompt / seen_elements,
     so the caller can let it OVERLAP the scene render and then join it before the
-    choice phase reads those fields — see _process_turn_background."""
+    choice phase reads those fields — see _process_turn_background.
+
+    player_action is THIS turn's choice, threaded through explicitly because the
+    history evolve reads does not yet contain the current turn."""
     def _worker():
         global state
         try:
@@ -9268,6 +9802,7 @@ def _spawn_evolve_thread(session_id: str, consequence_summary: str,
                 hist, consequence_summary,
                 state_file=str(_get_state_path(session_id)),
                 vision_description=vision_dispatch,
+                player_action=player_action,
             )
             if not evolution_result:
                 return
@@ -9291,10 +9826,12 @@ def _spawn_evolve_thread(session_id: str, consequence_summary: str,
     return t
 
 
-def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispatch: str):
+def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispatch: str,
+                        player_action: str = ""):
     """Fire-and-forget world evolution off the turn's critical path (the bot /
     skip_evolve path, which does not join). Affects the next turn's world_prompt."""
-    _spawn_evolve_thread(session_id, consequence_summary, vision_dispatch)
+    _spawn_evolve_thread(session_id, consequence_summary, vision_dispatch,
+                         player_action=player_action)
 
 
 # Ensure generate_intro_turn_feed_items is defined AFTER _structure_choices_for_feed
@@ -9412,14 +9949,28 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
     return intro_items, intro_image_kwargs
 
 
-def _spawn_cached_opening_vision(session_id: str, img_path: str) -> None:
-    """Look at the cached first frame, off the reset's critical path.
+def _spawn_cached_opening_vision(session_id: str, img_path: str,
+                                 slate_id=None) -> None:
+    """Look at the frame the run opens on, off the reset's critical path.
 
-    The cached opening is the picture the player starts on, but nothing ever
+    The opening frame is the picture the player starts on, but nothing ever
     read it: the entry went into history with an empty ``vision_analysis``, so
     everything downstream fell through to ``vision_dispatch`` — the intro
     dispatch, which describes the protagonist rather than the scene on screen.
     The first turn was therefore grounded on a picture nobody had looked at.
+
+    ``slate_id`` additionally regrounds the opening CHOICE SLATE on what this
+    vision pass saw, pushing a ``choices_revised`` item. On the montage path the
+    slate is written during reset, when the run has not rendered a single frame
+    — so it is drafted from the level's prose and can describe somewhere the
+    player is not. It did: on 2026-09-17 the opening slate offered "Smash the
+    CRT screen glass" while the player stood on a ridge above an open-pit mine.
+
+    Done here rather than through _spawn_observe_reground, which does the same
+    job for an ordinary turn, because that one writes ``hist[-1]`` unguarded —
+    fine mid-turn, wrong here, where the player may already have taken turn one
+    by the time this lands. This walks the same path with the opening's own
+    guard on it, and spends ONE vision call for both jobs.
     """
     if not VISION_ENABLED or not img_path:
         print(f"[WORLD FRAMES] opening vision skipped "
@@ -9457,19 +10008,196 @@ def _spawn_cached_opening_vision(session_id: str, img_path: str) -> None:
             if get_active_session_id() == session_id:
                 history = hist
         print(f"[WORLD FRAMES] opening vision len={len(vision)}", flush=True)
+        if slate_id is not None:
+            _reground_opening_slate(session_id, img_path, vision, slate_id)
 
     threading.Thread(target=_worker, name="opening-vision", daemon=True).start()
 
 
-def _cached_opening_frame(new_state: dict) -> tuple:
-    """Resolve the World's cached first frame for a fresh run.
+def _reground_opening_slate(session_id: str, img_path: str, vision: str,
+                            slate_id) -> None:
+    """Rewrite the opening choices from the frame the player actually arrived on.
 
-    Returns (slug, rec). `rec` is {} when there is nothing usable to open on, in
-    which case the intro has to render its own frame. Split out of
-    _apply_cached_opening_frame so the opening CHOICE SLATE can be grounded on
-    this still before the feed items are built — the slate used to be written
-    from the shot description while the picture the player actually starts on
-    sat on disk, unread.
+    Called with the vision text the opening pass already produced, so this costs
+    one choice call and no extra look. Never fatal: on any failure the slate the
+    level was authored with stays exactly as it is.
+    """
+    from choices import generate_choices
+
+    try:
+        with WORLD_STATE_LOCK:
+            st = _load_state(session_id) or {}
+            hist = _load_history(session_id) or []
+        # The player has already moved on; their live slate is turn one's.
+        if len(hist) > 1:
+            print("[OPENING SLATE] the run moved on before the reground "
+                  "landed; leaving the choices alone", flush=True)
+            return
+        texts = generate_choices(
+            client=client,
+            prompt_tmpl=PROMPTS["player_choice_generation_instructions"],
+            last_dispatch=vision,
+            image_description=vision,
+            image_url=img_path,
+            world_prompt=st.get("world_prompt", ""),
+            situation_summary=summarize_world_state(st),
+            inventory=st.get("inventory"),
+            n=3,
+            beat_nudge=beat_nudge_text(st),
+        ) or []
+    except Exception as e:
+        log_error(f"[OPENING SLATE] reground failed: {e}")
+        return
+    if not texts:
+        return
+    item = create_feed_item(
+        type="choices_revised",
+        content="",
+        choices=[{"text": t} for t in texts],
+        metadata={"prompt_id": slate_id},
+    )
+    with WORLD_STATE_LOCK:
+        st = _load_state(session_id) or {}
+        st["choices"] = [{"text": t} for t in texts]
+        _feed_append(st, item)
+        _save_state(st, session_id)
+        _sync_ambient_state(st, session_id)
+    print(f"[OPENING SLATE] regrounded on the frame the player arrived on: "
+          f"{texts}", flush=True)
+
+
+# The Level sheet fields that have to say something before a run can claim to
+# be set anywhere. `name` alone is not enough — that is exactly the state the
+# boot warning calls hollow (see api._warn_if_the_world_is_hollow).
+_LEVEL_ANCHOR_FIELDS = ("summary", "era", "palette", "landmarks", "opening_shot")
+
+
+def level_sheet_is_hollow(spec: Optional[dict] = None) -> bool:
+    """The Level sheet has a name and nothing else, or not even that."""
+    try:
+        spec = spec or game_identity.get_spec()
+        setting = spec.get(game_identity.SETTING_KEY) or {}
+    except Exception:
+        return False
+    return not any(str(setting.get(f) or "").strip() for f in _LEVEL_ANCHOR_FIELDS)
+
+
+def _ensure_level_sheet_is_filled() -> bool:
+    """Draft every EMPTY identity-sheet field from the world bible. EXPLICIT ONLY.
+
+    NOT ON THE BOOT PATH, and it must not go back on it. It was, for one
+    afternoon, and that was a worse bug than the one it set out to fix: a blank
+    Level sheet made this run a live LLM call at reset and PERSIST the answer
+    into prompts/simulation_prompts.json. Handed a nine-thousand-word bible
+    about a quarantined Horizon site in the Four Corners, the model invented "The
+    Kettle Yard — a flooded shipbreaking yard on a tidal flat", wrote it over the
+    authoring data, and the opening montage was then drawn of it. No prompt, no
+    undo, every boot. Model-invented content must never silently replace
+    something a person typed.
+
+    What the empty field genuinely costs is still real, and is still the reason
+    this function exists to be CALLED: nothing else in a boot knows where the
+    level is. ``opening_shot``, ``place_summary``, ``establishing_shot`` and the
+    montage's own shotlist each read this sheet, and when it is blank they each
+    fall through to free-associating over that same bible — three reads of one
+    empty field, three different answers, a run that does not stay in a place.
+    One blank field does it too: with ``goal`` empty, ``level_goal`` walks back
+    to the first landmark, so a level whose landmarks began "chain-link fence"
+    established a montage toward a fence the player already stood at.
+
+    So the capability stays, behind an explicit call — the editor's fill button,
+    or ``python tools/draft_identity_sheets.py`` — where a person sees the draft
+    and decides. The boot's job is to SAY the sheet is blank
+    (api._warn_if_the_world_is_hollow), not to answer for the author.
+
+    Never fatal. A failed draft leaves the sheets exactly as they were.
+    """
+    try:
+        blocks = [b for b in game_identity.text_fillable_blocks()
+                  if game_identity.empty_fill_fields(b)]
+    except Exception:
+        logging.exception("[SHEETS] could not read the identity sheets")
+        return False
+    if not blocks:
+        return False
+    # The Level sheet leads: it is the one that anchors the place, and it is
+    # what everything below this line is about to read.
+    setting_key = getattr(game_identity, "SETTING_KEY", "")
+    if setting_key in blocks:
+        blocks = [setting_key] + [b for b in blocks if b != setting_key]
+
+    gaps = {b: game_identity.empty_fill_fields(b) for b in blocks}
+    if not LLM_ENABLED:
+        print(f"[SHEETS] blank fields {gaps} and no text model to draft them "
+              f"from — the run may not know where it is", flush=True)
+        return False
+
+    t0 = time.time()
+    print(f"[SHEETS] drafting blank fields from the world bible before "
+          f"anything renders: {gaps}", flush=True)
+    any_filled = False
+    for block in blocks:
+        try:
+            res = game_identity.apply_text_fill(block)
+        except Exception as e:
+            log_error(f"[SHEETS] {block} draft failed: {e}")
+            continue
+        filled = (res or {}).get("filled") or {}
+        if not filled:
+            print(f"[SHEETS] {block}: nothing drafted "
+                  f"({(res or {}).get('reason') or 'unknown'})", flush=True)
+            continue
+        any_filled = True
+        for key, val in filled.items():
+            print(f"[SHEETS]   {block}.{key}: {str(val)[:110]}", flush=True)
+    if any_filled:
+        print(f"[SHEETS] done in {time.time() - t0:.1f}s — every render below "
+              f"this now agrees where it is", flush=True)
+    return any_filled
+
+
+def _cached_opening_frame(new_state: dict) -> tuple:
+    """The plate this run opens on — DRAWN FRESH, every run. No cache read.
+
+    Returns (slug, rec). `rec` is {} only when there is genuinely nothing to
+    open on, in which case the intro renders its own frame and the run gets no
+    montage. Split out of _apply_cached_opening_frame so the opening CHOICE
+    SLATE can be grounded on this still before the feed items are built — the
+    slate used to be written from the shot description while the picture the
+    player actually starts on sat on disk, unread.
+
+    It used to read ``world_frames.record()`` and open on whatever was cached.
+    That cache is stamped with the World SNAPSHOT's hash while a run is played
+    on the LIVE prompt file, and the two drift the moment anybody edits
+    anything — so the frame on disk could be a photograph of the previous hero.
+    ``drawn_from_live`` caught that, and the only thing it could then do was
+    give up: ``ensure()`` renders from the snapshot, so re-rendering would have
+    produced the wrong hero again. The run therefore opened with NO CUTSCENE,
+    explained in one line of server stdout that no player will ever read, and
+    healed itself on the following run. Editing a world cost you your opening,
+    silently, and that is exactly what happened on 2026-09-17.
+
+    So the opening does not consult the cache any more. ``render_live_plate``
+    draws it now, from the prompts this run is about to be played on, which
+    makes the frame correct by construction and removes every reason the
+    montage had to be skipped. The gain is that the opening happens EVERY time.
+
+    Two costs, both accepted deliberately:
+
+    · One image render on the boot path. In the case that was broken this is
+      free — the run was already paying for ``_spawn_scene_image_async``
+      because the cache had been refused. On a warm, valid cache it is new.
+    · It runs inside ``TURN_LOCK``, because the plate has to be drawn from the
+      prompts ``apply_experience_start`` binds a few lines earlier, and that
+      binding is what the lock protects. Scene renders were deliberately moved
+      OFF this lock once (see _spawn_scene_image_async) because one player's
+      render stalled every other player's reset, so this is a knowing step
+      back toward that for a once-per-run event on a local single-player boot.
+      If this app ever serves concurrent players again, hoist the plate render
+      out by binding the Experience before the lock.
+
+    The cache is still written — the editor's carousel and the Experience graph
+    read it — it just no longer decides whether the player gets a cutscene.
     """
     try:
         import world_frames
@@ -9485,33 +10213,45 @@ def _cached_opening_frame(new_state: dict) -> tuple:
         slug = str((world or {}).get("slug") or "") or world_frames.start_world_slug(exp)
     except Exception:
         slug = world_frames.start_world_slug()
-    rec = world_frames.record(slug) if slug else {}
-    # A placeholder is a 64px mint square that world_frames installs the
-    # moment a frame goes missing, and it stays there if the paid render
-    # then fails. Opening a run on it is the flat green screen on Start.
-    # Treat it as no cache at all and let the intro render for real.
-    if not rec.get("url") or not rec.get("path") or not world_frames.is_real_still(rec):
-        # Warm this World in the background so the *next* reset is instant.
-        if slug:
-            try:
-                world_frames.ensure(slug, wait=False)
-            except Exception:
-                pass
+    if not slug:
+        return "", {}
+
+    def _usable(r: dict) -> bool:
+        # A placeholder is a 64px mint square that world_frames installs the
+        # moment a frame goes missing, and it stays there if the paid render
+        # then fails. Opening a run on it is the flat green screen on Start.
+        return bool(r and r.get("url") and r.get("path")
+                    and world_frames.is_real_still(r))
+
+    rec = {}
+    try:
+        rec = world_frames.render_live_plate(slug) or {}
+    except Exception:
+        logging.exception(f"[WORLD FRAMES] live plate for {slug} raised")
+    if not rec:
+        rec = world_frames.record(slug) or {}
+
+    # Below here is the ORIGINAL refusal logic, unchanged, and it should now be
+    # unreachable whenever images are on: the render above draws from the live
+    # prompts and stamps them, so the frame cannot be of the wrong hero. What is
+    # left are the genuinely degraded cases — images off, no key, a render that
+    # came back empty — where there is no montage to be had either way, because
+    # the montage is itself a paid render. Falling back to a stale plate there
+    # would buy nothing and would re-introduce the bug these checks exist for:
+    # opening a run on a photograph of the previous protagonist.
+    if not _usable(rec):
+        # Warm this World in the background so the *next* reset has something.
+        try:
+            world_frames.ensure(slug, wait=False)
+        except Exception:
+            pass
         return slug, {}
-    # The frame on disk may be a picture of somebody else. It is stamped with
-    # the World SNAPSHOT's hash, but a run is played on the live prompts, and
-    # the snapshot only moves when the level is saved — so editing the
-    # protagonist left this reading "ready" while showing the old hero, and
-    # the run cut to the real one on turn two. Only open on a frame that was
-    # drawn from the prompts this run is about to use.
     if not world_frames.drawn_from_live(rec):
-        print(f"[WORLD FRAMES] not opening on {slug}'s cached frame — it was "
-              f"drawn from different prompts; rendering this run's own. "
-              f"NOTE: this also means NO OPENING MONTAGE this run — the montage "
-              f"is drawn from the cached plate and there isn't a usable one yet. "
-              f"The intro about to render installs a correct plate, so the next "
-              f"run gets its cutscene. Expected for one run after editing a "
-              f"world; not a cutscene fault.",
+        print(f"[WORLD FRAMES] {slug} has no plate of this run's own and the "
+              f"cached one was drawn from different prompts, so the run renders "
+              f"its own opening still and gets NO MONTAGE. This is now only "
+              f"reachable when the plate render could not run at all (images "
+              f"off, no key, empty result) — see world_frames.render_live_plate.",
               flush=True)
         # Deliberately no ensure() here: it would re-render from the snapshot,
         # i.e. the wrong hero again. The intro about to run installs the right
@@ -9615,17 +10355,17 @@ def _apply_cached_opening_frame(
     return False
 
 
-def _open_on_montage(new_state: dict, opening_rec: dict) -> bool:
+def _open_on_montage(new_state: dict) -> bool:
     """Whether this run should open on an establishing montage.
 
-    Needs a cached World frame, because the montage is drawn FROM one — it is
-    the level's look, light and cast, and the place the four shots are heading
-    toward. With no plate there is nothing to establish toward, so the run falls
-    back to rendering its own opening still, which is what it did before.
+    It used to require a cached World frame, because the montage was drawn FROM
+    one. That requirement is what made the opening disappear whenever the cache
+    was unusable, and the plate it depended on has been deleted: the montage is
+    the run's FIRST render now and establishes the place itself (see
+    cutscene.generate_shots with no source_path). So the only questions left are
+    whether montages are switched on and whether somebody authored their own.
     """
     if not INTRO_CUTSCENE or not IMAGE_ENABLED:
-        return False
-    if not (opening_rec or {}).get("url"):
         return False
     # An authored Cutscene node on the start of the graph is somebody's
     # deliberate opening. Don't stack a second montage in front of it.
@@ -9636,16 +10376,20 @@ def _stage_opening_montage(
     session_id: str,
     new_state: dict,
     intro_items: list,
-    opening_rec: dict,
 ) -> list:
-    """Open the run on the level's approach montage instead of the cached plate.
+    """Open the run on the level's approach montage. It renders FIRST.
 
-    The plate does not go into the feed. It is passed to the montage as the
-    reference it establishes toward (``source_url``) and left in
-    ``current_image_url`` so a status poll has something true to report, but the
-    player never looks at it: what the editor rendered is a preview of where the
-    level ends up, and opening on it made the first thing in every run a picture
-    nobody had shot for that run.
+    There is no plate any more. The montage used to be drawn from a cached (and
+    later, a freshly rendered) World frame, and that frame was a whole separate
+    image render whose only jobs were to seed this one and to flash for four
+    seconds as a fifth beat. It also decided, from a from-scratch text-to-image
+    guess, where the level was — which is how a run opened with a montage of an
+    open-pit mine and a first playable frame in an indoor storeroom.
+
+    So the order is inverted. The montage establishes the place, from the lore
+    and the Level sheet (which _ensure_level_sheet_is_filled has guaranteed says
+    something), and the IDLE beat that follows it is drawn from these panels.
+    Two renders, and the second one is locked to the first.
 
     The opening choice slate is pulled OUT of the feed and parked in
     ``pending_opening_choices``. Verbs sitting under a montage are a prompt to
@@ -9663,7 +10407,6 @@ def _stage_opening_montage(
         intro_items = [it for it in intro_items if it is not slate]
         new_state["pending_opening_choices"] = slate
 
-    new_state["current_image_url"] = opening_rec.get("url") or ""
     new_state["pending_cutscene"] = {
         "cutscene_id": "open-" + uuid.uuid4().hex[:8],
         "name": shot["title"],
@@ -9672,12 +10415,9 @@ def _stage_opening_montage(
         "opening": True,
         "goal": shot["goal"],
         "prologue": shot["prologue"],
-        # The plate as a FILE, kept server-side and deliberately not put on the
-        # feed item. A World frame's web URL is /api/worlds/<slug>/frame, and
-        # _resolve_image_path only understands /images/<name> and absolute
-        # paths — so a plate that went out to the browser and came back as a URL
-        # resolved to nothing and the montage failed to develop.
-        "source_path": opening_rec.get("path") or "",
+        # Deliberately absent: there is no source plate. cutscene.play_for_session
+        # reads `opening` to know it may render without one.
+        "source_path": "",
         "duration_ms": int(_cutscene.HOLD_MS),
         "graph": False,
     }
@@ -9690,15 +10430,312 @@ def _stage_opening_montage(
     return intro_items
 
 
-def _finish_opening_montage(st: dict, session_id: str) -> dict:
+# How many montage panels seed the idle beat. The FIRST is the img2img anchor —
+# the place the character is about to be standing in — and the rest are context.
+# generate_gemini_img2img caps the whole payload at six references and prepends
+# the identity plates, and the flipbook LAYOUT GUIDE goes on the tail — lose
+# that and the grid comes back unsplittable. Two panels is what fits with room
+# to spare.
+#
+# It was one while the plate held the anchor slot. With the plate gone the
+# panels ARE the place, so the wide and the architectural wide both go in; the
+# macro detail and the ground-level litter shot would be poor anchors and fall
+# off the end of the limit naturally, in shot order.
+OPENING_MONTAGE_REFS = 2
+
+
+def _montage_place_refs(pending: dict, plate_path: str = "") -> List[str]:
+    """The montage panels the first playable frame is drawn from.
+
+    The opening montage is the part of a boot that is drawn from the live level
+    definition — cutscene.mystery_shotlist reads the world bible for its four
+    subjects — and it is now also the run's first render. So these panels are
+    not context any more, they are the anchor: refs[0] is the photograph the
+    idle beat puts the character into.
+
+    Panel one leads because the approach mood's first brief is "the widest,
+    emptiest view this place affords", which is the strongest single statement
+    of where we are.
+
+    ``plate_path`` is vestigial and defaults to "". The opening has no plate, so
+    there is nothing to exclude; the argument survives for the graph-cutscene
+    callers that still restage from one.
+    """
+    def _key(p: str) -> str:
+        try:
+            return os.path.normcase(os.path.realpath(p))
+        except Exception:
+            return os.path.normcase(p)
+
+    skip = {_key(plate_path)} if plate_path else set()
+    out: List[str] = []
+    for shot in (pending or {}).get("shots") or []:
+        path = str((shot or {}).get("path") or "")
+        if not path or _key(path) in skip or not os.path.exists(path):
+            continue
+        skip.add(_key(path))
+        out.append(path)
+    if not out:
+        print("[OPENING FLIPBOOK] no montage panels to draw the first playable "
+              "frame from", flush=True)
+    return out[:OPENING_MONTAGE_REFS]
+
+
+def _generate_opening_establishing(session_id: str, pending: dict) -> Optional[dict]:
+    """Render the IDLE — the first playable frame — SYNCHRONOUSLY, for THIS run.
+
+    The montage is four unpeopled photographs of the place. This is the beat the
+    player arrives on: the character standing in that same place, checking their
+    gear, looking at something far off (establishing=True — see
+    _flipbook_establishing_block). It is the second and LAST render of a boot.
+
+    Drawn from the montage's own panels (``_montage_place_refs``), with the
+    character sheet riding along as the identity lock. It used to be drawn from
+    a separately rendered plate, with one montage panel behind it for context —
+    and that plate was a from-scratch text-to-image guess that had every right
+    to disagree with the montage about where the level was. It duly did: an
+    indoor storeroom after four photographs of an open-pit mine, on 2026-09-17.
+    Anchoring on panel one instead removes the disagreement by removing the
+    second opinion.
+
+    Normally started by _spawn_opening_establishing the instant the montage
+    begins playing, and collected at /api/cutscene/complete. The first playable
+    turn continues (img2img) from this beat's last panel, so it must be FINISHED
+    and be the anchor before that turn can run — but "finished before the
+    hand-off" does not mean "started at the hand-off", which is what it used to
+    mean and what made the opening feel dead: the montage is ~20s of held shots
+    with the server doing nothing, and then the player waited again. Generated
+    fresh for the run named by ``pending``, which is what stops a slow render
+    from a previous run leaking a frame into this one. It does NOT write shared
+    flipbook state itself (write_state=False); the caller installs the anchors
+    atomically under lock once it knows this is still the current run.
+
+    Returns {"payload", "still", "still_url", "seq"} — ``payload`` is None when
+    flipbook is off and this came back as a single still, which is a first
+    playable frame either way. Returns None only when nothing rendered.
+    """
+    montage = _montage_place_refs(pending)
+    if not montage:
+        return None
+    st = _load_state(session_id) or {}
+    try:
+        identity_spec = game_identity.get_spec()
+        if game_identity.is_viewfinder_spec(identity_spec):
+            plates = []
+        else:
+            plates = game_identity.identity_reference_paths(
+                include_character=(
+                    game_identity.shows_character(identity_spec)
+                    or game_identity.hands_visible(identity_spec)
+                ),
+                spec=identity_spec,
+            )
+        prompt_str = game_identity.apply(
+            str(st.get("world_prompt") or ""), "image", identity_spec)
+
+        if not flipbook_active(st):
+            # Flipbook off: the idle cannot animate, but the run still needs a
+            # frame with the character in it. Without this the boot would hand
+            # turn one an unpeopled montage panel — there is no plate behind it
+            # any more to fall back on.
+            return _opening_idle_still(
+                session_id, pending, st, montage, plates, identity_spec,
+                prompt_str)
+
+        seq = _flipbook_generate(
+            prompt_str=prompt_str,
+            caption="opening",
+            choice="",
+            dispatch=str((pending or {}).get("prologue") or ""),
+            world_prompt=str(st.get("world_prompt") or ""),
+            time_of_day=str(st.get("time_of_day") or ""),
+            img_dir=_get_image_dir(session_id),
+            session_id=session_id,
+            st=st,
+            # refs[0] is the montage's widest panel and it is the ANCHOR: the
+            # place the player is about to be standing in, already photographed,
+            # already seen by them. The character comes from identity_paths.
+            refs=montage,
+            ref_is_anchor=True,
+            identity_paths=plates or None,
+            identity_seed=True,
+            spec=identity_spec,
+            establishing=True,
+            write_state=False,  # caller installs the anchors atomically
+        )
+        if not seq:
+            print("[OPENING IDLE] no grid — falling back to a single still",
+                  flush=True)
+            return _opening_idle_still(
+                session_id, pending, st, montage, plates, identity_spec,
+                prompt_str)
+        payload = flipbook_web_payload(seq, session_id)
+        still = str(seq.get("still_path") or "")
+        if not payload or not still:
+            return None
+        # Hold each frame ~2.9s so the beat breathes (see
+        # OPENING_ESTABLISHING_FRAME_MS) instead of flicking past.
+        payload = dict(payload)
+        payload["frame_ms"] = OPENING_ESTABLISHING_FRAME_MS
+        print(f"[OPENING IDLE] {payload.get('frame_count')} frames ready — the "
+              f"player arrives standing in the place they just watched",
+              flush=True)
+        return {"payload": payload, "still": still,
+                "still_url": _to_web_image_url(still, session_id), "seq": seq}
+    except Exception as e:
+        log_error(f"[OPENING IDLE] failed: {e}")
+        return None
+
+
+def _opening_idle_still(session_id: str, pending: dict, st: dict,
+                        montage: List[str], plates: list,
+                        identity_spec: dict, prompt_str: str) -> Optional[dict]:
+    """One frame of the player standing in the montage's place. No animation.
+
+    The floor under the idle beat. With the plate deleted, a boot that cannot
+    draw a flipbook — flipbook switched off, or a grid that would not split —
+    has nothing else in it containing the protagonist, and handing turn one an
+    unpeopled establishing photograph would start the game on a landscape.
+    """
+    from gemini_image_utils import generate_gemini_img2img
+
+    prompt = game_identity.apply(
+        _flipbook_establishing_block(single=True) + "\n" + prompt_str, "raw")
+    try:
+        path = generate_gemini_img2img(
+            prompt=prompt,
+            caption="opening_idle",
+            reference_image_path=list(montage),
+            strength=0.5,
+            world_prompt=str(st.get("world_prompt") or ""),
+            time_of_day=str(st.get("time_of_day") or ""),
+            output_dir=_get_image_dir(session_id),
+            is_flipbook=False,
+            include_people=True,
+            identity_paths=plates or None,
+            spec=identity_spec,
+        )
+    except Exception as e:
+        log_error(f"[OPENING IDLE] still fallback failed: {e}")
+        return None
+    if not path or not os.path.exists(str(path)):
+        return None
+    print("[OPENING IDLE] one still (no flipbook this run)", flush=True)
+    return {"payload": None, "still": str(path),
+            "still_url": _to_web_image_url(str(path), session_id),
+            "seq": {"still_path": str(path)}}
+
+
+# The opening establishing beat, rendered WHILE the montage is on screen. One
+# entry per session: the run it belongs to, an Event that fires when the render
+# settles either way, and the result the hand-off wants.
+_OPENING_PREFETCH: Dict[str, dict] = {}
+_OPENING_PREFETCH_LOCK = threading.Lock()
+
+# How long the hand-off will hold on a prefetch that has not landed. The montage
+# runs ~20s of held shots and the render takes ~15s, so by the time the player
+# reaches the end it has almost always finished; a wait anywhere near this long
+# means the image call is stuck, and the run opens on the static plate rather
+# than leaving the browser parked on the last shot forever.
+OPENING_PREFETCH_TIMEOUT_S = float(os.getenv("OPENING_PREFETCH_TIMEOUT_S", "180"))
+
+
+def _spawn_opening_establishing(session_id: str, pending: dict) -> bool:
+    """Start the establishing beat the moment the montage starts playing.
+
+    This is the whole responsiveness fix. The montage's panels are the render's
+    references (see _montage_place_refs), so this is the earliest moment the
+    beat CAN be drawn — and it is also the moment the player stops waiting and
+    starts watching, which makes the next ~20s free. /api/cutscene/complete then
+    collects whatever this produced instead of starting from scratch.
+
+    ``pending`` is snapshotted because the caller's copy is state that a reset
+    landing mid-render will replace underneath us. Whether the result still
+    belongs to the live run is decided at collection, by cutscene_id.
+    """
+    import copy
+
+    cut_id = str((pending or {}).get("cutscene_id") or "")
+    if not cut_id or not (pending or {}).get("opening"):
+        # Loud on purpose. A silent return here is the whole run losing its
+        # first playable frame, and it took a live playtest and four passes
+        # through the logs to notice because nothing said anything.
+        print(f"[OPENING] NOT rendering the first playable frame: "
+              f"cutscene_id={cut_id!r} opening={(pending or {}).get('opening')!r} "
+              f"— the idle beat will have to be rendered inline at the hand-off",
+              flush=True)
+        return False
+    with _OPENING_PREFETCH_LOCK:
+        live = _OPENING_PREFETCH.get(session_id)
+        if live and live.get("cutscene_id") == cut_id:
+            return False
+        entry = {"cutscene_id": cut_id, "done": threading.Event(), "result": None}
+        _OPENING_PREFETCH[session_id] = entry
+    snapshot = copy.deepcopy(pending)
+
+    def _worker():
+        t0 = time.time()
+        try:
+            entry["result"] = _generate_opening_establishing(session_id, snapshot)
+        except Exception as e:
+            log_error(f"[OPENING] establishing beat raised behind the montage: {e}")
+        finally:
+            entry["done"].set()
+        print(f"[OPENING] establishing beat settled in {time.time() - t0:.1f}s "
+              f"behind the montage "
+              f"({'ready' if entry['result'] else 'nothing — the plate stands'})",
+              flush=True)
+
+    threading.Thread(target=_worker, daemon=True,
+                     name=f"opening-establishing-{session_id}").start()
+    print(f"[OPENING] rendering the first playable frame while {cut_id} plays",
+          flush=True)
+    return True
+
+
+def _take_opening_establishing(session_id: str,
+                               cutscene_id: str) -> tuple[Optional[dict], bool]:
+    """Collect the prefetched beat for this run, waiting if it is still going.
+
+    Returns ``(sequence, handled)``. ``handled`` is False only when there is no
+    prefetch for this run at all — the caller then renders inline, exactly as it
+    did before this existed (an Esc'd montage, a client that never called
+    /api/cutscene/play, a session whose prefetch belonged to a replaced run).
+    """
+    with _OPENING_PREFETCH_LOCK:
+        entry = _OPENING_PREFETCH.get(session_id)
+        if not entry or entry.get("cutscene_id") != str(cutscene_id or ""):
+            return None, False
+        _OPENING_PREFETCH.pop(session_id, None)
+    if entry["done"].is_set():
+        print("[OPENING] the establishing beat was ready before the montage "
+              "ended — handing over immediately", flush=True)
+        return entry.get("result"), True
+    t0 = time.time()
+    print("[OPENING] the montage ended first — holding on the establishing beat",
+          flush=True)
+    if not entry["done"].wait(OPENING_PREFETCH_TIMEOUT_S):
+        log_error(f"[OPENING] the establishing beat did not land within "
+                  f"{OPENING_PREFETCH_TIMEOUT_S:g}s — opening on the plate")
+        return None, True
+    print(f"[OPENING] held {time.time() - t0:.1f}s for the establishing beat",
+          flush=True)
+    return entry.get("result"), True
+
+
+def _finish_opening_montage(st: dict, session_id: str,
+                            opening_seq: Optional[dict] = None) -> dict:
     """Hand the run over from the opening montage to turn one.
 
-    The montage's LAST shot becomes the frame the run plays from. That matters
-    beyond presentation: history[0] is the img2img reference for turn 1 and what
-    SCAN and the vision pass read, so anchoring it on the plate the montage
-    walked away from would make turn 1 continue from a composition the player
-    never saw. The approach mood's fourth shot is written as a settled, held
-    frame precisely so it can carry that job.
+    The IDLE beat is the frame the run plays from — the character standing in
+    the place the montage just photographed (see _generate_opening_establishing).
+    That matters beyond presentation: history[0] is the img2img reference for
+    turn 1 and what SCAN and the vision pass read.
+
+    If the idle did not render, the montage's last panel stands in. It is an
+    unpeopled photograph, which is a poor place to start a game, so it is a
+    genuine fallback and not a design — see the degraded branch below, which
+    asks the intro renderer for a frame instead.
 
     Returns the fields api_cutscene_complete puts on the wire.
     """
@@ -9710,6 +10747,59 @@ def _finish_opening_montage(st: dict, session_id: str) -> dict:
 
     web = last.get("url") or st.get("current_image_url") or ""
     img_path = last.get("path") or ""
+
+    # The idle beat was rendered FRESH for this run (see
+    # _generate_opening_establishing) and handed in — the run hands off on its
+    # LAST panel and ships the sequence so the client plays it in. Turn one's
+    # img2img continues from that same panel, so we install the flipbook anchors
+    # here, atomically, now that we know this is the current run. Nothing is
+    # carried across runs, so a re-run can never land on a stale frame.
+    #
+    # ``payload`` is None when flipbook is off and the idle came back as a
+    # single still. That is still a first playable frame with the character in
+    # it, so it installs exactly the same way; there is just nothing to play.
+    # LAST LINE OF DEFENCE. The idle beat is normally rendered behind the
+    # montage and handed in as ``opening_seq``; when it is not, the run has NO
+    # frame with the protagonist in it and turn one draws one from nothing —
+    # text-to-image, no reference, a different place. That is precisely what
+    # shipped for an afternoon and it is the worst failure the opening has.
+    #
+    # So if the beat is absent and the panels are on disk, render it HERE,
+    # synchronously, from those panels. Slower than the prefetch, and the point
+    # is that it cannot be skipped: the montage the player just watched is the
+    # input to the frame they arrive on, always.
+    if not (isinstance(opening_seq, dict) and opening_seq.get("still")) \
+            and _montage_place_refs(pending):
+        log_error("[OPENING] no idle beat arrived from the prefetch — rendering "
+                  "it inline from the montage panels so the run does not open "
+                  "on a frame drawn from nothing")
+        try:
+            opening_seq = _generate_opening_establishing(session_id, pending)
+        except Exception as e:
+            log_error(f"[OPENING] inline idle render failed: {e}")
+
+    seq_payload = None
+    idle_landed = False
+    if isinstance(opening_seq, dict) and opening_seq.get("still") \
+            and os.path.exists(str(opening_seq.get("still"))):
+        idle_landed = True
+        seq_payload = opening_seq.get("payload")
+        web = str(opening_seq.get("still_url") or "") or web
+        img_path = str(opening_seq.get("still") or "") or img_path
+        _seq = opening_seq.get("seq") or {}
+        if _seq.get("still_path"):
+            # Anchor turn one on the idle frame (the img2img reference).
+            st["flipbook_last_grid"] = _seq.get("grid_path")
+            st["flipbook_first_frame"] = _seq.get("first_path")
+            st["flipbook_last_frame"] = _seq.get("still_path")
+            st["current_sequence"] = seq_payload
+        print(f"[OPENING] the player arrives in the place they just watched "
+              f"({(seq_payload or {}).get('frame_count') or 1} frame(s))",
+              flush=True)
+    elif shots:
+        log_error("[OPENING] the idle beat did not render — the run is opening "
+                  "on the montage's last panel, which has nobody in it")
+
     if web:
         st["current_image_url"] = web
         tape = [f for f in (st.get("tape_frames") or []) if isinstance(f, str)]
@@ -9717,10 +10807,21 @@ def _finish_opening_montage(st: dict, session_id: str) -> dict:
             tape.append(web)
         st["tape_frames"] = tape[-400:]
 
+    seed_vision_for = ""
     if img_path and os.path.exists(img_path):
         hist = _load_history(session_id)
         if not hist:
             visual = st.get("current_image_prompt") or pending.get("goal") or ""
+            # The montage panels, for turn one's img2img — but only when the
+            # idle beat did not land at all. When it did, `img_path` IS a frame
+            # generated from these panels, so handing the raw panels to turn one
+            # as well would put a second composition beside the one that already
+            # won.
+            montage_refs = [] if idle_landed else _montage_place_refs(pending)
+            if montage_refs:
+                print(f"[OPENING] no idle beat this run — carrying "
+                      f"{len(montage_refs)} montage panel(s) into turn one's "
+                      f"references instead", flush=True)
             hist.append({
                 "choice": "Initialize Simulation",
                 "dispatch": pending.get("prologue") or "",
@@ -9733,10 +10834,11 @@ def _finish_opening_montage(st: dict, session_id: str) -> dict:
                 "image_prompt": visual,
                 "hard_transition": True,
                 "cached_opening": True,
+                "montage_refs": montage_refs,
             })
             _save_history(hist, session_id)
             _sync_ambient_history(hist, session_id)
-            _spawn_cached_opening_vision(session_id, img_path)
+            seed_vision_for = img_path
 
     # The real opening slate, generated at reset and parked while the montage
     # played. Falling back to "Look around" here would throw away three choices
@@ -9749,8 +10851,19 @@ def _finish_opening_montage(st: dict, session_id: str) -> dict:
         )
     _feed_append(st, choices_item)
     st["choices"] = choices_item.get("choices")
+    # That slate was written during reset, before this run had rendered a
+    # single frame — on the montage path there is nothing to ground it on at
+    # that point. Look at the frame the player actually arrived on and rewrite
+    # it from that, in the background, off the same vision call that grounds
+    # history[0]. Appended first so the reground has an id to revise.
+    if seed_vision_for:
+        _spawn_cached_opening_vision(session_id, seed_vision_for,
+                                     slate_id=choices_item.get("id"))
     return {"image_url": web, "choices": choices_item,
-            "to_world": st.get("experience_world_id") or ""}
+            "to_world": st.get("experience_world_id") or "",
+            # The idle beat's frames + timing when it animated in, else None —
+            # the client plays it before settling on the last frame.
+            "sequence": seq_payload}
 
 # --- Internal Reset Logic --- (Moved from api_reset for reusability)
 def _perform_game_reset() -> List[Dict[str, Any]]:
@@ -9789,6 +10902,13 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
         # before world_brief() reads the prompt file.
         import experience_store
         _experience_seed = apply_experience_start({}, SID)
+
+        # Deliberately NOT drafting the identity sheets here. See
+        # _ensure_level_sheet_is_filled: it used to run on this line, and an LLM
+        # write over authoring data on the boot path is not a fix, it is a
+        # second bug. A blank Level sheet is reported by
+        # api._warn_if_the_world_is_hollow and filled by a human in the editor,
+        # or explicitly by tools/draft_identity_sheets.py.
     
         # Explicitly create a new dictionary for the state to ensure no shared references for critical parts.
         # This is a LOCAL variable — NOT assigned to the ambient `state` global
@@ -9866,27 +10986,34 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
         else:
             logging.info("_perform_game_reset: history.json does not exist, no need to clear.")
 
-        # Resolve the opening still BEFORE the intro items, so the first slate
-        # can be generated from the picture the run opens on rather than from
-        # the shot description.
-        opening_slug, opening_rec = _cached_opening_frame(new_state)
-        initial_items, intro_image_kwargs = generate_intro_turn_feed_items(
-            SID, new_state, spawn_image=False,
-            frame_path=opening_rec.get("path") or None)
-        logging.info(f"_perform_game_reset: initial_items from generate_intro_turn_feed_items (IDs): {[item['id'] for item in initial_items if item]}")
-
-        # How the level starts. Given a cached World frame the run opens on its
-        # establishing montage and the frame is demoted to that montage's
-        # reference; otherwise the cached frame is the load time, painting
-        # immediately so Play / Watch don't sit on black until intro gen returns.
-        if _open_on_montage(new_state, opening_rec):
+        # How the level starts.
+        #
+        # On the montage path NOTHING is resolved or rendered here. The montage
+        # is the run's first render and it happens on /api/cutscene/play, a
+        # moment later, with the client already watching — so the reset returns
+        # fast and the boot is two renders (montage, then the idle beat) instead
+        # of the three it briefly became. Resolving a plate here is what used to
+        # cost a whole extra image and let a from-scratch guess disagree with
+        # the montage about where the level was.
+        #
+        # Off the montage path the old behaviour stands: resolve the World's
+        # cached frame first, so the opening slate can be written from the
+        # picture the run opens on rather than from the shot description, and
+        # so Play / Watch paint immediately instead of sitting on black.
+        if _open_on_montage(new_state):
             need_intro_spawn = False
-            initial_items = _stage_opening_montage(
-                SID, new_state, initial_items, opening_rec)
+            initial_items, intro_image_kwargs = generate_intro_turn_feed_items(
+                SID, new_state, spawn_image=False)
+            initial_items = _stage_opening_montage(SID, new_state, initial_items)
         else:
+            opening_slug, opening_rec = _cached_opening_frame(new_state)
+            initial_items, intro_image_kwargs = generate_intro_turn_feed_items(
+                SID, new_state, spawn_image=False,
+                frame_path=opening_rec.get("path") or None)
             need_intro_spawn = _apply_cached_opening_frame(
                 SID, new_state, initial_items, intro_image_kwargs,
                 resolved=(opening_slug, opening_rec))
+        logging.info(f"_perform_game_reset: initial_items from generate_intro_turn_feed_items (IDs): {[item['id'] for item in initial_items if item]}")
 
         if new_state.get("experience_cutscene_id"):
             # Opening is the montage — don't leave intro verbs under it.
@@ -11567,6 +12694,9 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
         "sentences, a breath or two, never a speech or a monologue. It's fine to be fragmentary, to "
         "trail off, to interrupt yourself, or to answer with just a few words. Skip flowery description "
         "and big vocabulary; talk the way a scared, tired, or wary human really would in the moment. "
+        "Never open with a generic sentry line — no 'you shouldn't be here', 'what do you want', "
+        "'who are you', 'is someone there'. Name something in front of you, or say the thing only "
+        "THIS person would say in THIS second. "
         "You may be afraid, hostile, cryptic, desperate, or helpful depending on who you are and what is "
         "happening. Reveal information sparingly and in character. If asked something you couldn't know, "
         "deflect in a way that fits the scene. Never narrate stage directions or use asterisks — just say the words."
@@ -11608,12 +12738,33 @@ def _talk_llm_failed(text: str) -> bool:
 
 
 def _talk_opening_fallback(label: str, kind: str) -> str:
-    """Instant first line — no LLM. TALK must speak even when Gemini is slow."""
+    """Instant first line — no LLM. TALK must speak even when Gemini is slow.
+
+    These are presence beats, not interrogation. The old stock lines
+    ("You. You shouldn't be here. What do you want?") made every conversation
+    open as the same video-game NPC.
+    """
+    who = (label or "it").strip() or "it"
     return {
-        "machine": f"[the {label} crackles]… is someone there? Say something.",
-        "creature": "…you can see me. Most can't. Why are you still standing there?",
-        "animal": "…you hear me, don't you. Don't act like the others.",
-    }.get(kind, "You. You shouldn't be here. What do you want?")
+        "machine": f"The {who} pops. Don't hang up.",
+        "creature": "You can hear me.",
+        "animal": "Easy. Stay.",
+    }.get(kind, "Don't. Not yet.")
+
+
+def _is_canned_talk_fallback(text: str) -> bool:
+    """True when ``text`` is a stock TALK opener the client used to post as
+    the first message — ignore those so the persona can write a real line."""
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    if t.startswith("you. you shouldn't be here"):
+        return True
+    if "is someone there" in t and "say something" in t:
+        return True
+    if t.startswith("…you can see me") or t.startswith("...you can see me"):
+        return True
+    return False
 
 
 def _talk_opening_line(label: str, kind: str, situation: dict, persona_prompt: str) -> str:
@@ -11629,14 +12780,17 @@ def _talk_opening_line(label: str, kind: str, situation: dict, persona_prompt: s
     try:
         prompt = (
             persona_prompt
-            + "\n\nThe investigator has just turned to face you. Say your FIRST line to them — "
+            + "\n\nThe person has just turned to face you. Say your FIRST line to them — "
             "one short sentence, spoken out loud, in character, reacting to this exact moment. "
+            "Name something specific you can see, or something only you would say. "
+            "Do NOT say 'you shouldn't be here', 'who are you', 'what do you want', "
+            "'is someone there', or any other generic sentry/NPC greeting. "
             "Keep it terse and human. Output ONLY the spoken words."
         )
         line = _ask(prompt, temp=0.9, tokens=50, use_lore=False)
         line = (line or "").strip().strip('"').strip()
         # Guard against the model narrating, refusing, or erroring out.
-        if _talk_llm_failed(line) or len(line) > 320:
+        if _talk_llm_failed(line) or len(line) > 320 or _is_canned_talk_fallback(line):
             return fallback
         return line
     except Exception:
@@ -13171,16 +14325,23 @@ def api_talk_session():
         if not isinstance(subject, dict) or not (subject.get("label") or "").strip():
             return jsonify({"error": "missing subject"}), 400
 
-        # Don't block TALK on two vision calls + an opening LLM. The greeting
-        # is an instant fallback; /api/talk/message still grounds replies.
+        # Don't block TALK on vision. The greeting used to skip the opening
+        # LLM entirely and post a canned "you shouldn't be here" as the first
+        # message — every conversation opened on the same stock NPC line.
+        # Honor a reused line (voice switch). Ignore canned fallbacks so
+        # build_talk_context can write one for THIS subject.
         _label = _clean_subject_text(subject.get("label"), "figure", 40)
         _kind = _clean_subject_text(subject.get("kind"), "", 20)
         if not _kind:
             _kind = "person" if _talk_subject_is_figure(subject) else "machine"
-        _opening = (data.get("opening_line") or "").strip() or _talk_opening_fallback(_label, _kind)
+        _opening = (data.get("opening_line") or "").strip()
+        if _is_canned_talk_fallback(_opening):
+            _opening = ""
         context = build_talk_context(
             subject, session_id, opening_override=_opening, include_vision=False,
         )
+        if not (context.get("opening_line") or "").strip():
+            context["opening_line"] = _talk_opening_fallback(_label, _kind)
 
         # Resolve the voice. Precedence:
         #   1) Explicit (validated) client choice — that's what powers the
@@ -13450,6 +14611,21 @@ def api_cutscene_play():
     payload = _cutscene.play_for_session(sid, body)
     if not payload.get("ok"):
         return jsonify(payload), 409
+    # The montage starts playing the instant this response lands, and its held
+    # shots are ~20 seconds in which the server used to do nothing at all. The
+    # first playable frame is drawn from the panels the call above just stamped,
+    # so it can start NOW and be waiting by the time the player watches the last
+    # shot out. /api/cutscene/complete collects it (see _take_opening_
+    # establishing) rather than starting the render itself.
+    try:
+        _pending = (_load_state(sid) or {}).get("pending_cutscene") or {}
+        print(f"[OPENING] /api/cutscene/play staged "
+              f"id={_pending.get('cutscene_id')!r} opening={_pending.get('opening')!r} "
+              f"shots={len(_pending.get('shots') or [])}", flush=True)
+        if _pending.get("opening"):
+            _spawn_opening_establishing(sid, _pending)
+    except Exception as e:
+        log_error(f"[OPENING] could not start the establishing beat early: {e}")
     return jsonify(payload)
 
 
@@ -13458,15 +14634,43 @@ def api_cutscene_complete():
     from flask import jsonify, request
 
     sid = _resolve_request_session_id()
+    # Collect the opening establishing flipbook, which has been rendering behind
+    # the montage since /api/cutscene/play (see _spawn_opening_establishing) and
+    # is usually already finished by now. If it is not, we hold here — it must be
+    # complete to serve as the first turn's img2img anchor — and if there is no
+    # prefetch for this run we render it inline exactly as before. Either way it
+    # happens BEFORE the state lock: a ~15s image render holding that lock would
+    # stall every other session.
+    _opening_seq = None
+    _pre = _load_state(sid) or {}
+    _pre_pending = _pre.get("pending_cutscene") or {}
+    _pre_id = str(_pre_pending.get("cutscene_id") or "")
+    print(f"[OPENING] /api/cutscene/complete sees id={_pre_id!r} "
+          f"opening={_pre_pending.get('opening')!r} "
+          f"shots={len(_pre_pending.get('shots') or [])}", flush=True)
+    if _pre_pending.get("opening"):
+        _opening_seq, _prefetched = _take_opening_establishing(sid, _pre_id)
+        if not _prefetched:
+            _opening_seq = _generate_opening_establishing(sid, _pre_pending)
     with WORLD_STATE_LOCK:
         st = _load_state(sid) or {}
+        # That render happens outside the lock, and now spans the whole montage.
+        # A reset landing inside it stages a fresh montage with its own plate,
+        # and installing this sequence over that one would open the new run on
+        # the old run's establishing beat — the stale-first-frame failure this
+        # whole path exists to prevent.
+        if _opening_seq is not None and str(
+                (st.get("pending_cutscene") or {}).get("cutscene_id") or "") != _pre_id:
+            print(f"[OPENING] discarding establishing beat for {_pre_id!r} — the "
+                  f"run was replaced while it rendered", flush=True)
+            _opening_seq = None
         # The opening montage is not a graph node — it has no incoming World and
         # no outgoing edge, so complete_cutscene has nothing to follow and would
         # fall through to a bare "Look around". Check it before that runs, while
         # pending_cutscene still holds the shots.
         if (st.get("pending_cutscene") or {}).get("opening"):
             out = {"ok": True, "kind": "opening"}
-            out.update(_finish_opening_montage(st, sid))
+            out.update(_finish_opening_montage(st, sid, opening_seq=_opening_seq))
             _save_state(st, sid)
             _sync_ambient_state(st, sid)
             return jsonify(out)
@@ -13593,6 +14797,11 @@ def _tts_synthesize(text: str, voice_id: str, settings: dict = None):
             for k in ("stability", "similarity_boost", "style", "speed", "use_speaker_boost"):
                 if k in settings and settings[k] is not None:
                     vs[k] = settings[k]
+        # Don't hand a model a setting it will throw away. See _NO_SPEED_MODELS:
+        # v3 drops `speed` without saying so, and a pace nobody can hear is
+        # worse than no pace control, because it reads as "we tried that".
+        if "speed" in vs and not _model_supports_speed():
+            vs.pop("speed", None)
         billed_text = text[:2500]
         resp = _rq.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
@@ -13763,19 +14972,37 @@ def api_narrator_narrate():
         return jsonify({"error": str(e), "segments": []}), 500
 
 
-def _clip_narration_to_one_sentence(text: str) -> str:
-    """Trim a narration line down to a SINGLE sentence — the narrator always
-    speaks exactly one. LLMs occasionally ignore the "one sentence" instruction
-    and stack a second (or trail off), so this is the hard guarantee. Ellipses
-    ("...") are preserved as intra-sentence pauses; only a standalone terminator
-    (. ! ?) that isn't part of an ellipsis counts as the end of the sentence."""
+# The narrator's register is short declaratives stacked into a beat — "Saigon.
+# Shit. I'm still only in Saigon." A hard one-sentence clip cut that cadence off
+# at the first full stop, so the voice could only ever produce the first third of
+# a line. Three is the ceiling; the char cap is what actually keeps a bridging
+# beat shorter than the loading it covers.
+_NARRATION_MAX_SENTENCES = 3
+_NARRATION_MAX_CHARS = 240
+
+
+def _clip_narration(text: str, max_sentences: int = 1) -> str:
+    """Trim a narration line to at most ``max_sentences`` sentences.
+
+    LLMs ignore a sentence count often enough that this is the hard guarantee.
+    Ellipses ("...") are preserved as intra-sentence pauses; only a standalone
+    terminator (. ! ?) that isn't part of an ellipsis ends a sentence. One
+    sentence is the floor — an over-long first sentence is kept whole rather
+    than truncated mid-thought.
+    """
     t = (text or "").strip()
     if not t:
         return t
-    m = re.search(r"[.!?](?!\.)", t)
-    if not m:
+    ends = [m.end() for m in re.finditer(r"(?<!\.)[.!?](?!\.)", t)]
+    if not ends:
         return t.rstrip(",;:") + "."
-    return t[: m.end()].strip()
+    kept = t[: ends[0]].strip()
+    for end in ends[1:max(1, max_sentences)]:
+        candidate = t[:end].strip()
+        if len(candidate) > _NARRATION_MAX_CHARS:
+            break
+        kept = candidate
+    return kept
 
 
 def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") -> list:
@@ -13866,7 +15093,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") 
     ) if spoken else ""
 
     fallback = [{"character": "narrator",
-                 "text": "My hands won't stop shaking. I have to find out what happened here."}]
+                 "text": "The light was going. Nobody had been through here in a long time."}]
     if not LLM_ENABLED:
         return fallback
 
@@ -13921,7 +15148,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") 
         )
         raw = _ask(prompt, temp=0.9, tokens=320, use_lore=True)
         if _talk_llm_failed(raw):
-            return [{"character": s["character"], "text": _clip_narration_to_one_sentence(s["text"])} for s in fallback]
+            return [{"character": s["character"], "text": _clip_narration(s["text"])} for s in fallback]
         import json as _json, re as _re
         cleaned = _re.sub(r"^```(?:json)?|```$", "", (raw or "").strip(), flags=_re.MULTILINE).strip()
         try:
@@ -13933,11 +15160,14 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") 
         if isinstance(arr, list):
             for it in arr[:4]:  # cap lines — bounds TTS cost + payload size
                 if isinstance(it, dict) and (it.get("text") or "").strip():
-                    one = _clip_narration_to_one_sentence((it.get("text") or "").strip()[:400])
+                    # One sentence PER LINE here — the radio play gets its
+                    # length from the handoff between voices, not from stacking
+                    # sentences inside a single voice's line.
+                    one = _clip_narration((it.get("text") or "").strip()[:400])
                     if one:
                         segs.append({"character": (it.get("character") or "narrator").strip().lower(),
                                      "text": one})
-        return segs or [{"character": s["character"], "text": _clip_narration_to_one_sentence(s["text"])} for s in fallback]
+        return segs or [{"character": s["character"], "text": _clip_narration(s["text"])} for s in fallback]
 
     # Single-voice narration — one lone voice thinking out loud, in exactly ONE
     # short sentence (a bridging beat, not a monologue).
@@ -14003,14 +15233,21 @@ def _authored_narrator_brief(**fields) -> str:
 
 
 def _narrator_one_line(prompt: str, fallback: list) -> list:
-    """Ask for the narrator's line and clip it to one sentence. Shared by the
-    authored path and the shipped fallback so both behave identically."""
-    line = _ask(prompt, temp=0.85, tokens=80, use_lore=True)
+    """Ask for the narrator's line and clip it to a beat. Shared by the authored
+    path and the shipped fallback so both behave identically.
+
+    `tokens` has to clear three short sentences with room to land the last full
+    stop — at 80 the model was being cut off mid-word and the clip then threw
+    away the unfinished sentence, which read as the narrator trailing off.
+    """
+    line = _ask(prompt, temp=0.85, tokens=140, use_lore=True)
     if _talk_llm_failed(line):
         return [{"character": s["character"],
-                 "text": _clip_narration_to_one_sentence(s["text"])} for s in fallback]
+                 "text": _clip_narration(s["text"], _NARRATION_MAX_SENTENCES)}
+                for s in fallback]
     return [{"character": "narrator",
-             "text": _clip_narration_to_one_sentence((line or "").strip()[:600])}]
+             "text": _clip_narration((line or "").strip()[:600],
+                                     _NARRATION_MAX_SENTENCES)}]
 
 
 NARRATOR_MEMORY = 6
@@ -14316,6 +15553,9 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
             with WORLD_STATE_LOCK:
                 st = _load_state(session_id)
                 st['current_observed_vision'] = vision
+                # Realtime has no scene_image beat to score off, so this read
+                # of the live frame is also what the ambience is built from.
+                st['current_vision'] = vision
                 # This vision text describes the frame that was ACTUALLY
                 # rendered, which is the only honest answer to "did the object
                 # the player touched survive the turn?" — the consequence text
@@ -15978,18 +17218,19 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             # returned handle before Phase 2 reads those fields. Same read-
             # inside-lock merge as the async path; no feed_log clobber.
             _deferred_evolve_thread = _spawn_evolve_thread(
-                session_id, consequence_summary, vision_dispatch)
+                session_id, consequence_summary, vision_dispatch, player_action=choice)
         elif skip_evolve:
             # Feed path: run the (slow, ~1k-token) world evolution in the
             # background so the turn's narrative + choices return fast. It only
             # affects the NEXT turn's world_prompt. evolve_world_state is
             # read-only; the worker merges its result under lock, preserving
             # feed_log.
-            _evolve_world_async(session_id, consequence_summary, vision_dispatch)
+            _evolve_world_async(session_id, consequence_summary, vision_dispatch,
+                                player_action=choice)
         else:
             from evolve_prompt_file import evolve_world_state
             state_file_path = _get_state_path(session_id)
-            evolution_result = evolve_world_state(history, consequence_summary, state_file=str(state_file_path), vision_description=vision_dispatch)
+            evolution_result = evolve_world_state(history, consequence_summary, state_file=str(state_file_path), vision_description=vision_dispatch, player_action=choice)
             state = _load_state(session_id)
             if evolution_result:
                 for _k in ("world_prompt", "evolution_summary", "recent_events",
@@ -16227,8 +17468,16 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
     # that is the only frame worth reading — the first panel is just where the
     # player already was, and analyzing it too was a second sequential vision
     # call for context the slate no longer consumes.
+    #
+    # `current_sequence` is the proof that THIS turn drew a flipbook, and it has
+    # to be checked — the history selector below already learned that and this
+    # one did not. Asking only whether flipbook MODE is on meant a turn whose
+    # grid was refused (a content filter on a typed action is the common way)
+    # read the previous turn's last panel instead of the still it had just
+    # rendered, and wrote that frame's spatial anchor into history as if it were
+    # this turn's. The next turn then continued from before the refused one.
     analysis_img_url = consequence_img_url
-    if flipbook_settings(state)["enabled"]:
+    if flipbook_settings(state)["enabled"] and state.get("current_sequence"):
         _fb_last = state.get('flipbook_last_frame')
         if _fb_last and os.path.exists(_fb_last):
             print(f"[VISION] Flipbook mode - reading the LAST panel only")
@@ -16240,13 +17489,29 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
     _spatial_compass_turn = ""   # directional compass: ahead/left/right/ground/height
     _setting_type_turn    = ""   # environment type: outdoor-desert, indoor-corridor, etc.
 
-    # Read the frame on a BACKGROUND thread so it OVERLAPS choice generation
-    # below. The slate is grounded on the attached frame itself, so it does not
-    # need to wait on the vision TEXT — the text only feeds this turn's
-    # situation_report and the NEXT turn's spatial anchor (the history entry),
-    # both of which are consumed AFTER the join further down. This is the
-    # "picture on screen, buttons a beat later" wait the plan removes: vision no
-    # longer sits in series in front of the choice call.
+    # Read the frame on a BACKGROUND thread so it can overlap the bookkeeping
+    # below. It used to also overlap CHOICE GENERATION, on the reasoning that the
+    # slate has the picture attached and so does not need the vision TEXT. On a
+    # real turn that does not hold. From bugs/20260917_153517:
+    #
+    #   15:35:09  [SCENE IMG] scene appended ... _f04.png
+    #   15:35:09  [VISION] Analyzing _f04.png ...
+    #   15:35:11  [CHOICES RAW LLM OUTPUT] 'Sprint toward the rusted truck / ...'
+    #   15:35:11  [VISION] Analysis complete: Ahead: Rusted industrial tanks and
+    #             pipes ~10m. Left: Chain-link fence ~2m.
+    #
+    # The slate was written with `image_description=""`, so the only scene TEXT
+    # it had was `grounded_entities(state)` — a cumulative list that still
+    # carried "rusted truck", "Black pickup" and "Guard" two turns after the
+    # player vaulted the fence and left all three on the far side of it. The
+    # picture showed tanks and pipes. The game offered the truck.
+    #
+    # A picture is stronger grounding than a caption, but it is not stronger than
+    # a caption PLUS an entity list pulling the other way. So the slate now waits
+    # for the frame to be readable AND for the read of that frame to land, and
+    # spends both on `{image_description}`. That puts the vision call back on the
+    # turn's critical path, which is the cost of the buttons describing the
+    # picture the player is looking at.
     _vision_holder = {"description": "", "spatial": "", "setting": ""}
     _vision_ms = {"ms": 0}
 
@@ -16266,6 +17531,33 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
 
     _vision_thread = threading.Thread(target=_run_vision, daemon=True)
     _vision_thread.start()
+
+    _vision_absorbed = {"done": False}
+
+    def _absorb_vision(budget: float, why: str) -> bool:
+        """Join the frame read and take what it found. Idempotent, so the slate
+        can wait for it and the history entry can ask again for free."""
+        nonlocal vision_analysis_text, _spatial_compass_turn, _setting_type_turn
+        if _vision_absorbed["done"]:
+            return bool(_vision_holder["description"])
+        try:
+            _vision_thread.join(timeout=budget)
+        except Exception:
+            pass
+        if _vision_thread.is_alive():
+            print(f"[VISION] read has not landed after {budget:g}s ({why})",
+                  flush=True)
+            return False
+        _vision_absorbed["done"] = True
+        if _vision_holder["description"]:
+            vision_analysis_text = _vision_holder["description"]
+            print(f"[VISION] Analysis complete: {vision_analysis_text[:100]}...")
+        if _vision_holder["spatial"]:
+            _spatial_compass_turn = _vision_holder["spatial"]
+            print(f"[VISION] Spatial compass: {_spatial_compass_turn[:80]}...")
+        if _vision_holder["setting"]:
+            _setting_type_turn = _vision_holder["setting"]
+        return bool(_vision_holder["description"])
 
     # FAST PATH: if the consequence call already produced usable next-action
     # options, reuse them and SKIP both the situation-report and choice-generation
@@ -16302,15 +17594,39 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
         print(f"[PHASE 2] Using {len(next_choices)} provisional choice(s) from the consequence call "
               f"(skipped situation-report + choice LLM calls).", flush=True)
     else:
-        # The slate is grounded on the ATTACHED FRAME, generated in PARALLEL with
-        # the vision read started above. We deliberately do NOT wait on the
-        # vision text to feed it: the picture is stronger grounding than a
-        # caption, and blocking the slate on that read is exactly the serial cost
-        # this parallelization removes. When there is no frame at all, fall back
-        # to the text situation report so choices still have something to stand
-        # on. situation_report for the client is filled from the vision text
-        # after the join below.
-        if not analysis_img_url:
+        # ── THE SLATE DOES NOT RUN UNTIL IT HAS A FRAME TO RUN OFF ───────────
+        # Two waits, both bounded. First the frame has to be readable: a path
+        # that failed to attach used to degrade the slate to text-only and say so
+        # only in a log line nobody reads ("[CHOICES ERROR] Image file not
+        # found"). Then the READ of that frame has to land, so the slate gets
+        # scene text describing what actually rendered instead of nothing.
+        frame_for_slate = _await_frame_on_disk(analysis_img_url, CHOICE_FRAME_WAIT)
+        if analysis_img_url and not frame_for_slate:
+            print(f"[CHOICES] the frame never became readable in "
+                  f"{CHOICE_FRAME_WAIT:g}s ({analysis_img_url}) — this slate is "
+                  f"written from text and may not match the picture", flush=True)
+        if frame_for_slate and not _absorb_vision(
+                CHOICE_VISION_WAIT, "the slate is waiting on it"):
+            print(f"[CHOICES] no scene text within {CHOICE_VISION_WAIT:g}s — the "
+                  f"frame is still attached, but the slate has only the entity "
+                  f"list for context this turn", flush=True)
+
+        # What the frame actually SHOWS, as text, for the {image_description}
+        # slot the template already has. The spatial compass goes in with it:
+        # "Ahead: rusted tanks ~10m. Left: chain-link fence ~2m." is the line
+        # that makes "sprint toward the rusted truck" obviously wrong when the
+        # truck is behind a fence the player already crossed.
+        scene_text_for_slate = vision_analysis_text if frame_for_slate else ""
+        if frame_for_slate and _spatial_compass_turn:
+            scene_text_for_slate = (
+                (scene_text_for_slate + "\n") if scene_text_for_slate else ""
+            ) + _spatial_compass_turn
+
+        # With a frame read in hand the reading IS the situation report. Only a
+        # frameless turn has to pay for a separate text one.
+        if frame_for_slate and vision_analysis_text:
+            situation_summary = vision_analysis_text
+        elif not analysis_img_url:
             situation_summary = _generate_situation_report(
                 current_image=None,
                 current_dispatch=dispatch,
@@ -16321,15 +17637,13 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
             client, PROMPTS["player_choice_generation_instructions"],
             dispatch,
             n=3,
-            image_url=analysis_img_url,
+            image_url=frame_for_slate or analysis_img_url,
             # What SCAN saw in frame, then discovered entities as world memory —
             # so the slate offers verbs on things the player can actually see.
             seen_elements=grounded_entities(state),
             recent_choices='',
             caption=vision_dispatch,
-            # Frame is attached; the vision TEXT read runs in parallel and is not
-            # available yet, so the slate leans on the picture, not the caption.
-            image_description="",
+            image_description=scene_text_for_slate,
             world_prompt=state.get('world_prompt', ''),
             temperature=0.7,
             situation_summary=situation_summary,
@@ -16341,24 +17655,28 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
         except Exception:
             _choice_timing = {}
 
-    # Join the frame read started above. The slate is already generated; the read
-    # only has to finish before we write the history entry (next turn's spatial
-    # anchor) and the situation_report.
-    try:
-        _vision_thread.join(timeout=VISION_JOIN_TIMEOUT)
-    except Exception:
-        pass
-    if _vision_holder["description"]:
-        vision_analysis_text = _vision_holder["description"]
-        print(f"[VISION] Analysis complete: {vision_analysis_text[:100]}...")
-    if _vision_holder["spatial"]:
-        _spatial_compass_turn = _vision_holder["spatial"]
-        print(f"[VISION] Spatial compass: {_spatial_compass_turn[:80]}...")
-    if _vision_holder["setting"]:
-        _setting_type_turn = _vision_holder["setting"]
+    # The slate has usually already waited for this, in which case the call is
+    # free. It still has to happen for the two paths that did not: the
+    # pregenerated-choices fast path, and a slate whose tighter
+    # CHOICE_VISION_WAIT expired. The history entry is the NEXT turn's spatial
+    # anchor, so it must not be written from a caption if a real read exists.
+    _absorb_vision(VISION_JOIN_TIMEOUT, "the history entry needs it")
     # The client's situation_report is the vision reading once we have it.
     if analysis_img_url and vision_analysis_text:
         situation_summary = vision_analysis_text
+        # …and so is the scene's SOUND. This is the only description of the
+        # frame that actually rendered (on a flipbook turn, of the last panel —
+        # where the motion settles), which makes it the only honest source for
+        # ambience. The audio lanes used to score off the realtime render base:
+        # 1,480 characters opening with the style/camera anchor, from which
+        # _clean_scene_text keeps the last 240 — i.e. the place line. Measured,
+        # a desert well pad came out as "…s grit across the pad. The place is
+        # the Four Corners fence…" and the keyword matcher, seeing no outdoor
+        # cue in that, fell through to its default: indoor room tone under an
+        # outdoor scene. Surfaced on state because the turn result's
+        # situation_report is never sent to the browser.
+        state["current_vision"] = vision_analysis_text
+        _save_state(state, session_id)
 
     next_choices = [c for c in next_choices if c and c.strip() and c.strip() != '—']
     if not next_choices:
@@ -16433,8 +17751,10 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
         "danger": False,
         "combat": False,
         # Per-stage split for the turn-timing log (see _process_turn_background).
-        # vision_ms overlaps choices_ms in wall-clock now — that overlap is the
-        # point; phase2_ms upstream captures the true elapsed for the pair.
+        # These are close to SEQUENTIAL again: the slate waits for the frame read
+        # so its options can describe the picture, so vision_ms is in front of
+        # choices_ms rather than hidden underneath it. phase2_ms upstream is
+        # still the true elapsed for the pair, and is now roughly their sum.
         "_timing": {
             "vision_ms": int(_vision_ms.get("ms", 0) or 0),
             "choices_ms": int(_choice_timing.get("choices_ms", 0) or 0),

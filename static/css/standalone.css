@@ -4423,10 +4423,10 @@ html.is-mobile #scan-tags .scan-tag.targeted::before {
 #narrator-bar.hidden { display: none; }
 #narrator-inner {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
-  gap: 12px;
-  padding: 14px 16px;
+  gap: 8px;
+  padding: 6px 12px;
   border-radius: 14px;
   background: none;
   border: none;
@@ -4435,7 +4435,7 @@ html.is-mobile #scan-tags .scan-tag.targeted::before {
 #narrator-mark {
   flex: 0 0 auto;
   color: #bcd2ff;
-  font-size: 16px;
+  font-size: 9px;
   line-height: 1.4;
   filter: drop-shadow(0 0 8px rgba(150, 190, 255, 0.8));
   animation: narrator-mark-pulse 2.6s ease-in-out infinite;
@@ -4444,24 +4444,27 @@ html.is-mobile #scan-tags .scan-tag.targeted::before {
 #narrator-text { flex: 1 1 auto; min-width: 0; }
 #narrator-speaker {
   font-family: 'Share Tech Mono', monospace;
-  font-size: 10px;
+  font-size: 6px;
   letter-spacing: 0.2em;
   text-transform: uppercase;
   color: rgba(190, 210, 255, 0.7);
-  margin-bottom: 3px;
-  min-height: 12px;
+  margin-bottom: 2px;
+  min-height: 7px;
   text-shadow: 0 1px 4px rgba(0,0,0,0.95), 0 0 10px rgba(0,0,0,0.85);
 }
+/* Half the old 19px. It is a subtitle under the picture, not a second choice
+   stack: at the old size it read as another thing to act on, and it sat in the
+   same band as the choices to prove it. */
 #narrator-line {
   font-family: 'VT323', 'Share Tech Mono', monospace;
-  font-size: 19px;
-  line-height: 1.4;
+  font-size: 10px;
+  line-height: 1.5;
   color: #eaf1ff;
   text-shadow: 0 1px 4px rgba(0,0,0,1), 0 0 12px rgba(0,0,0,0.9), 0 0 3px rgba(0,0,0,1);
 }
 #narrator-stop {
   flex: 0 0 auto;
-  width: 26px; height: 26px;
+  width: 18px; height: 18px;
   border-radius: 7px;
   border: 1px solid rgba(255,255,255,0.14);
   background: rgba(255,255,255,0.05);
@@ -4685,7 +4688,7 @@ html.is-mobile #scan-tags .scan-tag.targeted::before {
      it never spills past the shorter mobile strip. */
   #talk-voice-menu { width: calc(100vw - 40px); right: 8px; max-height: min(220px, 30vh); top: 44px; }
   #narrator-bar { width: calc(100vw - 20px); }
-  #narrator-line { font-size: 17px; }
+  #narrator-line { font-size: 9px; }
 }
 
 /* ============================================================
@@ -5547,6 +5550,15 @@ body.moment-encounter .moment-choice:hover .moment-choice-num,
 body.moment-encounter .moment-choice:focus .moment-choice-num {
   color: rgba(142, 255, 193, 0.75);
 }
+/* The slate shows the LANE, one word per row (see LANE_WORDS). Sentence
+   typography on a single word reads as a line that got truncated; label
+   typography reads as a decision. The custom row is excluded — it is still a
+   sentence, and a deliberately quieter one. */
+body.moment-encounter .moment-choice:not(.moment-choice-custom) .moment-choice-text {
+  text-transform: uppercase;
+  letter-spacing: 0.26em;
+  font-size: clamp(13px, 1.5vw, 17px);
+}
 /* Writing your own is offered as the last line of the slate, set apart by tone
    rather than by a fourth button: it is a different KIND of answer. */
 body.moment-encounter .moment-choice-custom {
@@ -5666,23 +5678,12 @@ body.moment-interact .moment-choice-locked:focus {
 }
 body.moment-interact .moment-choice-num { display: none; }
 
-/* The danger line is a SENTENCE, not a label. Uppercase at 0.22em tracking
-   wrapped it into an unreadable orange smear across the sky, so drop the label
-   typography and clamp it to two lines: the stakes sit directly underneath and
-   must never be run into. */
-body.moment-encounter #moment-nameplate-sub {
-  color: rgba(255, 176, 158, 0.92);
-  max-width: min(520px, 70vw);
-  text-transform: none;
-  letter-spacing: 0.04em;
-  font-size: 12px;
-  line-height: 1.45;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 0.8);
-}
+/* A confrontation carries NO text but the lane words and the verdict word (see
+   NO_ENCOUNTER_TEXT in standalone.js). This corner used to run the character's
+   name over the danger sentence, then over the verb you had just committed —
+   a left-hand column of the simulator narrating itself on top of its own
+   photograph, where every line is a claim the picture has to honour. */
+body.moment-encounter #moment-nameplate { display: none; }
 
 /* The stakes came through the generic notify tray, which parked a bordered,
    blurred chip in the OPPOSITE corner from the nameplate — the two competing
@@ -7795,6 +7796,9 @@ body.render-on #render-panel { display: flex; }
 @media (prefers-reduced-motion: reduce) {
   #start-menu::after { animation: none; }
   .start-brand,
+  .start-brand-type,
+  body.start-arrived .start-brand-type,
+  body.start-arrived .start-tile,
   .start-tile,
   .watch-head,
   .watch-generate-mount,
@@ -7857,7 +7861,7 @@ body.start-menu-on #start-menu { display: flex; }
   pointer-events: auto;
   opacity: 1;
   background: #020504;
-  transition: opacity 1.65s var(--cine-ease), visibility 0s linear 1.65s;
+  transition: opacity 1.05s var(--cine-ease), visibility 0s linear 1.05s;
 }
 body.start-arrived .start-splash {
   opacity: 0;
@@ -7889,6 +7893,10 @@ body.start-arrived .start-splash {
   z-index: 0;
   pointer-events: none;
   overflow: hidden;
+  /* Shorter than the soft veil's reveal, so the wallpaper has finished leaving
+     before the picker is uncovered. Overlap the two and the start plate and
+     the picker's plate cross for a moment as a double exposure. */
+  transition: opacity 0.5s var(--cine-ease);
 }
 .start-signal-video,
 .start-signal-canvas,
@@ -7930,6 +7938,11 @@ body.signal-peek-watch .start-signal-video {
   from { transform: scale(1.06) translate3d(0, 0, 0); }
   to { transform: scale(1.14) translate3d(-1.6%, -1.2%, 0); }
 }
+/* The wallpaper used to be switched off in the same frame the picker appeared.
+   It dissolves now (see the transition above) so the hand-off to the picker's
+   own stage plate is a fade between two pictures rather than a cut. Holding it
+   up underneath the picker is not the answer: they are different photographs
+   and the overlap reads as a double exposure. */
 body.xp-open .start-signal,
 body.keys-open .start-signal { opacity: 0; }
 body.signal-lock #start-menu {
@@ -7964,6 +7977,17 @@ body.buck-on .buck-veil {
 body.buck-on.buck-out .buck-veil {
   animation: buck-reveal 0.78s var(--cine-ease, cubic-bezier(0.22, 1, 0.36, 1)) forwards;
 }
+/* Soft: the same beat at half the length, for hops that stay inside the start
+   menu (start → picker → start). A full 1.34s wash between two screens that
+   share a backdrop is the whole app stopping to change a panel. */
+body.buck-on.buck-soft .buck-veil {
+  animation-duration: 0.24s;
+}
+body.buck-on.buck-soft.buck-out .buck-veil {
+  animation-duration: 0.46s;
+}
+body.buck-on.buck-soft .buck-wash,
+body.buck-on.buck-soft .buck-bloom { animation-duration: 0.7s; }
 @keyframes buck-cover {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -8086,34 +8110,55 @@ body.xp-open:has(#xp-exit) #start-exit { visibility: hidden; pointer-events: non
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 14px;
+  gap: 46px;
   padding: 32px 24px;
   max-width: min(96vw, 1400px);
   width: 100%;
   opacity: 0;
   transform: translateY(18px);
-  transition: opacity 2.15s var(--cine-ease) 0.4s, transform 2.15s var(--cine-ease) 0.4s;
+  transition: opacity 1.5s var(--cine-ease) 0.2s, transform 1.9s var(--cine-ease) 0.2s;
 }
 body.start-arrived .start-menu-inner {
   opacity: 1;
   transform: none;
 }
+/* The wordmark is a title card, not a billboard. At 26vw / 0.82 line-height it
+   filled the screen edge to edge and reduced PLAY / CREATE / ACCOUNT to a row
+   of captions under it — and worse, a display-size text run hit-tests by its
+   FONT metrics, not by the crushed line box, so its click region hung ~60px
+   below the visible letters and directly over the menu. Pressing PLAY landed
+   on the letter W and did nothing. Hence pointer-events: none, a line-height
+   that matches the type, and room underneath. */
 .start-brand {
   font-family: var(--font-display);
-  font-size: clamp(108px, 26vw, 248px);
+  font-size: clamp(58px, 11vw, 146px);
   font-weight: 400;
-  letter-spacing: 0.07em;
-  line-height: 0.82;
+  letter-spacing: 0.22em;
+  /* letter-spacing hangs an extra gap off the last letter, which shoves a
+     centred line half a space left. Indenting by the same amount puts the
+     glyphs back on the centre line. */
+  text-indent: 0.22em;
+  line-height: 1;
   color: rgba(216, 240, 228, 0.92);
   text-shadow: 0 2px 28px rgba(0, 0, 0, 0.55), 0 0 42px rgba(2, 5, 4, 0.45);
   white-space: nowrap;
   text-align: center;
+  pointer-events: none;
 }
 .start-brand-type {
   position: relative;
   z-index: 1;
   display: block;
   color: inherit;
+}
+/* The title comes into focus rather than appearing: wide and soft, condensing
+   onto its final tracking. Runs once, when the splash gives way. */
+body.start-arrived .start-brand-type {
+  animation: brand-settle 2s var(--cine-ease) both;
+}
+@keyframes brand-settle {
+  from { letter-spacing: 0.5em; filter: blur(9px); }
+  to { letter-spacing: 0.22em; filter: blur(0); }
 }
 #start-menu.has-media::before {
   background: radial-gradient(ellipse at 50% 42%, rgba(0, 0, 0, 0.18) 22%, rgba(0, 0, 0, 0.62) 100%);
@@ -8135,7 +8180,7 @@ body:not(.lobby-page) .start-tiles {
 }
 .start-tiles {
   display: flex;
-  gap: 20px 28px;
+  gap: 20px 44px;
   width: auto;
   flex-wrap: wrap;
   justify-content: center;
@@ -8174,9 +8219,14 @@ body:not(.lobby-page) .start-tiles {
 }
 .start-tile:hover::before,
 .start-tile:focus-visible::before { opacity: 1; }
-.start-tiles .start-tile:nth-child(2) { animation-delay: 0.08s; }
-.start-tiles .start-tile:nth-child(3) { animation-delay: 0.16s; }
-.start-tiles .start-tile:nth-child(4) { animation-delay: 0.24s; }
+/* The choices arrive after the title has landed, one beat apart, so the eye is
+   led down to them instead of having to find them. */
+body.start-arrived .start-tile {
+  animation: cine-rise 0.8s var(--cine-ease) 0.5s both;
+}
+body.start-arrived .start-tiles .start-tile:nth-child(2) { animation-delay: 0.61s; }
+body.start-arrived .start-tiles .start-tile:nth-child(3) { animation-delay: 0.72s; }
+body.start-arrived .start-tiles .start-tile:nth-child(4) { animation-delay: 0.83s; }
 .keys-panel {
   position: absolute;
   inset: 0;
@@ -8237,19 +8287,37 @@ body.xp-open #xp-picker { display: flex; }
   pointer-events: none;
   overflow: hidden;
 }
+/* The Experience you are choosing should be LOOKING at you. This used to be a
+   20%-opacity plate over the start menu's green-black gradient, which is not a
+   dim photograph — it is the gradient, with a suggestion of a photograph in it.
+   The plate is opaque now and the grading does the work, so what is behind
+   PLAY is the film you are about to start. */
 .xp-stage-img {
   position: absolute;
   inset: -8%;
   background-size: cover;
   background-position: center;
   opacity: 0;
-  filter: saturate(0.55) brightness(0.46);
+  filter: saturate(0.88) brightness(0.6) contrast(1.04);
   transform: scale(1.04);
   transition: opacity 0.7s var(--ease-soft, ease);
 }
 .xp-stage.has-img .xp-stage-img.is-on {
-  opacity: 0.20;
+  opacity: 1;
   animation: signal-drift 28s ease-in-out infinite alternate;
+}
+/* Legibility comes from scrims on the three bands that carry type — the nav
+   row, the PLAY / watch pool, the name dock — not from crushing the whole
+   picture. */
+.xp-stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 42% 30% at 50% 47%, rgba(2, 5, 4, 0.66) 0%, rgba(2, 5, 4, 0) 72%),
+    linear-gradient(180deg, rgba(2, 5, 4, 0.72) 0%, rgba(2, 5, 4, 0) 18%,
+                    rgba(2, 5, 4, 0) 48%, rgba(2, 5, 4, 0.92) 100%);
 }
 .xp-hero {
   position: relative;
@@ -8273,7 +8341,9 @@ body.xp-open #xp-picker { display: flex; }
   cursor: pointer;
   opacity: 0;
   transform: scale(0.92);
-  text-shadow: none;
+  /* Holds against a bright plate as well as a dark one, now that the picker
+     shows the picture rather than a hint of it. */
+  text-shadow: 0 2px 16px rgba(2, 5, 4, 0.9);
   transition:
     opacity 0.55s var(--cine-ease, ease),
     transform 0.55s var(--cine-ease, ease),
@@ -8292,6 +8362,7 @@ body.xp-ready .xp-play {
   letter-spacing: 0.22em;
   text-transform: lowercase;
   color: rgba(216, 240, 228, 0.28);
+  text-shadow: 0 1px 10px rgba(2, 5, 4, 0.9);
   background: transparent;
   border: none;
   padding: 4px 10px;
@@ -8977,21 +9048,24 @@ body.xp-ready .xp-watch {
 .coin-insert[disabled] { opacity: 0.4; cursor: default; }
 .start-tile:hover { color: var(--text); }
 .start-tile:active { opacity: 0.7; }
-.start-tile-ico { font-size: 11px; color: inherit; line-height: 1; opacity: 0.7; }
+.start-tile-ico { font-size: 10px; color: inherit; line-height: 1; opacity: 0.55; }
 .start-tile-name {
   font-family: var(--font-display);
-  font-size: 18px;
+  font-size: 23px;
   font-weight: 400;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.2em;
   color: inherit;
 }
 .start-tile:hover .start-tile-name { color: var(--accent-fg); }
 @media (max-width: 640px) {
   .start-brand {
-    font-size: clamp(72px, 22vw, 128px);
+    font-size: clamp(42px, 14vw, 82px);
+    letter-spacing: 0.16em;
+    text-indent: 0.16em;
     white-space: normal;
     text-align: center;
   }
+  .start-menu-inner { gap: 34px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .start-splash-bar i { animation: none; width: 100%; }
@@ -14864,15 +14938,95 @@ body.world-editor-on:not(.mode-watch) #objectives-hud {
   background: #000;
   opacity: 0;
   pointer-events: none;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
   /* Under the BUG button (9000) so a bad opening can still be reported, and
      over everything else, including the letterbox and the encounter flare. */
   z-index: 8500;
-  transition: opacity 620ms ease;
+  /* Slow on the way OUT — that one is the dissolve into the film. Coming in it
+     is just a cover and wants to be quick. */
+  transition: opacity 1s var(--cine-ease);
 }
 body.opening-blackout #opening-blackout {
   opacity: 1;
   /* Swallow clicks while black: input during the hold belongs to nothing yet. */
   pointer-events: auto;
+  transition: opacity 420ms ease;
+}
+
+/* The overture. Entering an Experience from the picker holds ITS plate here
+   rather than nothing: graded most of the way down, pushing in slowly, with
+   the Experience's name under it. Thirty seconds of black was the reward for
+   pressing PLAY; this is thirty seconds of the film's first frame. */
+/* Sized and framed exactly like the scene layer underneath, which is already
+   holding this same plate (Signal.hold). Offset them and the blackout's fade-in
+   crosses two copies of one picture and reads as a double exposure. */
+.opening-plate {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  opacity: 0;
+  filter: saturate(0.42) brightness(0.38) contrast(1.08);
+  transition: opacity 1.4s var(--cine-ease);
+  pointer-events: none;
+}
+body.opening-overture .opening-plate {
+  opacity: 1;
+  animation: overture-push 60s linear both;
+}
+@keyframes overture-push {
+  from { transform: scale(1); }
+  to { transform: scale(1.18); }
+}
+/* Always laid out, never display-toggled: a display change in the same frame
+   as the opacity change cancels the transition, and the title would snap on
+   instead of arriving. */
+.opening-card {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 0 24px calc(env(safe-area-inset-bottom, 0px) + 12vh);
+  opacity: 0;
+  transition: opacity 1.6s var(--cine-ease) 0.5s;
+  pointer-events: none;
+}
+body.opening-overture .opening-card { opacity: 1; }
+.opening-title {
+  font-family: var(--font-display);
+  font-size: clamp(20px, 2.6vw, 34px);
+  font-weight: 400;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;
+  line-height: 1;
+  text-align: center;
+  text-transform: uppercase;
+  color: rgba(216, 240, 228, 0.82);
+  text-shadow: 0 2px 22px rgba(0, 0, 0, 0.8);
+}
+.opening-rule {
+  display: block;
+  width: min(280px, 46vw);
+  height: 1px;
+  background: rgba(216, 240, 228, 0.12);
+  overflow: hidden;
+}
+.opening-rule i {
+  display: block;
+  height: 100%;
+  width: 32%;
+  background: rgba(142, 255, 193, 0.85);
+  animation: splash-bar 2.4s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  body.opening-overture .opening-plate { animation: none; transform: none; }
+  .opening-card { transition: none; }
+  .opening-rule i { animation: none; width: 100%; }
 }
 /* Hold the black EMPTY. The ceremony, the veil, the prose and the choice stack
    all have their own show rules and would otherwise sit on top of it. */

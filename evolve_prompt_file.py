@@ -110,7 +110,8 @@ def evolve_world_state(
     dispatches: List[Dict],
     consequence_summary: str,
     state_file: str = "state.json",
-    vision_description: str = ""
+    vision_description: str = "",
+    player_action: str = "",
 ) -> dict:
     """
     Evolve the world state based on player actions and consequences.
@@ -160,12 +161,18 @@ def evolve_world_state(
     # instead of evaporating at the next turn.
     ambient_beats = [b for b in (state.get("ambient_beats") or []) if b]
     
-    # Extract player action and consequence from dispatches
-    last_choice = ""
-    if dispatches and len(dispatches) > 0:
+    # The action THIS turn. The caller passes it explicitly, because `dispatches`
+    # (the history) does NOT yet contain the current turn — Phase 2 appends this
+    # turn's entry only after the slate is built, so `dispatches[-1]` is the
+    # PREVIOUS turn's choice. Reading it from history therefore attributed every
+    # world rewrite (and its recent_events line + archive record) to the prior
+    # move. Fall back to the history-derived value only when no explicit action
+    # was threaded through, preserving the old behavior for any legacy caller.
+    last_choice = (player_action or "").strip()
+    if not last_choice and dispatches and len(dispatches) > 0:
         last_entry = dispatches[-1]
         last_choice = last_entry.get("choice", last_entry.get("user_input", ""))
-    
+
     player_action = last_choice if last_choice else "exploring"
 
     # The world_prompt is seeded at reset with the player's cast sheet (who they
@@ -353,11 +360,16 @@ RETURN ONE JSON OBJECT with these fields and nothing else:
         except Exception:
             pass
 
-        # The ceiling has to sit AFTER the lore append, or the one thing that
+        # The ceiling has to sit AFTER the lore goes in, or the one thing that
         # actually makes this document huge is the one thing it never measures.
+        # The lore now LEADS the document rather than trailing it, so what this
+        # cut takes is the tail of the evolved direction instead of the tail of
+        # the author's bible — which is the right way round: the direction is
+        # rewritten every turn, the bible is the source of truth.
         if len(new_world_prompt) > _WORLD_PROMPT_CAP:
             print(f"[WORLD EVOLUTION V3] WARNING: world prompt {len(new_world_prompt)} chars "
-                  f"> cap {_WORLD_PROMPT_CAP}, truncating")
+                  f"> cap {_WORLD_PROMPT_CAP}, truncating "
+                  f"{len(new_world_prompt) - _WORLD_PROMPT_CAP} chars off the end")
             new_world_prompt = _trim_to_sentence(new_world_prompt[:_WORLD_PROMPT_CAP])
         
     except Exception as e:

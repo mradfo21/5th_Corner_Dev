@@ -1373,7 +1373,14 @@
     const bufferCache = new Map(); // url -> decoded AudioBuffer
     const loopCache = new WeakMap(); // AudioBuffer -> {buf, loopEnd}
     const FADE = 1.4;           // crossfade seconds between scene scores
-    const SFX_BED = 0.55;       // ambience sits under the music bed
+    // The scene's own ambience is the ATMOSPHERE, not a garnish. At 0.55 of a
+    // music bed that already defaults to 0.12 it played at about 0.066 gain —
+    // technically running, inaudible in practice, which is most of why the
+    // world sounded like nothing was there. It now leads and the music sits
+    // under it, which is the right way round for a game whose sound is
+    // supposed to be a PLACE rather than a score.
+    const SFX_BED = 1.0;        // ambience leads, at the preset's face value
+    const MUSIC_BED = 0.35;     // the score sits under it
     const RETRY_MS = 3500;
     const RETRY_MAX = 28;       // ~98s, matches Eleven Music's timeout
     let audioToken = 0;         // bumps on every new score so late replies die
@@ -1386,21 +1393,68 @@
     let preConvoPrompt = null;
     let encounterSeq = 0;
     let encounterLive = false;
+    // action text -> a READY foley url. Only ever holds a url the server has
+    // confirmed is on disk: the endpoint answers with the url it WILL write
+    // before the clip exists, and playing that fetches a 404 and dies silently.
+    // Never cleared — the same verb should sound the same later, and the
+    // server caches per action anyway.
+    const foleyUrls = new Map();
+    const foleyAsking = new Map();   // text -> in-flight promise, so one ask each
+    const FOLEY_WARM_TRIES = 6;      // ~18s: the slate is on screen far longer
+    const FOLEY_PLAY_TRIES = 4;      // ~12s: a cold MOVE/INTERACT phrase
+    const FOLEY_POLL_MS = 3000;
+
+    // ── consequence bed ───────────────────────────────────────────────────
+    // A third looping layer, alongside the score and the ambience, carrying
+    // what the turn's choice actually DID. Armed when the consequence prose
+    // lands, started when the flipbook plays, held until the next action is
+    // committed. See the "Consequence bed" section in scene_audio.py.
+    let beatSrc = null;
+    let beatGain = null;
+    let beatArmed = "";              // consequence text the next frames belong to
+    let beatReady = null;            // promise of that text's url, warming now
+    let beatKey = "";                // what is playing, so a repaint can't restart it
+    let beatSeq = 0;                 // bumps on arm/abandon so a late clip cannot open
+    // Once per turn, full stop. Without this the one-shot ending would clear
+    // beatSrc, and the frames arriving afterwards would read "nothing playing"
+    // and start the very same clip again — the repetition this stopped being a
+    // loop to avoid.
+    let beatPlayed = false;
+    // A bed is the answer to something the PLAYER did, so it only exists on a
+    // turn they committed. Boot resolves a turn too, and its opening prose is
+    // "1993. You are Jason Fleece, investigative photojournalist" — a setting
+    // dump with no sound in it, which is exactly the mush the foley lane above
+    // learned not to generate from.
+    let beatTurnLive = false;
+    // The event leads: it is newer than the room and it is the thing the
+    // player just caused. Still under foley, which is the answer to their hand
+    // on the button.
+    const BEAT_BED = 1.25;
+    // The picture is the long pole — the consequence lands five steps before
+    // it — so this can afford to wait far longer than the slate's prewarm.
+    const BEAT_WARM_TRIES = 14;      // ~42s
+    const BEAT_PLAY_TRIES = 2;       // the frames are already up; don't stall
 
     // Music bed volume — an ambient bed that should sit UNDER the UI SFX, not
     // compete with it. It's now adjustable live from the debug panel (WORLD
     // MODEL / L) and persisted per browser. We expose a short list of preset
     // "options" (Off…Max) rather than a fiddly slider, and default lower than
     // before (the old 0.26 read as too loud for a background bed).
+    // Recalibrated when the beds started being loudness-normalised (see
+    // normalizeGain). The old numbers were raw multipliers on whatever level
+    // ElevenLabs happened to return, chosen when the layer was a music bed
+    // hiding under everything — 0.12 against an un-normalised clip measured
+    // -43 dBFS at the speakers. Now that a clip arrives at a known loudness
+    // these mean what they say, and "Med" is an ambience you can actually hear.
     const VOL_KEY = "music_vol";
     const VOL_PRESETS = [
       { id: "off",  label: "Off",  value: 0.0  },
-      { id: "low",  label: "Low",  value: 0.06 },
-      { id: "med",  label: "Med",  value: 0.12 },
-      { id: "high", label: "High", value: 0.20 },
-      { id: "max",  label: "Max",  value: 0.30 },
+      { id: "low",  label: "Low",  value: 0.15 },
+      { id: "med",  label: "Med",  value: 0.35 },
+      { id: "high", label: "High", value: 0.60 },
+      { id: "max",  label: "Max",  value: 1.00 },
     ];
-    const DEFAULT_VOL = 0.12;
+    const DEFAULT_VOL = 0.35;
     function loadVol() {
       try {
         const raw = localStorage.getItem(VOL_KEY);
@@ -1418,8 +1472,10 @@
     function applyLiveVolume() {
       const c = ctx();
       const duck = Math.max(0, Math.min(1, duckFactor));
-      const musicTarget = state.soundEnabled ? (musicVol * duck) : 0;
-      const sfxTarget = state.soundEnabled ? (musicVol * SFX_BED * duck) : 0;
+      const musicTarget = state.soundEnabled
+        ? (musicVol * MUSIC_BED * duck * ((gain && gain._norm) || 1)) : 0;
+      const sfxTarget = state.soundEnabled
+        ? (musicVol * SFX_BED * duck * ((sfxGain && sfxGain._norm) || 1)) : 0;
       function ramp(node, value) {
         if (!node || !c) return;
         try {
@@ -1429,8 +1485,11 @@
           node.gain.linearRampToValueAtTime(value, t + 0.25);
         } catch (_) {}
       }
+      const beatTarget = state.soundEnabled
+        ? (musicVol * BEAT_BED * duck * ((beatGain && beatGain._norm) || 1)) : 0;
       ramp(gain, musicTarget);
       ramp(sfxGain, sfxTarget);
+      ramp(beatGain, beatTarget);
     }
 
     function ctx() {
@@ -1491,6 +1550,54 @@
       return buf;
     }
 
+    // ── loudness ──────────────────────────────────────────────────────────
+    // Generated clips come back at wildly different levels and ElevenLabs does
+    // not normalise them, so a fixed gain is always wrong for something. The
+    // measured result of not doing this: a scene bed playing at RMS 0.007,
+    // about -43 dBFS, which is running-but-inaudible — "I never hear anything",
+    // and correctly so. Ambience wants roughly -22 dBFS to sit under dialogue
+    // and still read as a place.
+    //
+    // Measured once per buffer and cached with it. Clamped so a nearly silent
+    // clip cannot be amplified into noise, and a hot one is pulled down rather
+    // than left to clip.
+    // Measured off a real ElevenLabs foley clip: rms 0.006, peak 0.060 — a raw
+    // peak of -24 dBFS. The source is genuinely that quiet, so the headroom
+    // needed to rescue it is large, and an earlier 12x ceiling was itself the
+    // thing keeping foley inaudible.
+    //
+    // Loudness to TARGET_RMS, but never past PEAK_CEIL: the peak term is what
+    // makes a big boost safe, because it cannot by construction push the clip
+    // into clipping however quiet the source was.
+    const TARGET_RMS = 0.13;
+    const PEAK_CEIL = 0.9;
+    const GAIN_MIN = 0.25, GAIN_MAX = 40;
+    const rmsCache = new WeakMap();
+    function normalizeGain(buf) {
+      if (!buf) return 1;
+      if (rmsCache.has(buf)) return rmsCache.get(buf);
+      let sum = 0, peak = 0, n = 0;
+      // One channel, strided — once per clip, and a 14s stereo buffer is ~1.2M
+      // frames.
+      const data = buf.getChannelData(0);
+      const stride = Math.max(1, Math.floor(data.length / 50000));
+      for (let i = 0; i < data.length; i += stride) {
+        const v = data[i];
+        sum += v * v;
+        const a = v < 0 ? -v : v;
+        if (a > peak) peak = a;
+        n++;
+      }
+      const rms = n ? Math.sqrt(sum / n) : 0;
+      let g = 1;
+      if (rms > 0.00001 && peak > 0.00001) {
+        g = Math.min(TARGET_RMS / rms, PEAK_CEIL / peak);
+        g = Math.max(GAIN_MIN, Math.min(GAIN_MAX, g));
+      }
+      rmsCache.set(buf, g);
+      return g;
+    }
+
     function stopLayer(which, fadeOut) {
       const isSfx = which === "sfx";
       const oldSrc = isSfx ? sfxSrc : src;
@@ -1516,6 +1623,7 @@
     function stop(fadeOut) {
       stopLayer("music", fadeOut);
       stopLayer("sfx", fadeOut);
+      abandonBeat(fadeOut);
     }
 
     function loopable(c, buf) {
@@ -1556,13 +1664,196 @@
       const g = c.createGain();
       const t = c.currentTime;
       const duck = Math.max(0, Math.min(1, duckFactor));
-      const target = musicVol * duck * (isSfx ? SFX_BED : 1);
+      // Carried on the node so applyLiveVolume can re-target it later without
+      // needing the buffer back.
+      g._norm = normalizeGain(looped.buf || buf);
+      const target = musicVol * duck * (isSfx ? SFX_BED : MUSIC_BED) * g._norm;
       g.gain.setValueAtTime(0.0001, t);
       g.gain.linearRampToValueAtTime(target, t + FADE);
       s.connect(g); g.connect(c.destination);
       try { s.start(); } catch (_) { return; }
       if (isSfx) { sfxSrc = s; sfxGain = g; }
       else { src = s; gain = g; }
+    }
+
+    // Play a foley clip once, over the beds, on its own node. Normalised like
+    // everything else and mixed ABOVE the ambience — it is the answer to a
+    // button press, so it has to read as the loudest thing for its two seconds.
+    // normalizeGain already brings a clip up to PEAK_CEIL, so what is left to
+    // choose is how loud foley sits RELATIVE to that — and the cap belongs on
+    // this multiplier, not on the gain. Clamping the gain (which is what this
+    // did at first) threw the normalisation away: a 14.9x boost became 0.85x
+    // and the hit came out at -37 dBFS, quieter than the bed under it.
+    const FOLEY_LEVEL = 1.9;
+    function playFoley(url) {
+      return fetchBuffer(url).then((buf) => {
+        if (!state.soundEnabled || !buf) return false;
+        const c = wake();
+        if (!c) return false;
+        const s = c.createBufferSource();
+        s.buffer = buf;
+        s.loop = false;
+        const g = c.createGain();
+        const t = c.currentTime;
+        const duck = Math.max(0, Math.min(1, duckFactor));
+        // Capped at 1 so a normalised clip (peak ~PEAK_CEIL) cannot clip even
+        // at the loudest preset.
+        const mult = Math.min(1, musicVol * FOLEY_LEVEL * duck);
+        const target = mult * normalizeGain(buf);
+        if (target <= 0) return false;
+        // Generated clips can open on a hard transient; a 30ms lift off zero
+        // stops that arriving as a click.
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(target, t + 0.03);
+        s.connect(g); g.connect(c.destination);
+        try { s.start(); } catch (_) { return false; }
+        try { s.onended = () => { try { g.disconnect(); } catch (_) {} }; } catch (_) {}
+        return true;
+      }).catch(() => false);
+    }
+
+    // ── consequence bed transport ─────────────────────────────────────────
+    // Its own pair of nodes rather than a third case threaded through
+    // stopLayer/playBuffer/crossfadeTo: those carry the score and the
+    // ambience, which are per-SCENE and deduped by url, and this is per-TURN
+    // and deduped by the frames it belongs to. Different lifetime, different
+    // transport.
+    // Tear down whatever is sounding. Deliberately does NOT invalidate an
+    // armed clip — playConsequence uses this to swap one bed for the next.
+    function stopBeat(fadeOut) {
+      const oldSrc = beatSrc;
+      const oldGain = beatGain;
+      beatSrc = null;
+      beatGain = null;
+      beatKey = "";
+      if (!oldSrc) return;
+      const c = ctx();
+      try {
+        if (c && oldGain) {
+          const t = c.currentTime;
+          const d = fadeOut == null ? FADE : fadeOut;
+          oldGain.gain.cancelScheduledValues(t);
+          oldGain.gain.setValueAtTime(oldGain.gain.value, t);
+          oldGain.gain.linearRampToValueAtTime(0.0001, t + d);
+          oldSrc.stop(t + d + 0.05);
+        } else {
+          oldSrc.stop();
+        }
+      } catch (_) {}
+    }
+
+    // Stop AND forget: the armed clip no longer belongs to anything on screen,
+    // so a generation still in flight must not open when it lands.
+    function abandonBeat(fadeOut) {
+      beatSeq += 1;
+      beatArmed = "";
+      beatReady = null;
+      beatTurnLive = false;
+      beatPlayed = false;
+      stopBeat(fadeOut);
+    }
+
+    async function openBeat(url, key, mine) {
+      if (!url || mine !== beatSeq || beatPlayed) return false;
+      let buf = null;
+      try { buf = await fetchBuffer(url); } catch (_) { return false; }
+      if (!buf || mine !== beatSeq || beatPlayed) return false;
+      stopBeat(0.3);
+      const ok = startBeat(buf, key || url);
+      if (ok) beatPlayed = true;
+      return ok;
+    }
+
+    // ONE pass, then silence. It used to loop and hold until the next action
+    // was committed, which meant a distinctive 18-second gesture repeating
+    // under a player who is still reading — the repetition is what made it
+    // annoying, and a sound only reads as the world answering if it happens
+    // once. No loopable() seam-blending either: that exists to hide a loop
+    // point this no longer has, and it costs a copy of the whole buffer.
+    function startBeat(buf, key) {
+      const c = wake();
+      if (!c || !buf) return false;
+      const s = c.createBufferSource();
+      s.buffer = buf;
+      s.loop = false;
+      const g = c.createGain();
+      const t = c.currentTime;
+      const duck = Math.max(0, Math.min(1, duckFactor));
+      g._norm = normalizeGain(buf);
+      const target = musicVol * BEAT_BED * duck * g._norm;
+      // Faster in than a scene crossfade: this is supposed to arrive WITH the
+      // first frame, not drift up over the whole flipbook.
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(target, t + 0.45);
+      s.connect(g); g.connect(c.destination);
+      try { s.start(); } catch (_) { return false; }
+      // Let go when it finishes on its own, or the node stays "current"
+      // forever: applyLiveVolume would keep ramping a dead gain and
+      // playConsequence would think a bed was still running.
+      try {
+        s.onended = () => {
+          if (beatSrc !== s) return;
+          beatSrc = null;
+          beatGain = null;
+          beatKey = "";
+          try { g.disconnect(); } catch (_) {}
+        };
+      } catch (_) {}
+      beatSrc = s;
+      beatGain = g;
+      beatKey = key || "";
+      return true;
+    }
+
+    // Same poll-until-really-on-disk contract as askFoley: the endpoint answers
+    // with the url it is GOING to write, and fetching that early 404s.
+    function askBeat(text, tries) {
+      return (async () => {
+        for (let i = 0; i < Math.max(1, tries); i++) {
+          let res = null;
+          try {
+            res = await postJSON("/api/consequence_audio",
+                                 { text: text, session: sessionId() });
+          } catch (_) { return null; }
+          if (!res || !res.url) return null;   // off, no key, or too short
+          if (!res.pending) return res.url;
+          await new Promise((r) => setTimeout(r, FOLEY_POLL_MS));
+        }
+        return null;
+      })();
+    }
+
+    // Ask for one action's foley and resolve only when the clip is REALLY
+    // there. The endpoint reports `pending` while ElevenLabs is still working
+    // and hands back the url it is GOING to write; treating that as playable
+    // was the bug — the fetch 404s, the .catch swallows it, and the action is
+    // silent. Polls instead, shares one request per action, and gives up
+    // quietly rather than holding anything up.
+    function askFoley(text, tries) {
+      const ready = foleyUrls.get(text);
+      if (ready) return Promise.resolve(ready);
+      const inflight = foleyAsking.get(text);
+      if (inflight) return inflight;
+
+      const run = (async () => {
+        for (let i = 0; i < Math.max(1, tries); i++) {
+          let res = null;
+          try {
+            res = await postJSON("/api/action_foley",
+                                 { action: text, session: sessionId() });
+          } catch (_) { break; }
+          if (!res || !res.url) break;          // off, no key, or junk action
+          if (!res.pending) {                   // on disk — safe to play
+            foleyUrls.set(text, res.url);
+            return res.url;
+          }
+          await new Promise((r) => setTimeout(r, FOLEY_POLL_MS));
+        }
+        return null;
+      })();
+      run.finally(() => { foleyAsking.delete(text); });
+      foleyAsking.set(text, run);
+      return run;
     }
 
     async function crossfadeTo(url, layer) {
@@ -1631,7 +1922,15 @@
         if (!res || (!res.audio_url && !res.sfx_url && !res.stinger_url
             && !res.pending_music && !res.pending_sfx)) return;
         applyScore(res);
-        const waiting = !!(res.pending_music || (res.pending_sfx && !res.sfx_url));
+        // Keep asking while EITHER layer is still being made. `pending_sfx &&
+        // !sfx_url` was wrong in the one case that matters: when the scene's
+        // own ambience is still generating the server hands back the generic
+        // stock bed as `sfx_url` so there is something to hear immediately —
+        // which made this condition false, stopped the retries, and left the
+        // scene on that stock bed permanently. Every location in the game
+        // therefore sounded like the same four rooms, and the scene-specific
+        // loops piled up on disk having been generated and never fetched.
+        const waiting = !!(res.pending_music || res.pending_sfx);
         if (waiting && pendingTries < RETRY_MAX) {
           pendingTries += 1;
           scheduleRetry(() => { this.score(raw, { retry: true }); });
@@ -1815,6 +2114,14 @@
       },
       // Title screen bed. The match loop used to keep going after LEAVE, which
       // is why the menu sounded like the same default track forever.
+      //
+      // ONLY a track somebody locked in the editor plays here. It used to fall
+      // back to the menu_preview sample — the 10-second audition the Play menu
+      // button writes, which the server also generated unprompted from the
+      // direction text. So the title screen looped ten seconds of, in this
+      // case, "horror action score": clanking metal, forever, under a menu.
+      // An audition is not a decision. The editor says "silent until you set
+      // one" and that is now true.
       async enterMenu() {
         try { this.unlock(); } catch (_) {}
         const t = bumpToken();
@@ -1830,23 +2137,7 @@
         } catch (_) { return; }
         if (!sameToken(t)) return;
         const locked = info.menu_loop && info.menu_loop.url;
-        if (locked) { await crossfadeTo(locked, "music"); return; }
-        const cached = info.menu_preview && info.menu_preview.url;
-        if (cached) { await crossfadeTo(cached, "music"); return; }
-        // Boot used to POST a 10s generate here. PLAY is the same click
-        // that unlocks audio, so the sample landed after LEAVE and the
-        // title track played over the match. Only generate after a
-        // gesture, and only if we are still on the menu when it returns.
-        const prompt = (info.menu_direction || "").trim();
-        if (!prompt || !info.can_generate || !state.audioUnlocked) return;
-        try {
-          const r = await postJSON("/api/music/preview", {
-            prompt: prompt, seconds: 10, for: "menu",
-          });
-          if (!sameToken(t)) return;
-          const preview = (r && r.data && r.data.preview) || (r && r.preview);
-          if (preview && preview.url) await crossfadeTo(preview.url, "music");
-        } catch (_) {}
+        if (locked) await crossfadeTo(locked, "music");
       },
       leaveMenu() {
         bumpToken();
@@ -1868,6 +2159,82 @@
           requestedKey = null;
           this.score(raw);
         }
+      },
+      // ── action foley ────────────────────────────────────────────────
+      // The sound of the thing the player just did. Ask for every choice the
+      // moment the slate renders (prewarm) so the click itself is a cache hit
+      // — a foley that lands eight seconds after the button is worse than
+      // none. See the "Action foley" section in scene_audio.py.
+      prewarmFoley(actions) {
+        if (!state.soundEnabled) return;
+        (actions || []).forEach((a) => {
+          const text = (a == null ? "" : String(a)).trim();
+          if (text.length >= 2 && !foleyUrls.has(text)) askFoley(text, FOLEY_WARM_TRIES);
+        });
+      },
+      // Play it. A prewarmed clip is READY and starts immediately; a cold one
+      // (SCAN MOVE, INTERACT, a typed action — phrases that do not exist until
+      // the click) is waited on briefly rather than skipped.
+      async foley(action) {
+        if (!state.soundEnabled) return false;
+        const text = (action == null ? "" : String(action)).trim();
+        if (text.length < 2) return false;
+        const url = await askFoley(text, FOLEY_PLAY_TRIES);
+        if (!url) return false;
+        return playFoley(url);
+      },
+      // ── consequence bed ─────────────────────────────────────────────
+      // Arm on the consequence prose, start when the frames play, drop when
+      // the next action is committed. The arming is the whole trick: the
+      // consequence lands five pipeline steps before the picture, so the
+      // clip is generated during a wait the player is already having.
+      armConsequence(text) {
+        if (!state.soundEnabled) return;
+        const raw = (text == null ? "" : String(text)).trim();
+        if (raw.length < 12) return;
+        // Nothing was committed, so nothing has a consequence — this is the
+        // opening of a run, not the answer to a choice.
+        if (!beatTurnLive) return;
+        // Once per turn. A turn can land several prose beats (escalation
+        // stings, pickups) and the FIRST one is the consequence; re-arming on
+        // a later one would throw away a generation that is already warming
+        // and restart the clock with less of the window left. endConsequence
+        // clears this on commit, so the next turn arms freely.
+        if (beatArmed) return;
+        beatSeq += 1;
+        beatPlayed = false;
+        const mine = beatSeq;
+        beatArmed = raw;
+        beatReady = askBeat(raw, BEAT_WARM_TRIES)
+          .then((url) => (mine === beatSeq ? url : null))
+          .catch(() => null);
+        // Open it the moment it exists rather than holding it for the frames.
+        // The picture is 20-40s away and the ceremony only has six short blips
+        // to fill that with, so waiting was leaving the longest silence in the
+        // turn exactly where the player is doing nothing but waiting. The prose
+        // this bed was made from is already on screen, so it is not early.
+        beatReady.then((url) => openBeat(url, "", mine)).catch(() => {});
+      },
+      // The frames are on screen. Usually a no-op — it has been sounding since
+      // the clip landed, or it has already played through — but it still
+      // covers the case where the generation only finished after the picture
+      // did, which is the one turn in which the frames are the right cue.
+      async playConsequence(key) {
+        if (!state.soundEnabled || !beatArmed || beatPlayed) return false;
+        if (beatSrc) { beatKey = key || beatKey; return true; }
+        const mine = beatSeq;
+        let url = null;
+        try {
+          url = await (beatReady || askBeat(beatArmed, BEAT_PLAY_TRIES));
+        } catch (_) { return false; }
+        return openBeat(url, key, mine);
+      },
+      // The player committed the next action: the beat that was holding is
+      // over, and a new one is owed. Slower than a cut so it reads as the
+      // moment releasing rather than an audio glitch.
+      endConsequence() {
+        abandonBeat(0.9);
+        beatTurnLive = true;
       },
       // Restore the pre-conversation exploration bed (or just unduck).
       async endConversation() {
@@ -2091,9 +2458,47 @@
     const CEILING_MS = 40000;
     let holding = false;
     let ceiling = 0;
+    // The overture: a plate and a title to hold the frame ON, armed by whoever
+    // is about to start the run (the picker knows which Experience it is; a
+    // mid-run restart does not, and gets the plain black). Armed state is
+    // one-shot so a restart can never inherit the last opening's card.
+    let armedPlate = "";
+    let armedTitle = "";
+    let overtureTimer = 0;
+
+    function arm(plate, title) {
+      armedPlate = typeof plate === "string" ? plate : "";
+      armedTitle = typeof title === "string" ? title : "";
+    }
+
+    function paintOverture() {
+      const plate = armedPlate;
+      const title = armedTitle;
+      armedPlate = "";
+      armedTitle = "";
+      // A restart during the last opening's tail must not have its card wiped
+      // by that opening's cleanup.
+      clearTimeout(overtureTimer);
+      const node = document.getElementById("opening-plate");
+      const label = document.getElementById("opening-title");
+      if (!plate || !node) {
+        document.body.classList.remove("opening-overture");
+        return;
+      }
+      node.style.backgroundImage = `url("${plate}")`;
+      if (label) label.textContent = title || "";
+      document.body.classList.add("opening-overture");
+    }
+
+    function clearOverture() {
+      document.body.classList.remove("opening-overture");
+      const node = document.getElementById("opening-plate");
+      if (node) node.style.backgroundImage = "";
+    }
 
     function begin() {
       holding = true;
+      paintOverture();
       document.body.classList.add("opening-blackout");
       clearTimeout(ceiling);
       ceiling = setTimeout(() => {
@@ -2112,17 +2517,25 @@
       clearTimeout(ceiling);
       try { console.log("[opening] fading up on " + (reason || "?")); } catch (_) {}
       document.body.classList.remove("opening-blackout");
+      // Let the card ride out on the blackout's own dissolve, then drop it so
+      // the next opening starts from nothing.
+      clearTimeout(overtureTimer);
+      overtureTimer = setTimeout(clearOverture, 1100);
       // The first turn's deadline starts NOW, not when the montage was
       // requested. Everything before this beat was the opening playing, which
       // the player was watching rather than waiting on.
       try {
         if (state.awaitingResolution) armTurnWatchdog();
       } catch (_) {}
+      // First picture is up. If that picture is the opening montage's first
+      // shot, the voice should start now so it speaks OVER the cinematic.
+      // Cutscene.isGenerating still defers this until the shots exist.
+      try { Narrator.onOpeningReady(); } catch (_) {}
     }
 
     function isHolding() { return holding; }
 
-    return { begin: begin, ready: ready, isHolding: isHolding };
+    return { begin: begin, ready: ready, isHolding: isHolding, arm: arm };
   })();
 
   // One-shot subscribers for "the next scene image is actually painted".
@@ -2810,11 +3223,16 @@
     // Without it the sequence was torn down and replayed from frame 1 on every
     // repaint, so a 4-frame beat only ever showed its first two frames and
     // never reached the end it is supposed to hold on.
+    const key = frames.length + "|" + frames[0] + "|" + frames[frames.length - 1];
     sceneSequence.play(frames, {
       frameMs: sequenceFrameMs(sequence),
       loop: false,
-      key: frames.length + "|" + frames[0] + "|" + frames[frames.length - 1],
+      key: key,
     });
+    // The motion has the turn's own bed under it, armed when the consequence
+    // landed. Keyed on the same frames the player is keyed on, so the feed
+    // poll repainting this sequence cannot restart it.
+    try { SceneAudio.playConsequence(key); } catch (_) {}
     // SCAN and PHOTO capture whatever is in currentStillUrl, and they must get
     // the frame the turn ENDS on — never a mid-motion blur. play() paints frame
     // 1 synchronously (which sets this), so the correction goes after it.
@@ -5884,8 +6302,8 @@
       if (!ok) return;
       render();
       try { refreshDirective(true); } catch (_) {}
-      try { await persistAndRender(); } catch (_) {}
-      toast("Applied — updating the viewport.");
+      try { await persistEditingWorld(); } catch (_) {}
+      toast("Applied. Press GENERATE to draw it.");
     }
 
     async function saveAndRestart() {
@@ -6924,30 +7342,27 @@
       applyIdentityPayload(payload, { keepSheet: true });
       paintCompiled(blockId);
       if (opts && opts.skipPersist) return;
-      if (FRAME_BLOCKS[blockId]) {
-        setSaveStatus("saving");
-        try {
-          await persistAndRender({
-            resetFrame: true,
-          });
-        } catch (err) {
-          setSaveStatus("error");
-          if (!(opts && opts.quiet)) toast((err && err.message) || "Couldn't update this World.", "warn");
-          return;
-        }
-        setSaveStatus(anyFrameBusy() ? "rendering" : "saved");
-        if (!(opts && opts.quiet)) {
-          const nowName = String(((identity[blockId] || {}).name) || "").trim();
-          toast(blockId === "player_character" && nowName && nowName !== wasName
-            ? "Saved. Prompts now use " + nowName + ". Updating the picture."
-            : "Saved — restaging the live scene.");
-        }
-      } else {
-        try { await persistEditingWorld(); } catch (_) {}
-        if (!(opts && opts.quiet)) {
-          setSaveStatus("saved");
-          toast("Saved to this World.");
-        }
+      // EDITING DOES NOT DRAW. This used to persistAndRender on every field
+      // save, which re-rendered the World's frame and restaged the live scene
+      // from a sheet the author was still halfway through writing — so a
+      // character edit was drawn once per field, each time from a different
+      // half-finished person. Saving writes; GENERATE draws.
+      setSaveStatus("saving");
+      try {
+        await persistEditingWorld();
+      } catch (err) {
+        setSaveStatus("error");
+        if (!(opts && opts.quiet)) toast((err && err.message) || "Couldn't save that.", "warn");
+        return;
+      }
+      setSaveStatus("saved");
+      if (!(opts && opts.quiet)) {
+        const nowName = String(((identity[blockId] || {}).name) || "").trim();
+        toast(FRAME_BLOCKS[blockId]
+          ? (blockId === "player_character" && nowName && nowName !== wasName
+              ? "Saved. Prompts now use " + nowName + ". Press GENERATE to draw it."
+              : "Saved. Press GENERATE to draw it.")
+          : "Saved to this World.");
       }
     }
 
@@ -6957,13 +7372,8 @@
       const payload = data && (data.data || data);
       if (!ok || !payload) { toast("Couldn't clear that.", "warn"); return; }
       applyIdentityPayload(payload);
-      if (FRAME_BLOCKS[blockId]) {
-        kickWorldFrame(editingWorldId);
-        try { persistAndRender(); } catch (_) {}
-      } else {
-        try { persistEditingWorld(); } catch (_) {}
-      }
-      toast("Cleared.");
+      try { persistEditingWorld(); } catch (_) {}
+      toast("Cleared. Press GENERATE to draw it.");
     }
 
     function uploadPlate(file, slot) {
@@ -6987,14 +7397,18 @@
         // Applying mid-read used to redraw Jason, then the plate, then a man.
         applyIdentityPayload(payload, { skipResteer: true });
         const filled = payload.image_fill && payload.image_fill.fields;
-        if (!filled || !filled.length) {
-          toast("Couldn't read a description from that image.", "warn");
-          return;
-        }
-        setSaveStatus("rendering");
-        try { await persistAndRender(); } catch (_) {}
-        setSaveStatus(anyFrameBusy() ? "rendering" : "saved");
-        toast("Saved — drafted from the image, updating the picture.");
+        const readable = !!(filled && filled.length);
+        // An unreadable photo used to return here, before the save — so the
+        // plate the server had already wired was never written to the World
+        // and the upload silently did nothing. Warn, then save anyway.
+        setSaveStatus("saving");
+        try { await persistEditingWorld(); } catch (_) {}
+        setSaveStatus("saved");
+        toast(readable
+          ? "Saved — drafted from the image. Press GENERATE to draw it."
+          : "Couldn't read a description from that image — the plate is attached. "
+            + "Fill the sheet in, then press GENERATE.",
+          readable ? "" : "warn");
       };
       reader.readAsDataURL(file);
     }
@@ -7005,9 +7419,9 @@
       if (!ok || !payload) { toast("Delete failed.", "warn"); return; }
       applyIdentityPayload(payload);
       setSaveStatus("saving");
-      try { await persistAndRender(); } catch (_) {}
-      setSaveStatus(anyFrameBusy() ? "rendering" : "saved");
-      toast("Saved — updating the picture.");
+      try { await persistEditingWorld(); } catch (_) {}
+      setSaveStatus("saved");
+      toast("Saved. Press GENERATE to draw it.");
     }
 
     // ── Worlds tab ────────────────────────────────────────────────────
@@ -7467,6 +7881,9 @@
       try {
         await flushPendingWorldEdits();
         await persistWorld(wid);
+        // GENERATE is now the only thing that draws, so it is also the only
+        // thing that pushes the finished sheet at the live scene.
+        await applySheetToLiveScene();
         paintViewportFromFrame._url = "";
         keepLiveExperience._url = "";
         keepLiveExperience._world = "";
@@ -7493,14 +7910,19 @@
       }
     }
 
+    // Art direction lives in the prompt file, not the identity PUT, so the
+    // live contract is reloaded before the restage — the same image must not
+    // keep the old look. Split out of persistAndRender so GENERATE can do it
+    // without an empty catch in its own body.
+    async function applySheetToLiveScene() {
+      try { await Camera.reload(); } catch (err) { console.warn("[editor] camera reload failed:", err); }
+      try { resteerLiveFromSheet(); } catch (err) { console.warn("[editor] restage failed:", err); }
+    }
+
     async function persistAndRender(opts) {
       await persistEditingWorld();
       kickWorldFrame(resolveEditingWorldId());
-      // Art direction lives in the prompt file, not the identity PUT, so
-      // reload the live contract and restage — same image must not keep
-      // the old look.
-      try { await Camera.reload(); } catch (_) {}
-      try { resteerLiveFromSheet(); } catch (_) {}
+      await applySheetToLiveScene();
       if (opts && opts.resetFrame) {
         const wid = resolveEditingWorldId();
         if (wid) {
@@ -7531,6 +7953,7 @@
       } catch (_) {}
     }
 
+    // SAVE writes the sheet. It does NOT draw — see saveIdentity.
     async function flushSave() {
       setSaveStatus("saving");
       try {
@@ -7539,8 +7962,8 @@
           if (ae && ae.blur && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")) ae.blur();
         } catch (_) {}
         await flushPendingWorldEdits();
-        await persistAndRender({ resetFrame: true });
-        setSaveStatus(anyFrameBusy() ? "rendering" : "saved");
+        await persistEditingWorld();
+        setSaveStatus("saved");
         return true;
       } catch (_) {
         setSaveStatus("error");
@@ -8395,8 +8818,8 @@
         b.id = "we-reset";
         b.className = "we-reset";
         b.type = "button";
-        b.title = "Force a new opening still of this World, even if the design did not change";
-        b.textContent = "REDRAW";
+        b.title = "Draw this World's opening still from the sheet as it stands. Nothing else in the editor draws.";
+        b.textContent = "GENERATE";
         el.weSave.parentNode.insertBefore(b, el.weSave);
         el.weReset = b;
       }
@@ -12005,6 +12428,10 @@
   const Buck = (function () {
     const COVER_MS = 560;
     const REVEAL_MS = 780;
+    // Half-length beat for hops that stay inside the start menu, where both
+    // screens sit on the same backdrop (see .buck-soft).
+    const SOFT_COVER_MS = 240;
+    const SOFT_REVEAL_MS = 460;
     let busy = false;
     let coverTimer = null;
     let revealTimer = null;
@@ -12052,7 +12479,7 @@
     }
 
     function finish() {
-      document.body.classList.remove("buck-on", "buck-out");
+      document.body.classList.remove("buck-on", "buck-out", "buck-soft");
       busy = false;
       clear();
       const next = pending;
@@ -12060,8 +12487,9 @@
       if (next) { try { next(); } catch (_) {} }
     }
 
-    function play(swap) {
+    function play(swap, opts) {
       const go = typeof swap === "function" ? swap : function () {};
+      const soft = !!(opts && opts.soft);
       let reduce = false;
       try { reduce = prefersReducedMotion(); } catch (_) {}
       if (reduce) { go(); return Promise.resolve(); }
@@ -12070,6 +12498,7 @@
       clear();
       const veil = ensure();
       document.body.classList.remove("buck-out");
+      document.body.classList.toggle("buck-soft", soft);
       document.body.classList.add("buck-on");
       try { void veil.offsetWidth; } catch (_) {}
       return new Promise((resolve) => {
@@ -12080,8 +12509,8 @@
           revealTimer = setTimeout(() => {
             finish();
             resolve();
-          }, REVEAL_MS);
-        }, COVER_MS);
+          }, soft ? SOFT_REVEAL_MS : REVEAL_MS);
+        }, soft ? SOFT_COVER_MS : COVER_MS);
       });
     }
 
@@ -12099,7 +12528,6 @@
     let arrived = false;  // splash has already given way to the menu
     let xpItems = [];
     let xpIndex = 0;
-    let xpLiftTimer = null;
     let xpStageUrl = "";
     let xpStageOnB = false;
 
@@ -12124,7 +12552,7 @@
       catch (_) {}
       if (reduce) { revealMenu(); return; }
       const t0 = performance.now();
-      const MIN_MS = 1600;
+      const MIN_MS = 1100;
       const go = () => {
         const wait = Math.max(0, MIN_MS - (performance.now() - t0));
         setTimeout(revealMenu, wait);
@@ -12441,39 +12869,35 @@
     function openPicker() {
       if (isPickerOpen()) return;
       if (Buck.isBusy()) { Buck.whenFree(openPicker); return; }
-      Buck.play(applyPickerOpen);
+      Buck.play(applyPickerOpen, { soft: true });
     }
 
     function closePicker() {
       if (!isPickerOpen()) return;
       if (Buck.isBusy()) { Buck.whenFree(closePicker); return; }
-      Buck.play(applyPickerClose);
+      Buck.play(applyPickerClose, { soft: true });
     }
 
     function settlePlayFromPicker() {
-      if (xpLiftTimer) { clearTimeout(xpLiftTimer); xpLiftTimer = null; }
       document.body.classList.remove("xp-open", "xp-ready", "keys-open", "coin-open");
       closePickerChrome();
-      document.body.classList.remove("start-arrived");
-      if (el.startMenu) el.startMenu.setAttribute("aria-busy", "true");
       try { Accounts.close({ silent: true }); } catch (_) {}
       try { Machine.close({ silent: true }); } catch (_) {}
       document.body.classList.remove("mode-watch");
       document.body.classList.add("mode-play");
       try { WatchMode.leave(); } catch (_) {}
+      // The menu leaves NOW, inside the cover, in the same frame the picker
+      // does. It used to be dropped 1.5s later with start-arrived stripped
+      // first to fade it out — but the veil lifts at 780ms and that fade runs
+      // for 2.15s, so what the veil actually revealed was SOMEWHERE and the
+      // tiles sitting back on screen at half opacity, and only then a cut to
+      // the opening. You pressed PLAY and the main menu answered.
+      hideMenu();
       // PLAY from the picker is a new run, not a resume. Editor already
       // boots (and may have advanced) the same session; leaving that live
       // made PLAY feel like "continue from the desk."
       booted = true;
       try { resetGame(); } catch (_) {}
-      const lift = () => {
-        xpLiftTimer = null;
-        hideMenu();
-      };
-      let reduce = false;
-      try { reduce = prefersReducedMotion(); } catch (_) {}
-      if (reduce) lift();
-      else xpLiftTimer = setTimeout(lift, 1500);
     }
 
     async function activateSelected() {
@@ -12508,6 +12932,12 @@
       } else {
         try { Signal.lock("play"); } catch (_) {}
       }
+      // Hand the opening something to hold on while the first scene renders:
+      // the plate the player just chose, under its name.
+      try {
+        OpeningFade.arm((item && item.preview_url) || "",
+                        (item && item.name) || "");
+      } catch (_) {}
       Buck.play(settlePlayFromPicker);
     }
 
@@ -15453,7 +15883,13 @@
     // Everything the player can click/tap. Buttons/links cover most; the couple
     // of non-button clickables (scan tags, evidence thumbnails) are named too.
     const SELECTOR = "button, a[href], [role='button'], .scan-tag, .inv-thumb";
+    // One detent per control, and never two inside a blink. The floor is a
+    // backstop for dense rows (the Experience dock, the choice stack) where a
+    // fast sweep can legitimately cross several controls in a few frames —
+    // that is a rattle, not a detent.
+    const MIN_GAP_MS = 70;
     let lastHover = null;
+    let lastAt = 0;
     let keyboardModality = false;
 
     function control(node) {
@@ -15470,11 +15906,22 @@
       const c = control(e.target);
       if (!c || c === lastHover) return;
       lastHover = c;
+      const t = Date.now();
+      if (t - lastAt < MIN_GAP_MS) return;
+      lastAt = t;
       try { Sound.hover(); } catch (_) {}
     }
+    // pointerout also fires crossing from one CHILD of a control to another —
+    // the icon to the label inside a start tile, the thumbnail to the name
+    // inside an Experience cell. Clearing the detent there let the very next
+    // pointerover re-fire on the SAME button, so dragging the cursor over the
+    // menu machine-gunned the tick: three tiles, a dozen clicks, a sound like
+    // a chain. Only forget the control once the pointer is genuinely outside it.
     function onOut(e) {
-      const c = control(e.target);
-      if (c && c === lastHover) lastHover = null;
+      if (!lastHover) return;
+      const to = e.relatedTarget;
+      if (to && lastHover.contains(to)) return;
+      lastHover = null;
     }
     function onDown(e) {
       keyboardModality = false;
@@ -15724,7 +16171,118 @@
     return div;
   }
 
-  function renderChoices(promptItem) {
+  // ── AFTERMATH GATE ─────────────────────────────────────────────────
+  // A confrontation ends on its own picture, and the turn it spawns keeps
+  // running underneath the overlay. Those beats used to land wherever they
+  // fell. The frame was dropped — renderItem refuses to restage while a
+  // Moment owns the screen — and the slate generated from it was rendered
+  // behind the letterbox, so popping the Moment put three explore verbs on
+  // screen in the same instant as the fight's result. The player read them
+  // as the fight's own choices, and the world never visibly moved.
+  //
+  // So hold the world's two visible beats while the Moment is up and play
+  // them back in order once it is down: the result, then the frame the
+  // fight left behind, then the choices. Bounded — a turn whose frame never
+  // lands gives the slate back rather than sitting on it (a turn that never
+  // lands at all is still the turn watchdog's, which is why MAX_WAIT_MS is
+  // the shorter of the two).
+  // Nothing here may gate the TURN: the prompt item still renders in full, so
+  // the ceremony completes, state.processing clears and every input path opens
+  // exactly as it does on an ordinary turn. The only thing withheld is the
+  // painting of the buttons, and it is withheld on a timer — so the worst this
+  // can do when something goes wrong is show the slate early.
+  const Aftermath = (() => {
+    const RESULT_HOLD_MS = 1100;   // the resolve still reads before the world moves
+    const CHOICES_DELAY_MS = 700;  // the new frame reads before the slate returns
+    const OPEN_TIMEOUT_MS = 8000;  // a frame that never lands never holds the slate
+
+    let holdScene = false; // a verb is committed: the frame belongs to the exit
+    let scene = null;      // that frame, if it arrived under the overlay
+    let gated = false;     // the overlay is down; the slate waits for the frame
+    let slate = null;      // the prompt whose buttons are not painted yet
+    let timer = null;
+
+    function paint(delayMs) {
+      gated = false;
+      clearTimeout(timer);
+      timer = null;
+      const item = slate;
+      slate = null;
+      if (!item) return;
+      setTimeout(() => { try { renderChoices(item, { force: true }); } catch (_) {} },
+                 Math.max(0, delayMs || 0));
+    }
+
+    return {
+      // Armed when a verb is committed: from here a real turn is running for
+      // this fight, and the frame it draws belongs to the world on the other
+      // side of the Moment, not to the fight.
+      arm() { holdScene = true; },
+
+      // renderItem: keep the aftermath frame out of the fight. It was already
+      // being thrown away here (restaging is refused while a Moment is up);
+      // holding it means the exit can actually play it.
+      holdFrame(item) {
+        if (!holdScene || !item || item.type !== "scene_image") return false;
+        scene = item;
+        return true;
+      },
+
+      // renderChoices: a confrontation's own slate is the only one on screen
+      // while it is up, and the world's slate waits for the world's frame.
+      holdSlate(item, opts) {
+        if (opts && opts.force) return false;
+        let inMoment = false;
+        try {
+          inMoment = !!(window.Encounter && Encounter.isActive && Encounter.isActive());
+        } catch (_) {}
+        if (!inMoment && !gated) return false;
+        slate = item;
+        return true;
+      },
+
+      // The overlay is down and the result is on screen. Sequence the rest.
+      release() {
+        holdScene = false;
+        gated = true;
+        // The pre-fight slate is still sitting in the DOM, hidden all this
+        // time by body.moment-encounter. Popping the Moment reveals it, and
+        // stale verbs over the fight's result look exactly like fresh ones.
+        try { el.choices.innerHTML = ""; } catch (_) {}
+        clearTimeout(timer);
+        timer = setTimeout(() => paint(0), OPEN_TIMEOUT_MS);
+        setTimeout(() => {
+          const item = scene;
+          scene = null;
+          if (!item || !gated) return;
+          try { state.renderedIds.delete(item.id); } catch (_) {}
+          renderItem(item); // lands the frame, which opens the gate below
+        }, RESULT_HOLD_MS);
+      },
+
+      // The frame the fight left behind is on screen — the slate can come back.
+      sceneLanded() {
+        if (gated) paint(CHOICES_DELAY_MS);
+      },
+
+      // Death, abort, or a fight that ended without a release to sequence.
+      // The frame is dropped exactly as it was before any of this existed;
+      // the slate is never dropped — an abort never sets the gate, so this
+      // cannot be conditional on it.
+      flushNow() {
+        holdScene = false;
+        scene = null;
+        paint(0);
+      },
+    };
+  })();
+
+  function renderChoices(promptItem, opts) {
+    // A confrontation's own slate is the only one on screen while it is up,
+    // and after one ends the world's slate waits for the world's frame.
+    // `force` is the recovery paths, which must always leave the player
+    // something to press. See Aftermath.
+    if (Aftermath.holdSlate(promptItem, opts)) return;
     el.choices.innerHTML = "";
     if (state.gameOver) return; // death overlay owns the restart action
     if (!promptItem || !Array.isArray(promptItem.choices)) return;
@@ -15749,6 +16307,11 @@
       });
       el.choices.appendChild(btn);
     });
+    // Ask for all of them now. The slate sits on screen for ten or twenty
+    // seconds before anything is pressed, which is more than enough.
+    try {
+      SceneAudio.prewarmFoley(promptItem.choices.map((c) => c && c.text));
+    } catch (_) {}
     // A fourth row, the way an encounter offers one: doing something nobody
     // wrote is a CHOICE sitting with the others, not a separate button off to
     // the side. It opens the same free-will input the ACT hub did.
@@ -15847,6 +16410,11 @@
       }
     } catch (_) {}
 
+    // A confrontation owns the screen. The frame the turn underneath it draws
+    // is the world on the OTHER side of the fight, so it waits for the exit
+    // rather than being thrown away here — see Aftermath.
+    if (Aftermath.holdFrame(item)) return;
+
     // Ambient world drift (see WorldDrift): a text-only simulation step between
     // turns. It carries a steer prompt but NO new guide image, so it must not go
     // through the generic scene path below — that treats a prompt as a new scene
@@ -15875,10 +16443,14 @@
       // Re-score the ambient bed from this scene's descriptor. Works for both
       // the still (image) and realtime (reactor) renderers since both flow the
       // guide image + prompt through here.
-      const scenePrompt = (item.metadata && (item.metadata.base || item.metadata.prompt))
-        || item.content || "";
-      state.lastScenePrompt = scenePrompt;
-      try { SceneAudio.score(scenePrompt); } catch (_) {}
+        const scenePrompt = (item.metadata && (item.metadata.base || item.metadata.prompt))
+          || item.content || "";
+        state.lastScenePrompt = scenePrompt;
+        // Deliberately does NOT score the bed. This text is the realtime render
+        // base — a style/camera anchor with the scene buried in the middle —
+        // and scoring off it is why the ambience never matched the picture.
+        // The bed is scored from vision's read of the rendered frame instead;
+        // see current_vision in refreshStatus.
     }
 
     switch (item.type) {
@@ -15924,6 +16496,9 @@
         // video re-anchor is still establishing), so realtime auto-advance is
         // driven by the reactor 'video_showing' event instead — see Renderer.init.
         if (state.autoPlay && Renderer.mode !== "reactor") scheduleAutoAdvance(AUTOPLAY_FRAME_DELAY_MS);
+        // A fight just ended and this is the frame it left behind: the slate
+        // it generated has been waiting on exactly this.
+        Aftermath.sceneLanded();
         return;
 
       case "game_over":
@@ -16041,6 +16616,21 @@
         // consequence, so it doesn't advance the pipeline.)
         if (state.awaitingResolution && item.type !== "player_action") {
           Ceremony.reach("consequence");
+          // Start making the bed the flipbook will play over. This is the same
+          // signal the ceremony trusts for "the consequence landed" — the
+          // dispatch prose arrives as a narrative_event and falls to this
+          // branch; there is no consequence_event type. The picture is still
+          // several steps away, which is the window the generation needs.
+          //
+          // Prefer the VISUAL scene over the narrative prose: it describes the
+          // shot this turn is about to draw rather than telling the story of
+          // it, which is what a sound model can actually record. Vision's read
+          // of the real frame would be better still, but it cannot exist yet —
+          // that is the trade this lane makes to be audible on time.
+          try {
+            const meta = item.metadata || {};
+            SceneAudio.armConsequence((meta.visual || "").trim() || item.content);
+          } catch (_) {}
         }
         return;
     }
@@ -16172,12 +16762,13 @@
       // fades itself once the first scene lands (player_choice_prompt →
       // Ceremony.complete, then the guide-image step resolves on scene_image).
       // The guide-image fallback timer guarantees it can never spin forever.
+      // Arm BEFORE renderItems: a cached first frame can lift the opening
+      // black synchronously, and onOpeningReady would miss a pending that
+      // was set afterwards. The 4.2s timer used to talk over the title card
+      // while the opening cinematic was still rendering.
+      try { Narrator.armColdOpen(); } catch (_) {}
       renderItems(items);
       refreshStatus();
-      // A narrated cold open once the first scene has had a moment to land —
-      // only if audio is already unlocked (a real gesture happened), so it
-      // speaks rather than silently failing autoplay.
-      setTimeout(() => Narrator.coldOpen(), 4200);
     } catch (err) {
       console.error("[standalone] resetGame failed:", err);
       hideVeil();
@@ -16188,7 +16779,7 @@
       renderChoices({
         id: -1,
         choices: [{ text: "Try again", action_id: "__retry_boot" }],
-      });
+      }, { force: true });
       state.awaitingResolution = false;
     } finally {
       startPolling(); // resume normal polling once the fresh feed is in
@@ -16275,7 +16866,7 @@
           { text: "Move forward." },
           { text: "Wait and listen." },
         ],
-      });
+      }, { force: true });
     }, ms);
   }
 
@@ -16294,9 +16885,30 @@
     // commitScanAction. Null for typed and generated choices, which name no
     // specific thing the picture is obliged to keep.
     const actionSubject = (opts && opts.subject) || null;
+    // The world answers the button. One funnel for every way an action is
+    // committed — a curated choice, SCAN MOVE / INTERACT, a typed action,
+    // leaving camp — so none of them are silent. Curated choices were
+    // prewarmed when the slate rendered and play instantly; the generated
+    // phrases (MOVE TO, INTERACT) are cold and land a beat later, which still
+    // reads as the world responding rather than as nothing happening.
+    try { SceneAudio.foley(choiceText); } catch (_) {}
+    // The last turn's outcome is over the moment you answer it — the bed it
+    // was holding must not run under the next one's consequence.
+    try { SceneAudio.endConsequence(); } catch (_) {}
     closeFreeWill(true); // picking any action closes the free-will gate
     clearScanTags();      // the scene is about to change — drop stale scan tags
     Narrator.stop();      // stop narration about the scene we're leaving
+    // …and start one about the scene we're entering. Until now the narrator
+    // only ever spoke on the cold open and on a MOVE TO, which is why it read
+    // as broken: it talked at the start, twice on the first trip (transition()
+    // is deliberately two lines — a bridge and the dark truth under it), and
+    // then never again on an ordinary choice. A committed action is the
+    // natural cue, and the render wait behind it is the gap a voice covers
+    // best. Skipped for a MOVE TO, which has its own two-line transition a few
+    // lines below and would otherwise cancel it on the busy check.
+    if (!moveTarget) {
+      try { Narrator.onCommit(choiceText); } catch (_) {}
+    }
     // MOVE TO always ends somewhere the camera wasn't now — the engine gives
     // every scan_move action an unconditional hard cut (see is_move in
     // advance_turn_image_fast), no wording-dependent guessing. Without
@@ -21014,9 +21626,11 @@
       const kind = (subj && subj.kind) || "";
       const label = (subj && subj.label) || "figure";
       if (kind === "machine" || kind === "object") {
-        return "[the " + label + " crackles]\u2026 is someone there? Say something.";
+        return "The " + label + " pops. Don't hang up.";
       }
-      return "You. You shouldn't be here. What do you want?";
+      if (kind === "creature") return "You can hear me.";
+      if (kind === "animal") return "Easy. Stay.";
+      return "Don't. Not yet.";
     }
 
     function animateCharacter(imageUrl, worldPrompt, subj) {
@@ -21266,15 +21880,11 @@
       document.body.classList.add("talking");
       requestAnimationFrame(() => el.talkOverlay.classList.add("talk-in"));
       Haptics.select();
-      // Speak immediately — do not wait for /api/talk/session (vision +
-      // voice signing used to leave this screen silent for many seconds).
+      // Presence, not a stock greeting. Painting "You shouldn't be here" here
+      // used to become the voice agent's first message because it was posted
+      // as opening_line. Wait for /api/talk/session to write a line for THIS
+      // subject; fallbackOpening is the last resort if that fails.
       const firstLine = fallbackOpening(subject);
-      messages.push({ role: "assistant", content: firstLine });
-      addLine("assistant", firstLine);
-      greetingShown = true;
-      Sound.talkLine();
-      setSub("speak or type");
-      setOrbState("idle");
 
       // Crop the SCAN subject's bounding box NOW — before the letterbox/dim
       // covers the scene — so portrait img2img is this figure's actual pixels,
@@ -21336,7 +21946,6 @@
       // of the two, not their sum.
       const sessionP = withTimeout(postJSON("/api/talk/session", {
         subject, voice_id: selectedVoiceId || undefined,
-        opening_line: firstLine,
       }), 25000, "talk session").catch((err) => { console.warn("[talk] session failed:", err); return null; });
       // Fire-and-forget alongside session; img2img off the SCAN bbox crop.
       if (inMoment) fetchPortrait(subject, referenceFrame, {
@@ -21360,8 +21969,13 @@
       adoptVoiceCatalog(session);
       const opening = (session && session.context && session.context.opening_line)
         || firstLine;
-      if (opening && opening !== firstLine) {
-        try { showFloat(opening, subject.label.toUpperCase()); } catch (_) {}
+      if (opening && !greetingShown) {
+        messages.push({ role: "assistant", content: opening });
+        addLine("assistant", opening);
+        greetingShown = true;
+        Sound.talkLine();
+        setSub("speak or type");
+        setOrbState("idle");
       }
       if (inMoment && window.Moments) {
         try {
@@ -22298,10 +22912,14 @@
       });
     }
 
-    function playVerdict(outcome, sub, wordOverride) {
+    function playVerdict(outcome, wordOverride) {
       const reduce = (typeof prefersReducedMotion === "function" && prefersReducedMotion());
       const el = document.getElementById("encounter-verdict");
       const wordEl = el && el.querySelector(".encounter-verdict-word");
+      // The card is the word. It used to carry the play-out sentence underneath
+      // it — the last prose surface in a fight, and the same claim the picture
+      // has to honour (see NO_ENCOUNTER_TEXT). Cleared rather than left alone so
+      // a previous round's line cannot sit under this round's verdict.
       const subEl = el && el.querySelector(".encounter-verdict-sub");
       const labels = {
         survive: "SURVIVED",
@@ -22315,7 +22933,7 @@
       // SETTLED) because it is the side that knows the enemy's state.
       const word = wordOverride || labels[outcome] || "SURVIVED";
       if (wordEl) wordEl.textContent = word;
-      if (subEl) subEl.textContent = sub || "";
+      if (subEl) subEl.textContent = "";
       if (el) {
         el.classList.remove("is-dead", "is-hurt", "is-clear");
         if (outcome === "die") el.classList.add("is-dead");
@@ -22544,18 +23162,38 @@
       });
     }
 
+    // What a confrontation slate SHOWS is the lane, not the sentence. The
+    // written verb still goes to the server and still drives the roll — the
+    // player just isn't shown it, because the picture the fight renders never
+    // matches the line closely enough to survive being read first. Promise
+    // "attack" and a violent frame delivers on it; promise "Shatter his skull
+    // against wall" and anything else is a broken promise.
+    const LANE_WORDS = { confront: "attack", evade: "flee", parley: "reason" };
+    const LANE_ORDER = ["confront", "evade", "parley"];
+
+    // NO_ENCOUNTER_TEXT — a confrontation is the picture and the lane words,
+    // and nothing else. The left column used to run the character's name, the
+    // danger line, the verb you committed and then the play-out prose; the
+    // verdict card carried one more sentence under its word. Every one of those
+    // is a claim the photograph then has to honour, and when the two disagree
+    // it is the text the player believes and the frame that looks broken. So
+    // the nameplate is hidden in CSS for this Moment type, the notify chips are
+    // not sent, and the verdict shows its word alone. The strings still exist
+    // where they do real work — the music prompt, the server's own roll.
+
+    function laneWord(lane, idx) {
+      return LANE_WORDS[lane] || LANE_WORDS[LANE_ORDER[idx]] || "act";
+    }
+
     function showChoices(items) {
       choices = Array.isArray(items) ? items.slice(0, 3) : [];
       slateSeq += 1;
       if (!window.Moments || typeof window.Moments.setChoices !== "function") return;
-      const mapped = choices.map((c) => {
-        if (typeof c === "string") return { label: c, text: c };
-        return {
-          label: c.text || c.label || "",
-          text: c.text || c.label || "",
-          lane: c.lane || "",
-        };
-      }).filter((c) => c.label);
+      const mapped = choices.map((c, idx) => {
+        const text = typeof c === "string" ? c : (c && (c.text || c.label)) || "";
+        const lane = (typeof c === "object" && c && c.lane) || "";
+        return { label: laneWord(lane, idx), text: text, lane: lane };
+      }).filter((c) => c.text);
       // The three authored verbs, plus a way to do something nobody wrote.
       // What gets typed is posted as the choice and drives the roll, the
       // resolve plate and the aftermath turn exactly like a picked one — the
@@ -22622,9 +23260,6 @@
       clearReleaseWatchdog();
       try { clearTurnWatchdog(); } catch (_) {}
       state.awaitingResolution = false;
-      const name = (brief && brief.character && brief.character.label) || "…";
-      const danger = (brief && brief.danger) || "still here";
-      try { window.Moments.setNameplate(name, danger); } catch (_) {}
       showChoices(nextChoices && nextChoices.length ? nextChoices : choices);
     }
 
@@ -22659,6 +23294,10 @@
       resolveShown = false;
       pendingFinish = null;
       promptAfterResolve = false;
+      // From here a real turn runs for this verb. Its frame and its slate
+      // belong to the world on the other side of this Moment, not to the
+      // fight — hold them until the overlay is down (see Aftermath).
+      try { Aftermath.arm(); } catch (_) {}
       // Whatever the last beat was still animating is over the moment a verb
       // is committed — a leftover sequence painting into the next plate is
       // how the standoff bled into its own play-out.
@@ -22668,8 +23307,6 @@
       try { if (Haptics && Haptics.encounterResolve) Haptics.encounterResolve(); } catch (_) {}
       try { if (Sound.heartbeatSetBpm) Sound.heartbeatSetBpm(108); } catch (_) {}
       try { window.Moments.clearChoices(); } catch (_) {}
-      const name = (brief && brief.character && brief.character.label) || "…";
-      try { window.Moments.setNameplate(name, text); } catch (_) {}
       try {
         if (window.Moments && typeof window.Moments.setSceneLive === "function") {
           window.Moments.setSceneLive(false);
@@ -22755,25 +23392,9 @@
       // restages it as a breathing standoff and recasts the people.
       const outcome = res.outcome || "";
       const released = res.released === true || outcome === "escape" || outcome === "die";
-      // `closing` is the server saying what the fight DID — "A creature is
-      // down. You are still standing." On a release there is no dispatch to
-      // fall back on (the aftermath turn writes that later, on another
-      // thread), so winning used to put the STAKES line under the card: a
-      // sentence about what happens if you hesitate, over a fight you had
-      // already won.
-      const consequence = (res.closing || res.dispatch || res.stakes || "").trim();
-      await playVerdict(outcome, consequence, res.verdict_word || "");
+      await playVerdict(outcome, res.verdict_word || "");
       if (!active || !resolving) return;
       resolveShown = true;
-      if (consequence) {
-        try { window.Moments.notify({ text: consequence }); } catch (_) {}
-      } else if (outcome === "wounded") {
-        try { window.Moments.notify({ text: "You are hurt." }); } catch (_) {}
-      } else if (outcome === "survive" && !released) {
-        try { window.Moments.notify({ text: "They are still here." }); } catch (_) {}
-      } else if (outcome === "escape") {
-        try { window.Moments.notify({ text: "You are clear." }); } catch (_) {}
-      }
       if (!released) {
         stayLocked(res.choices);
         return;
@@ -22909,12 +23530,10 @@
       brief = res.encounter || null;
       choices = res.choices || [];
       plateUrl = res.plate_url || null;
+      // Not drawn — a confrontation shows no text at all (see NO_ENCOUNTER_TEXT).
+      // Both still feed the music prompt further down.
       const name = (brief && brief.character && brief.character.label) || "A stranger";
       const danger = (brief && brief.danger) || "";
-      try { window.Moments.setNameplate(name, danger); } catch (_) {}
-      if (brief && brief.stakes) {
-        try { window.Moments.notify({ text: brief.stakes }); } catch (_) {}
-      }
       if (plateUrl) {
         const sc = document.getElementById("moment-scene");
         if (sc) {
@@ -22959,11 +23578,11 @@
         danger,
         (brief && brief.stakes) || "",
       ].filter(Boolean).join(" — ");
-      try {
-        if (SceneAudio && SceneAudio.scoreEncounter) SceneAudio.scoreEncounter(scoreKey);
-      } catch (_) {}
-      return true;
-    }
+        try {
+          if (SceneAudio && SceneAudio.scoreEncounter) SceneAudio.scoreEncounter(scoreKey);
+        } catch (_) {}
+        return true;
+      }
 
     function requestFinish(result) {
       const payload = result || {};
@@ -23059,6 +23678,9 @@
       releasePending = false;
       promptAfterResolve = false;
       clearAutoPick();
+      // No-op when the exit above is already sequencing them; this is for the
+      // fights that end without one (death, abort, a pop that never ran).
+      try { Aftermath.flushNow(); } catch (_) {}
       try { if (Sound && Sound.heartbeatStop) Sound.heartbeatStop(); } catch (_) {}
       try {
         if (SceneAudio && typeof SceneAudio.endEncounter === "function") {
@@ -23201,10 +23823,10 @@
           // frame. Death / abort skip the restage.
           const survived = !result || result.survived !== false;
           const aborted = !!(result && result.aborted);
-          if (!survived) {
-            try { Sound.encounterDie(); } catch (_) {}
-            try { if (Haptics && Haptics.encounterDie) Haptics.encounterDie(); } catch (_) {}
-          } else if (!aborted) {
+            if (!survived) {
+              try { Sound.encounterDie(); } catch (_) {}
+              try { if (Haptics && Haptics.encounterDie) Haptics.encounterDie(); } catch (_) {}
+            } else if (!aborted) {
             try { if (Haptics && Haptics.encounterSurvive) Haptics.encounterSurvive(); } catch (_) {}
             const nextPrompt = (result && result.prompt) || (aftermath && aftermath.prompt);
             if (nextPrompt && SceneAudio && typeof SceneAudio.score === "function") {
@@ -23223,6 +23845,11 @@
             }
           } else if (aborted) {
             restoreExploreIfAborted();
+          }
+          // Walking out of a fight is its own beat: the result holds, THEN
+          // the turn it started lands its frame, THEN the slate comes back.
+          if (survived && !aborted) {
+            try { Aftermath.release(); } catch (_) {}
           }
           resetLocal({ restore: aborted || !survived });
           return true;
@@ -23339,7 +23966,7 @@
     }
 
     function readHop(res) {
-      const hop = { nextCut: null, destUrl: "", destWorld: "", choicesItem: null };
+      const hop = { nextCut: null, destUrl: "", destWorld: "", choicesItem: null, sequence: null };
       if (!res) return hop;
       if (res.kind === "cutscene") {
         hop.nextCut = res.cutscene || res;
@@ -23350,12 +23977,19 @@
       if (res.image_url) hop.destUrl = res.image_url;
       if (res.to_world) hop.destWorld = res.to_world;
       if (res.choices) hop.choicesItem = res.choices;
+      // The opening plate can animate IN from the montage (see
+      // _generate_opening_establishing, which renders it while the montage is
+      // still on screen): play the sequence, then hold its last frame.
+      if (res.sequence) hop.sequence = res.sequence;
       return hop;
     }
 
     function applyDest(hop) {
       if (hop.destUrl) {
-        try { Renderer.applyScene(hop.destUrl, "", { hard_transition: true }); } catch (_) {}
+        // When the server shipped an opening flipbook, hand the sequence to
+        // Renderer.applyScene so it plays the frames and settles on the last
+        // one — the same path a normal flipbook turn uses (metadata.sequence).
+        try { Renderer.applyScene(hop.destUrl, "", { hard_transition: true, sequence: hop.sequence || null }); } catch (_) {}
       }
       if (hop.destWorld) {
         state.experienceWorldId = hop.destWorld;
@@ -23385,6 +24019,7 @@
       } catch (err) {
         console.warn("[cutscene] unstick failed:", err);
       }
+      try { Narrator.onOpeningReady(); } catch (_) {}
     }
 
     async function finish() {
@@ -23415,6 +24050,7 @@
       }
       completing = false;
       playNextCut(hop);
+      try { Narrator.onOpeningReady(); } catch (_) {}
     }
 
     function onEsc() {
@@ -23513,6 +24149,7 @@
             try { renderItem(hop.choicesItem); } catch (_) {}
           }
           playNextCut(hop);
+          try { Narrator.onOpeningReady(); } catch (_) {}
           return false;
         }
         shots = res.shots;
@@ -23542,6 +24179,11 @@
       generating = false;
       playing = true;
       scheduleNext();
+      // Shots exist and the first one is on (or loading onto) the screen —
+      // start the cold open so the narrator speaks OVER the montage, not
+      // after it. OpeningFade still holding (shot not decoded yet) re-defers
+      // until that paint, which is the overlap we want.
+      try { Narrator.onOpeningReady(); } catch (_) {}
       return true;
     }
 
@@ -23658,6 +24300,8 @@
       onKey,
       onMenuClosed,
       isActive: () => playing || completing || generating,
+      isGenerating: () => generating,
+      isPlaying: () => playing,
     };
   })();
   try { window.Cutscene = Cutscene; } catch (_) {}
@@ -23794,9 +24438,10 @@
       if (el.narratorSpeaker) el.narratorSpeaker.textContent = speaker ? speaker.toUpperCase() : "";
       if (el.narratorLine) el.narratorLine.textContent = text || "";
       if (!el.narratorBar) return;
-      // Sit the caption ABOVE the action wheel so it never covers the controls.
-      const wheelH = (el.actionWheel && el.actionWheel.offsetHeight) || 120;
-      el.narratorBar.style.bottom = "calc(env(safe-area-inset-bottom, 0px) + " + (wheelH + 22) + "px)";
+      // Position is the stylesheet's. This used to push the bar up by the
+      // action wheel's height, which put it back in the same band as the
+      // choice stack — the exact collision the CSS comment says it moved to
+      // the bottom edge to avoid. Two rules disagreeing, and the inline one won.
       el.narratorBar.classList.remove("hidden");
       el.narratorBar.setAttribute("aria-hidden", "false");
       requestAnimationFrame(() => el.narratorBar.classList.add("narrator-in"));
@@ -23814,17 +24459,79 @@
       closeSilentInput();
     }
 
+    // THE CLIPPED LAST WORD. The SDK reports mode "listening" when the agent
+    // has finished GENERATING the line — not when the browser has finished
+    // PLAYING it. There is still audio in the output node at that point, and
+    // endSession() tears the node down, so every narration lost its tail.
+    // Wait for the output to actually go quiet before wrapping the segment.
+    // Bounded both ways: a build with no analyser gets a flat grace beat, and
+    // a level that never settles gives up. Late is recoverable; clipped is not.
+    const OUTPUT_QUIET_MS = 420;
+    const OUTPUT_WAIT_MAX_MS = 6000;
+    const OUTPUT_FLOOR = 0.005;
+    const OUTPUT_BLIND_GRACE_MS = 900;
+
+    function outputLevel() {
+      try {
+        if (convo && typeof convo.getOutputVolume === "function") {
+          return convo.getOutputVolume() || 0;
+        }
+      } catch (_) {}
+      try {
+        if (convo && typeof convo.getOutputByteFrequencyData === "function") {
+          const d = convo.getOutputByteFrequencyData();
+          if (d && d.length) {
+            let sum = 0;
+            for (let i = 0; i < d.length; i++) sum += d[i];
+            return (sum / d.length) / 255;
+          }
+        }
+      } catch (_) {}
+      return -1; // nothing to measure on this SDK build
+    }
+
+    function waitForOutputSilence() {
+      if (outputLevel() < 0) {
+        return new Promise((r) => setTimeout(r, OUTPUT_BLIND_GRACE_MS));
+      }
+      return new Promise((resolve) => {
+        const t0 = Date.now();
+        let quietSince = 0;
+        const tick = setInterval(() => {
+          const now = Date.now();
+          const lvl = outputLevel();
+          if (lvl > OUTPUT_FLOOR) quietSince = 0;
+          else if (!quietSince) quietSince = now;
+          if ((quietSince && now - quietSince >= OUTPUT_QUIET_MS)
+              || now - t0 > OUTPUT_WAIT_MAX_MS) {
+            clearInterval(tick);
+            resolve();
+          }
+        }, 60);
+      });
+    }
+
     // Speak ONE segment through the generative agent: a short SDK session whose
     // FIRST MESSAGE is the exact narration line, in the segment's voice. The
     // agent utters it, we detect it finished (mode → listening, or a hard
     // timeout), then tear the session down and move on. Mic is muted (one-way).
     function speakSegment(seg, myGen) {
       return new Promise(async (resolve) => {
-        show(seg.character, seg.text);
+        // The caption used to be drawn HERE, before the SDK had even loaded —
+        // then a websocket opened, a session started, and the voice began one
+        // to three seconds later. You read the line, then heard it. Subtitles
+        // are only subtitles if the audio is under them, so the line is held
+        // until the agent actually reaches "speaking". The fallback paths
+        // below have no audio to wait for and still show it immediately.
+        const reveal = () => show(seg.character, seg.text);
         Sound.talkLine();
         AgentLog.push("narrator", (seg.character || "narrator").toUpperCase() + ":", AgentLog.clip(seg.text, 100));
-        // No voice channel possible → timed subtitle.
-        const timed = () => setTimeout(resolve, Math.max(2600, (seg.text || "").length * 60));
+        // No voice channel possible → timed subtitle, shown at once because
+        // there is nothing for it to be early for.
+        const timed = () => {
+          reveal();
+          setTimeout(resolve, Math.max(2600, (seg.text || "").length * 60));
+        };
         if (!agentCfg || !agentCfg.agent_id && !agentCfg.signed_url || state.soundEnabled === false) {
           if (state.soundEnabled === false) AgentLog.push("dim", "muted \u2014 subtitle only");
           else AgentLog.push("warn", "no narrator agent \u2014 subtitle only");
@@ -23854,9 +24561,13 @@
           onConnect: () => { AgentLog.push("ok", "narrator connected", seg.voice_id); },
           onModeChange: (m) => {
             const md = (m && (m.mode || m)) || "";
-            if (md === "speaking") spoke = true;
-            // Finished uttering the line → wrap this segment.
-            else if (md === "listening" && spoke) finish("spoke");
+            if (md === "speaking") { spoke = true; reveal(); }
+            // "listening" means the agent has finished GENERATING the line,
+            // not that the browser has finished playing it — there is still
+            // buffered audio in the output node. Ending the session here cut
+            // the last word off every single narration. Wait for the output
+            // to actually go quiet first.
+            else if (md === "listening" && spoke) waitForOutputSilence().then(() => finish("spoke"));
           },
           onError: (e) => { AgentLog.push("error", "narrator seg error", AgentLog.clip(e && (e.message || e), 100)); finish("error"); },
           onDisconnect: () => { if (spoke) finish("disconnect"); },
@@ -23872,6 +24583,10 @@
           convo = null; timed(); return;
         }
         if (myGen !== gen) { finish("aborted"); return; }
+        // A session that connects but never speaks would now show nothing at
+        // all, where before it at least showed the line. Put the subtitle up
+        // anyway after a beat — late is the failure mode we can live with.
+        setTimeout(() => { if (!spoke && !done && myGen === gen) reveal(); }, 2500);
         // Safety net: never hang on a segment (long line ≈ read time + buffer).
         hardTimer = setTimeout(() => finish("timeout"), Math.max(9000, (seg.text || "").length * 90));
       });
@@ -23906,7 +24621,9 @@
       const myGen = ++gen;
       busy = true;
       if (el.narratorBtn) el.narratorBtn.classList.add("on");
-      show("narrator", "\u2026");
+      // No "…" placeholder: the worldbuild call takes seconds, and parking an
+      // ellipsis on screen for them is the same "text before voice" problem in
+      // miniature. The lit narrator button is the "working" signal.
       Sound.talkOpen();
       AgentLog.push("narrator", "worldbuild\u2026", opts.focus ? AgentLog.clip(opts.focus, 60) : (opts.multi !== false ? "multi" : "single"));
       try {
@@ -23963,12 +24680,78 @@
     // very first playthrough is mute and narration only ever appears on a second
     // run (after a Reset click unlocks audio). onAudioUnlocked() fires the
     // pending cold open on the first real gesture.
+    //
+    // The opening cinematic is the other deferral: a timed cold open talked
+    // over the black title card while the montage was still rendering, and
+    // with nothing on screen the line collapsed to a stock "I feel uneasy /
+    // I have to find out what happened" beat. Hold the voice until the shots
+    // exist and a picture is up — then speak OVER the montage, not after it.
     let pendingColdOpen = false;
+    function openingBusy() {
+      try {
+        if (window.Cutscene && Cutscene.isGenerating && Cutscene.isGenerating()) return true;
+      } catch (_) {}
+      try {
+        if (OpeningFade.isHolding && OpeningFade.isHolding()) return true;
+      } catch (_) {}
+      return false;
+    }
+    function armColdOpen() { pendingColdOpen = true; }
     function coldOpen() {
-      if (state.gameOver || Talk.isOpen() || isBusy()) return;
+      if (state.gameOver || Talk.isOpen() || isBusy()) {
+        pendingColdOpen = false;
+        return;
+      }
+      if (openingBusy()) { pendingColdOpen = true; return; }
       if (!state.audioUnlocked) { pendingColdOpen = true; return; }
       pendingColdOpen = false;
-      narrate({ multi: false, focus: "You have just woken up here. Say how uneasy you feel and that you need to find out what happened." });
+      // Over the opening montage: a voice-over of the pictures. Unfocused
+      // otherwise, so a plain first scene is not ordered onto a stock beat.
+      let overCutscene = false;
+      try {
+        overCutscene = !!(window.Cutscene && Cutscene.isPlaying && Cutscene.isPlaying());
+      } catch (_) {}
+      if (overCutscene) {
+        // The cold open is the one beat in the run that is ALLOWED to be about
+        // how things came to be this way. Everywhere else the narrator is held
+        // to the frame in front of it, which is why it never had any backstory
+        // to give — and over an establishing montage that reads as a caption.
+        narrate({
+          multi: false,
+          focus: "This is the opening cinematic \u2014 the cold open of the film. Reach back into the history of this place and set ONE buried piece of it down beside what is on screen. This is the only line in the run allowed to be about how things came to be this way. Do not state the mission and do not say what you plan to do next.",
+        });
+      } else {
+        narrate({ multi: false });
+      }
+    }
+    function onOpeningReady() {
+      if (!pendingColdOpen) return;
+      if (openingBusy()) return;
+      coldOpen();
+    }
+
+    // One short line the instant a choice is committed, over the render wait.
+    // Deliberately single-voice and deliberately brief: this is a beat to stop
+    // the turn feeling dead, not a set piece. Returns false when it declined,
+    // so the caller can log why nothing was said.
+    function onCommit(choiceText) {
+      const act = String(choiceText || "").trim();
+      if (!act) return false;
+      if (state.gameOver) return false;
+      try { if (Talk.isOpen()) return false; } catch (_) {}
+      // No agent, no gesture, no voice — narrate() would fall back to a timed
+      // subtitle, and a caption with no audio during a load is just clutter.
+      if (!state.audioUnlocked) return false;
+      if (openingBusy()) return false;
+      if (busy || playing) return false;
+      narrate({
+        multi: false,
+        focus: "The player has just committed to: \"" + act + "\". Speak ONE " +
+               "short line — a dozen words at most — that sits in the silence " +
+               "while the world answers. Do not narrate the outcome; it has " +
+               "not happened yet. Do not restate the action.",
+      });
+      return true;
     }
 
     // Called from the global audio-unlock gesture handler. If a cold open was
@@ -23976,10 +24759,11 @@
     // user's first gesture has satisfied autoplay policy.
     function onAudioUnlocked() {
       if (!pendingColdOpen) return;
-      pendingColdOpen = false;
       // Small delay so the unlock gesture (and any scene it triggered) settles
       // before the narrator opens; still guards on gameOver/Talk/busy inside.
-      setTimeout(() => coldOpen(), 300);
+      // Leave pending armed — coldOpen re-defers if the cinematic is still
+      // rendering, and onOpeningReady picks it up when the first shot lands.
+      setTimeout(() => { if (pendingColdOpen) coldOpen(); }, 300);
     }
 
     // A final, funereal line over the death screen.
@@ -24073,7 +24857,7 @@
       }
     }
 
-    return { narrate, stop, isBusy, preflight, coldOpen, onAudioUnlocked, epitaph, transition };
+    return { narrate, stop, isBusy, preflight, coldOpen, armColdOpen, onOpeningReady, onCommit, onAudioUnlocked, epitaph, transition };
   })();
 
   function toggleNarrator() {
@@ -24432,6 +25216,30 @@
         state._lastImagePrompt = ip;
         try { Renderer.rememberImagePrompt(ip); } catch (_) { Renderer.lastImagePrompt = ip; }
         RtLog.push("img", "image prompt", RtLog.clip(ip, 180));
+      }
+      // The scene now SOUNDS like what it looks like. This is vision's read of
+      // the frame that rendered (on a flipbook turn, of the last panel), which
+      // lands a beat after the picture — so the bed crossfades in behind it
+      // rather than being scored off the render base, which is 1,480 characters
+      // of camera anchor with the actual scene buried in the middle.
+      const vis = (s.current_vision || "").trim();
+      if (vis && vis !== state._lastVision) {
+        state._lastVision = vis;
+        clearTimeout(state.sceneAudioFallback);
+        state.sceneAudioFallback = null;
+        try { SceneAudio.score(vis); } catch (_) {}
+      } else if (!vis && ip && ip !== state._lastAudioFallback
+                 && !state.sceneAudioFallback) {
+        // Vision is off, or it failed on this frame. The caption the image
+        // model was handed is the next best thing — still a description of the
+        // scene rather than of the camera. Held briefly so a vision read that
+        // is merely LATE wins instead of paying for two beds.
+        state._lastAudioFallback = ip;
+        state.sceneAudioFallback = setTimeout(() => {
+          state.sceneAudioFallback = null;
+          if (state._lastVision) return;
+          try { SceneAudio.score(ip); } catch (_) {}
+        }, 6000);
       }
       const liveId = s.experience_world_id || "";
       if (liveId !== (state.experienceWorldId || "")) {

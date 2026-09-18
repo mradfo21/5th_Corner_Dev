@@ -817,9 +817,22 @@
   </button>
   <!-- Opening blackout. Starting a run used to mean watching a progress bar
        tick over an empty screen, which made the most important moment in the
-       game read as a loading fault. Now PLAY fades to black, holds it with
-       nothing on it, and only fades up once there is a picture to show. -->
-  <div id="opening-blackout" aria-hidden="true"></div>
+       game read as a loading fault. Now PLAY holds the frame and only fades up
+       once there is a picture to show.
+
+       Held on NOTHING it was its own kind of fault: press PLAY on an
+       Experience and the reward is thirty seconds of black. So when the hop
+       came from the picker it holds that Experience's plate instead, graded
+       down and pushing in slowly under its title — an establishing card the
+       first real scene dissolves out of. Black is still the fallback for a
+       mid-run restart, where there is no plate and no title to show. -->
+  <div id="opening-blackout" aria-hidden="true">
+    <div id="opening-plate" class="opening-plate"></div>
+    <div class="opening-card">
+      <span id="opening-title" class="opening-title"></span>
+      <span class="opening-rule"><i></i></span>
+    </div>
+  </div>
   <!-- Bug capture. Unlike the ENCOUNTER button this deliberately stays visible
        through moments, encounters and death: those are exactly when the screen
        goes wrong, and a report you cannot file while looking at the fault is
@@ -1091,9 +1104,9 @@
     <div id="we-picture-bar" class="we-picture-bar">
       <span id="we-save-status" class="we-save-status" aria-live="polite"></span>
       <button id="we-reset" class="we-reset" type="button"
-              title="Force a new opening still of this World, even if the design did not change">REDRAW</button>
+              title="Draw this World's opening still from the sheet as it stands. Nothing else in the editor draws.">GENERATE</button>
       <button id="we-save" class="we-save" type="button"
-              title="Write leftover prompt edits and refresh the opening still. Graph changes already save on their own.">SAVE</button>
+              title="Write leftover prompt edits to this World. Does not draw — press GENERATE for that.">SAVE</button>
       <button id="we-defaults" class="we-defaults" type="button"
               title="Roll character, level, camera, and prompts back to what the app shipped">RESET</button>
     </div>

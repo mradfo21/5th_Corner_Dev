@@ -331,7 +331,8 @@ class GameIdentityTestCase(_IdentityFixture):
         }})
         shot = gi.opening_shot()
         self.assertIn("Wren Alvarez", shot["prologue"])
-        self.assertIn("Wren Alvarez is in frame", shot["vision"])
+        self.assertIn("Wren Alvarez", shot["vision"])
+        self.assertIn("BEHIND", shot["vision"])
 
     def test_opening_narration_is_written_from_the_sheet(self):
         self._set_character(backstory="Came back for her sister")
@@ -385,9 +386,64 @@ class GameIdentityTestCase(_IdentityFixture):
         self.assertNotIn("1993 VHS camcorder", sheet)
         self.assertNotIn("he/him", gi.protagonist_line())
 
-    def test_a_plate_does_not_compile_leftover_jason_name_or_look(self):
-        """Upload used to skip fill when Jason's Name/Look were already set.
-        The plate is who this is; leftover shipped copy must not reach MOVE TO."""
+    # A 1x1 PNG, so the plate below is a real file rather than a bare id.
+    _PLATE_PNG = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
+
+    def test_the_authors_name_is_used_even_when_it_matches_the_shipped_one(self):
+        """"Why? This is the character's name."
+
+        Name / Role / Look used to be blanked whenever they matched the shipped
+        values and a plate existed, to cover a different bug: the upload skipped
+        filling a field that already had text, so a photograph of a woman still
+        compiled as "Jason Fleece, adult man". That skip is gone — an
+        overwriting draft clears what it could not read, so a plate cannot leave
+        the previous person's name behind (see
+        test_overwrite_replaces_leftover_jason_from_the_plate).
+
+        What the blanking could never tell apart is a leftover default from a
+        name the author typed, so it made "Jason Fleece" an unusable name for
+        anyone who uploaded a photo: the sheet said Jason and the prose said
+        "the player character". These three are the fields the minimal editor
+        shows; a field you can see and edit is your choice.
+        """
+        self._set_mode("third_person")
+        meta = gi.save_reference(self._PLATE_PNG, "character", "plate.png")
+        gi.save_spec({gi.CHARACTER_KEY: {
+            "enabled": True,
+            "name": "Jason Fleece",
+            "role": "investigative photojournalist",
+            "appearance": "adult man, short dark hair, weathered face, stubble",
+            "reference_images": [meta["id"]],
+        }})
+        self.assertEqual(gi.display_name(), "Jason Fleece")
+        self.assertIn("Jason Fleece", gi.protagonist_line())
+        self.assertIn("adult man", gi.character_visual_sheet())
+
+    def test_hidden_shipped_leftovers_are_still_dropped(self):
+        """The drop that stays: pronouns / wardrobe / gear are not shown in the
+        minimal editor, so a shipped value there is not a choice."""
+        meta = gi.save_reference(self._PLATE_PNG, "character", "plate.png")
+        gi.save_spec({gi.CHARACTER_KEY: {
+            "enabled": True,
+            "name": "Wren Alvarez",
+            "appearance": "adult woman, cropped hair",
+            "pronouns": gi.SHIPPED_PROTAGONIST["pronouns"],
+            "wardrobe": gi.SHIPPED_PROTAGONIST["wardrobe"],
+            "reference_images": [meta["id"]],
+        }})
+        char = gi.authored_character()
+        self.assertEqual(char["pronouns"], "")
+        self.assertEqual(char["wardrobe"], "")
+        self.assertEqual(char["name"], "Wren Alvarez")
+
+    def test_a_plate_whose_file_is_gone_leaves_the_written_sheet_alone(self):
+        """The other side of it. bugs: the shipped sheet named
+        `character_54a7f7d76882` and no such file existed anywhere in the repo, so
+        the code believed a photograph defined the protagonist while the image
+        call attached nothing. Wardrobe then drifted frame to frame."""
         self._set_mode("third_person")
         gi.save_spec({gi.CHARACTER_KEY: {
             "enabled": True,
@@ -396,11 +452,23 @@ class GameIdentityTestCase(_IdentityFixture):
             "appearance": "adult man, short dark hair, weathered face, stubble",
             "reference_images": ["character_a37a470f299d"],
         }})
-        sheet = gi.character_visual_sheet()
-        self.assertNotIn("Jason Fleece", sheet)
-        self.assertNotIn("adult man", sheet)
-        self.assertNotIn("Jason Fleece", gi.display_name())
-        self.assertNotIn("Jason Fleece", gi.protagonist_line())
+        self.assertEqual(gi.live_reference_ids(gi.get_spec()[gi.CHARACTER_KEY]), [])
+        # The written sheet is all there is, so it has to survive.
+        self.assertIn("Jason Fleece", gi.character_visual_sheet())
+        # And with no plate behind it, leftover Jason copy is exactly what it
+        # looks like: the shipped cast. Reporting a recast on the strength of an
+        # id with no file is how this went unnoticed.
+        self.assertTrue(gi.is_shipped_cast())
+
+    def test_a_dead_plate_is_reported_to_the_author(self):
+        """Silent was the problem: a missing file looks exactly like a working
+        one until the look starts drifting."""
+        gi.save_spec({gi.CHARACTER_KEY: {
+            "enabled": True, "name": "Kelsey Rowe",
+            "reference_images": ["character_a37a470f299d"],
+        }})
+        notes = gi.wiring_notes()[gi.CHARACTER_KEY]
+        self.assertTrue(any("missing from disk" in n for n in notes), notes)
 
     def test_a_plate_does_not_compile_leftover_somewhere_name_or_summary(self):
         """Upload used to skip fill when SOMEWHERE / the fence were already set.
@@ -589,7 +657,8 @@ class GameIdentityTestCase(_IdentityFixture):
         shot = gi.opening_shot()
         self.assertIsNotNone(shot)
         self.assertIn("Wren Alvarez", shot["prologue"])
-        self.assertIn("Wren Alvarez is in frame", shot["vision"])
+        self.assertIn("Wren Alvarez", shot["vision"])
+        self.assertIn("BEHIND", shot["vision"])
 
     # ── stage 3: reconcile ──────────────────────────────────────────
 
@@ -1114,6 +1183,147 @@ class ImageFillTestCase(_IdentityFixture):
                 os.environ["GEMINI_API_KEY"] = old_gemini
             if old_openai is not None:
                 os.environ["OPENAI_API_KEY"] = old_openai
+
+
+class TestTheDraftDoesNotWearTheExample(_IdentityFixture):
+    """Reported as "my character appeared as an orange jump suit for a frame".
+
+    The fill prompt handed the model each field's PLACEHOLDER as the hint, so
+    asking for a wardrobe read `- "wardrobe": Wardrobe — Patched orange dive
+    suit, mismatched boots, canvas satchel.` and the model echoed it back. Five
+    of the eight character fields on the reporter's sheet were verbatim
+    placeholders — the dive suit, "Dented Nikon F3, sodium lamp", she/her, the
+    temperament and the backstory — over a photograph of somebody else. All
+    five are `advanced`, so the minimal editor never showed them.
+    """
+
+    def _placeholder(self, block_id, fid):
+        field = next(f for f in gi.fillable_text_fields(block_id) if f["id"] == fid)
+        return field["placeholder"]
+
+    def test_the_prompt_does_not_offer_the_placeholder_as_the_answer(self):
+        prompt = gi._identity_fill_prompt(gi.CHARACTER_KEY, ["wardrobe"])
+        ph = self._placeholder(gi.CHARACTER_KEY, "wardrobe")
+        keys = prompt.split("Return ONLY a JSON object", 1)[1]
+        keys = keys.split("These are the editor's own example strings", 1)[0]
+        self.assertNotIn(ph, keys,
+                         "the key list must describe the field, not answer it")
+
+    def test_an_example_that_is_shown_is_shown_as_one_to_avoid(self):
+        prompt = gi._identity_fill_prompt(gi.CHARACTER_KEY, ["wardrobe"])
+        ph = self._placeholder(gi.CHARACTER_KEY, "wardrobe")
+        if ph in prompt:
+            self.assertIn("never return", prompt.lower())
+            self.assertIn("do not reuse their content", prompt.lower())
+
+    def test_an_echoed_placeholder_is_dropped(self):
+        ph = self._placeholder(gi.CHARACTER_KEY, "wardrobe")
+        kept = gi._drop_placeholder_echoes(
+            gi.CHARACTER_KEY,
+            {"wardrobe": ph, "appearance": "a woman in a blue press vest"},
+        )
+        self.assertNotIn("wardrobe", kept)
+        self.assertEqual(kept["appearance"], "a woman in a blue press vest")
+
+    def test_the_echo_check_is_not_fooled_by_case_or_trailing_stops(self):
+        ph = self._placeholder(gi.CHARACTER_KEY, "signature_gear")
+        kept = gi._drop_placeholder_echoes(
+            gi.CHARACTER_KEY, {"signature_gear": ph.upper() + "."})
+        self.assertEqual(kept, {})
+
+    def test_a_real_answer_survives(self):
+        kept = gi._drop_placeholder_echoes(
+            gi.CHARACTER_KEY, {"wardrobe": "a scorched hazmat smock"})
+        self.assertEqual(kept["wardrobe"], "a scorched hazmat smock")
+
+    def test_no_shipped_sheet_wears_a_placeholder(self):
+        """The live file and every World snapshot, so a cleaned sheet cannot
+        be quietly restored by binding a World that still holds one."""
+        root = Path(__file__).resolve().parent
+        targets = [("prompts/simulation_prompts.json", None)]
+        targets += [(f"worlds/{p.name}", None) for p in sorted((root / "worlds").glob("*.json"))
+                    if not p.name.endswith(".frame.json")]
+        offenders = []
+        for rel, _ in targets:
+            path = root / rel
+            if not path.is_file():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            blob = data.get("prompts") if "worlds/" in rel else data
+            if not isinstance(blob, dict):
+                continue
+            for block_id in (gi.CHARACTER_KEY, gi.SETTING_KEY):
+                block = blob.get(block_id)
+                if not isinstance(block, dict):
+                    continue
+                for field in gi.fillable_text_fields(block_id):
+                    ph = str(field.get("placeholder") or "").strip()
+                    val = str(block.get(field["id"]) or "").strip()
+                    if ph and val and gi._norm_field(val) == gi._norm_field(ph):
+                        offenders.append(f"{rel}:{block_id}.{field['id']}")
+        self.assertEqual(offenders, [],
+                         "these are the editor's examples saved as real values")
+
+
+class TestTheOpeningShotObeysItsOwnCamera(_IdentityFixture):
+    """The plate this writes is the opening montage's reference AND the frame
+    turn one continues from, so whatever pose it describes propagates through
+    the whole run.
+
+    It used to say the protagonist "is in frame, seen by the camera ... standing
+    in <place>" — the exact shot the follow-cam rig bans two paragraphs earlier
+    ("no walking-toward-camera arrival, no front-facing portrait"). The rig is
+    rules in capitals; this is concrete prose about the subject, and concrete
+    wins (see the precedence note in engine.build_image_prompt). So every
+    follow-cam world opened on the hero strolling at the lens, stood still.
+    """
+
+    def _vision(self, mode):
+        self._set_character()
+        self._set_mode(mode)
+        return gi.opening_shot()["vision"]
+
+    def test_a_follow_cam_opening_faces_into_the_scene(self):
+        for mode in ("third_person", "over_shoulder"):
+            with self.subTest(mode=mode):
+                v = self._vision(mode)
+                self.assertIn("BEHIND", v)
+                self.assertIn("facing INTO the place", v)
+
+    def test_it_never_asks_for_the_shot_the_rig_forbids(self):
+        for mode in ("third_person", "over_shoulder", "fixed_cinematic"):
+            with self.subTest(mode=mode):
+                v = self._vision(mode).lower()
+                self.assertNotIn("seen by the camera", v)
+                self.assertNotIn("standing in", v)
+
+    def test_the_pose_is_a_moment_not_a_portrait(self):
+        """"Standing" is why the opening had no charge: the first frame of a
+        horror game was a man stood still, waiting to be looked at."""
+        v = self._vision("third_person")
+        self.assertIn("mid-stride", v)
+        self.assertIn("arrested motion, not a pose", v)
+
+    def test_a_locked_off_camera_is_not_told_to_shoot_from_behind(self):
+        """Fixed cinematic is an angle the character walks INTO, so "from
+        behind" would fight the rig rather than serve it."""
+        v = self._vision("fixed_cinematic")
+        self.assertNotIn("BEHIND", v)
+        self.assertIn("not looking at the lens", v)
+        self.assertIn("dwarfed by the space", v)
+
+    def test_the_character_is_still_named_and_described(self):
+        v = self._vision("third_person")
+        self.assertIn("Wren Alvarez", v)
+        self.assertIn("orange dive suit", v)
+
+    def test_first_person_still_declines(self):
+        self._set_character()
+        self._set_mode("first_person")
+        self.assertIsNone(gi.opening_shot())
 
 
 if __name__ == "__main__":

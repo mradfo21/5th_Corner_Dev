@@ -488,7 +488,11 @@ class TestEngineResolver(unittest.TestCase):
         import importlib
         import engine
         importlib.reload(engine)
-        engine.ELEVENLABS_NARRATOR_VOICE_ID = "BF8pwMTsMLfoEJTkla4e"  # stock leftover
+        # Read from the registry rather than hardcoded: the shipped narrator id
+        # changes when the voice is recast, and a hardcoded id that is no longer
+        # in voices.json is not a stock leftover — it is an id the guard is
+        # supposed to honour, so the test would pass its own premise by mistake.
+        engine.ELEVENLABS_NARRATOR_VOICE_ID = engine.VOICES_CONFIG["narrator_voice"]
         engine.ELEVENLABS_VOICE_ID = ""
         self.assertEqual(engine._narrator_voice_id(), "narr_ours")
         self.assertEqual(engine._default_voice_id(), "clara_1")

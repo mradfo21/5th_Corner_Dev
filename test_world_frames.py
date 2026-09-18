@@ -318,6 +318,98 @@ class TestEnsure(_Isolated):
         self.assertIn("Dawn", captured["caption"])
 
 
+class TestThePlateIsAPictureOfTheAuthoredWorld(_Isolated):
+    """The plate and the opening montage have to be the same place.
+
+    The montage reads the bible (cutscene.mystery_shotlist) and the plate used
+    to read only the Cast & Camera sheet. A level authored entirely in the
+    bible therefore rendered four photographs of its own world and then cut to
+    DEFAULT_FRAME_VISION — a stock establishing wide of nowhere. That cut is
+    the teleport players reported at the top of every run.
+    """
+
+    BIBLE = (
+        "A 1993 analog-horror level set at a flooded lithium refinery under a "
+        "red mesa. Chain-link, rusted settling tanks, sodium lamps, ankle-deep "
+        "alkaline water across the loading apron. "
+    ) * 6  # comfortably past OPENING_VISION_MIN_BIBLE
+
+    def setUp(self):
+        super().setUp()
+        wf._OPENING_VISION_CACHE.clear()
+
+    def _blank_sheet_world(self, name="Refinery"):
+        """A world authored ONLY in the bible — both sheets off, as shipped."""
+        ps.save_prompts_bulk({
+            gi.SETTING_KEY: dict(gi.SETTING_DEFAULTS),
+            "world_initial_state": self.BIBLE,
+        })
+        return ws.save_world(name)
+
+    def _capture_paid(self, slug):
+        captured = {}
+
+        def fake_gen(*args, **kwargs):
+            captured["caption"] = args[0] if args else ""
+            captured["kwargs"] = kwargs
+            return (None, "", None)
+
+        prompts = ws.get_world(slug)["prompts"]
+        with patch.object(engine, "_gen_image", side_effect=fake_gen):
+            wf._generate_paid(slug, prompts, "fp")
+        return captured
+
+    def test_a_bible_only_world_is_not_drawn_from_the_generic_fallback(self):
+        info = self._blank_sheet_world()
+        with patch.object(engine, "_ask", return_value="Ankle-deep water across "
+                          "a loading apron under a red mesa."):
+            captured = self._capture_paid(info["slug"])
+        self.assertIn("red mesa", captured["caption"])
+        self.assertNotIn(wf.DEFAULT_FRAME_VISION, captured["caption"],
+                         "the plate fell back to the stock establishing wide "
+                         "while the montage was reading the bible")
+
+    def test_the_bible_reaches_the_render_as_world_context(self):
+        info = self._blank_sheet_world()
+        with patch.object(engine, "_ask", return_value="A flooded apron."):
+            captured = self._capture_paid(info["slug"])
+        # Not the one-line prologue: that carried no sense of the place, and it
+        # is the only channel a stateless wf-<slug> render has.
+        self.assertIn("lithium refinery", captured["kwargs"]["world_prompt"])
+
+    def test_an_authored_sheet_still_leads_and_the_bible_grounds_it(self):
+        info = self._world("Yard")
+        data = ws.get_world(info["slug"])
+        data["prompts"]["world_initial_state"] = self.BIBLE
+        (ws.WORLDS_DIR / f"{info['slug']}.json").write_text(
+            json.dumps(data, indent=2), encoding="utf-8")
+        with patch.object(engine, "_ask", return_value="Rusted settling tanks."):
+            captured = self._capture_paid(info["slug"])
+        self.assertIn("Dawn", captured["caption"], "the sheet still leads")
+        self.assertIn("settling tanks", captured["caption"])
+
+    def test_a_world_with_no_bible_never_asks(self):
+        info = self._world("Yard")  # bible is "You arrive at Yard"
+        with patch.object(engine, "_ask") as ask:
+            captured = self._capture_paid(info["slug"])
+        self.assertFalse(ask.called, "nothing to read, so nothing to pay for")
+        self.assertIn("Dawn", captured["caption"])
+
+    def test_a_failed_ask_leaves_the_plate_exactly_as_it_was(self):
+        info = self._blank_sheet_world()
+        with patch.object(engine, "_ask", side_effect=RuntimeError("no keys")):
+            captured = self._capture_paid(info["slug"])
+        self.assertEqual(captured["caption"], wf.DEFAULT_FRAME_VISION)
+
+    def test_one_bible_is_read_once(self):
+        info = self._blank_sheet_world()
+        with patch.object(engine, "_ask", return_value="A flooded apron.") as ask:
+            self._capture_paid(info["slug"])
+            self._capture_paid(info["slug"])
+        self.assertEqual(ask.call_count, 1,
+                         "the carousel re-warms every World; this is per bible")
+
+
 class TestAnnotate(_Isolated):
     def test_experience_worlds_carry_frame_url(self):
         info = self._world("Yard")
@@ -604,6 +696,142 @@ class TestTheOpeningFrameIsActuallyLookedAt(_Isolated):
         self.assertEqual(entry["spatial_compass"], "Ahead: water")
         # The dispatch is the protagonist's sheet, not the scene; leave it be.
         self.assertEqual(entry["vision_dispatch"], "Jason Fleece is in frame.")
+
+
+class TestTheOpeningPlateIsDrawnForThisRun(_Isolated):
+    """A run does not open on a cached picture any more. It draws its own.
+
+    The cache is stamped with the World SNAPSHOT's hash while a run is played
+    on the LIVE prompt file, so the two drift the moment anybody edits
+    anything. ``drawn_from_live`` caught the drift and the only thing it could
+    do was give up — ``ensure`` renders from the snapshot, so redrawing would
+    have produced the same wrong picture — which meant editing a world silently
+    cost the next run its entire opening montage.
+    """
+
+    def _wire_experience(self, slug):
+        exp = xs.get_experience()
+        exp["worlds"][0]["slug"] = slug
+        xs.save_experience(exp)
+        return {"experience_world_id": exp["worlds"][0]["id"], "tape_frames": []}
+
+    def _recast(self, name="Someone Else"):
+        """Exactly what saving Cast & Camera does: live prompts move, the
+        World snapshot does not."""
+        ps.save_prompts_bulk({"player_character": dict(
+            gi.default_spec()["player_character"],
+            enabled=True, name=name, appearance="tall, shaved head")})
+
+    def _paid_spy(self, seen):
+        def fake_paid(slug, prompts, fp, *, drawn="", source="generated"):
+            seen.append({"prompts": prompts, "fp": fp,
+                         "drawn": drawn, "source": source})
+            return wf.install_from_file(
+                slug, wf.frame_path(slug), fp,
+                source=source, drawn=drawn or fp)["path"]
+        return fake_paid
+
+    def test_the_plate_is_drawn_from_the_live_prompts_not_the_snapshot(self):
+        info = self._rendered_world("Yard")
+        self._recast()
+        seen = []
+        with patch.object(wf, "_images_enabled", return_value=True), \
+             patch.object(wf, "_generate_paid", side_effect=self._paid_spy(seen)):
+            wf.render_live_plate(info["slug"])
+        self.assertEqual(len(seen), 1)
+        drew = seen[0]["prompts"].get("player_character") or {}
+        self.assertEqual(drew.get("name"), "Someone Else",
+                         "the render must see the hero the run is played as")
+        snapshot = ws.get_world(info["slug"])["prompts"]
+        self.assertNotEqual(
+            (snapshot.get("player_character") or {}).get("name"), "Someone Else",
+            "the snapshot has NOT moved — that is the whole point")
+
+    def test_what_it_draws_is_stamped_as_this_runs_own(self):
+        info = self._rendered_world("Yard")
+        self._recast()
+        self.assertFalse(wf.drawn_from_live(wf.record(info["slug"])))
+        with patch.object(wf, "_images_enabled", return_value=True), \
+             patch.object(wf, "_generate_paid", side_effect=self._paid_spy([])):
+            rec = wf.render_live_plate(info["slug"])
+        self.assertTrue(wf.drawn_from_live(rec))
+
+    def test_the_frame_still_reads_ready_so_the_editor_does_not_redraw_it(self):
+        """``drawn`` carries the live hash and ``fingerprint`` keeps the
+        snapshot's. Stamping the live hash in both would leave ``record``
+        calling the frame permanently dirty, and the editor's debounced
+        ensure() would render a snapshot plate straight over the top."""
+        info = self._rendered_world("Yard")
+        self._recast()
+        with patch.object(wf, "_images_enabled", return_value=True), \
+             patch.object(wf, "_generate_paid", side_effect=self._paid_spy([])):
+            rec = wf.render_live_plate(info["slug"])
+        self.assertEqual(rec["fingerprint"], wf.fingerprint_for_slug(info["slug"]))
+        self.assertEqual(rec["status"], "ready")
+        self.assertFalse(rec["dirty"])
+
+    def test_recasting_the_hero_no_longer_costs_the_run_its_opening(self):
+        """The 2026-09-17 bug, end to end: edit the world, press New Game, and
+        the montage silently did not happen.
+
+        Two things fixed it and both are checked here. The montage no longer
+        asks the frame cache for permission at all (``_open_on_montage`` takes
+        only the state), and the non-montage path that still wants an opening
+        still draws its own rather than refusing a stale one."""
+        info = self._rendered_world("Yard")
+        self._recast()
+        state = self._wire_experience(info["slug"])
+        with patch.object(engine, "INTRO_CUTSCENE", True), \
+             patch.object(engine, "IMAGE_ENABLED", True):
+            self.assertTrue(engine._open_on_montage(state),
+                            "an edited world must still get its cutscene")
+        with patch.object(wf, "_images_enabled", return_value=True), \
+             patch.object(wf, "_generate_paid", side_effect=self._paid_spy([])):
+            slug, rec = engine._cached_opening_frame(state)
+        self.assertEqual(slug, info["slug"])
+        self.assertTrue(rec, "and the no-montage path still gets a still")
+
+    def test_a_perfectly_valid_cache_is_redrawn_anyway(self):
+        """No cache read. The frame on disk can be ready, real and stamped with
+        the live prompts and the run still draws its own — that is the only
+        version of this with no silent-skip case left in it."""
+        info = self._rendered_world("Yard")
+        rec_before = wf.record(info["slug"])
+        self.assertEqual(rec_before["status"], "ready")
+        self.assertTrue(wf.drawn_from_live(rec_before))
+        seen = []
+        with patch.object(wf, "_images_enabled", return_value=True), \
+             patch.object(wf, "_generate_paid", side_effect=self._paid_spy(seen)):
+            engine._cached_opening_frame(self._wire_experience(info["slug"]))
+        self.assertEqual(len(seen), 1, "a warm cache is not a reason to skip it")
+
+    def test_with_images_off_nothing_is_drawn_and_the_old_refusal_stands(self):
+        """The degraded path. There is no montage to be had without a render,
+        so falling back to a stale plate would buy nothing and would re-open
+        the bug the refusal exists for: starting a run on the previous hero."""
+        info = self._rendered_world("Yard")
+        self._recast()
+        with patch.object(wf, "_generate_paid") as paid:  # images off via _Isolated
+            slug, rec = engine._cached_opening_frame(
+                self._wire_experience(info["slug"]))
+        paid.assert_not_called()
+        self.assertEqual(rec, {}, "no run opens on a picture of somebody else")
+
+    def test_a_render_that_comes_back_empty_does_not_take_the_run_down(self):
+        info = self._rendered_world("Yard")
+        with patch.object(wf, "_images_enabled", return_value=True), \
+             patch.object(wf, "_generate_paid", return_value=None):
+            slug, rec = engine._cached_opening_frame(
+                self._wire_experience(info["slug"]))
+        self.assertEqual(slug, info["slug"])
+        self.assertTrue(rec, "the previous good frame is still of this hero")
+
+    def test_a_render_that_raises_does_not_take_the_run_down(self):
+        info = self._rendered_world("Yard")
+        with patch.object(wf, "render_live_plate", side_effect=RuntimeError("boom")):
+            slug, rec = engine._cached_opening_frame(
+                self._wire_experience(info["slug"]))
+        self.assertTrue(rec)
 
 
 class TestForceReset(_Isolated):

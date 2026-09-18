@@ -88,6 +88,71 @@ def scene_prompt_for(prompts: Optional[Dict[str, Any]] = None, vision: str = "")
     return DEFAULT_FRAME_VISION
 
 
+# The plate used to be described from the Cast & Camera sheet alone. A level
+# authored entirely in the bible — Level and Character toggles off, nine
+# thousand words in ``world_initial_state`` — therefore fell all the way
+# through ``opening_shot`` to DEFAULT_FRAME_VISION, and the cached frame was a
+# stock establishing wide of nowhere. The opening montage reads that same bible
+# (see cutscene.mystery_shotlist), so the run showed four photographs of the
+# authored place and then cut to a stranger: the teleport at the top of every
+# run. This asks the bible the one question the plate needs answered.
+OPENING_VISION_INSTRUCTIONS = (
+    "Below is the bible for a game level. Describe THE SINGLE FIRST FRAME the "
+    "player sees when the level begins: the establishing view of the place they "
+    "are standing in.\n"
+    "Describe only what the camera sees — architecture, ground, light, weather, "
+    "materials, the landmarks that make this place itself and nowhere else. "
+    "Name nothing that is not visible. No story, no history, no backstory, no "
+    "names, no interpretation, no camera or lens direction, no film-stock or "
+    "grain notes: those are set elsewhere in the prompt.\n"
+    "Do NOT put a person, a figure, a body part or a crowd in it.\n"
+    "Answer with at most 60 words of plain prose. No preamble, no heading."
+)
+# Bible text is long and this is asked on every regeneration of every World in
+# the carousel. One answer per distinct bible, in-process.
+_OPENING_VISION_CACHE: Dict[str, str] = {}
+OPENING_VISION_MIN_BIBLE = 400
+
+
+def lore_opening_vision(prompts: Optional[Dict[str, Any]] = None) -> str:
+    """One establishing description of this World, read from its own bible.
+
+    Returns "" when there is no bible worth reading or the model is unavailable,
+    in which case the caller keeps the sheet's description (or the generic
+    fallback) exactly as before — a plate is never worth failing a render over.
+    """
+    bible = str((prompts or {}).get("world_initial_state") or "").strip()
+    if len(bible) < OPENING_VISION_MIN_BIBLE:
+        return ""
+    key = hashlib.sha256(bible.encode("utf-8", "replace")).hexdigest()
+    if key in _OPENING_VISION_CACHE:
+        return _OPENING_VISION_CACHE[key]
+    try:
+        import engine
+        place = ""
+        try:
+            import game_identity
+            place = game_identity.place_summary(
+                game_identity.spec_from_prompts(prompts or {})) or ""
+        except Exception:
+            place = ""
+        answer = engine._ask(
+            f"{OPENING_VISION_INSTRUCTIONS}\n\n"
+            f"LEVEL BIBLE:\n{bible[:6000]}\n\n"
+            + (f"THE PLACE THIS OPENS IN: {place}\n" if place else ""),
+            temp=0.4, tokens=160, use_lore=False,
+        )
+    except Exception:
+        log.warning("[WORLD FRAMES] opening vision ask failed", exc_info=True)
+        return ""
+    text = " ".join(str(answer or "").split())
+    if not text:
+        return ""
+    _OPENING_VISION_CACHE[key] = text
+    log.info("[WORLD FRAMES] plate described from the bible: %s", text[:110])
+    return text
+
+
 def _meta_prompt(slug: str, prompts: Optional[Dict[str, Any]] = None,
                  prompt: str = "") -> str:
     text = clip_steer_prompt(prompt)
@@ -449,22 +514,38 @@ def _images_enabled() -> bool:
         return False
 
 
-def _generate_paid(slug: str, prompts: Dict[str, Any], fp: str) -> Optional[str]:
-    """Render an opening still into a private session. Does not touch play state."""
+def _generate_paid(slug: str, prompts: Dict[str, Any], fp: str, *,
+                   drawn: str = "", source: str = "generated") -> Optional[str]:
+    """Render an opening still into a private session. Does not touch play state.
+
+    ``drawn`` is the fingerprint of the prompts this picture is actually OF, and
+    defaults to ``fp`` because the cache-warming path renders from the same
+    snapshot it stamps. ``render_live_plate`` separates the two: it draws from
+    the live prompt file while keeping the snapshot's hash in ``fingerprint``,
+    so the editor's dirty/ready reporting is unaffected.
+    """
     import engine
     import game_identity
 
     spec = game_identity.spec_from_prompts(prompts)
     shot = game_identity.opening_shot(spec)
+    bible = str((prompts or {}).get("world_initial_state") or "")
+    lore_vision = lore_opening_vision(prompts)
     if shot:
-        vision = shot["vision"]
+        # The sheet leads — it names the cast and the framing — and the bible
+        # grounds it in the place the montage is about to photograph.
+        vision = f"{shot['vision']} {lore_vision}".strip() if lore_vision else shot["vision"]
         prologue = shot["prologue"]
     else:
-        vision = DEFAULT_FRAME_VISION
+        vision = lore_vision or DEFAULT_FRAME_VISION
         prologue = "The run begins."
     session_id = f"{_GEN_SESSION_PREFIX}{_safe_slug(slug)}"[:80]
     # Use this World's sheet, not whoever happens to be loaded live. The
     # plate is an img2img reference inside _gen_image, not the cached still.
+    #
+    # ``world_prompt`` is the bible, not the prologue. This render has no
+    # session state behind it, so it is the only way the level's own text
+    # reaches the visual-tone gloss — the same channel a played frame uses.
     result = engine._gen_image(
         vision,
         "camcorder",
@@ -473,7 +554,7 @@ def _generate_paid(slug: str, prompts: Dict[str, Any], fp: str) -> Optional[str]
         use_edit_mode=False,
         frame_idx=0,
         dispatch=prologue,
-        world_prompt=prologue,
+        world_prompt=bible or prologue,
         hard_transition=True,
         session_id=session_id,
         history_ref=[],
@@ -482,11 +563,81 @@ def _generate_paid(slug: str, prompts: Dict[str, Any], fp: str) -> Optional[str]
     img_path = result[0] if result else None
     if img_path and Path(img_path).is_file():
         install_from_file(
-            slug, img_path, fp, source="generated",
-            prompt=scene_prompt_for(prompts, vision), drawn=fp,
+            slug, img_path, fp, source=source,
+            prompt=scene_prompt_for(prompts, vision), drawn=drawn or fp,
         )
         return str(img_path)
     return None
+
+
+def render_live_plate(slug: str) -> Dict[str, Any]:
+    """Draw this World's opening plate NOW, from the prompts the run will use.
+
+    Every other render path here goes through the World SNAPSHOT
+    (``worlds/<slug>.json``), which is a copy that only moves when somebody
+    saves the level — while a run is played on the live prompt file. The two
+    drift the moment anybody edits anything, and a plate drawn from the snapshot
+    is then a photograph of the level as it used to be.
+
+    That drift is the entire reason the opening had a cache check in front of it
+    (``drawn_from_live``), and the reason editing a world silently cost the next
+    run its montage: the cached frame failed the check, ``ensure`` could only
+    have redrawn it wrong, so the run opened with no cutscene at all and a log
+    line nobody sees. Play now calls this instead of reading the cache, so the
+    plate is always a picture of the level being played and the opening never
+    has a reason to be skipped.
+
+    ``fingerprint`` keeps the snapshot's hash and ``drawn`` carries the live one,
+    matching what ``remember_from_play`` writes — stamping the live hash in both
+    would leave ``record`` reporting the frame permanently dirty, and the
+    editor would schedule a snapshot re-render straight over the top of it.
+
+    Returns the resulting record. On any failure (images off, no key, the render
+    came back empty) that is whatever was already on disk, and the caller
+    decides what to do with it.
+    """
+    slug = _safe_slug(slug)
+    if not slug:
+        return record("")
+    if not _images_enabled():
+        log.info("[WORLD FRAMES] live plate for %s skipped: images are off", slug)
+        return record(slug)
+    try:
+        from prompts_store import PROMPTS
+        live = dict(PROMPTS)
+    except Exception as e:
+        log.warning("[WORLD FRAMES] live plate for %s: no live prompts (%s)", slug, e)
+        return record(slug)
+    if not live:
+        return record(slug)
+
+    fp = fingerprint_for_slug(slug)
+    drawn = live_fingerprint()
+    t0 = time.time()
+    print(f"[WORLD FRAMES] drawing {slug}'s opening plate from the live prompts "
+          f"({(drawn or '-')[:8]})", flush=True)
+    # Claim the slot so a debounced editor ensure() for the same World does not
+    # render a second, snapshot-based plate straight over this one.
+    with _lock:
+        _generating[slug] = drawn or fp
+    try:
+        path = _generate_paid(slug, live, fp, drawn=drawn, source="intro")
+    except Exception as e:
+        log.warning("[WORLD FRAMES] live plate for %s failed: %s", slug, e)
+        path = None
+    finally:
+        with _lock:
+            _generating.pop(slug, None)
+
+    rec = record(slug)
+    if path:
+        print(f"[WORLD FRAMES] {slug}'s plate is this run's own "
+              f"({time.time() - t0:.1f}s)", flush=True)
+    else:
+        print(f"[WORLD FRAMES] live plate for {slug} did not render "
+              f"({time.time() - t0:.1f}s) — falling back to whatever is cached",
+              flush=True)
+    return rec
 
 
 def is_real_still(rec: Optional[Dict[str, Any]]) -> bool:

@@ -112,8 +112,13 @@ class EditorHarness(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from pathlib import Path
-        exp_path = Path("experiences") / "default.json"
+        import experience_store as xs
+        # Where the STORE says Experiences live, not where they live in the
+        # repo. A test run redirects that to a sandbox (see conftest.py) and
+        # the server subprocess inherits the same path through the
+        # environment, so this is the only spelling that reads what the server
+        # actually wrote.
+        exp_path = xs.EXPERIENCES_DIR / "default.json"
         cls._exp_path = exp_path
         cls._exp_backup = exp_path.read_text(encoding="utf-8") if exp_path.exists() else None
         cls.port = _find_free_port()
@@ -415,7 +420,7 @@ class TestEditorDots(EditorHarness):
         self.assertTrue(self.page.is_visible("#we-xp-row"))
         self.assertEqual(self._shown(), ["experience"])
 
-        mesa = Path("experiences") / "night-mesa.json"
+        mesa = xs.EXPERIENCES_DIR / "night-mesa.json"
         try:
             xs.save_experience({
                 "name": "Night Mesa",
@@ -465,7 +470,6 @@ class TestEditorDots(EditorHarness):
         """+ NEW writes a file, typing the selected name saves it, and
         clicking another tile loads that Experience."""
         import experience_store as xs
-        from pathlib import Path
 
         self.page.wait_for_selector("#we-xp-new", timeout=4000)
         self.assertTrue(self.page.is_visible("#we-xp-new"))
@@ -483,7 +487,7 @@ class TestEditorDots(EditorHarness):
             slug = self.page.evaluate(
                 """() => document.querySelector('#we-xp-track .we-xp-cell.is-on')
                                  .getAttribute('data-slug')""")
-            created = Path("experiences") / f"{slug}.json"
+            created = xs.EXPERIENCES_DIR / f"{slug}.json"
             name = "#we-xp-track .we-xp-cell.is-on input.we-xp-name"
             self.page.fill(name, "Carousel Mesa")
             self.page.locator(name).blur()

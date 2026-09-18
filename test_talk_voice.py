@@ -125,14 +125,23 @@ class TestClientNeverHangsOnADeadChannel(unittest.TestCase):
         self.assertIn("beginVoice(session, opening)", start)
 
     def test_the_opening_line_appears_before_the_voice_socket(self):
-        """A hung startSession used to leave the speak screen silent."""
+        """A hung startSession used to leave the speak screen silent.
+
+        The greeting used to be a canned 'you shouldn't be here' painted
+        BEFORE /api/talk/session, then posted as opening_line, so the voice
+        agent spoke that stock NPC line every time. Wait for the session to
+        write a real line; still paint it before beginVoice so a hung socket
+        is not a silent screen.
+        """
         start = self.src.split("async function start(subj)", 1)[1].split("\n    function ", 1)[0]
-        greet_at = start.index('addLine("assistant", firstLine)')
+        greet_at = start.index('addLine("assistant", opening)')
         voice_at = start.index("beginVoice(session, opening)")
+        session_at = start.index("postJSON(\"/api/talk/session\"")
         self.assertLess(greet_at, voice_at)
-        self.assertLess(greet_at, start.index("postJSON(\"/api/talk/session\""))
+        self.assertGreater(greet_at, session_at)
         self.assertIn("fallbackOpening", start)
         self.assertIn("greetingShown = true", start)
+        self.assertNotIn("opening_line: firstLine", start)
 
     def test_a_channel_that_never_connects_falls_back(self):
         """startSession() can resolve and then never connect — an unauthorised
@@ -161,6 +170,28 @@ class TestClientNeverHangsOnADeadChannel(unittest.TestCase):
         # while the channel is still opening.
         self.assertIn('mode = "voice"', begin)
         self.assertLess(begin.index("onConnect"), begin.index('mode = "voice"'))
+
+
+class TestTalkOpeningIsNotAStockNpc(unittest.TestCase):
+    def test_fallback_is_not_the_sentry_line(self):
+        line = engine._talk_opening_fallback("guard", "person")
+        self.assertNotIn("shouldn't be here", line.lower())
+        self.assertNotIn("what do you want", line.lower())
+        self.assertNotIn("who are you", line.lower())
+
+    def test_the_old_canned_opener_is_detected(self):
+        self.assertTrue(engine._is_canned_talk_fallback(
+            "You. You shouldn't be here. What do you want?"))
+        self.assertTrue(engine._is_canned_talk_fallback(
+            "[the radio crackles]… is someone there? Say something."))
+        self.assertFalse(engine._is_canned_talk_fallback("Don't. Not yet."))
+
+    def test_the_client_fallback_is_not_the_sentry_line(self):
+        src = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
+        fn = src.split("function fallbackOpening(subj)", 1)[1].split(
+            "\n    function ", 1)[0]
+        self.assertNotIn("You shouldn't be here", fn)
+        self.assertNotIn("is someone there", fn)
 
 
 if __name__ == "__main__":

@@ -38,8 +38,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import worlds_store
 
 ROOT = Path(__file__).parent.resolve()
-EXPERIENCES_DIR = ROOT / "experiences"
-SESSIONS_DIR = ROOT / "sessions"
+import authoring_sandbox as _sandbox
+_sandbox.guard()  # before the path below is computed — see authoring_sandbox
+# Overridable so a test run writes to a copy — see prompts_store.PROMPTS_PATH.
+EXPERIENCES_DIR = Path(os.getenv("SOMEWHERE_EXPERIENCES_DIR")
+                       or (ROOT / "experiences"))
+SESSIONS_DIR = Path(os.getenv("SESSIONS_DIR") or (ROOT / "sessions"))
 ACTIVE_SLUG = "default"
 # The shipped Play door. worlds/somewhere.json + this Experience are the
 # Phase 0 freeze of the Horizon demo. Empty ``.active`` binds here when the
@@ -578,8 +582,10 @@ def save_experience(payload: Any, slug: str = "") -> Dict[str, Any]:
     exp = normalize_experience(payload)
     exp["id"] = slug
     incoming = payload.get("lore") if isinstance(payload, dict) else None
-    # Inherited world-bible notes are a read overlay. Do not write them
-    # back as if the author typed them (set_sound / add_world used to).
+    # Legacy guard. `_resolve_lore` no longer overlays the world document onto an
+    # empty Lore node, so nothing produces `source: "world"` any more — but a
+    # client holding an older payload still could, and writing that overlay back
+    # would enter thousands of characters of model direction as authored lore.
     if isinstance(incoming, dict) and incoming.get("source") == "world":
         kept = normalize_lore(incoming)
         kept["notes"] = ""
@@ -589,6 +595,7 @@ def save_experience(payload: Any, slug: str = "") -> Dict[str, Any]:
         _path(slug).write_text(
             json.dumps(exp, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+    forget_lore(slug)
     exp["lore"] = _resolve_lore(exp)
     return exp
 
@@ -1275,6 +1282,16 @@ def persist_world_snapshot(world_id: str, slug: str = "") -> Dict[str, Any]:
     )
     world["slug"] = info["slug"]
     world["name"] = info.get("name") or world["name"]
+    # Saving the cast saves it everywhere — see worlds_store.CAST_KEYS. Without
+    # this, the recast lived only in the World that happened to be open and
+    # every hop restored a different protagonist.
+    try:
+        worlds_store.sync_cast_to_worlds(
+            [w.get("slug") or "" for w in exp.get("worlds") or []
+             if (w.get("slug") or "") != info["slug"]]
+        )
+    except Exception:
+        pass
     return save_experience(exp, slug)
 
 
@@ -1491,48 +1508,23 @@ def _decode_data_url(raw: str) -> bytes:
         raise ValueError("Could not read that image.") from e
 
 
-def _authored_lore_rich(lore: Optional[Dict[str, Any]]) -> bool:
-    data = normalize_lore(lore)
-    if str(data.get("notes") or "").strip():
-        return True
-    return bool(data.get("documents"))
-
-
-def _implicit_world_bible_from_exp(exp: Optional[Dict[str, Any]]) -> str:
-    """Read-only start-World bible. Never calls load_world (that overwrites Play)."""
-    if not isinstance(exp, dict):
-        return ""
-    world = landing_world(exp) or world_by_id(exp, str(exp.get("start_world") or ""))
-    wslug = str((world or {}).get("slug") or "").strip()
-    if wslug:
-        try:
-            data = worlds_store.get_world(wslug)
-            text = str((data.get("prompts") or {}).get("world_initial_state") or "").strip()
-            if text:
-                return text
-        except Exception:
-            pass
-    try:
-        from prompts_store import PROMPTS
-        return str(PROMPTS.get("world_initial_state") or "").strip()
-    except Exception:
-        return ""
-
-
 def _resolve_lore(exp: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Empty Lore inherits the start World's story bible so Play and the graph share it."""
-    lore = normalize_lore((exp or {}).get("lore"))
-    if not lore.get("enabled", True):
-        return lore
-    if _authored_lore_rich(lore):
-        return lore
-    bible = _implicit_world_bible_from_exp(exp)
-    if not bible:
-        return lore
-    out = dict(lore)
-    out["notes"] = bible[:_LORE_MAX_NOTES]
-    out["source"] = "world"
-    return out
+    """The author's Lore node, and nothing standing in for it.
+
+    An empty node used to inherit the start World's `world_initial_state` as the
+    bible, tagged ``source: "world"``, so that Play and the graph would agree
+    about something rather than nothing. That substitution is worse than nothing.
+    `world_initial_state` is mostly DIRECTION for the model — "Never depict
+    forests", "Do not reference sound-based cues", "escalate to full horror" —
+    and it was arriving under the HISTORICAL BACKGROUND heading, i.e. handed to
+    the narrator as facts it happened to know about the place. It also hid the
+    real state of the node: the shipped Experience read as having a bible for as
+    long as it had a world document, so a Lore node holding camera direction
+    looked identical to one holding history.
+
+    Empty now means empty, and `boot_report` says so in the boot log.
+    """
+    return normalize_lore((exp or {}).get("lore"))
 
 
 def _doc_body(slug: str, doc: Dict[str, Any]) -> str:
@@ -1564,6 +1556,92 @@ def _lore_chunks(slug: str = "") -> List[str]:
     return chunks
 
 
+# The bible is read on EVERY narrative call — `_ask(use_lore=True)` goes through
+# `apply_lore_to_prompt`, and `lore_already_in` reads it a second time to dedupe.
+# Each of those reads was a disk read plus a full normalize of the Experience
+# document, several times per turn. Cached against a fingerprint of the files it
+# came from rather than a timer, so an author editing lore in the editor still
+# sees the very next turn change with no restart and no polling.
+_LORE_CACHE: Dict[str, Any] = {}
+
+
+def _lore_fingerprint(slug: str) -> tuple:
+    """What the assembled bible depends on, cheaply: the Experience document and
+    every uploaded lore file, by size and mtime."""
+    marks: List[Any] = []
+    try:
+        st = _path(slug).stat()
+        marks.append((st.st_mtime_ns, st.st_size))
+    except OSError:
+        marks.append(None)
+    try:
+        for path in sorted(lore_dir(slug).iterdir()):
+            st = path.stat()
+            marks.append((path.name, st.st_mtime_ns, st.st_size))
+    except OSError:
+        pass
+    return tuple(marks)
+
+
+def _lore_snapshot(slug: str = "") -> tuple:
+    """``(chunks, body)`` for this Experience — the assembled, capped bible
+    before the cast sheet is applied to it."""
+    slug = _resolve_slug(slug)
+    fingerprint = _lore_fingerprint(slug)
+    cached = _LORE_CACHE.get(slug)
+    if cached and cached[0] == fingerprint:
+        return cached[1], cached[2]
+    chunks = _lore_chunks(slug)
+    body = "\n\n".join(chunks)
+    if len(body) > _LORE_BRIEF_CAP:
+        # Used to happen in silence, mid-sentence. The author's last page is the
+        # one most likely to be the deepest lore, and it was the one being cut.
+        print(f"[LORE] {slug}: the bible is {len(body):,} chars against a "
+              f"{_LORE_BRIEF_CAP:,} cap — the last "
+              f"{len(body) - _LORE_BRIEF_CAP:,} characters reach no prompt. "
+              f"Trim it, or raise LORE_BRIEF_CAP.", flush=True)
+        body = body[:_LORE_BRIEF_CAP].rstrip() + "\n…"
+    _LORE_CACHE[slug] = (fingerprint, chunks, body)
+    return chunks, body
+
+
+def forget_lore(slug: str = "") -> None:
+    """Drop the cached bible. The fingerprint catches writes on its own; this is
+    for callers that have just written and want the next read to be certain."""
+    if slug:
+        _LORE_CACHE.pop(_resolve_slug(slug), None)
+    else:
+        _LORE_CACHE.clear()
+
+
+def boot_report(slug: str = "") -> str:
+    """One line for the boot log: what bible this run will actually carry.
+
+    Nothing ever announced the lore, and that is how the shipped Lore node came
+    to be holding 266 characters of camera direction instead of the world's
+    history with neither the author nor the engine noticing. Every other
+    subsystem says what it loaded; this one now does too.
+    """
+    slug = _resolve_slug(slug)
+    try:
+        lore = get_lore(slug)
+        if not lore.get("enabled", True):
+            return (f"Lore for {slug!r} is DISABLED — no HISTORICAL BACKGROUND "
+                    f"reaches any prompt.")
+        chunks, body = _lore_snapshot(slug)
+        if not chunks:
+            return (f"Lore for {slug!r} is EMPTY — every narrative prompt runs "
+                    f"with no HISTORICAL BACKGROUND, and the narrator falls back "
+                    f"to the premise. Author it on the Lore node in the editor.")
+        stats = lore_stats(lore)
+        return (f"Lore for {slug!r}: {len(body):,} chars "
+                f"({stats['notes_chars']:,} of notes, {stats['texts']} text "
+                f"document(s), {stats['images']} image(s)) on every narrative "
+                f"prompt as HISTORICAL BACKGROUND.")
+    except Exception as e:
+        return f"Lore for {slug!r} could not be read ({e}) — running without it."
+
+
 def lore_already_in(text: str, slug: str = "") -> bool:
     """True when this prompt already carries the Experience bible."""
     hay = text or ""
@@ -1571,7 +1649,7 @@ def lore_already_in(text: str, slug: str = "") -> bool:
         return False
     if _LORE_FRAMING.strip() in hay:
         return True
-    for chunk in _lore_chunks(slug):
+    for chunk in _lore_snapshot(slug)[0]:
         needle = (chunk or "").strip()
         if len(needle) >= 80 and needle[:80] in hay:
             return True
@@ -1582,16 +1660,14 @@ def lore_already_in(text: str, slug: str = "") -> bool:
 
 def lore_brief(slug: str = "") -> str:
     """Compact background injected into a run's world document."""
-    chunks = _lore_chunks(slug)
+    chunks, body = _lore_snapshot(slug)
     if not chunks:
         return ""
-    body = "\n\n".join(chunks)
-    if len(body) > _LORE_BRIEF_CAP:
-        body = body[:_LORE_BRIEF_CAP].rstrip() + "\n…"
     # Lore authored against the shipped protagonist keeps that name forever,
     # so a run whose cast sheet says Wren Alvarez shipped a world document
     # naming Jason six times and Wren once — and every prompt read it. The
-    # cast sheet is the authority on who the player is.
+    # cast sheet is the authority on who the player is. Applied outside the
+    # cache: the sheet changes without any lore file changing.
     try:
         import game_identity
         body = game_identity.recast(body)
@@ -1601,14 +1677,21 @@ def lore_brief(slug: str = "") -> str:
 
 
 def with_lore(text: str, slug: str = "") -> str:
-    """Append Experience lore to a world prompt. Empty or already-present lore is a no-op."""
+    """Put the Experience bible at the TOP of a run's world document.
+
+    It used to be appended. The bible is the author's account of what this place
+    is, and the world document under it is direction for the model — so the one
+    thing the author actually wrote about the world was sitting last, beneath
+    9,000 characters of instructions, in the position a model weights least.
+    `apply_lore_to_prompt` has always prepended; the two agree now.
+    """
     brief = lore_brief(slug)
     if not brief:
         return text
     if lore_already_in(text, slug):
         return text or ""
-    base = (text or "").rstrip()
-    return f"{base}\n\n{brief}" if base else brief
+    base = (text or "").strip()
+    return f"{brief}\n\n{base}" if base else brief
 
 
 def apply_lore_to_prompt(prompt: str, slug: str = "") -> str:

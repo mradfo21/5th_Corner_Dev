@@ -797,6 +797,53 @@ class TestDegradedTurnsStayInFiction(unittest.TestCase):
         self.assertIn("degraded = _is_failure_dispatch(dispatch)", src)
         self.assertIn("dispatch = _diegetic_dispatch(choice)", src)
 
+
+class TestAnOutageNeverBecomesTheVisualTone(unittest.TestCase):
+    """The prose path has masked `_ask` sentinels since _is_failure_dispatch
+    was written. The IMAGE path had no such guard: the sentinel came back as
+    the world's "visual tone", went into the render prompt, and was cached — so
+    one transient 403 left every remaining frame of the session being drawn in
+    the style of an error message. Found by the playtest harness.
+    """
+
+    def setUp(self):
+        import engine
+        self.engine = engine
+        self.sid = "tone-guard-test"
+        engine._VISUAL_TONE_CACHE.pop(self.sid, None)
+
+    def tearDown(self):
+        self.engine._VISUAL_TONE_CACHE.pop(self.sid, None)
+
+    def _tone(self, answer):
+        with patch.object(self.engine, "_ask", return_value=answer):
+            return self.engine.summarize_world_prompt_for_image(
+                "a world", session_id=self.sid, hard_transition=True)
+
+    def test_a_good_gloss_is_returned_and_cached(self):
+        got = self._tone("muted 1993 desert thriller, amber and rust tones")
+        self.assertIn("amber and rust", got)
+        self.assertEqual(self.engine._VISUAL_TONE_CACHE[self.sid], got)
+
+    def test_a_failure_keeps_the_last_good_tone(self):
+        good = self._tone("muted 1993 desert thriller, amber and rust tones")
+        after = self._tone("Signal interrupted due to API error...")
+        self.assertEqual(after, good)
+        self.assertEqual(self.engine._VISUAL_TONE_CACHE[self.sid], good)
+
+    def test_a_failure_with_no_prior_tone_contributes_nothing(self):
+        self.assertEqual(
+            self._tone("Signal interrupted — GEMINI_API_KEY not configured."), "")
+        self.assertNotIn(self.sid, self.engine._VISUAL_TONE_CACHE)
+
+    def test_no_sentinel_can_reach_a_render_prompt(self):
+        for bad in ("Signal interrupted due to timeout...",
+                    "Signal interrupted due to API error...",
+                    "Signal interrupted — Anthropic API key not configured.",
+                    "Signal interrupted — could not read image."):
+            with self.subTest(bad=bad):
+                self.assertNotIn("signal interrupted", self._tone(bad).lower())
+
     def test_autoplay_can_still_tell_a_masked_failure_apart(self):
         """Masking makes the text look real, so the flag is the only signal
         left — without it a fully broken run reports 100% real narrative."""

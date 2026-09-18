@@ -920,14 +920,41 @@ def _identity_fill_prompt(block_id: str, field_ids: List[str]) -> str:
     block = next((b for b in IDENTITY_SCHEMA if b["id"] == block_id), None)
     wanted = {f["id"]: f for f in fillable_text_fields(block_id) if f["id"] in field_ids}
     kind = "character" if block_id == CHARACTER_KEY else "place"
+    # NEVER HAND THE MODEL THE PLACEHOLDER AS THE ANSWER.
+    #
+    # This used to read `field.get("placeholder") or field.get("help")`, so the
+    # request for a wardrobe was literally:
+    #     - "wardrobe": Wardrobe — Patched orange dive suit, mismatched boots…
+    # and the model did the obvious thing and echoed it back. A drafted sheet
+    # came out wearing the example: orange dive suit, "Dented Nikon F3, sodium
+    # lamp", she/her, "talks to herself", and the sister who never filed a
+    # flight plan — five of the eight character fields, verbatim, on a
+    # photograph of somebody else entirely. Those fields are `advanced` and
+    # hidden in the minimal editor, so the author never saw where the orange
+    # jumpsuit in their game was coming from.
+    #
+    # `help` describes the field. The placeholder is UI furniture, and it only
+    # goes in clearly marked as a shape to avoid. _drop_placeholder_echoes is
+    # the guarantee — a model shown an example will sometimes copy it however
+    # it is labelled.
     lines = []
+    examples = []
     for fid in field_ids:
         field = wanted.get(fid)
         if not field:
             continue
-        hint = field.get("placeholder") or field.get("help") or ""
+        hint = field.get("help") or ""
         lines.append(f'- "{fid}": {field["label"]}' + (f" — {hint}" if hint else ""))
+        ph = str(field.get("placeholder") or "").strip()
+        if ph:
+            examples.append(f'- "{fid}": {ph}')
     label = (block or {}).get("label") or block_id
+    dont_copy = (
+        "\n\nThese are the editor's own example strings, shown so you can see "
+        "the SHAPE and length expected. They are about a different character "
+        "in a different story. Do not reuse their content, and never return "
+        "one of them as an answer:\n" + "\n".join(examples)
+    ) if examples else ""
     return (
         f"{ai_provider_manager.IDENTITY_DRAFT_MARKER}\n"
         f"block={block_id}\n"
@@ -936,8 +963,41 @@ def _identity_fill_prompt(block_id: str, field_ids: List[str]) -> str:
         f"Return ONLY a JSON object with these keys (omit a key if you cannot tell):\n"
         + "\n".join(lines)
         + "\nRules: short and concrete; visual first; a real name, not Unknown; "
-        "no plot. JSON only, no markdown."
+        "no plot. Omit any key you would be guessing at — a blank field is "
+        "fixable, an invented one is not. JSON only, no markdown."
+        + dont_copy
     )
+
+
+def _drop_placeholder_echoes(block_id: str, drafted: Dict[str, str]) -> Dict[str, str]:
+    """Discard drafted values that are just the field's own example back.
+
+    Belt to the prompt's braces: told not to copy the examples, a model still
+    will when it cannot read the answer off the picture — and that is exactly
+    when the echo is most convincing and most wrong.
+    """
+    if not drafted:
+        return drafted
+
+    # _norm_field alone is not enough here: it lowercases and collapses space
+    # but keeps punctuation, so an echo that arrives with a full stop welded on
+    # ("…sodium lamp.") reads as a different string from the example it copied.
+    def _same(text: str) -> str:
+        return _norm_field(text).strip(" .,;:!?\"'")
+
+    placeholders = {
+        f["id"]: _same(str(f.get("placeholder") or ""))
+        for f in fillable_text_fields(block_id)
+    }
+    out: Dict[str, str] = {}
+    for fid, value in drafted.items():
+        ph = placeholders.get(fid) or ""
+        if ph and _same(str(value or "")) == ph:
+            print(f"[IDENTITY] {block_id}.{fid}: draft echoed the placeholder "
+                  f"— dropped", flush=True)
+            continue
+        out[fid] = value
+    return out
 
 
 def _parse_fill_json(raw: str) -> Dict[str, str]:
@@ -987,7 +1047,8 @@ def infer_fields_from_image(
         max_tokens=IMAGE_FILL_MAX_TOKENS,
     )
     parsed = _parse_fill_json(raw)
-    return {fid: parsed[fid] for fid in wanted if parsed.get(fid)}
+    return _drop_placeholder_echoes(
+        block_id, {fid: parsed[fid] for fid in wanted if parsed.get(fid)})
 
 
 def infer_fields_from_text(
@@ -1046,7 +1107,8 @@ def infer_fields_from_text(
         print(f"[IDENTITY] text fill failed: {err}", flush=True)
         return {}
     parsed = _parse_fill_json(raw)
-    return {fid: parsed[fid] for fid in wanted if parsed.get(fid)}
+    return _drop_placeholder_echoes(
+        block_id, {fid: parsed[fid] for fid in wanted if parsed.get(fid)})
 
 
 def apply_image_fill(
@@ -1162,13 +1224,37 @@ def attach_reference_and_fill(
             continue
         if overwrite or not str(current.get(key, "") or "").strip():
             filled[key] = value
+    # A NEW PLATE IS A NEW PERSON, NOT A PATCH OVER THE OLD ONE.
+    #
+    # Only the fields vision could answer were written, so everything it could
+    # not stayed behind from whoever was on the sheet before — and most of
+    # those fields are `advanced`, so the author never saw them. A sheet was
+    # found reading name "Jason Fleece" (the shipped default), pronouns
+    # "she/her" (left from an earlier recast), Look "blue press flak jacket"
+    # (the new upload) and Wardrobe "Patched orange dive suit" (the editor's
+    # own placeholder text, saved as a value). Every prompt then carried two
+    # outfits and two genders for one person, and the image model picked a
+    # different answer per frame.
+    #
+    # An overwriting draft therefore CLEARS what it could not read. A blank
+    # field is visibly missing and the author can fill it; a stale one is
+    # invisible and contradicts the photograph. `filled` stays the fields that
+    # got real text — it is what the editor reports back — so the clears go
+    # straight onto the patch.
+    cleared = [fid for fid in wanted if fid not in filled] if overwrite else []
     reason = (
         "" if filled else
         ("no_image" if not path else
          "all_filled" if not wanted else "nothing_inferred")
     )
-    if filled:
+    # Wire the plate even when nothing could be read off it. This used to be
+    # `if filled:`, so a photograph vision had no words for was silently not
+    # attached at all — the upload looked like it worked and changed nothing.
+    attaching = bool(ref_id) and refs != list(current.get("reference_images") or [])
+    if filled or attaching:
         patch: Dict[str, Any] = {"reference_images": refs, "enabled": True}
+        for fid in cleared:
+            patch[fid] = ""
         patch.update(filled)
         save_spec({block_id: patch})
     return {
@@ -1176,7 +1262,8 @@ def attach_reference_and_fill(
         "skipped": not bool(filled),
         "reason": reason,
         "fields": list(filled.keys()),
-        "attached": ref_id if filled else "",
+        "cleared": cleared,
+        "attached": ref_id if (filled or attaching) else "",
         "backend": ai_provider_manager.active_backend("vision"),
         "model": ai_provider_manager.resolve_model(None, "vision"),
     }
@@ -1222,6 +1309,17 @@ def character_enabled(spec: Optional[Dict[str, Any]] = None) -> bool:
     char = spec[CHARACTER_KEY]
     if not char.get("enabled"):
         return False
+    # An uploaded character sheet DEFINES the protagonist even with the text
+    # fields left blank. Without this, an image-only character read as "no
+    # character" — so uses_shipped_protagonist() flipped true and every prompt's
+    # PROSE fell back to "Jason Fleece" while the plate drew the upload, and the
+    # image model coin-flipped between the two (the "randomly switches to Jason"
+    # bug, worst in encounters where several text prompts name the protagonist).
+    # A plate that is not on disk is not a plate. See live_reference_ids: this
+    # used to read `char.get("reference_images")`, so a dead id reported an
+    # image-only character with no image.
+    if live_reference_ids(char):
+        return True
     return any(char.get(f) for f in ("name", "role", "appearance", "wardrobe", "signature_gear"))
 
 
@@ -1295,7 +1393,7 @@ def is_shipped_cast(spec: Optional[Dict[str, Any]] = None) -> bool:
         return False
     if look and look != _norm_field(SHIPPED_PROTAGONIST["appearance"]):
         return False
-    if char.get("reference_images"):
+    if live_reference_ids(char):
         return False
     return True
 
@@ -1331,14 +1429,23 @@ def authored_character(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         current = _norm_field(char.get(field))
         if any(current == _norm_field(v) for v in _shipped_field_values(field)):
             char[field] = ""
-    # A plate with leftover Jason Name / Role / Look is the same hole as
-    # leftover jacket. The Experience editor used to skip fill when those
-    # fields were already full, so a woman plate still compiled as
-    # "Jason Fleece, adult man" and every MOVE TO redrew the default guy.
-    if char.get("reference_images"):
-        for field in ("name", "role", "appearance"):
-            if _norm_field(char.get(field)) == _norm_field(SHIPPED_PROTAGONIST.get(field, "")):
-                char[field] = ""
+    # NAME / ROLE / LOOK ARE THE AUTHOR'S, WHATEVER THEY SAY.
+    #
+    # These three used to be blanked as well whenever they matched the shipped
+    # values and a plate existed, to cover a different bug: the upload skipped
+    # filling a field that already had text, so a photograph of a woman still
+    # compiled as "Jason Fleece, adult man". That skip is gone — an overwriting
+    # draft now clears what it could not read (see attach_reference_and_fill),
+    # so a new plate cannot leave the previous person's name behind and there
+    # is nothing left to compensate for.
+    #
+    # What the blanking could never do is tell "the author left the default
+    # there" from "the author typed that name", so it made Jason Fleece an
+    # unusable name for anybody who uploaded a photo: the sheet said Jason, the
+    # prose said "the player character", and the author had no way to see why.
+    # These three are the fields the minimal editor SHOWS. A field you can see
+    # and edit is your choice by definition. The leftover drop above stays,
+    # because those fields are hidden and genuinely are not.
     return char
 
 
@@ -2203,22 +2310,56 @@ def opening_shot(spec: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, st
         look = ", ".join(
             p for p in (char.get("role"), char.get("appearance"), char.get("wardrobe")) if p
         )
+        cfg = mode_config(spec)
+        # How the body sits in the frame, and what it is DOING. This is the
+        # most load-bearing sentence in the game: it draws the World plate,
+        # which is the opening montage's reference and the frame turn one
+        # continues from, so whatever it describes propagates through the run.
+        #
+        # It used to read "is in frame, seen by the camera ... standing in
+        # <place>", and both halves were wrong. "Seen by the camera" describes
+        # the exact shot the follow-cam rig bans two paragraphs earlier — "no
+        # walking-toward-camera arrival, no front-facing portrait" — and it won,
+        # because the CAMERA block is rules in capitals while this is concrete
+        # prose about the subject, and concrete wins (see the precedence note in
+        # engine.build_image_prompt). Every follow-cam world opened on the
+        # protagonist strolling at the lens. "Standing", meanwhile, is why the
+        # opening had no charge: the first frame of a horror game was a man
+        # stood still, facing front, waiting to be looked at.
+        if cfg.get("follow_lock"):
+            vantage = (
+                f"{who} is seen from BEHIND — the back of the head and the "
+                f"shoulders toward the lens, facing INTO the place, which opens "
+                f"away from them into the depth of the frame"
+            )
+            stance = (
+                "Caught mid-stride with the weight already thrown forward, one "
+                "step further in — arrested motion, not a pose. Put them off "
+                "centre on a third, near enough the lens to read, with the "
+                "place running away past them and somewhere to walk to."
+            )
+        else:
+            # Fixed cinematic: a locked-off angle the character walks into.
+            # "From behind" would fight the rig, so this states the framing the
+            # mode actually wants while still refusing the face-on portrait.
+            vantage = (
+                f"{who} is somewhere inside the composed frame, small against "
+                f"the architecture and not looking at the lens"
+            )
+            stance = (
+                "Caught mid-movement rather than posed, dwarfed by the space "
+                "around them, the angle doing the drama."
+            )
         if setting_on:
             prologue = f"{who} arrives at {place}."
-            body = f"{who} is in frame, seen by the camera, entering the space"
+            body = f"{vantage}, stepping into the space"
         else:
             prologue = f"{who} is here."
-            body = f"{who} is in frame, seen by the camera"
+            body = vantage
         if look:
             body += f" — {look}"
-        if setting_on:
-            who_bits.append(body + ".")
-        else:
-            who_bits.append(f"{body}, standing in {place}.")
-        if not who_bits and not place_bits:
-            who_bits.append(
-                f"{who} stands in {place}. The camera sees their whole body."
-            )
+        who_bits.append(body.rstrip(". ") + ".")
+        who_bits.append(stance)
     else:
         prologue = f"You arrive at {place}."
 
@@ -2736,11 +2877,43 @@ def wiring_notes(spec: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]:
         notes[CHARACTER_KEY].append(
             "Your character reference plate is not being attached for the same reason."
         )
+    # A sheet can name a plate whose file is gone — swept with an old session, or
+    # carried over when the sheet was edited from one protagonist to another. The
+    # image call silently attaches nothing and the look then drifts frame to
+    # frame, which is a hard symptom to trace back to a missing file.
+    _dead = [str(i) for i in (char.get("reference_images") or [])
+             if not reference_path(str(i))]
+    if _dead:
+        notes[CHARACTER_KEY].append(
+            f"{len(_dead)} character reference plate(s) are missing from disk "
+            f"({', '.join(_dead)}), so nothing is locking your character's look "
+            f"and it will drift between frames. Re-upload the plate, or remove it "
+            f"and let the written appearance do the work."
+        )
+    _dead_setting = [str(i) for i in (setting.get("reference_images") or [])
+                     if not reference_path(str(i))]
+    if _dead_setting:
+        notes[SETTING_KEY].append(
+            f"{len(_dead_setting)} level plate(s) are missing from disk "
+            f"({', '.join(_dead_setting)}) and are not being attached."
+        )
 
     if not char.get("enabled") and any(char.get(f) for f in _INTENT_FIELDS):
         notes[CHARACTER_KEY].append(
             "Switched off, so none of this is being used. Turn it back on to play as them."
         )
+
+    if character_enabled(spec) and not is_shipped_cast(spec):
+        # Hidden fields the minimal editor does not show can contradict the
+        # Look it does. Two outfits for one person is drawn as two people.
+        _look = _norm_field(char.get("appearance"))
+        _fit = _norm_field(char.get("wardrobe"))
+        if _look and _fit and _fit not in _look and _look not in _fit:
+            notes[CHARACTER_KEY].append(
+                "Wardrobe (under Advanced) describes different clothes from Look, and both "
+                "are sent. Clear one of them, or the image model picks between them frame "
+                "to frame."
+            )
 
     if setting.get("enabled") and not setting_enabled(spec):
         notes[SETTING_KEY].append(
@@ -2926,6 +3099,28 @@ def delete_reference(ref_id: str) -> bool:
     if updates:
         save_spec(updates)
     return removed
+
+
+def live_reference_ids(block: Optional[Dict[str, Any]]) -> List[str]:
+    """The block's reference ids whose files are actually on disk.
+
+    An id is a promise, not a plate. `reference_path` has always returned None
+    for a file that is gone, so the image call correctly attached nothing — but
+    the functions that REASON about the sheet asked whether `reference_images`
+    was non-empty, which is a different question and the wrong one.
+
+    Found on 2026-09-17: the shipped Character sheet named
+    `character_54a7f7d76882` and no such file existed anywhere in the repo. So
+    `character_enabled` reported an "image-only character" with no image,
+    `is_shipped_cast` reported a recast, and `drop_shipped_leftovers` was willing
+    to blank name / role / appearance in the belief that a plate would supply
+    them. Nothing would have. The visible symptom was wardrobe drifting frame to
+    frame — the sheet says "olive field jacket", the run rendered a teal jumpsuit
+    and then added red gloves — because the identity lock was text alone while
+    the code believed it had a photograph.
+    """
+    return [str(i) for i in ((block or {}).get("reference_images") or [])
+            if reference_path(str(i))]
 
 
 def character_reference_paths(spec: Optional[Dict[str, Any]] = None) -> List[str]:

@@ -325,6 +325,7 @@ def generate_with_gemini(
     portrait_mode: bool = False,
     object_subject: bool = False,
     spec: dict | None = None,
+    image_size: str | None = None,
 ) -> str:
     """
     Generate an image using Google Gemini (Nano Banana).
@@ -374,7 +375,24 @@ def generate_with_gemini(
     # hd_mode arg is retained for call-site compatibility but no longer selects
     # a model, so a render raises the ceiling for every frame at once.
     model = model or resolve_model()
-    image_size = resolve_image_size()
+    # A named size is honoured the same way the img2img path honours it (see
+    # the long note beside `selected_size` there): a GRID render slices every
+    # panel out of one generation, so a 2x2 at the play setting of 1K yields
+    # 672x376 panels and the establishing shots come back soft. The opening
+    # montage is the only text-to-image caller that asks.
+    if image_size:
+        import ai_provider_manager
+        want = str(image_size).strip().upper()
+        allowed = ((ai_provider_manager.find_model("image", model) or {})
+                   .get("sizes") or list(ai_provider_manager.IMAGE_SIZES))
+        if want in allowed:
+            image_size = want
+        else:
+            image_size = allowed[-1]
+            print(f"[GOOGLE GEMINI] {model} does not offer {want}; using "
+                  f"{image_size} (offers {allowed})", flush=True)
+    else:
+        image_size = resolve_image_size()
     print(f"[GOOGLE GEMINI] Using {model} @ {image_size}")
     
     # Load prompt template from JSON (single source of truth!)

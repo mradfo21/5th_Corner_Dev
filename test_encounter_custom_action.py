@@ -223,8 +223,11 @@ class TestItLooksLikeWatchAndNotLikeAMenu(unittest.TestCase):
     """"Displayed like the watch mechanic": typography over the frame."""
 
     def _encounter_slate_css(self):
+        # Bounded by the rule that follows the slate. It used to be the
+        # nameplate's SUB line; a confrontation draws no text now, so the
+        # nameplate is hidden outright and that selector is gone.
         start = CSS.index("body.moment-encounter #moment-choices {")
-        end = CSS.index("body.moment-encounter #moment-nameplate-sub")
+        end = CSS.index("body.moment-encounter #moment-nameplate")
         return CSS[start:end]
 
     def test_the_lane_coloured_boxes_are_gone(self):

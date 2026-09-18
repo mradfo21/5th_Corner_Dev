@@ -518,17 +518,131 @@ def run_edge_checks(client: Client, turn_timeout: int) -> list[dict]:
     return findings
 
 
+def _choices_from_cutscene_complete(resp) -> list:
+    """Pull the opening slate out of an /api/cutscene/complete response.
+
+    Its shape is {"choices": {"choices": [{"text": ...}, ...]}} — a structured
+    player_choice_prompt nested one level deeper than a feed item — so dig
+    through both layers defensively."""
+    if not isinstance(resp, dict):
+        return []
+    inner = resp.get("choices")
+    if isinstance(inner, dict):
+        inner = inner.get("choices")
+    if isinstance(inner, list):
+        return [c.get("text") for c in inner if isinstance(c, dict) and c.get("text")]
+    return []
+
+
+def _prompt_choices(seq) -> list:
+    p = latest_prompt(seq if isinstance(seq, list) else [])
+    return [c.get("text") for c in (p.get("choices") or [])] if p else []
+
+
+def drive_opening(client: Client, reset_items, *, play_timeout: int = 240,
+                  complete_timeout: int = 300) -> dict:
+    """Play the opening the way the BROWSER plays it, and report what happened.
+
+    A fresh run opens on the intro montage (tunables `intro_cutscene`), and that
+    beat is CLIENT-DRIVEN: the server stages a `cutscene` feed item, the browser
+    calls /api/cutscene/play to render it, watches the shots, then signals
+    /api/cutscene/complete — and only THEN is the opening slate minted and the
+    first playable frame installed. A harness that posts /api/reset and reads
+    the feed is looking at a run that has not started yet.
+
+    This is where the whole opening lives, so this is what has to be exercised:
+    the montage renders as the run's first image, the idle beat renders behind
+    it and becomes turn one's anchor, and the parked slate comes back. Returns
+    everything the caller needs to check all three, plus ``ok`` for "the run is
+    playable now".
+    """
+    out: dict[str, Any] = {"ok": False, "via": "", "choices": [],
+                           "shots": [], "image_url": "", "sequence": None,
+                           "errors": []}
+
+    # Already playable: no intro montage configured.
+    choices = _prompt_choices(reset_items)
+    if choices:
+        return {**out, "ok": True, "via": "no_cutscene", "choices": choices}
+
+    has_cutscene = isinstance(reset_items, list) and any(
+        isinstance(it, dict) and it.get("type") == "cutscene"
+        for it in reset_items)
+    if not has_cutscene:
+        out["errors"].append("reset returned neither a choice prompt nor a "
+                             "cutscene — the run has nothing to show")
+        return out
+
+    meta = next((it.get("metadata") or {} for it in reset_items
+                 if isinstance(it, dict) and it.get("type") == "cutscene"), {})
+    out["opening_flag"] = bool(meta.get("opening"))
+    out["name"] = meta.get("name") or ""
+    out["goal"] = meta.get("goal") or ""
+
+    # The montage is the run's FIRST render now (no plate in front of it), so
+    # this call is a full image generation and wants a real timeout.
+    t0 = time.time()
+    try:
+        play_resp, play_status = client.post(
+            "/api/cutscene/play",
+            {"cutscene_id": meta.get("cutscene_id") or "",
+             "mood": meta.get("mood") or "approach",
+             "name": meta.get("name") or "",
+             "source_url": ""},
+            timeout=play_timeout)
+    except Exception as e:
+        out["errors"].append(f"/api/cutscene/play raised: {e}")
+        return out
+    out["play_ms"] = int((time.time() - t0) * 1000)
+    out["play_status"] = play_status
+    if isinstance(play_resp, dict):
+        out["shots"] = [s.get("url") for s in (play_resp.get("shots") or [])
+                        if isinstance(s, dict)]
+        out["montage_source"] = play_resp.get("source") or ""
+    if play_status != 200:
+        out["errors"].append(f"/api/cutscene/play returned {play_status}: "
+                             f"{str(play_resp)[:300]}")
+
+    t0 = time.time()
+    try:
+        done, done_status = client.post("/api/cutscene/complete", {},
+                                        timeout=complete_timeout)
+    except Exception as e:
+        out["errors"].append(f"/api/cutscene/complete raised: {e}")
+        return out
+    out["complete_ms"] = int((time.time() - t0) * 1000)
+    out["complete_status"] = done_status
+    if isinstance(done, dict):
+        out["image_url"] = done.get("image_url") or ""
+        out["sequence"] = done.get("sequence")
+        out["kind"] = done.get("kind") or ""
+    out["choices"] = _choices_from_cutscene_complete(done)
+    if not out["choices"]:
+        # Fall back to whatever the feed shows once the montage resolved.
+        try:
+            out["choices"] = _prompt_choices(client.get("/api/feed"))
+            if out["choices"]:
+                out["slate_from_feed"] = True
+        except Exception:
+            pass
+    out["via"] = "cutscene"
+    out["ok"] = bool(out["choices"]) and not out["errors"]
+    return out
+
+
 def verify_restart(client: Client) -> dict:
     """After a death, confirm /api/reset actually starts a fresh run rather
     than leaving a dead session that a harness (or a player) keeps 'playing'.
     """
     try:
-        items, status = client.post("/api/reset", {}, timeout=60)
+        items, _status = client.post("/api/reset", {}, timeout=60)
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    prompt = latest_prompt(items if isinstance(items, list) else [])
-    ok = prompt is not None and bool(prompt.get("choices"))
-    return {"ok": ok, "choices": [c.get("text") for c in (prompt.get("choices") or [])] if prompt else []}
+    res = drive_opening(client, items)
+    if res["errors"]:
+        return {"ok": False, "choices": res["choices"],
+                "error": "; ".join(res["errors"]), "via": res["via"]}
+    return {"ok": res["ok"], "choices": res["choices"], "via": res["via"]}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -574,12 +688,60 @@ def play(args) -> dict:
     narratives: list[str] = []
 
     reset_items, _ = client.post("/api/reset", {})
+
+    # ---- THE OPENING ----------------------------------------------------
+    # Driven the way the browser drives it, because that is the only way it
+    # runs at all: the montage renders on /api/cutscene/play and the first
+    # playable frame is installed by /api/cutscene/complete. This used to be
+    # skipped here (only the death-restart path drove it), so every run of this
+    # harness began by reading a feed belonging to a run that had not started.
+    opening = drive_opening(client, reset_items)
+    run["opening"] = opening
+    for err in opening["errors"]:
+        finding(0, "opening_failed", err)
+    if opening["via"] == "cutscene":
+        shots = opening["shots"]
+        if len(shots) != 4:
+            finding(0, "opening_montage_shot_count",
+                    f"the montage came back with {len(shots)} shot(s), expected "
+                    f"4 — the opening is four cold-open photographs and the "
+                    f"beat after them is the idle, not a fifth still")
+        if opening.get("montage_source") == "optical":
+            finding(0, "opening_montage_fell_back",
+                    "the montage came back from the optical fallback (four "
+                    "crops of one plate), not a render")
+        if not opening["image_url"]:
+            finding(0, "opening_no_first_frame",
+                    "/api/cutscene/complete handed back no image_url — the run "
+                    "has nothing to play from")
+        if opening.get("slate_from_feed"):
+            finding(0, "opening_slate_not_on_the_wire",
+                    "the opening slate had to be scraped off /api/feed; "
+                    "/api/cutscene/complete should return it directly")
+        if not opening["choices"]:
+            finding(0, "opening_no_slate",
+                    "the montage finished and left no choices — the run is "
+                    "unplayable without reloading")
+        elif [c.lower() for c in opening["choices"]] == ["look around"]:
+            finding(0, "opening_slate_is_the_fallback",
+                    "the opening slate is the bare 'Look around' fallback, so "
+                    "the three choices written for this level were lost")
+        print(f"[opening] montage {len(shots)} shots in "
+              f"{opening.get('play_ms', 0)}ms, handoff in "
+              f"{opening.get('complete_ms', 0)}ms, "
+              f"sequence={'yes' if opening.get('sequence') else 'no'}, "
+              f"slate={opening['choices']}", flush=True)
+
     if images_on:
         reset_items = wait_for_scene_image(client, 0, reset_items, args.image_grace)
+    feed_now = client.get("/api/feed")
+    if isinstance(feed_now, list) and feed_now:
+        reset_items = feed_now
     prompt = latest_prompt(reset_items)
-    choices = [c.get("text") for c in ((prompt or {}).get("choices") or [])]
+    choices = opening["choices"] or [
+        c.get("text") for c in ((prompt or {}).get("choices") or [])]
     last_id = max((i.get("id", 0) for i in reset_items), default=0)
-    scene_url = latest_image_url(reset_items)
+    scene_url = opening["image_url"] or latest_image_url(reset_items)
     prev_view_bytes: Optional[bytes] = None
 
     n = 0
@@ -841,6 +1003,10 @@ def aggregate_checks(run: dict) -> dict:
             t.get("checks", {}).get("encounter_resolved") for t in encounters),
         "restart_after_death_works": not any(f["kind"] == "restart_failed" for f in run["findings"]),
         "scan_found_something_when_tried": (not scans) or any(t.get("detections") for t in scans),
+        # The opening is the only beat every player sees and the one this
+        # harness used to skip entirely (see drive_opening).
+        "opening_played_through": not any(
+            f["kind"].startswith("opening_") for f in run["findings"]),
     }
 
 

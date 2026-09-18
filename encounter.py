@@ -88,7 +88,6 @@ ENCOUNTER_TRAVEL_DT_MAX = float(os.getenv("ENCOUNTER_TRAVEL_DT_MAX", "2.5"))
 # How hard img2img may restage the live frame. High values invent a new room
 # (outdoor walk → indoor garage). Keep this a nudge, not a rewrite.
 ENCOUNTER_PLATE_STRENGTH = float(os.getenv("ENCOUNTER_PLATE_STRENGTH", "0.48"))
-ENCOUNTER_PLATE_RETRY_STRENGTH = float(os.getenv("ENCOUNTER_PLATE_RETRY_STRENGTH", "0.58"))
 # Resolve is a hard cut. The enter plate is lighting only (style swatch),
 # never composition. Strength is unused on that path; kept for env overrides
 # of any leftover img2img fallback.
@@ -1432,7 +1431,16 @@ def align_brief_to_plate(brief: dict, vision: Optional[dict] = None) -> dict:
     draw. The still is what the player believes — relabel and rewrite
     danger when they do not appear in the plate.
     """
+    # THE FROZEN STANDOFF. What gets aligned to the photograph is the WORDS;
+    # the photograph itself has to come through untouched. normalize rebuilds
+    # the brief from a fixed set of fields (see the `enemy_state` note there),
+    # so the frames the plate was drawn as were dropped on the way through —
+    # and this is the only path that runs the relabel, which is why the
+    # play-out moved and the standoff arrived holding on its last panel.
+    frames = (brief or {}).get("_sequence") if isinstance(brief, dict) else None
     brief = separate_cast(normalize_encounter_brief(brief))
+    if frames:
+        brief["_sequence"] = frames
     vis = vision if isinstance(vision, dict) else {}
     seen = _clip(vis.get("description") or brief.get("plate_seen") or "", "", 220)
     char = brief.setdefault("character", {})
@@ -2322,15 +2330,50 @@ def encounter_outcome_weights(lane: str, stance: str = "hostile",
     return {k: max(0, int(v)) for k, v in w.items()}
 
 
+# How much likelier each further round of the same lane is to settle the other
+# body, and the ceiling it climbs to. A flat per-round chance has a long tail:
+# at 0.62 a staggered body shrugs off four consecutive finishers about one
+# fight in ten, and a playtest hit exactly that — "crush his skull with boot"
+# landed four times running, the prose said the skull yielded and the player
+# was standing over him, and the state machine still said `staggered` and kept
+# the Moment open. Pressing an advantage has to converge, or the fight reads as
+# broken however good the individual beats are.
+ENEMY_STATE_ROUND_GAIN = 0.14
+ENEMY_STATE_MAX_CHANCE = 0.94
+
+# A landed confront's odds of moving the other body one step. These used to be
+# 0.55 and 0.62, which did not deliver what the docstring below promises: two
+# committed verbs finished a fight only about a third of the time, and the
+# prose ran far ahead of the state machine. A playtest opened with a crate to
+# the face, then a skull crushed against monitors, then a skull shattered
+# against monitors — and the man was still `ready`, not even staggered, for all
+# three. At these rates a pressed fight settles in two verbs about 73% of the
+# time and in four about 99.8%.
+CONFRONT_STAGGER_CHANCE = 0.75   # ready -> staggered
+CONFRONT_DOWN_CHANCE = 0.70      # staggered -> down
+
+
+def _settle_chance(base: float, round_no: int = 1) -> float:
+    """`base` on the first exchange, climbing with each further one."""
+    rounds = max(0, int(round_no or 1) - 1)
+    return max(0.0, min(ENEMY_STATE_MAX_CHANCE,
+                        base + ENEMY_STATE_ROUND_GAIN * rounds))
+
+
 def advance_enemy_state(lane: str, outcome: str, enemy_state: str = "ready",
                         rng: Any = None, stance: str = "hostile",
-                        kind: str = "person") -> str:
+                        kind: str = "person", round_no: int = 1) -> str:
     """How the other body changes as a result of this exchange.
 
     This is the escalation the encounter never had. Pressing a confront moves
     them ready -> staggered -> down, so two committed verbs finish a fight and
     the player can win one, which was previously impossible: `encounter_releases`
     only fired on escape or death.
+
+    ``round_no`` is what stops the tail. The odds above are for the FIRST
+    exchange; every further one in the same fight is likelier to settle it (see
+    ENEMY_STATE_ROUND_GAIN), so a player who keeps pressing always gets an
+    answer instead of watching the same standoff repeat.
     """
     state = str(enemy_state or "ready").strip().lower()
     if state not in ENCOUNTER_ENEMY_STATES:
@@ -2340,8 +2383,10 @@ def advance_enemy_state(lane: str, outcome: str, enemy_state: str = "ready",
     roll = rng.random() if rng is not None else random.random()
     if lane == "confront":
         if state == "staggered":
-            return "down" if roll < 0.62 else "staggered"
-        return "staggered" if roll < 0.55 else "ready"
+            return ("down" if roll < _settle_chance(CONFRONT_DOWN_CHANCE, round_no)
+                    else "staggered")
+        return ("staggered" if roll < _settle_chance(CONFRONT_STAGGER_CHANCE, round_no)
+                else "ready")
     if lane == "parley":
         # This is the other way to win, and the only one that does not
         # cost a body. A creature has no use for what the player is
@@ -2353,7 +2398,7 @@ def advance_enemy_state(lane: str, outcome: str, enemy_state: str = "ready",
             chance += 0.20
         if outcome == "wounded":
             chance -= 0.25
-        return "standing_down" if roll < max(0.0, chance) else state
+        return "standing_down" if roll < _settle_chance(chance, round_no) else state
     # Evading buys distance; they recover their footing.
     return "ready" if roll < 0.6 else state
 
@@ -2377,7 +2422,8 @@ def roll_encounter_outcome(lane: str, stance: str = "hostile",
             break
     prev = "wounded" if str(condition or "").strip().lower() == "wounded" else "ok"
     next_enemy = advance_enemy_state(lane, outcome, enemy_state, rng=rng,
-                                     stance=stance, kind=kind)
+                                     stance=stance, kind=kind,
+                                     round_no=round_no)
     if outcome == "die":
         next_cond = prev
         alive = False
@@ -2516,8 +2562,59 @@ def cinematic_composition(action: bool = False) -> str:
     return " ".join(bits)
 
 
+def world_flavor(session_id: str = "default") -> str:
+    """This run's visual tone gloss — the line every ordinary frame gets.
+
+    An encounter is the one beat that does not render through
+    ``engine._gen_image_impl``, and that is where it lost the world. Ordinary
+    frames pick the look up from
+    ``summarize_world_prompt_for_image(state["world_prompt"])``; the plate and
+    the resolve call the image API directly, so they saw none of it — not the
+    place, and not the era, film stock or palette either.
+
+    The result was not a fight somewhere new, it was a fight in a different
+    FILM. A playtest cut from a dusk red-mesa scrapyard on 1993 consumer stock
+    into a damp conifer forest under flat grey daylight, and every lock in the
+    prompt was satisfied: they pin the camera, the cast and the objects carried
+    over, and none of them says what world this is.
+
+    Reads the cached gloss (frame_idx=2, no hard transition), so this costs
+    nothing on any session that has already rendered a turn.
+    """
+    try:
+        import engine
+        st = engine._load_state(session_id) or {}
+        text = str(st.get("world_prompt") or "").strip()
+        if not text:
+            return ""
+        return str(engine.summarize_world_prompt_for_image(
+            text, session_id=session_id,
+            hard_transition=False, frame_idx=2) or "").strip()
+    except Exception:
+        logging.exception("[ENCOUNTER] world flavor lookup failed")
+        return ""
+
+
+def _world_flavor_bit(flavor: str) -> str:
+    """The gloss as one prompt line, or "" when there is nothing to say.
+
+    Deliberately about the LOOK and about holding THIS location, not about
+    which places the world is allowed to contain. The world is free to range
+    somewhere strange between scenes; what a fight must not do is change
+    country between one exposure and the next.
+    """
+    text = " ".join(str(flavor or "").split())
+    if not text:
+        return ""
+    return (f"WORLD — this frame is from the same film as the rest of the run: "
+            f"{text.rstrip('. ')}. Hold that era, stock, palette and light. "
+            f"The fight also stays in the location it started in — whatever "
+            f"kind of place that is, it does not change between exposures.")
+
+
 def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
-                                 setting: str = "", target: Optional[dict] = None) -> str:
+                                 setting: str = "", target: Optional[dict] = None,
+                                 world_flavor: str = "") -> str:
     """Cinematic restage of THIS place with the new character and danger visible.
 
     ``target`` marks a fight the player aimed at something already in the
@@ -2565,6 +2662,10 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
         authored = ""
     if authored:
         bits.append(authored.strip())
+
+    world_bit = _world_flavor_bit(world_flavor)
+    if world_bit:
+        bits.append(world_bit)
 
     outdoor = is_outdoor(setting, brief.get("place_hold") or "")
     aimed = _clip((target or {}).get("label") if isinstance(target, dict) else target, "", 60)
@@ -2720,7 +2821,8 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
 
 
 def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
-                                   outcome: str, setting: str = "") -> str:
+                                   outcome: str, setting: str = "",
+                                   world_flavor: str = "") -> str:
     """Hard-cut still of THIS verb landing. Place and cast are text locks."""
     brief = normalize_encounter_brief(brief)
     char = brief["character"]
@@ -2743,6 +2845,9 @@ def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
         bits.append(ENCOUNTER_ACTION_STYLE_ANCHOR + ".")
 
     outdoor = is_outdoor(setting, brief.get("place_hold") or "")
+    world_bit = _world_flavor_bit(world_flavor)
+    if world_bit:
+        bits.append(world_bit)
     bits.append(
         "PLACE LOCK — TEXT ONLY. Same location, architecture, materials, "
         "ground, sky, and light. Do not teleport. This is a NEW SHOT of that "
@@ -3013,62 +3118,9 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
     return separate_cast(brief)
 
 
-def plate_shows_confrontation(vision: Optional[dict], brief: Optional[dict] = None) -> bool:
-    """True when vision of the plate actually contains a second presence."""
-    vis = vision if isinstance(vision, dict) else {}
-    desc = str(vis.get("description") or "").lower()
-    if not desc:
-        return False
-    label = ""
-    look = ""
-    char = (brief or {}).get("character") if isinstance(brief, dict) else {}
-    if isinstance(char, dict):
-        label = str(char.get("label") or "").strip().lower()
-        look = str(char.get("look") or "").strip().lower()
-    if label and label in desc:
-        return True
-    look_hits = 0
-    for token in (w for w in re.split(r"[^a-z0-9]+", look) if len(w) > 3):
-        if token in desc:
-            look_hits += 1
-    if look_hits >= 2:
-        return True
-    figures = 0
-    for w in ("person", "people", "figure", "woman", "stranger", "hooded",
-              "goggles", "creature", "being", "scavenger", "soldier",
-              "trooper", "animal", "beast", "shape", "silhouette", "mass"):
-        if re.search(r"\b" + w + r"\b", desc):
-            figures += 1
-    if re.search(r"\bman\b", desc) or re.search(r"\bmen\b", desc):
-        figures += 1
-    if figures >= 2:
-        return True
-    if any(w in desc for w in ("two people", "another person", "facing you",
-                               "facing the", "in the doorway", "in front of")):
-        return True
-    return False
-
-
-def plate_needs_a_retry(vision: Optional[dict], brief: Optional[dict] = None) -> bool:
-    """True only when vision LOOKED at a plate and did not find the other body.
-
-    ``plate_shows_confrontation`` answers "is a second presence visible", and
-    no description at all is a No — so a vision hiccup, a disabled vision pass
-    or a provider timeout made EVERY beat of a fight generate its plate twice,
-    at full price, on no evidence. Absence of evidence is not evidence that the
-    plate is wrong, and the duplicate render is also where a custom action's
-    framing drifts: the retry prompt appends its own staging instructions.
-    """
-    vis = vision if isinstance(vision, dict) else {}
-    if not str(vis.get("description") or "").strip():
-        return False
-    return not plate_shows_confrontation(vis, brief)
-
-
 def _safe_vision_analyze(image_path: Optional[str]) -> dict:
-    """``engine._vision_analyze_all``, but never raises. Grounding checks
-    that fire off it (plate_shows_confrontation) should degrade to "no
-    evidence either way" on a vision hiccup, not take the request down."""
+    """``engine._vision_analyze_all``, but never raises. A vision hiccup should
+    leave the plate ungrounded, not take the request down."""
     if not image_path:
         return {}
     import engine
@@ -3076,6 +3128,31 @@ def _safe_vision_analyze(image_path: Optional[str]) -> dict:
         return engine._vision_analyze_all(image_path) or {}
     except Exception:
         return {}
+
+
+def _ground_brief_on_plate(brief: dict, image_path: Optional[str]) -> None:
+    """Point the brief's cast at the person the plate actually drew.
+
+    The photograph is what the player is looking at, so it outranks the look the
+    brief invented before any pixels existed — otherwise the nameplate describes
+    one stranger and the picture shows another.
+
+    This is grounding, NOT verification. There used to be a pass/fail check
+    beside it (``plate_shows_confrontation``) that read the same vision prose for
+    a second body and re-rendered the plate when it could not find one. It was
+    built to catch a prompt that did not draw the antagonist, it scored two
+    words of overlap as proof of a confrontation, and it eventually waved through
+    a grid of the player alone — so the fight ran with the protagonist cast as
+    his own hostile. A prompt whose output has to be inspected is a prompt that
+    is not fixed; the render is correct at the source now (see the two_shot mode
+    in engine._flipbook_generate), and the retry it triggered mutated the prompt
+    on the second attempt, which is its own drift.
+    """
+    seen = _clip(_safe_vision_analyze(image_path).get("description") or "", "", 220)
+    if not seen:
+        return
+    brief["plate_seen"] = seen
+    adopt_plate_look(brief, seen)
 
 
 def _parse_choice_payload(raw: Any) -> list:
@@ -3337,8 +3414,32 @@ def _pin_encounter_resolve(session_id: str, image_path: Optional[str],
             pass
 
 
+def _plate_stranger_billing(brief: Optional[dict]) -> tuple[str, str]:
+    """How to bill the other body to the grid: (name, what they are wearing).
+
+    A name on its own ("A stranger") dresses nobody and comes back as the generic
+    rugged man; a look on its own ("wearing a dusty jacket") is not a person the
+    model can stage. Both — and the look runs through the same
+    ``distinct_enemy_look`` gate the plate prompt uses, because a grid header
+    naming one stranger over staging that names another is how a third one gets
+    drawn.
+    """
+    if not isinstance(brief, dict):
+        return "", ""
+    char = (normalize_encounter_brief(brief) or {}).get("character") or {}
+    if not isinstance(char, dict):
+        return "", ""
+    label = _clip(str(char.get("label") or "").strip(), "", 60)
+    look = _clip(distinct_enemy_look(
+        char.get("locked_look") or char.get("look") or "",
+        seed=char.get("label") or "", kind=char.get("kind") or "",
+    ), "", 140)
+    return label, look
+
+
 def _plate_sequence(session_id: str, prompt: str, ref_path: Optional[str],
-                    caption: str = "") -> Optional[dict]:
+                    caption: str = "", two_shot: str = "", two_shot_look: str = "",
+                    beat: str = "", hold_cast: bool = False) -> Optional[dict]:
     """This plate as flipbook frames, or None to stay a still.
 
     Every stage of a confrontation should move the way the ordinary view does —
@@ -3346,6 +3447,13 @@ def _plate_sequence(session_id: str, prompt: str, ref_path: Optional[str],
     that freezes. The already-generated plate is the reference, so the motion
     starts from the picture the player is looking at and the last frame is where
     it holds.
+
+    ``two_shot`` is the stranger, and it is load-bearing rather than decorative:
+    it puts the grid on the same confrontation branch of the image call that the
+    still path reaches with ``include_people=True``. Left off, the grid is
+    generated as a solo shot and the image layer closes the prompt with "not a
+    different person than the character sheet" — the antagonist was being drawn
+    out by the plumbing, not lost to a flaky model.
 
     Never fatal: a flipbook that doesn't come back leaves the still in place, so
     a failure costs motion, not the encounter.
@@ -3371,12 +3479,19 @@ def _plate_sequence(session_id: str, prompt: str, ref_path: Optional[str],
                   f"({os.path.basename(str(ref_path))}) - generating without it",
                   flush=True)
 
+        # Same character sheet the encounter STILL path attaches, so the
+        # confrontation's animated panels keep YOUR protagonist instead of a
+        # stranger. Without this the encounter flipbook was the one beat that
+        # dropped the identity plate entirely (its refs are prior-encounter
+        # panels), so an uploaded character never showed up in a fight.
+        _identity = encounter_identity_paths()
+
         def _grid(refs):
             return engine._flipbook_generate(
                 prompt_str=prompt,
                 caption=caption,
                 choice=caption,
-                dispatch="",
+                dispatch=beat,
                 world_prompt=str(st.get("world_prompt") or ""),
                 time_of_day=str(st.get("time_of_day") or ""),
                 img_dir=engine._get_image_dir(session_id),
@@ -3384,6 +3499,12 @@ def _plate_sequence(session_id: str, prompt: str, ref_path: Optional[str],
                 st=st,
                 refs=refs,
                 ref_is_anchor=True,
+                identity_paths=_identity or None,
+                identity_seed=bool(_identity),
+                spec=engine.game_identity.get_spec(),
+                two_shot=two_shot,
+                two_shot_look=two_shot_look,
+                hold_cast=hold_cast,
             )
 
         seq = _grid([use_ref] if use_ref else None)
@@ -3503,6 +3624,7 @@ def api_begin():
         brief, img2img=bool(ref_path),
         setting=place.get("setting") or "",
         target=target,
+        world_flavor=world_flavor(session_id),
     )
 
     image_path = None
@@ -3517,12 +3639,22 @@ def api_begin():
     # reference all still get one true image, and the confrontation arrives
     # breathing instead of frozen. Falls through to the still below if flipbook
     # is off or the grid doesn't come back.
-    _fb = _plate_sequence(session_id, prompt, ref_path,
-                          caption=f"encounter_{brief['character']['label']}")
+    #
+    # The grid is told who the stranger is and what the two of them are doing.
+    # Without that it ran as a solo shot and animated the caption string, so the
+    # player met himself.
+    _billed, _billed_look = _plate_stranger_billing(brief)
+    _fb = _plate_sequence(
+        session_id, prompt, ref_path,
+        caption=f"encounter_{brief['character']['label']}",
+        two_shot=_billed, two_shot_look=_billed_look,
+        beat=_clip(brief.get("danger") or brief.get("stakes") or "", "", 200),
+    )
     if _fb and _fb.get("still"):
         image_path = _fb["still"]
         brief["_sequence"] = _fb.get("payload")
         gen_mode = "flipbook"
+        _ground_brief_on_plate(brief, image_path)
 
     if image_path is None and getattr(engine, "IMAGE_ENABLED", True):
         try:
@@ -3548,61 +3680,7 @@ def api_begin():
                     identity_paths=identity or None,
                 )
                 gen_mode = "img2img"
-                if image_path:
-                    try:
-                        plate_vis = engine._vision_analyze_all(image_path) or {}
-                    except Exception:
-                        plate_vis = {}
-                    seen = _clip(plate_vis.get("description") or "", "", 220)
-                    if seen:
-                        brief["plate_seen"] = seen
-                        # Lock the challenger to the person the plate actually
-                        # drew, not the one the brief invented before it.
-                        adopt_plate_look(brief, seen)
-                        label = brief["character"]["label"]
-                    if plate_needs_a_retry(plate_vis, brief):
-                        try:
-                            engine.log_error(
-                                "[ENCOUNTER] plate missing the new character — retrying"
-                            )
-                        except Exception:
-                            pass
-                        retry_suffix = (
-                            f" The {target['label']} fills this frame, close and "
-                            f"coming at the player. This is the confrontation, "
-                            f"not an empty place. Keep the player as the "
-                            f"character-sheet person."
-                        ) if target else (
-                            " The new character is already standing in this "
-                            "frame, large, facing the player. This is the "
-                            "confrontation, not an empty place. "
-                            "Keep the player as the character-sheet person. "
-                            "The other person is a stranger in different clothes "
-                            "— not a second copy of the player."
-                        )
-                        retry_path = generate_gemini_img2img(
-                            prompt=prompt + retry_suffix,
-                            caption=f"encounter_{label}_retry",
-                            reference_image_path=ref_path,
-                            strength=ENCOUNTER_PLATE_RETRY_STRENGTH,
-                            world_prompt=place_ctx[:200] if place_ctx else None,
-                            time_of_day=tod,
-                            hd_mode=False,
-                            output_dir=Path(img_dir),
-                            include_people=True,
-                            identity_paths=identity or None,
-                        )
-                        if retry_path:
-                            image_path = retry_path
-                            gen_mode = "img2img_retry"
-                            try:
-                                plate_vis = engine._vision_analyze_all(image_path) or {}
-                                seen = _clip(plate_vis.get("description") or "", "", 220)
-                                if seen:
-                                    brief["plate_seen"] = seen
-                                    adopt_plate_look(brief, seen)
-                            except Exception:
-                                pass
+                _ground_brief_on_plate(brief, image_path)
             else:
                 from gemini_image_utils import generate_with_gemini
                 image_path = generate_with_gemini(
@@ -3615,51 +3693,7 @@ def api_begin():
                     output_dir=Path(img_dir),
                 )
                 gen_mode = "text2img"
-                # This path used to skip vision entirely, so a text2img plate
-                # was never checked for actually containing the antagonist and
-                # never grounded the cast lock.
-                if image_path:
-                    try:
-                        plate_vis = engine._vision_analyze_all(image_path) or {}
-                    except Exception:
-                        plate_vis = {}
-                    seen = _clip(plate_vis.get("description") or "", "", 220)
-                    if seen:
-                        brief["plate_seen"] = seen
-                        adopt_plate_look(brief, seen)
-                    if plate_needs_a_retry(plate_vis, brief):
-                        try:
-                            engine.log_error(
-                                "[ENCOUNTER] text2img plate missing the new "
-                                "character — retrying"
-                            )
-                        except Exception:
-                            pass
-                        retry_path = generate_with_gemini(
-                            prompt=prompt + (
-                                " The new character is already standing in this "
-                                "frame, large, close, facing the player. This is "
-                                "the confrontation, not an empty landscape. Do "
-                                "not render a wide establishing shot."
-                            ),
-                            caption=f"encounter_{label}_retry",
-                            world_prompt=place_ctx[:200] if place_ctx else None,
-                            aspect_ratio="16:9",
-                            time_of_day=tod,
-                            hd_mode=False,
-                            output_dir=Path(img_dir),
-                        )
-                        if retry_path:
-                            image_path = retry_path
-                            gen_mode = "text2img_retry"
-                            try:
-                                plate_vis = engine._vision_analyze_all(image_path) or {}
-                                seen = _clip(plate_vis.get("description") or "", "", 220)
-                                if seen:
-                                    brief["plate_seen"] = seen
-                                    adopt_plate_look(brief, seen)
-                            except Exception:
-                                pass
+                _ground_brief_on_plate(brief, image_path)
         except Exception as gen_err:
             try:
                 engine.log_error(f"[ENCOUNTER] plate generate failed: {gen_err}")
@@ -3786,7 +3820,13 @@ def _generate_resolve_plate(session_id: str, brief: dict, prompt: str,
     # indoor shed where the standoff had been an outdoor yard. The last panel IS
     # the plate, so pinning, SCAN, the vision pass and the next img2img
     # reference all still get one true image (sequence_from_grid guarantees it).
-    fb = _plate_sequence(session_id, prompt, ref_path, caption=caption)
+    # hold_cast: both bodies are already in the standoff plate this beat is
+    # generated from, so they are copied out of it rather than introduced.
+    billed, billed_look = _plate_stranger_billing(brief)
+    fb = _plate_sequence(session_id, prompt, ref_path, caption=caption,
+                         two_shot=billed, two_shot_look=billed_look,
+                         beat=_clip(verb or (brief or {}).get("stakes") or "", "", 200),
+                         hold_cast=True)
     if fb and fb.get("still"):
         if isinstance(brief, dict):
             brief["_sequence"] = fb.get("payload")
@@ -3850,54 +3890,6 @@ def _generate_resolve_plate(session_id: str, brief: dict, prompt: str,
         except Exception:
             pass
         return None, "failed"
-
-    # Found by playtest.py's forced-encounter probe: a "die" outcome's own
-    # "death still" came back as a calm, empty establishing shot — no
-    # antagonist, no violence, nothing that reads as the ending it names.
-    # api_begin already has this exact check for the STANDOFF plate
-    # (plate_shows_confrontation, with a retry) — it was never applied to
-    # the RESOLVE plate, so a fight could win/lose/die on a frame that
-    # never actually showed the fight. One retry, same shape as the begin
-    # path's, with the same "the other person is here, in frame" push.
-    if image_path and plate_needs_a_retry(
-        _safe_vision_analyze(image_path), brief
-    ):
-        try:
-            engine.log_error(
-                "[ENCOUNTER] resolve plate missing the other body — retrying"
-            )
-        except Exception:
-            pass
-        retry_prompt = prompt + (
-            " The other person in this fight is here, in frame, close to the "
-            "lens, still part of this moment — not an empty place, not a shot "
-            "of the player alone. This is the result of what just happened "
-            "between the two of them."
-        )
-        try:
-            if gen_mode.startswith("hard_cut_plate") or gen_mode == "hard_cut_identity":
-                retry_path = generate_gemini_img2img(
-                    prompt=retry_prompt, caption=caption + "_retry",
-                    reference_image_path=refs, strength=ENCOUNTER_RESOLVE_STRENGTH,
-                    world_prompt=place_ctx[:200] if place_ctx else None,
-                    time_of_day=tod, hd_mode=False, output_dir=Path(img_dir),
-                    include_people=True, hold_cast=True, style_only_swatch=False,
-                    identity_paths=identity or None, identity_seed=bool(identity),
-                )
-            else:
-                retry_path = generate_with_gemini(
-                    prompt=retry_prompt, caption=caption + "_retry",
-                    world_prompt=place_ctx[:200] if place_ctx else None,
-                    time_of_day=tod, hd_mode=False, output_dir=Path(img_dir),
-                )
-            if retry_path:
-                image_path = retry_path
-                gen_mode = gen_mode + "_retry"
-        except Exception as retry_err:
-            try:
-                engine.log_error(f"[ENCOUNTER] resolve retry failed: {retry_err}")
-            except Exception:
-                pass
 
     web_ok = bool(image_path)
     try:
@@ -4017,6 +4009,7 @@ def api_resolve():
     prompt = build_encounter_resolve_prompt(
         brief, verb, lane, rolled["outcome"],
         setting=enc.get("setting") or brief.get("place_hold") or "",
+        world_flavor=world_flavor(session_id),
     )
     ref_path = _confrontation_plate_path(session_id, enc)
     image_path, gen_mode = _generate_resolve_plate(
