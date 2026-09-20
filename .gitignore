@@ -155,6 +155,7 @@ dist/
 /_*.py
 /_*.txt
 /_*.ps1
+/_*.bat
 /_*.json
 /_playthrough/
 *.bak
