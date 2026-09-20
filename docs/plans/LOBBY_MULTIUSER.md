@@ -1,5 +1,11 @@
 # Lobby + Multi-User Session Framework
 
+> **Status: shipped.** `templates/lobby.html`, `static/js/lobby.js`,
+> `presence.py`, the `/lobby` route and the `/api/lobby/*` endpoints in `api.py`,
+> covered by `test_concurrent_sessions.py` and `tests_concurrency_*.py`. Note
+> that the hosted service runs **one** gunicorn worker process on purpose (see
+> `start_production.sh`), which is what makes shared in-process state safe.
+
 This doc describes the lobby splash page and the multi-user session
 framework that lets separate visitors each play their own persisted
 instance of SOMEWHERE against the same server process.

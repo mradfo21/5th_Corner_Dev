@@ -149,10 +149,12 @@ exercise the actual HTTP paths without spending anything.
 ## Documentation
 
 - **[QUICKSTART.md](QUICKSTART.md)** — get it running
-- **[AGENT_GUIDE.md](AGENT_GUIDE.md)** — technical guide for working on it
+- **[CLAUDE.md](CLAUDE.md)** — orientation for working on it: architecture, the
+  testing flow, and the rules that cost us a session each
 - **[CHANGELOG.md](CHANGELOG.md)** — what changed and why
+- **[docs/operations/TESTING_USE_THIS.md](docs/operations/TESTING_USE_THIS.md)** — read before writing a test
 - **[docs/operations/SHIPPING.md](docs/operations/SHIPPING.md)** — the player folder
-- **[docs/operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md)** — cloud deployment
+- **[docs/operations/DEPLOYMENT.md](docs/operations/DEPLOYMENT.md)** — the hosted web build
 
 ## License
 

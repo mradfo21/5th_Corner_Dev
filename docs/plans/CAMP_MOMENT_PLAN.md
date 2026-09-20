@@ -1,6 +1,13 @@
 # 🔥 CAMP — a new wheel button and cinematic Moment
 
-**Status: proposed / not yet implemented.** This is a design + integration plan, written
+**Status: shipped, and it landed as a playable level rather than the Moment this
+plan proposed.** CAMP is a hard cut via `/api/camp/enter` + `Renderer.applyScene`
+with the full HUD live, not a letterboxed cinematic — see the Camp section of
+[`../MOMENTS.md`](../MOMENTS.md), which is the accurate description, plus
+`test_camp_companions.py`. Where this document and `MOMENTS.md` disagree,
+`MOMENTS.md` is right. Preserved below as the design record.
+
+This was a design + integration plan, written
 against the current codebase, for a "CAMP" action on the action-wheel that teleports the
 player to a night campsite with every companion they've met, sitting around a fire — a
 breather beat, distinct from a combat/investigation turn. It leans hard on infrastructure

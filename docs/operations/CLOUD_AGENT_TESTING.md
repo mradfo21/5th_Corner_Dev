@@ -10,7 +10,7 @@ tear it down" path that replaces that.
 **The short version:** this repo already ships the exact production Flask
 app (`api.app`) plus a deterministic, zero-network **mock backend**, so it
 can run — and be played, either by a script or by an actual browser — fully
-offline, with no API keys, no Discord, no Render.
+offline, with no API keys and no Render.
 
 ## Starting the server
 
@@ -112,6 +112,7 @@ something you chose. It matters most with real keys: an auto-restarting
 server holds your API credentials in memory indefinitely, and any harness
 pointed at it keeps spending.
 
-See [`DESKTOP_APP_ROADMAP.md`](../plans/DESKTOP_APP_ROADMAP.md) for where this local
-path is headed longer-term (a real double-click desktop build), and
-[`AGENT_GUIDE.md`](../../AGENT_GUIDE.md) for how the engine itself works.
+See [`CLAUDE.md`](../../CLAUDE.md) for how the engine itself works, and
+[`TESTING_USE_THIS.md`](TESTING_USE_THIS.md) for the harness that drives the real
+app — which is what you want for anything touching the UI, and which this
+document predates.

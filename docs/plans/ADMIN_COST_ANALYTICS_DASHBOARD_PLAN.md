@@ -1,10 +1,12 @@
 # Admin Cost & Analytics Dashboard — Implementation Plan
 
-> **Status:** Planning only. Nothing in this doc is implemented yet. This is
-> the design record for extending the existing `/admin` dashboard
-> (`admin_dashboard.html`, served by `api.py`) with real cost tracking,
-> per-session financial breakdowns, historical trends, and general
-> business-intelligence views.
+> **Status: shipped.** This line used to say "planning only, nothing
+> implemented" and was left that way long after the work landed. It is built:
+> `cost_tracker.py` and its SQLite ledger, `pricing.py` + `pricing.json`, the
+> `/api/admin/analytics/*` and `/api/admin/pricing` endpoints in `api.py`, the
+> `static/js/admin_analytics.js` tab, and `test_cost_tracker.py` +
+> `test_analytics_api.py`. Read the code, not this plan, for current behaviour;
+> what follows is the design record.
 
 ---
 

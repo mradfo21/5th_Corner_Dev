@@ -165,21 +165,20 @@ if active_image_provider == "gemini":
     ...
 ```
 
-### **`bot.py`**
+### Switching it at runtime
 
-Added slash commands:
-- `/ai_status`
-- `/ai_presets`
-- `/ai_switch`
+Provider switching was originally driven by Discord slash commands
+(`/ai_switch`). That bot is gone. The same operations are now HTTP endpoints in
+`api.py`, surfaced by the admin dashboard's **AI MODELS** switcher:
 
-Added `on_ready()` event to sync slash commands:
-```python
-@bot.event
-async def on_ready():
-    print(f"[BOT] {bot.user} is ready!")
-    synced = await bot.tree.sync()
-    print(f"[BOT] Synced {len(synced)} slash command(s)")
-```
+| Endpoint | Does |
+|---|---|
+| `GET /api/ai/config`, `GET /api/admin/ai_config` | read the current selection |
+| `POST /api/ai/switch`, `POST /api/admin/ai_switch` | change provider or preset |
+| `POST /api/ai/models` | list what a provider offers |
+
+`python play.py --backend gemini` overrides it for one run. The catalogue the
+render form offers is whatever is in `ai_config.json`.
 
 ---
 
@@ -196,8 +195,8 @@ import ai_provider_manager
 
 ### **2. Runtime Switching**
 ```
-User runs: /ai_switch openai
-├─ bot.py receives command
+Admin dashboard -> AI MODELS -> pick "openai"
+├─ POST /api/ai/switch
 ├─ calls ai_provider_manager.set_preset("openai")
 ├─ updates ai_config.json
 └─ next _ask() call uses new provider

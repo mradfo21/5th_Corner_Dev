@@ -66,17 +66,23 @@ lore/images/logo_horizon.png
 **Supported formats:**
 - `.png`, `.jpg`, `.jpeg`, `.webp`
 
-### **Step 4: Start Bot**
+### **Step 4: Start the game**
 
 ```bash
-python bot.py
+python play.py
 ```
 
-The bot will automatically:
-1. ✅ Load all lore files
-2. ✅ Create Gemini cache
-3. ✅ Include cache in every AI call
-4. ✅ Auto-refresh when files change
+Startup automatically:
+1. ✅ Loads all lore files
+2. ✅ Creates the Gemini cache
+3. ✅ Includes the cache in every AI call
+4. ✅ Auto-refreshes when files change
+
+Lore is also editable per-Experience from World Studio — see the
+`/api/admin/studio/experience/lore` endpoints and `experiences/_lore/`, which is
+where a shipped Experience keeps its documents. Boot prints how much lore it
+attached (`[ENGINE INIT] Lore for '<experience>': N chars`), which is the quickest
+way to tell whether any of this is actually reaching the model.
 
 ---
 

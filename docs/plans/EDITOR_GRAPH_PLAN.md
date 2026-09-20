@@ -1,5 +1,10 @@
 # THE ORGANISM — the World Editor as a recursive graph
 
+> **Status: shipped.** The graph editor is `static/js/editor_graph.js`, covered by
+> `test_editor_graph_e2e.py` and `test_editor_lands_e2e.py`. See also
+> [`EDITOR_SIMPLIFICATION_PLAN.md`](EDITOR_SIMPLIFICATION_PLAN.md), which describes
+> what shipped on top of it. Preserved as the design record.
+
 ## The problem
 
 The editor is a phone-hostile stack of everything at once: a five-tab strip that

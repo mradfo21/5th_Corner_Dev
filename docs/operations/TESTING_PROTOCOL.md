@@ -1,5 +1,14 @@
 # 🧪 Testing Protocol - READ BEFORE EVERY DEPLOY
 
+> **This is the deploy gate, not the whole story.** It predates the two tools
+> you probably want: `tools/demo_check.py --boot`, which clears what a first run
+> inherits and then watches the opening happen, and `playtest_app.py`, which
+> drives the **real native app** over CDP through SCAN, MOVE, INTERACT, PHOTO,
+> encounters and CAMP. Read
+> **[TESTING_USE_THIS.md](TESTING_USE_THIS.md)** before writing any test — the
+> API-level checks below cannot see the UI, and a green run here has shipped a
+> visibly broken client before.
+
 ## **RULE: NEVER PUSH TO PRODUCTION WITHOUT TESTING LOCALLY FIRST**
 
 The whole point of this protocol is that you never *need* to deploy to

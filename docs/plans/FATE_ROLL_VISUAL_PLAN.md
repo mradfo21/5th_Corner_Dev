@@ -1,5 +1,10 @@
 # The Tracking Roll — making fate visible
 
+> **Status: not built.** There is no fate-roll visual in the client. The rolls
+> themselves happen server-side; showing them to the player is still a proposal.
+> (Do not confuse this with the turn-pipeline ceremony circle, which did ship —
+> that is `test_ceremony_hud.py`.)
+
 ## The opportunity
 
 Two facts about the game today, which together suggest one feature.

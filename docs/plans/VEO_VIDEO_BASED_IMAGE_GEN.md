@@ -1,5 +1,12 @@
 # 🎬 Veo 3.1 Video-Based Image Generation
 
+> **Status: built but switched off.** `veo_video_utils.py` exists and engine
+> wiring is in place, gated behind `VEO_MODE_ENABLED`, which is `False` by
+> default. Motion between frames is handled in practice by the **flipbook**
+> (a grid of panels split back into frames) — see
+> [`FLIPBOOK_MODE_REVIVAL_PLAN.md`](FLIPBOOK_MODE_REVIVAL_PLAN.md). Treat Veo as a
+> dormant experiment, not a path anything currently depends on.
+
 ## Revolutionary Approach
 
 Instead of generating static images, we use **Veo 3.1 to generate short videos** and extract the last frame as the displayed "image". This creates natural visual consistency and cinematic motion between every frame.

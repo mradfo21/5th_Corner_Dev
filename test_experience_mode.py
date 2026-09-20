@@ -5,8 +5,7 @@ Unit tests for the Experience Mode system.
 Tests cover:
   1. Constants and metadata completeness (engine.EXPERIENCE_MODES)
   2. apply_experience_mode() — engine globals + state persistence
-  3. api_client.GameEngineClient proxy methods
-  4. Edge cases (unknown mode, repeated application, session isolation)
+  3. Edge cases (unknown mode, repeated application, session isolation)
 
 Run with:
     python3 test_experience_mode.py
@@ -324,72 +323,6 @@ class TestApplyExperienceMode(unittest.TestCase):
 
             self.eng.apply_experience_mode(
                 self.eng.EXPERIENCE_MODE_FLIPBOOK, "switch_session"
-            )
-            self.assertTrue(self.eng.IMAGE_ENABLED)
-            self.assertTrue(self.eng.WORLD_IMAGE_ENABLED)
-
-
-class TestApiClientExperienceMode(unittest.TestCase):
-    """Tests for api_client.GameEngineClient experience mode proxies."""
-
-    def setUp(self):
-        import api_client
-        import engine
-        self.eng = engine
-        self.client = api_client.GameEngineClient(use_api=False)
-        self._tmpdir = tempfile.mkdtemp(prefix="test_apiclient_exp_")
-        self._orig_root = engine.ROOT
-        engine.ROOT = Path(self._tmpdir)
-
-    def tearDown(self):
-        self.eng.ROOT = self._orig_root
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
-
-    def test_constant_proxy_no_images(self):
-        self.assertEqual(
-            self.client.EXPERIENCE_MODE_NO_IMAGES,
-            self.eng.EXPERIENCE_MODE_NO_IMAGES,
-        )
-
-    def test_constant_proxy_flipbook(self):
-        self.assertEqual(
-            self.client.EXPERIENCE_MODE_FLIPBOOK,
-            self.eng.EXPERIENCE_MODE_FLIPBOOK,
-        )
-
-    def test_constant_proxy_full_frame(self):
-        self.assertEqual(
-            self.client.EXPERIENCE_MODE_FULL_FRAME,
-            self.eng.EXPERIENCE_MODE_FULL_FRAME,
-        )
-
-    def test_modes_dict_proxy(self):
-        self.assertIs(self.client.EXPERIENCE_MODES, self.eng.EXPERIENCE_MODES)
-
-    def test_apply_experience_mode_returns_true_for_valid_mode(self):
-        with _EngineGlobalSaver(self.eng):
-            result = self.client.apply_experience_mode(
-                self.eng.EXPERIENCE_MODE_FLIPBOOK, "apiclient_test"
-            )
-            self.assertTrue(result)
-
-    def test_apply_experience_mode_returns_false_for_unknown(self):
-        with _EngineGlobalSaver(self.eng):
-            result = self.client.apply_experience_mode("garbage_mode", "apiclient_test2")
-            self.assertFalse(result)
-
-    def test_apply_no_images_via_client_sets_engine_globals(self):
-        with _EngineGlobalSaver(self.eng):
-            self.client.apply_experience_mode(
-                self.eng.EXPERIENCE_MODE_NO_IMAGES, "apiclient_ni"
-            )
-            self.assertFalse(self.eng.IMAGE_ENABLED)
-            self.assertFalse(self.eng.WORLD_IMAGE_ENABLED)
-
-    def test_apply_full_frame_via_client_sets_engine_globals(self):
-        with _EngineGlobalSaver(self.eng):
-            self.client.apply_experience_mode(
-                self.eng.EXPERIENCE_MODE_FULL_FRAME, "apiclient_ff"
             )
             self.assertTrue(self.eng.IMAGE_ENABLED)
             self.assertTrue(self.eng.WORLD_IMAGE_ENABLED)

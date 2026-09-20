@@ -1,5 +1,12 @@
 # 🎮 One PLAYTEST — consolidation plan
 
+> **Status: partly done, and the answer landed somewhere else.** The single
+> harness that matters turned out to be `playtest_app.py` — it drives the **real
+> native app** over CDP — with `playtest.py` keeping the API-level probes. The
+> 59 test files were not consolidated. For what to actually run and why, read
+> [`../operations/TESTING_USE_THIS.md`](../operations/TESTING_USE_THIS.md); it
+> supersedes this plan's Part 3 and Part 5.
+
 ## The problem, stated plainly
 
 There are 59 `test_*.py` files (≈24,000 lines, ~1,900 `def test_*`) and the

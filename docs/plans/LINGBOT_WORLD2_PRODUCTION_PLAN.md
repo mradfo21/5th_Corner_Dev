@@ -1,5 +1,12 @@
 # SOMEWHERE × LingBot World 2 — Production Plan
 
+> **Status: superseded.** LingBot World 2 is no longer the default world model —
+> Reactor's **Happy Oyster** is (`REACTOR_WORLD_MODEL` in `render.yaml`). LingBot
+> remains selectable via the live world-model switcher. Read
+> [`WORLD_MODEL_SWITCHING_PLAN.md`](WORLD_MODEL_SWITCHING_PLAN.md) for the current
+> arrangement; this document is the production plan from when LingBot was the
+> target.
+
 **Goal:** Ship one focused, playable horror experience to a gameplay tester — video-streamed world, choice-driven narrative, no per-turn image/vision bottleneck.
 
 **Non-goal:** A "play anything" sandbox. One curated run: Jason Fleece, Four Corners / Horizon / The Gate, 1993 VHS found-footage.

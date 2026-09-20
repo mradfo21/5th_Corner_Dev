@@ -1,5 +1,12 @@
 # 🎥 Reactor Realtime World-Model Renderer — Integration Plan
 
+> **Status: shipped, and the default model has moved on.** The renderer is
+> `static/js/reactor_renderer.js` plus the `/api/reactor/*` endpoints. The
+> default world model is **Happy Oyster**, not `helios` — see
+> [`WORLD_MODEL_SWITCHING_PLAN.md`](WORLD_MODEL_SWITCHING_PLAN.md) and the
+> `REACTOR_*` block in `render.yaml`, which are the current truth. Preserved as
+> the design record.
+
 **Goal:** add [Reactor](https://docs.reactor.inc/overview) real-time world-model video
 (model `helios`) as a **swappable scene renderer** for SOMEWHERE, alongside the
 existing Gemini still-image renderer. We steer the world model by **injecting the

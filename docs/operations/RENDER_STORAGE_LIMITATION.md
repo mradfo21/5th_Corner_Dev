@@ -95,7 +95,7 @@ sessions/
 **Changes needed:**
 1. Install `boto3` (AWS) or `cloudinary`
 2. Modify `gemini_image_utils.py` to upload images
-3. Modify `bot.py` to fetch images from URL
+3. Serve the URLs from the image routes in `api.py` instead of local files
 4. Store URLs in state instead of file paths
 
 **Pros:**
@@ -214,7 +214,6 @@ Even without persistent storage, you can still:
 - ✅ Test gameplay
 - ✅ Test image generation
 - ✅ Test choices and actions
-- ✅ Test Discord bot
 - ✅ Test admin dashboard
 
 Just know that everything resets on redeploy.

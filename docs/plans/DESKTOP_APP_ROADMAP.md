@@ -1,5 +1,12 @@
 # Desktop App Roadmap
 
+> **Status: the desktop app shipped.** `play.py` / `PLAY.bat` boot the game in a
+> native pywebview window, and `tools/build_exe.py` produces the movable
+> `dist/SOMEWHERE/` folder (contents governed by `tools/ship_layout.py`, verified
+> by `tools/smoke_exe.py`). For how to run and build it, read `QUICKSTART.md` and
+> `docs/operations/SHIPPING.md`, not this roadmap. What remains open here is the
+> longer arc — fully local models — not the packaging.
+
 **Goal (owner's words):** "the long term goal is local... an AI game that's
 fully playable as a desktop application... we expect the technology to
 improve, generation times to come down, let's be ready."

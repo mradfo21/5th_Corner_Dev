@@ -1,5 +1,12 @@
 # INTERACT as a Moment
 
+> **Status: shipped on the stills renderer**, as `interactEnabled` /
+> `openInteractMoment` in `static/js/standalone.js` with the server side arming
+> the close-up handoff (`_arm_interact_plate` / `awaiting_closeup`). It stays
+> shelved under the live world-model renderer, where poking the world reacts too
+> weakly to read. Covered by `test_interact_dive_options.py` and
+> `test_interact_plate_handoff.py`. Preserved as the design record.
+
 ## Why
 
 Scanning only ever offers one verb. INTERACT is disabled, and TALK only appears
