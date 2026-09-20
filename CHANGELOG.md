@@ -1,3 +1,156 @@
+# 🔧 CHANGELOG - September 20, 2026
+
+## ✅ FIXED: a new run inherited the last one, and nothing was going to tell us
+
+Reported: *"when I run the game the current run is always polluted by previous
+runs. when I switch worlds I get artifacts from the last one... sometimes I see
+images of a character appear in my new world. This needs to be bullet proof."*
+
+The run's own DATA was never the problem. `_perform_game_reset` rebuilds
+`state.json` and `history.json` correctly and always has. What survived was
+everything held in PROCESS memory beside them: eight module-level dicts keyed by
+`session_id`, where a single-player boot's session id is always the literal
+string `"default"`. So the new run asked each of them a question the old run had
+already answered, and got the old run's answer.
+
+| What survived a reset | What the player saw |
+|---|---|
+| `_INTERACT_PLATES` | a close-up published in the previous run, still inside its 90-second TTL, composited into the new run's first frame under "THE SUBJECT YOU JUST LOOKED AT CLOSELY" — *copy its face… do not leave it out of the frame* |
+| `_PORTRAIT_CACHE` | a face minted in the previous world, returned for any subject with the same label in the new one |
+| `_CAMP_CACHE` | the previous world's campfire — its key was the session, the roster and the jeep, and named no world |
+| `_VISUAL_TONE_CACHE` | the previous world's palette, then handed to the new world's first tone call as *"PREVIOUS TONE (keep matching this)"* — the new world was told to look like the old one before it had rendered a frame |
+| `_OPENING_PREFETCH` | an opening image prefetched for the world we left |
+| `_FLIPBOOK_SEQUENCES` | a half-consumed animation from the previous run |
+| `gemini_image_utils._last_corrected_image` | the img2img continuity handle, a module global with no session in it at all |
+| `sessions/<id>/images/companion_*.png`, `prop_*.png` | plates written to stable sweep-protected filenames so they can be re-referenced forever — right within a run, wrong across one |
+
+The two reset paths had also drifted into two different ideas of what a reset
+means. `/api/reset` (what the New Game button calls) cleared the feed; the
+`reset_state` path archived and released voices and deleted `*.png` only — the
+pipeline writes `.jpg` on some provider paths, so half a run survived the wipe
+that was supposed to clear it. Neither cleared a single cache.
+
+Now there is **one** purge, `purge_run_caches()`, and no judgement calls at the
+call sites. Both reset paths call it, `delete_session` calls it, and so does
+`apply_experience_world` — switching worlds mid-run is where the complaint was
+loudest and it previously cleared only the open encounter. It is scoped to one
+session, because two people on one server must not purge each other's run.
+
+**The part that makes it bullet proof rather than fixed.** Every one of these was
+somebody adding a cache with nothing to tell them it had to be forgotten, so the
+list is now declared in `engine.py` and `test_run_isolation.py` walks the module
+and fails on any module-level cache that appears in neither the purge tuples nor
+`_RUN_CACHES_EXEMPT` — which requires a stated reason. `_RATE_BUCKETS` is exempt
+on purpose: abuse limits are per-IP and must outlive a run, or `/api/reset`
+becomes the way to bypass every limit.
+
+Also: `_camp_cache_key` now names the active world, and `seen_elements` /
+`scene_objects` are cleared on a world stitch (see below for why that matters).
+
+## ✅ FIXED: "I told it to go to antarctica and it didnt"
+
+From the filed bug (`bugs/20260920_101244`). Every stage upstream worked. The
+consequence model wrote the flight and the arrival; world evolution recorded *"the
+transport helicopter has deposited you over a desolate Antarctic ice shelf"*; the
+cut was detected; the scene description handed to the renderer read *"a vast,
+featureless Antarctic ice sheet"*. The frame that came back was the Utah desert at
+golden hour with a helicopter parked in it, and the next choice slate offered
+**"Heave open the truck door"**.
+
+Nothing overruled the cut. What overruled it was everything a cut politely keeps
+hold of — all of it written for the next ROOM rather than the next continent:
+
+1. the hard-cut camera block: *"Carry over the light, the look, and whether this
+   is indoors or outdoors"*
+2. the img2img clause, last in the payload and the most concrete line in it:
+   *"Maintain the same lighting, time of day, and color palette as the previous
+   image"*
+3. `time_of_day`, rolled once at reset partly off the LEVEL PLATE's own palette
+   and then pinned for the session: *"7:14pm | weather: golden hour, rust, red
+   dust, chain-link steel"*
+4. the visual tone gloss — a cut is allowed to re-ask for it, but it is handed
+   the old gloss as *"PREVIOUS TONE (keep matching this unless…)"*
+5. the previous desert frame, still img2img reference #1
+
+Five concrete statements that the light was red desert dusk, against one sentence
+naming Antarctica. The model went with the five, exactly as this module's own
+notes predict it will whenever precedence is left undefined. Fixing any one of
+them would have changed nothing, which is why all five are addressed.
+
+Carrying light across a threshold is correct — two rooms in one building share a
+sun. Carrying it across a CONTINENT is not. So there is now a grade above a hard
+cut, `is_region_change()`, and the only things that survive it are the film stock,
+the era, the grain and who the player is. The clock survives too, because the
+story's hour does: flying somewhere takes time but does not reset the evening.
+The weather and the mood do not, because they were the previous place's.
+
+It is deliberately narrow — long-haul travel with a destination, or being moved
+by something else ("transports you to", "teleport", "wake up in"). In-building
+conveyances are vetoed: *"ride the elevator to the top floor"* is a long-haul verb
+and a destination by the plain rule, and it is also the same building, which keeps
+its weather and its hour.
+
+**The slate was the other half of the bug.** `seen_elements` is the
+discovered-entity list `grounded_entities` hands to the choice generator, and
+nothing pruned it on a relocation — so the chain-link fence and the pickup truck
+were still on the board two thousand miles away. A choice the player cannot
+physically take is worse than a shorter list, and the next frame's SCAN refills it
+from the place they are actually in.
+
+**And it was not even reliably classified as movement.** `_detect_movement_type`
+had no entry for long-haul travel, so *"travel to antartica"* matched no keyword,
+paid for an LLM round-trip, and took whatever came back. Its failure default is
+`exploration` — *"Same spot, new angle"* — so a 403 rendered a change of continent
+as a slight pan. A live capture caught exactly that. It is now answered locally.
+
+## ✅ FIXED: the game was playing the test fixture's rulebook
+
+Reported: *"it feels random sometimes like the features are either trying to work
+and break or the prompts get randomly generated incorrectly."* Not randomness.
+`action_consequence_instructions` in the live prompt file was **451 characters,
+byte-identical to `prompts/harness.generic.json`**. The authored one is 15,461. No
+fairness doctrine, no death rules, no tension rhythm, no stillness beats — the
+five failures in `test_experience_mode.TestPacingFairnessHardening` were reporting
+this correctly and had been for days.
+
+**No test run did it,** which is why the existing `authoring_sandbox` guard never
+caught it and why nothing was going to. `worlds_store._blank_prompts` deliberately
+seeds a new World from the harness so it cannot inherit whatever happens to be
+loaded into Play. That is the right instinct about the wrong set of keys.
+`world_initial_state`, the cast, the setting and the camera genuinely belong to a
+World and should start blank. The rulebook does not — it is how the *game* works,
+identical in every world that ships, and a blank one is not an empty room waiting
+to be authored, it is the rules deleted.
+
+So every World created in the editor was born holding a gutted rulebook, and
+`load_world` stamps a World's prompts onto the live file on **every bind and every
+reset**. The pollution reinstalled itself on each new run, which is exactly why it
+read as intermittent rather than as a broken file.
+
+Two guards, because the born-wrong worlds already exist on disk:
+
+- `_blank_prompts` takes the three `DOCTRINE_KEYS` from the factory defaults, so a
+  world created in the editor is playable the day it is created.
+- `load_world` refuses a stored value that is byte-identical to the harness
+  fixture, substitutes the factory copy, and says so in the log. Exact match only
+  — `somewhere.json` and `world.json` both author ~15,000 characters of their own
+  consequence doctrine and are untouched. Substituting rather than dropping is
+  deliberate: dropping the key would leave whatever was loaded before it in place,
+  which is the same class of bug as the run pollution above.
+
+Affected worlds on this machine: `untitled-experience` (the active one) and
+`new-world`. Both heal on the next New Game; no manual restore needed.
+
+**Correction to an earlier diagnosis in this session:**
+`world_evolution_instructions` is byte-identical in the harness and the factory
+defaults, so it was never polluted anywhere — an initial length-comparison sweep
+flagged it and was wrong. `narrator_direction` and
+`player_choice_generation_instructions` were also not the fixture; the live
+choice-slate block is a deliberately shortened authored version. The exact-match
+detector is what narrowed this from "three blocks" to the one real case.
+
+---
+
 # 🔧 CHANGELOG - September 18, 2026
 
 ## ✅ FIXED: the simulator was under orders not to let you leave

@@ -132,9 +132,29 @@ def load_world(slug: str) -> Dict[str, Any]:
     stored = data.get("prompts") or {}
     known = set(prompts_store.editable_keys())
     fields = {k: v for k, v in stored.items() if k in known}
+    # A World born from the harness carries a gutted rulebook (see DOCTRINE_KEYS).
+    # Binding it used to stamp that over the live prompt file, on every bind and
+    # every reset, so the pollution reinstalled itself each run. Substitute the
+    # factory copy instead of dropping the key: a World the editor created has no
+    # other source for these, and leaving the live value alone would make what the
+    # game plays depend on what was loaded before it.
+    gutted = harness_doctrine_in(fields)
+    if gutted:
+        factory = prompts_store.load_defaults()
+        for key in gutted:
+            replacement = factory.get(key)
+            if isinstance(replacement, str) and replacement.strip():
+                fields[key] = replacement
+            else:
+                fields.pop(key, None)
+        print(f"[WORLDS] '{_slug(slug)}' carries the generic harness copy of "
+              f"{', '.join(gutted)} — restored from the factory defaults rather "
+              f"than playing the test fixture. Author these in the editor to "
+              f"make the substitution stop.", flush=True)
     if fields:
         prompts_store.save_prompts_bulk(fields)
-    return {"slug": _slug(slug), "name": data.get("name", slug), "applied": len(fields)}
+    return {"slug": _slug(slug), "name": data.get("name", slug),
+            "applied": len(fields), "doctrine_restored": gutted}
 
 
 # THE CAST IS THE RUN'S, NOT THE ROOM'S.
@@ -152,6 +172,75 @@ def load_world(slug: str) -> Dict[str, Any]:
 # save: a World is a place, the person walking through it belongs to the run,
 # so saving the cast saves it into every room at once.
 CAST_KEYS = ("player_character",)
+
+
+# THE RULEBOOK IS THE GAME'S, NOT THE ROOM'S — AND NEVER THE TEST HARNESS'S.
+#
+# Reported as *"it feels random sometimes like the features are either trying to
+# work and break or the prompts get randomly generated incorrectly"*, and it was
+# not randomness. Measured on the live prompt file during that report:
+#
+#   action_consequence_instructions           451 chars   (authored: 15,461)
+#   player_choice_generation_instructions      364 chars   (authored:  4,528)
+#   narrator_direction                         533 chars   (authored:  3,681)
+#
+# Byte-identical to `prompts/harness.generic.json`. The game was playing the test
+# fixture: no fairness doctrine, no death rules, no tension rhythm, no stillness
+# beats, no choice-slate doctrine.
+#
+# It was not a test run that did it, and that is the part worth understanding.
+# `_blank_prompts` deliberately seeds a NEW World from the harness so it does not
+# inherit whatever happens to be loaded into Play — which is the right instinct
+# about the wrong set of keys. `world_initial_state`, the cast, the setting and
+# the camera genuinely belong to a World and should start blank. These three do
+# not. They are how the GAME works, identical in every world that ever ships, and
+# a blank one is not an empty room waiting to be authored — it is the rulebook
+# deleted.
+#
+# So every World made in the editor was born holding a gutted rulebook, and
+# `load_world` stamps a World's prompts onto the live file on every bind and
+# every reset. The pollution therefore reinstalled itself on each new run, which
+# is exactly why it read as intermittent rather than as a broken file.
+#
+# Two guards, because the born-wrong worlds already exist on disk:
+#   * `_blank_prompts` takes these from the factory defaults.
+#   * `load_world` refuses a stored value that is byte-identical to the harness
+#     fixture and says so. Exact-match only — a World that genuinely authors its
+#     own consequence doctrine (somewhere.json and world.json both do, at ~15,000
+#     chars) is untouched.
+DOCTRINE_KEYS = (
+    "action_consequence_instructions",
+    "player_choice_generation_instructions",
+    "narrator_direction",
+)
+
+
+def _harness_prompts() -> Dict[str, Any]:
+    """The generic test/authoring harness, or {} if it is missing."""
+    if not HARNESS_PATH.is_file():
+        return {}
+    try:
+        data = json.loads(HARNESS_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def harness_doctrine_in(prompts: Dict[str, Any]) -> List[str]:
+    """Which rulebook blocks in `prompts` are the harness fixture verbatim.
+
+    The whole detection is exact string equality against the shipped fixture, so
+    it cannot misfire on authored prose however short somebody writes it.
+    """
+    harness = _harness_prompts()
+    out: List[str] = []
+    for key in DOCTRINE_KEYS:
+        fixture = harness.get(key)
+        if not isinstance(fixture, str) or not fixture.strip():
+            continue
+        if isinstance(prompts.get(key), str) and prompts[key].strip() == fixture.strip():
+            out.append(key)
+    return out
 
 
 def patch_world_prompts(slug: str, fields: Dict[str, Any]) -> bool:
@@ -210,14 +299,25 @@ def delete_world(slug: str) -> bool:
 
 
 def _blank_prompts() -> Dict[str, Any]:
-    """Mechanical loop + empty place. Never the live Play file."""
-    if HARNESS_PATH.is_file():
-        try:
-            data = json.loads(HARNESS_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and data.get("world_initial_state"):
-                return {k: v for k, v in data.items() if k in prompts_store.editable_keys(data) or k in data}
-        except Exception:
-            pass
+    """Mechanical loop + empty place. Never the live Play file.
+
+    "Blank" means an unauthored PLACE, not an unauthored GAME. The harness blanks
+    the rulebook along with the room (see DOCTRINE_KEYS), and a new World holding
+    a 451-character consequence doctrine is not waiting to be filled in — it has
+    had the fairness rules, the death rules and the pacing deleted. Those come
+    from the factory so a world created in the editor is playable on the day it
+    is created.
+    """
+    data = _harness_prompts()
+    if data.get("world_initial_state"):
+        blank = {k: v for k, v in data.items()
+                 if k in prompts_store.editable_keys(data) or k in data}
+        factory = prompts_store.load_defaults()
+        for key in DOCTRINE_KEYS:
+            replacement = factory.get(key)
+            if isinstance(replacement, str) and replacement.strip():
+                blank[key] = replacement
+        return blank
     prompts = _editable_snapshot()
     prompts["world_initial_state"] = (
         "A playable place in third person. The camera follows a person through space. "

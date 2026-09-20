@@ -111,6 +111,7 @@ test_*.py
 !test_exit_button.py
 !test_flipbook.py
 !test_move_moves_the_camera.py
+!test_run_isolation.py
 !test_third_person_orbit.py
 !test_transition_types.py
 !test_turn_memory.py

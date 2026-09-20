@@ -885,6 +885,24 @@ except Exception as _lv_err:  # noqa: BLE001
 # _generate_random_starting_time.
 INITIAL_TIME_OF_DAY = "6:30pm | weather: clear golden hour light | mood: tense anticipation"
 
+
+def _clock_only(time_of_day: str) -> str:
+    """Just the hour, with the weather and mood dropped.
+
+    The string above is rolled once per run, partly off the LEVEL PLATE's own
+    palette, and then pinned for the whole session — which is correct, and is
+    what stops the light flickering from frame to frame. It is also a
+    description of ONE PLACE. A capture had "7:14pm | weather: golden hour,
+    rust, red dust, chain-link steel" going into a render of an Antarctic ice
+    sheet, and red dust is exactly what came back.
+
+    The clock survives a change of region because the story's hour does: flying
+    somewhere takes time but does not reset the evening. The weather and the
+    mood do not survive it, because they were the previous place's.
+    """
+    head = str(time_of_day or "").split("|", 1)[0].strip()
+    return head
+
 # Detection floors. The logic that moves these lives further down with the rest
 # of the turn simulation (see "detection"); only the constants are up here,
 # because _load_state runs during import and has to be able to backfill a save
@@ -1124,6 +1142,11 @@ def delete_session(session_id, archive_first=True):
 
     # Delete the entire session directory
     shutil.rmtree(session_root)
+
+    # The files are gone; the process still remembered the run. A session id is
+    # reusable (the lobby mints short ones), so without this a recreated session
+    # inherited the deleted one's portraits and tone.
+    purge_run_caches(session_id, reason="session deleted")
 
     print(f"[SESSION DELETE] Deleted session '{session_id}' ({file_count} files)")
     return {"session_id": session_id, "files_deleted": file_count}
@@ -1732,6 +1755,22 @@ def apply_experience_world(state: dict, world_id: str, session_id: str = "defaul
     state.pop("encounter", None)
     state.pop("encounter_outcome", None)
     state.pop("encounter_resolving", None)
+    # And so does the world's MEMORY. `seen_elements` is the discovered-entity
+    # list `grounded_entities` hands to the choice generator, and nothing ever
+    # pruned it — so a stitch from the desert into a facility kept offering
+    # "Heave open the truck door" and "Climb over the chain link fence" in a
+    # place that has neither. The player reads that as the game not having
+    # noticed where they are, which is exactly what has happened.
+    #
+    # `scene_objects` expires by itself (it is stamped with the turn it
+    # describes, see scene_objects_for_turn) but the stamp is cleared here too,
+    # because a stitch lands mid-turn and the stamp would otherwise still match.
+    state["seen_elements"] = []
+    state["scene_objects"] = []
+    state["scene_objects_turn"] = -1
+    # Caches keyed by session, not by world: the new world would otherwise open
+    # on the previous one's palette gloss, its cast portraits and its campfire.
+    purge_run_caches(session_id, reason=f"world stitch -> {dest.get('slug') or dest['id']}")
     state["world_prompt"] = experience_store.with_lore(
         game_identity.world_brief(
             PROMPTS.get("world_initial_state", "Default world starting point.")
@@ -4959,7 +4998,8 @@ _VISUAL_TONE_CACHE: dict = {}
 
 
 def summarize_world_prompt_for_image(world_prompt: str, session_id: str = 'default',
-                                      hard_transition: bool = False, frame_idx: int = 0) -> str:
+                                      hard_transition: bool = False, frame_idx: int = 0,
+                                      relight: bool = False) -> str:
     """Boil the world context down to an aesthetic/tone gloss appended to
     EVERY image prompt as "World flavor" — never a second description of
     the scene or the character.
@@ -4997,10 +5037,38 @@ def summarize_world_prompt_for_image(world_prompt: str, session_id: str = 'defau
     genuinely may be different) or the first frame of a session; every other
     turn reuses the cached gloss so the tone truly stays fixed, matching the
     continuity instruction it sits next to instead of undercutting it.
+
+    `relight` is the exception the anchoring needs. A hard transition re-asks
+    but is deliberately handed the old gloss as "PREVIOUS TONE (keep matching
+    this)", because a doorway does not change the sun. A change of REGION does
+    (see is_region_change), and the anchor then becomes the bug: a capture had
+    the gloss for an Antarctic ice sheet come back as "golden hour, rust, red
+    dust" because the desert it was anchored to was the more concrete of the two
+    texts in front of the model. This drops the anchor for that one call.
     """
     cached = _VISUAL_TONE_CACHE.get(session_id)
     if cached and not hard_transition and frame_idx > 1:
         return cached
+    # `cached` stays intact below as the failure fallback — a transient API error
+    # must still leave the run with a tone rather than none. What a relight drops
+    # is the ANCHOR: the continuity paragraph and the PREVIOUS TONE line.
+    anchor = "" if relight else (cached or "")
+    if relight and cached:
+        print(f"[VISUAL TONE] region change — letting go of {cached[:48]!r} "
+              f"rather than anchoring the new place to it", flush=True)
+    continuity = (
+        "This is one still moment of a single, continuous scene. Unless "
+        "the world context explicitly says the time of day changed, the "
+        "weather broke, or the player moved indoors/outdoors, name the "
+        "SAME base lighting condition and palette as the previous tone "
+        "below — do not invent a new light source or swap day for night.\n"
+    ) if not relight else (
+        "The player has just travelled to a DIFFERENT PLACE. Name the tone of "
+        "the place described below and nothing else. Do not carry over a "
+        "palette, a light or a weather condition from anywhere else — the "
+        "previous location's are not available to you and would be wrong. Keep "
+        "only the era and the film stock.\n"
+    )
     prompt = (
         "In ONE short phrase, name the visual TONE of the following world "
         "context for an image generation model — grain/film stock, era, "
@@ -5015,14 +5083,10 @@ def summarize_world_prompt_for_image(world_prompt: str, session_id: str = 'defau
         "a camcorder, VHS, videotape, analog recording, or any recording "
         "device — those are equipment, not tone, and must not leak into "
         "the aesthetic gloss.\n"
-        "This is one still moment of a single, continuous scene. Unless "
-        "the world context explicitly says the time of day changed, the "
-        "weather broke, or the player moved indoors/outdoors, name the "
-        "SAME base lighting condition and palette as the previous tone "
-        "below — do not invent a new light source or swap day for night.\n"
-        "CRITICAL: Avoid using graphic or violent words like 'blood', 'gore', 'mutilated', 'viscera', etc. "
+        + continuity
+        + "CRITICAL: Avoid using graphic or violent words like 'blood', 'gore', 'mutilated', 'viscera', etc. "
         "Use clinical or atmospheric equivalents if needed.\n\n"
-        + (f"PREVIOUS TONE (keep matching this unless the context below overrides it): {cached}\n\n" if cached else "")
+        + (f"PREVIOUS TONE (keep matching this unless the context below overrides it): {anchor}\n\n" if anchor else "")
         + "WORLD CONTEXT: " + world_prompt
     )
     # Don't use lore - just summarizing existing text. Low temperature on
@@ -5147,6 +5211,23 @@ _TRAVEL_VERBS = [
     'backtrack', 'double back', 'make your way',
 ]
 
+# Being CARRIED somewhere, under power. Deliberately separate from the list
+# above AND from the short-range approach verbs it excludes, because the
+# distinction is not politeness about wording — it is distance. Walking to the
+# oil pump leaves you in the same place; DRIVING or FLYING to something does
+# not, ever.
+#
+# These are the verbs a player TYPES. The curated slates are written in the
+# game's own locomotion vocabulary and so were covered; free will is not, and
+# without these "drive to the big building", "fly to antarctica" and "take the
+# helicopter to the city" all scored as no-transition — so the next frame
+# continued img2img from the frame they had just left and put them back on the
+# same dirt. Measured: four of five typed travel actions failed to register.
+_VEHICLE_TRAVEL_VERBS = [
+    'drive', 'fly', 'ride', 'sail', 'speed', 'steer', 'pilot', 'motor',
+    'floor it', 'gun it', 'take off',
+]
+
 # Travel verbs that take their destination as a plain object: you do not
 # "scale INTO" a mesa, you scale it, and you are somewhere else after.
 _TRAVEL_OBJECT_VERBS = [
@@ -5254,6 +5335,110 @@ def resolve_hard_transition(choice: str, dispatch: str,
     return is_hard_transition(choice, dispatch)
 
 
+# ───────── leaving the REGION, not just the room ─────────────────────────────
+# `hard_transition` means "the previous frame cannot be edited into this one".
+# That is the right answer for a doorway, and it turned out to be half the
+# answer for a journey.
+#
+# Reported: the player typed "travel to antartica". Every stage upstream worked.
+# The consequence model wrote the flight and the arrival; world evolution
+# recorded "the transport helicopter has deposited you over a desolate Antarctic
+# ice shelf"; the cut was detected; the scene description handed to the renderer
+# read "a vast, featureless Antarctic ice sheet". The frame that came back was
+# the Utah desert at golden hour with a helicopter parked in it.
+#
+# Nothing overruled the cut. What overruled it was everything the cut politely
+# keeps hold of — all of which is written for the next ROOM:
+#
+#   - the hard-cut camera block, which says "Carry over the light, the look, and
+#     whether this is indoors or outdoors"
+#   - the img2img clause, "Maintain the same lighting, time of day, and color
+#     palette as the previous image"
+#   - `time_of_day`, rolled once at reset off the LEVEL PLATE's palette and
+#     pinned for the session: "weather: golden hour, rust, red dust,
+#     chain-link steel"
+#   - the visual tone gloss, which a cut is allowed to re-ask but which is
+#     handed the old gloss as "PREVIOUS TONE (keep matching this)"
+#   - the previous desert frame, still img2img reference #1
+#
+# Five concrete statements that the light is red desert dusk, against one
+# sentence naming Antarctica. The model went with the five — exactly as this
+# module's own notes predict it will whenever precedence is left undefined.
+#
+# Carrying light across a threshold is correct: two rooms in one building share
+# a sun. Carrying it across a CONTINENT is not. So this is the grade above a
+# hard cut, and the only things that survive it are the film stock, the era and
+# who the player is.
+
+#: Being MOVED somewhere by something else. Not a long walk — these phrases mean
+#: the player never crossed the ground in between.
+_RELOCATION_PHRASES = (
+    'teleport', 'transported to', 'transports you', 'transport you',
+    'carried to', 'dragged to', 'flown to', 'airlifted',
+    'wake up in', 'wakes up in', 'find yourself in',
+)
+
+#: Verbs whose destination is a PLACE ON THE MAP rather than something in view.
+#: You do not travel to the far side of a yard, and the game has no vocabulary
+#: for "walk there for two days", so any of these plus a destination has left
+#: the region. Kept separate from `_VEHICLE_TRAVEL_VERBS`, which exists to
+#: answer the narrower question of whether a cut is needed at all.
+_LONGHAUL_TRAVEL_VERBS = (
+    'travel', 'journey', 'voyage', 'relocate', 'migrate', 'warp',
+    'fly', 'sail', 'drive', 'ride',
+)
+
+#: Things you ride or drive WITHOUT leaving the building. "Ride the elevator to
+#: the top floor" is a long-haul verb and a destination by the rule above, and
+#: it is also the same place: the tower keeps its weather and its hour, and
+#: relighting it would be the original continuity bug wearing the fix's clothes.
+_SAME_PLACE_CONVEYANCES = (
+    'elevator', 'lift', 'escalator', 'stairs', 'stairway', 'staircase',
+    'stairwell', 'ladder', 'dumbwaiter', 'hoist', 'forklift', 'cart',
+    'gurney', 'conveyor',
+)
+
+
+def is_region_change(choice: str) -> bool:
+    """Did this action leave the PLACE, rather than just the room?
+
+    Only the player's action is inspected, for the same reason
+    `is_hard_transition` refuses to read the narrative: prose is full of
+    dramatic relocation language ("the floor falls away", "the world tilts")
+    that means nothing of the kind.
+
+    Deliberately narrow. A false positive costs one frame its lighting
+    continuity, which the next frame restores. A false negative is the bug
+    above, which costs the player their belief that typing anything does
+    anything. Narrow still wins, because the actions that reach here are
+    unambiguous: a player who types a continent has said what they want.
+    """
+    if not choice:
+        return False
+    low = choice.lower()
+    # "follow the wire with your eyes" style tails mean the body did not move,
+    # whatever verb they were built on.
+    if any(m in low for m in _IN_PLACE_MARKERS):
+        return False
+    for phrase in _RELOCATION_PHRASES:
+        if phrase in low:
+            print(f"[REGION CHANGE] '{choice[:60]}' — moved by something else "
+                  f"('{phrase}'): the old place's light has no authority here",
+                  flush=True)
+            return True
+    if any(re.search(rf"\b{re.escape(c)}", low) for c in _SAME_PLACE_CONVEYANCES):
+        return False
+    # A long-haul verb still needs somewhere to go. Bare "drive" is flooring it
+    # down the same road; "drive to the city" is not.
+    has_verb = any(re.search(rf"\b{re.escape(v)}", low)
+                   for v in _LONGHAUL_TRAVEL_VERBS)
+    if has_verb and re.search(r"\b(?:to|toward|towards|into|for)\s+\w", low):
+        print(f"[REGION CHANGE] '{choice[:60]}' — long-haul travel to a named "
+              f"destination: relighting for the new place", flush=True)
+        return True
+    return False
+
+
 def _transition_reason(choice_lower: str) -> tuple[str, str]:
     """The shared detector behind :func:`is_hard_transition` and
     :func:`transition_kind`. Returns (kind, human reason), ("", "") for no."""
@@ -5304,7 +5489,16 @@ def _transition_reason(choice_lower: str) -> tuple[str, str]:
         return "", ""
     has_travel_verb = any(re.search(rf"\b{re.escape(v)}", choice_lower)
                           for v in _TRAVEL_VERBS)
-    if has_travel_verb:
+    # Under power, a bare "to" is enough. The prep list wants an article —
+    # "to the", "to a" — because on foot "turn to the left" and "listen to the
+    # hum" are not journeys. But a PLACE NAME takes no article, so "fly to
+    # antarctica" and "sail to Mexico" matched nothing, and the one kind of
+    # action that is guaranteed to leave was the one kind that never cut.
+    under_power = any(re.search(rf"\b{re.escape(v)}", choice_lower)
+                      for v in _VEHICLE_TRAVEL_VERBS)
+    if under_power and re.search(r"\b(?:to|for)\s+\w", choice_lower):
+        return "approach", "under power + destination"
+    if has_travel_verb or under_power:
         for prep in _TRAVEL_PREPS:
             if f" {prep}" in choice_lower:
                 return "approach", f"travel verb + '{prep.strip()}' + destination"
@@ -5831,6 +6025,15 @@ def _detect_movement_type(player_choice: str) -> str:
     if _UI_MOVE_PHRASES.search(choice_lower):
         return 'forward_movement'
 
+    # Leaving the region is travel by definition, and it must not be decided by
+    # a round-trip that can fail. "travel to antartica" matches no keyword below,
+    # so the commonest typed journey in the game paid for an LLM call and then
+    # accepted whatever came back — and the failure default is 'exploration',
+    # which renders a change of continent as a slight pan from the same spot.
+    # A live capture has that call returning 403 and doing exactly that.
+    if is_region_change(player_choice):
+        return 'forward_movement'
+
     # Stationary actions (observing, no camera movement)
     stationary_keywords = ['photograph', 'examine', 'inspect', 'check', 'observe', 'watch', 'study', 'crouch in place', 'stand still']
     if _mentions(choice_lower, stationary_keywords):
@@ -5882,6 +6085,7 @@ def build_image_prompt(
     prev_setting: str = "",
     softened_move: bool = False,
     holds_reference_frame: bool = False,
+    region_change: bool = False,
     spec: Optional[dict] = None,
 ) -> str:
     """
@@ -5900,6 +6104,14 @@ def build_image_prompt(
 
     ``prev_setting`` — indoor/outdoor environment type from previous vision
     analysis; used to enforce environment type consistency.
+
+    ``region_change`` — this turn did not move to another part of the same
+    place, it left the place. See :func:`is_region_change`: the hard-cut block
+    below tells the camera to carry the light and the indoor/outdoor state over,
+    which is right for the next room and wrong for another continent. When this
+    is set, that carry-over is withdrawn and said so explicitly, because a
+    withdrawn instruction the model never hears is indistinguishable from the
+    instruction still being there.
 
     ``softened_move`` — this turn asked for a location change and the throttle
     declined to give it a fresh composition. It still has to MOVE. Without
@@ -6047,7 +6259,49 @@ def build_image_prompt(
     # One sentence group, no markers to match, no precedence to assert.
     travelled = softened_move or movement_type == 'forward_movement'
 
-    if hard_transition:
+    if hard_transition and region_change:
+        # A different place on the map. Everything the ordinary hard cut keeps —
+        # the light, the palette, the indoor/outdoor state — is a property of
+        # the place just left, so here it is all explicitly released. What is
+        # kept is what actually makes this the same GAME: the film stock, the
+        # era, the grain, and the person.
+        keep = (
+            "Keep only the film stock, the era, the grain and the people — the "
+            "same camera and the same cast, somewhere else entirely."
+        )
+        if cam["shows_body"]:
+            lock = cam.get("follow_lock") or (
+                "the character stays on screen, medium-wide, seen from behind at chest height"
+            )
+            camera = (
+                "The camera is in a DIFFERENT PLACE ON THE MAP — not another "
+                "part of the previous location. The reference photograph is "
+                "where they used to be and is NOT where they are: do not keep "
+                "its ground, its horizon, its landmarks, its weather, its "
+                "palette or its light, and do not keep whether it was indoors "
+                "or outdoors. The new place brings its own daylight, its own "
+                "weather and its own colour.\n"
+                f"{keep}\n"
+                "Render the destination the scene names, established and "
+                "filling the depth of frame — they have arrived, it is not a "
+                "shape on the horizon.\n"
+                f"{lock}."
+            )
+        else:
+            camera = (
+                "The camera is in a DIFFERENT PLACE ON THE MAP — not another "
+                "part of the previous location. The reference photograph is "
+                "where it used to be and is NOT where it is: do not keep its "
+                "ground, its horizon, its landmarks, its weather, its palette "
+                "or its light, and do not keep whether it was indoors or "
+                "outdoors. The new place brings its own daylight, its own "
+                "weather and its own colour.\n"
+                f"{keep}\n"
+                "Render the destination the scene names, established and "
+                "filling the depth of frame — they have arrived, it is not a "
+                "shape on the horizon."
+            )
+    elif hard_transition:
         # "Carry over only the light, the film stock and the look" was too
         # literal a licence: a run that entered a building and then went deeper
         # through two interior doors grew a purple storm sky over an indoor
@@ -7700,6 +7954,12 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 prev_time_of_day = ""
                 prev_color = ""
         
+        # Did this turn leave the region, or only the room? Decided here, once,
+        # and then applied to all four places that would otherwise pin the new
+        # place to the old one's light. See is_region_change for the capture
+        # this comes from.
+        region_change = bool(hard_transition) and is_region_change(choice)
+
         # Use provided time_of_day, or fall back to state (persistent across frames)
         # Check for None explicitly (not just falsy) to handle empty string vs None
         if time_of_day is None:
@@ -7710,6 +7970,8 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
             use_time_of_day = time_of_day
             if use_time_of_day:
                 print(f"[TIME] Using explicitly provided time_of_day: {use_time_of_day}")
+        if region_change:
+            use_time_of_day = _clock_only(use_time_of_day)
         use_color = prev_color
         
         # --- Summarize world prompt for image flavor ---
@@ -7734,6 +7996,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 session_id=session_id,
                 hard_transition=hard_transition,
                 frame_idx=frame_idx,
+                relight=region_change,
             )
         identity_spec = identity_spec or game_identity.get_spec()
         if game_identity.is_viewfinder_spec(identity_spec):
@@ -7754,6 +8017,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
             # reference (see the branch that sets it), so it is the one that
             # needs telling the vantage moved.
             holds_reference_frame=opening_handoff_ref,
+            region_change=region_change,
             spec=identity_spec,
         )
         
@@ -7765,16 +8029,38 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
         # not imply one either.
         if world_flavor:
             prompt_str += f" Visual tone: {world_flavor}."
-        _tmp_regression_check = summarize_world_state(current_state)
-        if _tmp_regression_check:
-            prompt_str += f" Background context: {_tmp_regression_check}."
+        # NOTHING ELSE from the story state goes on the end of a render prompt.
+        # A `_tmp_regression_check = summarize_world_state(...)` probe was left
+        # here appending " Background context: <beat>." to every single frame,
+        # directly under the comment above that forbids exactly that — and it
+        # shipped. A live capture caught it putting "Background context: The red
+        # biome is dangerously close." on a render, which is almost word for
+        # word the example that comment uses to explain why this is banned: the
+        # beat lines name things that are NOT on camera, the image model reads
+        # them as things to draw, and img2img then carries the invention forward
+        # for the rest of the run.
         # ALWAYS maintain lighting/aesthetic continuity, even during location changes.
         # NOTE: guard on prev_img_paths_list (the list we actually populate). The old
         # code checked `prev_img_paths`, which is never appended to, so this whole
         # continuity clause was silently dead — hard cuts lost their "same world
         # aesthetic" instruction and same-location frames lost their lighting match.
         if prev_img_paths_list:
-            if hard_transition:
+            if region_change:
+                # A different place on the map. This clause is the single most
+                # CONCRETE statement in the whole payload — it names lighting,
+                # time of day and palette in one breath, and it sits at the very
+                # end, which is why the desert won the Antarctica frame outright
+                # (see is_region_change). On a change of region the reference is
+                # a record of the camera and the cast, and of nothing else about
+                # where they were.
+                prompt_str = (
+                    f"{prompt_str}\nThe previous image is a reference for the FILM STOCK, "
+                    f"the grain, the era and the people only. Its lighting, its time of day, "
+                    f"its weather and its color palette belong to a place that has been left "
+                    f"behind — do not carry any of them into this frame. Light this location "
+                    f"the way this location is lit."
+                )
+            elif hard_transition:
                 # Location change - use reference for lighting/aesthetic ONLY (not composition)
                 prompt_str = (
                     f"{prompt_str}\nMaintain the same lighting, time of day, and color palette as the previous image. "
@@ -11205,6 +11491,213 @@ def _finish_opening_montage(st: dict, session_id: str,
             "sequence": seq_payload}
 
 # --- Internal Reset Logic --- (Moved from api_reset for reusability)
+# ═══════════════════════════════════════════════════════════════════════════
+# ONE PURGE, CALLED FROM EVERY PLACE A RUN BEGINS
+#
+# Reported from the sofa: "when I run the game the current run is always
+# polluted by previous runs. when I switch worlds I get artifacts from the last
+# one... sometimes I see images of a character appear in my new world."
+#
+# The run's own DATA was never the problem. `_perform_game_reset` rebuilds
+# state.json and history.json correctly and always has. What survived was
+# everything held in PROCESS memory beside them: module-level dicts keyed by
+# session_id, where `session_id` for a single-player boot is always the literal
+# string "default". A new run therefore asked each of them a question the old
+# run had already answered, and got the old run's answer:
+#
+#   _VISUAL_TONE_CACHE   the previous world's palette — and it is not merely
+#                        returned, it is fed to the new world's first tone call
+#                        as "PREVIOUS TONE (keep matching this)". The new world
+#                        was told to look like the old one before it had
+#                        rendered a single frame.
+#   _PORTRAIT_CACHE      a face minted in the previous world, returned for any
+#                        subject carrying the same label in the new one
+#   _CAMP_CACHE          the previous world's campfire, because its key is the
+#                        companion roster and the jeep, and names no world
+#   _INTERACT_PLATES     a close-up published in the previous run, still inside
+#                        its 90-second TTL, composited into the new run's first
+#                        scene under the heading "THE SUBJECT YOU JUST LOOKED
+#                        AT CLOSELY"
+#   _OPENING_PREFETCH    an opening image prefetched for the world we left
+#   _FLIPBOOK_SEQUENCES  a half-consumed animation from the previous run
+#   _vision_cache        a read of a frame belonging to the previous world
+#
+# The last four are how a character from the previous world physically walks
+# into the new one, and neither reset path cleared any of them.
+#
+# So: one function, no judgement calls at the call sites. Both reset paths call
+# it, and so does the mid-run world stitch — switching worlds is where the
+# complaint is loudest, and `apply_experience_world` only ever cleared the open
+# encounter.
+#
+# It takes a session id and clears that session's slice, because two people on
+# one server must not purge each other's run. The genuinely process-wide ones
+# are cleared wholesale; they cache a picture or a reading of one, so another
+# session losing an entry costs it a re-read rather than correctness.
+#
+# ADDING A CACHE: put its name in one of the tuples below, or in
+# `_RUN_CACHES_EXEMPT` with the reason it must survive. test_run_isolation.py
+# walks this module for caches and fails if a new one appears in neither —
+# because the entire class of bug above is "somebody added a cache and nothing
+# told them it had to be forgotten".
+
+#: Dicts keyed DIRECTLY by session_id.
+_RUN_CACHES_BY_SESSION = (
+    "_VISUAL_TONE_CACHE",
+    "_PORTRAIT_SPEND",
+    "_FLIPBOOK_SEQUENCES",
+    "_OPENING_PREFETCH",
+    "_INTERACT_PLATES",
+)
+
+#: Dicts whose key is a TUPLE whose FIRST element is the session id. Purging
+#: these means walking the keys, so they are listed apart rather than guessed
+#: at: popping by session id would silently no-op and read as working.
+_RUN_CACHES_BY_SESSION_TUPLE = (
+    "_PORTRAIT_CACHE",
+    "_CAMP_CACHE",
+)
+
+#: Caches with no session in the key at all, cleared wholesale.
+_RUN_CACHES_PROCESS_WIDE = (
+    "_vision_cache",
+)
+
+#: Module-level dicts that must SURVIVE a reset, and why. A reader arriving
+#: here from the guard test needs the reason, not just the exemption.
+_RUN_CACHES_EXEMPT = {
+    "_SESSION_IMAGE_LOCKS":
+        "locks, not data — replacing one mid-render loses mutual exclusion "
+        "between the render that holds it and the next one",
+    "_RATE_BUCKETS":
+        "abuse limits are keyed per client IP and deliberately outlive a run. "
+        "Clearing them would make /api/reset the way to bypass every limit.",
+}
+
+
+def purge_run_caches(session_id: str = "default", *, reason: str = "reset") -> None:
+    """Forget everything this process remembers about ``session_id``'s run.
+
+    Safe to call more than once and safe to call on a session that has never
+    played — every branch is a pop or a clear. It deliberately touches only
+    caches: nothing here is authoritative, so the cost of purging too much is
+    latency and the cost of purging too little is the previous world's
+    character standing in this one.
+    """
+    global _last_image_path, _last_movement_type, _is_inside
+
+    sid = str(session_id or "default")
+    cleared: List[str] = []
+
+    for name in _RUN_CACHES_BY_SESSION:
+        cache = globals().get(name)
+        if isinstance(cache, dict) and cache.pop(sid, None) is not None:
+            cleared.append(name)
+
+    for name in _RUN_CACHES_BY_SESSION_TUPLE:
+        cache = globals().get(name)
+        if not isinstance(cache, dict):
+            continue
+        doomed = [k for k in list(cache.keys())
+                  if isinstance(k, tuple) and k and k[0] == sid]
+        for key in doomed:
+            cache.pop(key, None)
+        if doomed:
+            cleared.append(name)
+
+    for name in _RUN_CACHES_PROCESS_WIDE:
+        cache = globals().get(name)
+        if cache is not None and hasattr(cache, "clear"):
+            try:
+                cache.clear()
+                cleared.append(name)
+            except Exception as e:
+                logging.warning(f"[PURGE] {name} would not clear: {e}")
+
+    # Single-slot process globals that describe "the frame we are continuing
+    # from". A new run continues from nothing, and `_last_image_path` in
+    # particular is what a render reaches for when history is empty — which is
+    # exactly the state a reset leaves history in.
+    _last_image_path = None
+    _last_movement_type = None
+    _is_inside = False
+
+    # Sibling modules keep their own run-scoped state. They are imported here
+    # rather than at module scope because `encounter` imports `engine` back.
+    try:
+        import gemini_image_utils
+        # The img2img continuity handle. It is a module global holding a PIL
+        # image of the last frame this process corrected, with no session in
+        # it at all, so the first render of a new world could continue from the
+        # last render of the old one.
+        gemini_image_utils._last_corrected_image = None
+        cleared.append("gemini_image_utils._last_corrected_image")
+    except Exception as e:
+        logging.warning(f"[PURGE] image continuity handle survived: {e}")
+
+    try:
+        import encounter
+        encounter._LOOK_READ_CACHE.pop(sid, None)
+        # Keyed by description text, not by session: the previous world's
+        # wardrobe tokens would answer a clone check in the new one.
+        encounter._LOOK_TOKEN_CACHE.clear()
+        cleared.append("encounter look caches")
+    except Exception as e:
+        logging.warning(f"[PURGE] encounter look caches survived: {e}")
+
+    try:
+        import choices as _choices
+        _choices.LAST_CHOICE_TIMING.update({"choices_ms": 0, "critic_ms": 0})
+    except Exception:
+        pass
+
+    print(f"[PURGE] session={sid} reason={reason} "
+          f"cleared={', '.join(cleared) if cleared else 'nothing was stale'}",
+          flush=True)
+
+
+#: Media a run generates and can generate again. Wiped when a run is thrown
+#: away so the disk does not fill with orphans — every one of these is
+#: referenced only by the history and state files the reset has just emptied.
+#:
+#: `films/` and `tapes/` are NOT here. They are finished artifacts a player
+#: asked for and may still want; a new run cannot splice onto them because the
+#: reel is rebuilt from `tape_frames`, which the reset empties in state.
+#: Extensions, not one glob: `reset_state` only ever deleted `*.png` and the
+#: pipeline writes jpg on some provider paths, so half a run survived the wipe
+#: that was supposed to clear it.
+_REGENERABLE_FRAME_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def purge_run_media(session_id: str = "default") -> int:
+    """Delete the frames of a run that is being thrown away. Returns the count.
+
+    Orphan frames are not a correctness bug on their own — nothing points at
+    them once history is empty. They became one through `_ensure_disk_headroom`,
+    which sweeps regenerable files across sessions when space runs short and so
+    turned "last night's frames are still on disk" into "this run's frames were
+    deleted to make room for last night's".
+    """
+    removed = 0
+    try:
+        frames = list(_get_image_dir(session_id).iterdir())
+    except Exception as e:
+        logging.warning(f"[PURGE] could not list frames for {session_id}: {e}")
+        return 0
+    for stale in frames:
+        if stale.suffix.lower() not in _REGENERABLE_FRAME_SUFFIXES:
+            continue
+        try:
+            stale.unlink()
+            removed += 1
+        except Exception as e:
+            logging.warning(f"[PURGE] could not delete {stale.name}: {e}")
+    if removed:
+        print(f"[PURGE] session={session_id} deleted {removed} orphaned frame(s)",
+              flush=True)
+    return removed
+
+
 def _perform_game_reset() -> List[Dict[str, Any]]:
     global state, history, _last_image_path, _next_feed_item_id
     # Resolve THIS request's session id straight from Flask's request object
@@ -11229,7 +11722,15 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
     with TURN_LOCK:
         SID = _resolve_request_session_id()
         logging.info(f"_perform_game_reset: ENTER session='{SID}'. Initial global state object id: {id(state)}")
-    
+
+        # Forget the last run BEFORE building the new one, not after. Everything
+        # below this line renders, reads a frame and mints a tone gloss for the
+        # new world, and each of those consults a cache — so a purge at the end
+        # of the reset would arrive after the very frames it exists to protect.
+        # See purge_run_caches for what was surviving and what it looked like.
+        purge_run_caches(SID, reason="new run")
+        purge_run_media(SID)
+
         # Reset state variables by loading a fresh copy and then clearing/setting specifics
         current_state_at_reset_start = _load_state(SID) 
         logging.info(f"_perform_game_reset: After _load_state. Loaded state id: {id(current_state_at_reset_start)}. Its feed_log (len {len(current_state_at_reset_start.get('feed_log',[]))}) id: {id(current_state_at_reset_start.get('feed_log')) if current_state_at_reset_start.get('feed_log') is not None else 'None'}")
@@ -14764,10 +15265,31 @@ def _ensure_jeep_prop(session_id: str) -> dict:
                         label="your red jeep", prompt=_JEEP_PROP_PROMPT)
 
 
+def _active_world_sig(session_id: str = "default") -> str:
+    """Which world this session is standing in, for cache keys.
+
+    Belt to the purge's braces. `purge_run_caches` is what actually stops the
+    previous world's pictures reappearing, but a purge is a thing somebody has
+    to remember to call, and the failure is silent and looks like the image
+    model misbehaving. A world in the key means that even a missed purge cannot
+    return another world's picture — it can only cost a regeneration.
+    """
+    try:
+        st = get_state(session_id) or {}
+    except Exception:
+        return ""
+    return f"{st.get('experience_id') or ''}/{st.get('experience_world_id') or ''}"
+
+
 def _camp_cache_key(session_id: str, labels: list, jeep_url: str) -> tuple:
     labels_sig = ",".join(sorted((l or "").strip().lower() for l in labels))
     jeep_hash = hashlib.sha1((jeep_url or "").encode("utf-8")).hexdigest()[:12]
-    return (session_id or "default", _CAMP_CACHE_VERSION, labels_sig, jeep_hash)
+    # The world belongs in here. This key was the session, the roster and the
+    # jeep — nothing that changes when the player walks into a different world,
+    # so the same five companions sat around the previous world's fire in the
+    # new one.
+    return (session_id or "default", _CAMP_CACHE_VERSION,
+            _active_world_sig(session_id), labels_sig, jeep_hash)
 
 
 def _camp_seat_layout(count: int) -> list:
@@ -19077,6 +19599,26 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             hard_transition = True
             _save_state(state, session_id)
 
+        # Leaving the REGION also empties the world's memory of props.
+        #
+        # The render is only half of what the player sees. `seen_elements` is the
+        # discovered-entity list `grounded_entities` hands to the choice
+        # generator, and nothing pruned it on a relocation — so the capture that
+        # produced is_region_change offered "Climb over the chain link fence" and
+        # "Heave open the truck door" on an Antarctic ice shelf. Those props are
+        # two thousand miles away. Forgetting them is not a loss: a choice the
+        # player cannot physically take is worse than a shorter list, and the
+        # next frame's SCAN refills the list from the place they are actually in.
+        if hard_transition and not is_timeout_penalty and is_region_change(choice):
+            forgotten = len(state.get("seen_elements") or [])
+            state["seen_elements"] = []
+            state["scene_objects"] = []
+            state["scene_objects_turn"] = -1
+            _save_state(state, session_id)
+            print(f"[REGION CHANGE] forgot {forgotten} prop(s) belonging to the "
+                  f"place just left, so the next slate cannot offer them",
+                  flush=True)
+
         consequence_img_url = None
         consequence_img_prompt = ""  # Initialize to prevent undefined variable error
         consequence_video_url = None  # Initialize to prevent UnboundLocalError if _gen_image raises before its internal assignment
@@ -19720,23 +20262,17 @@ def reset_state(session_id='default'):
     except Exception as e:
         print(f"[RESET] Failed to delete history: {e}")
     
-    # Clear vision cache. The disk layer (authored worlds/ frames only) is
+    # Every process cache this run wrote, including the vision LRU this used to
+    # clear on its own. The disk vision layer (authored worlds/ frames only) is
     # deliberately left alone: those pictures are identical next run, and
     # re-reading them is what made a fresh start hang on a vision call.
-    _vision_cache.clear()
-    print("[CLEANUP] Cleared vision analysis cache")
-    
-    # Clear all images from the session's image folder
-    image_dir = _get_image_dir(session_id)
-    if image_dir.exists():
-        image_count = 0
-        for image_file in image_dir.glob("*.png"):
-            try:
-                image_file.unlink()
-                image_count += 1
-            except Exception as e:
-                print(f"[CLEANUP] Failed to delete {image_file.name}: {e}")
-        print(f"[CLEANUP] Deleted {image_count} old images from session {session_id}")
+    #
+    # This path and /api/reset had drifted into two different ideas of what a
+    # reset means — this one archived and released voices, that one cleared the
+    # feed. Neither cleared the caches. They now agree on the caches at least,
+    # which is the half that was producing the previous world's character.
+    purge_run_caches(session_id, reason="hard reset")
+    purge_run_media(session_id)
     
     # Recreate history as empty list
     _save_history([], session_id)
