@@ -7460,8 +7460,19 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
                        two_shot_look: str = "",
                        hold_cast: bool = False,
                        cast_plates: Optional[list] = None,
-                       write_state: bool = True) -> Optional[dict]:
+                       write_state: bool = True,
+                       hard_cut: bool = False) -> Optional[dict]:
     """Draw this turn as a grid of in-betweens and split it back into frames.
+
+    hard_cut — the engine has already decided this turn LEAVES the place the
+    previous panel shows (MOVE TO, a relocating typed action). The grid rules
+    are written for one unbroken take and say so in the strongest terms they
+    have ("panel 1 is the very next instant after the reference … same
+    landmarks"), and the authored prefix adds "HELD CONSTANT IN EVERY PANEL:
+    location". On a cut turn those beat the render prompt's "NEW PLACE" every
+    time: "Move to the doorway" came back as the same hatch at 0.97 continuity
+    while the still path, given the identical prompt and references, relocated
+    four times out of four. See flipbook.grid_prompt(cut=True).
 
     establishing — an ESTABLISHING beat instead of an action. Ordinary turns
     animate a specific action (the character performs it with their whole body,
@@ -7613,9 +7624,20 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
             "raw",
         )
     else:
+        if hard_cut and authored:
+            # The authored prefix is the continuous-shot contract ("the first
+            # reference image is the final frame of the previous sequence …
+            # same landmarks, same horizon", "HELD CONSTANT IN EVERY PANEL:
+            # location"). Correct for every ordinary turn; on a cut it is the
+            # instruction that kept the player in the room. The generated grid
+            # rules carry the cut version of the same contract.
+            print("[FLIPBOOK] hard cut — the grid begins inside the destination; "
+                  "the continuous-shot prefix is stood down for this turn", flush=True)
+            authored = ""
         flipbook_prompt = game_identity.apply(
             _flipbook_action_block(choice, dispatch_preview, is_free_will, frames)
-            + flipbook.grid_prompt(frames, seconds=_flipbook_seconds(frames, frame_ms))
+            + flipbook.grid_prompt(frames, seconds=_flipbook_seconds(frames, frame_ms),
+                                   cut=hard_cut)
             + "\n" + _flipbook_camera_block()
             + (authored + "\n" if authored else "")
             + prompt_str,
@@ -8398,6 +8420,9 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                         # that only reached the still path would reach almost no
                         # real turns.
                         cast_plates=cast_plate_paths,
+                        # ...and it is the renderer that was ignoring hard cuts:
+                        # the still path relocates, the grid held the room.
+                        hard_cut=bool(hard_transition and frame_idx > 0),
                     )
                     # A flipbook that didn't come back costs quality, not the
                     # turn: fall through to the ordinary still below.

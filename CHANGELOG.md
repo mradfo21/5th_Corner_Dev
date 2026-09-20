@@ -12,6 +12,52 @@ server log and the generated panels pulled after every run and read against
 the frames. What follows is what that found, in the order it was found.
 Everything fixed here was re-played afterwards on the live app.
 
+## ✅ FIXED: a hard cut kept the player in the room, because the flipbook was told it was one unbroken take
+
+*"Sprint toward the dark threshold"* (relocated, hard cut) rendered the same
+corridor with the door still ahead. *"Move to the doorway"* rendered the same
+hatch at 0.97 continuity. Both are turns the engine had already decided were
+cuts — MOVE TO is an unconditional one — and both were flipbook turns.
+
+To separate the suspects, the "Move to the doorway" render was replayed
+through the **still** path with its exact prompt and references, four ways:
+as shipped; without the level plate; with the LANDMARKS line softened; both.
+All four relocated. The still path was never the problem, and neither were
+the plate or the landmarks on their own. The grid rules were: on every
+flipbook turn the model is told *"PANEL 1: the very next instant after the
+reference image — same camera height, same direction, same landmarks. A
+viewer watching the reference and then panel 1 must not see a cut,"* and the
+authored prefix adds *"HELD CONSTANT IN EVERY PANEL: … location."* Against
+that, "The camera is in a NEW PLACE" four thousand characters further down
+never had a chance — the nearer, more concrete rule won, which is this
+module's oldest lesson.
+
+`flipbook.grid_prompt(cut=True)` is the same contract for a turn that
+begins after a cut: the reference is the place the character has just LEFT;
+panel 1 is the first frame inside the destination; keep the reference's film
+stock, light and person, not its walls, floor, landmarks or camera; a panel
+that still shows the place they left is a failed panel; and from panel 1 on
+it is one shot again. `_flipbook_generate` takes `hard_cut`, stands the
+authored continuous-shot prefix down for that turn, and the engine passes
+`hard_transition and frame_idx > 0`. Fourth harness run: the door turn and
+the MOVE TO turn both left the room (0.88 and 0.91 continuity against 0.97
+before), with `[FLIPBOOK] hard cut — the grid begins inside the destination`
+in the log on each.
+
+## 🗺️ The location plate's people are not cast
+
+The A/B above put the level plate on screen next to the frames it was
+steering, and the plate on this machine's active level is a concept still
+with **four armed figures** in it. It rides as reference slot 1 on every
+frame with "copy its architecture, materials, palette, and mood" — so a
+second armoured figure kept walking into the corridor, SCAN tagged it
+"character", MOVE TO drew the player's twin face to face with him, and the
+fight that followed was against a man in the player's own suit. The
+annotation now says what a plate is for: the place — *"do NOT copy any
+person, figure or creature standing in it; the only people in this frame are
+the ones the scene names."* The better fix is a plate with nobody in it;
+this stops a populated one from casting.
+
 ## ✅ FIXED: every photograph bought two detection passes, and the hotspots churned
 
 Seen first as a harness crash at turn 5: it clicked the third hotspot and
@@ -144,24 +190,7 @@ arrives seconds after the frame and its tags.
 
 ## 📋 Found and NOT fixed — the design questions, with the evidence
 
-- **A hard cut does not reliably leave the room.** *"Sprint toward the dark
-  threshold"* (relocated, hard cut, prose: *"hunched in the center of a
-  pitch-black chamber… the open blast door behind him"*) rendered the same
-  corridor with the door still AHEAD; *"Move to the doorway"* in run 3 rendered
-  the same hatch at 0.97 continuity. Two of about five hard cuts. The render
-  prompt for those turns carries, at once: `LANDMARKS THAT MUST RECUR: The
-  rusted blast door…` (the level sheet's landmarks, demanded in every frame),
-  the LOCATION PLATE as **reference slot 1** with "copy its architecture" (and
-  three files state three different intents about that slot: `game_identity`
-  says setting leads, `gemini_image_utils` says the player's sheet keeps slot
-  1, `engine` says plates ride behind the previous frame), "Maintain the same
-  lighting… New location", and the previous frame as an edit-mode base — all
-  against one sentence naming the new room. This is the Antarctica mechanism
-  one grade down, and the fix is the same shape: on a hard cut, "landmarks of
-  this level" should not mean "in this shot", and the plate should not lead.
-  Not changed here because the plate order is the defence against the shipped
-  desert reappearing in custom levels; it wants an A/B on hard cuts, not a
-  guess.
+- **A hard cut did not reliably leave the room** — found here, chased with an A/B, and fixed at the flipbook layer (see the entry above). What is still open from that investigation: the render prompt carries `LANDMARKS THAT MUST RECUR` in every frame and the LOCATION PLATE as reference slot 1 on every frame, and three files state three different intents about that slot (`game_identity` says setting leads, `gemini_image_utils` says the player's sheet keeps slot 1, `engine` says plates ride behind the previous frame). The A/B did not implicate either on its own; worth settling the intent in one place.
 - **`relocated` is 1-for-2 on its own test sentence.** "explore deeper into
   this space", same four-field contract both times: once the model wrote *"you
   push past the chain-link perimeter and move deeper"* and answered

@@ -315,6 +315,39 @@ class TestGuideImages(unittest.TestCase):
                          blank.stat().st_size)
 
 
+class TestACutTurnBeginsInsideTheDestination(unittest.TestCase):
+    """The grid rules are written for one unbroken take, and on a turn the
+    engine had already decided was a hard cut they won: "Move to the doorway"
+    rendered the same hatch at 0.97 continuity, "Sprint toward the dark
+    threshold" the same corridor with the door still ahead. The still path,
+    given the identical prompt and references, relocated four times out of
+    four. The only difference was "PANEL 1: the very next instant after the
+    reference image — same landmarks."""
+
+    def test_an_ordinary_turn_is_still_one_unbroken_take(self):
+        text = flipbook.grid_prompt(4, seconds=1.7)
+        self.assertIn("very next instant after the reference", text)
+        self.assertNotIn("THIS TURN IS A CUT", text)
+
+    def test_a_cut_turn_arrives_before_panel_one(self):
+        text = flipbook.grid_prompt(4, seconds=1.7, cut=True)
+        self.assertIn("THIS TURN IS A CUT", text)
+        self.assertNotIn("very next instant after the reference", text)
+        self.assertIn("place they left is a FAILED panel", text)
+        # Still one shot once it is there: the camera does not cut BETWEEN panels.
+        self.assertIn("the camera does not cut", text)
+
+    def test_the_engine_stands_the_authored_prefix_down_on_a_cut(self):
+        """The authored prefix says "HELD CONSTANT IN EVERY PANEL: … location";
+        on a cut that is the sentence that kept the player in the room."""
+        import engine
+        src = Path(engine.__file__).read_text(encoding="utf-8")
+        body = src.split("def _flipbook_generate(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("hard_cut", body)
+        self.assertIn("cut=hard_cut", body)
+        self.assertIn("hard_cut=bool(hard_transition and frame_idx > 0)", src)
+
+
 class TestThePromptFollowsTheShape(unittest.TestCase):
     """The prompt used to be prose hand-written for 4x4, including a sixteen
     cell ASCII diagram. Any other count contradicted the picture it drew."""

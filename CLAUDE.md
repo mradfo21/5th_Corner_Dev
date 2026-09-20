@@ -72,19 +72,18 @@ and `CHANGELOG.md`.
 Branch: `cursor/fix-simulation-playback-coherence-9f80`. `main` is behind it.
 Remote is `github.com/mradfo21/5th_Corner_Dev`.
 
-**There is roughly a full day of uncommitted work in the tree** — about 10,000
-insertions across 51 tracked files, plus new files (`test_interact_plate_handoff.py`,
-six new `tools/*.py`, `experiences/somewhere.json`). It is finished and
-documented — the entire **September 18, 2026** section at the top of
-`CHANGELOG.md` (29 entries) describes it — but never committed.
+The tree is committed. The September 18 day and the September 20 morning went
+in as three commits on 2026-09-20 (`6206295` the docs and dead-code cleanup,
+`9dd4a7d` the feature day, `1118d5f` run isolation / region change / the
+doctrine guard), and the QA loop that afternoon added two more — see the top
+of `CHANGELOG.md`. Start with `git status` and `git log --oneline -6` anyway;
+`prompts/simulation_prompts.json` will usually show as modified, because
+binding a World rewrites it (see section 8), and that diff is not work.
 
-Start by running `git status` and `git diff --stat`, reading that changelog
-section, and agreeing with Matt on how to commit it. Do not start new work on
-top of it without that conversation.
-
-Also untracked and safe to ignore or sweep: `_menushots_before/`,
-`_menushots_after/`, `_playthrough/`, and loose `_*.png` probe images at the
-root. Those are screenshot evidence from past sessions.
+Untracked and safe to ignore or sweep: `_menushots_before/`,
+`_menushots_after/`, `_playthrough/`, loose `_*.png` probe images at the root,
+and `_claude_pull/` (frames and logs pulled out of a QA run). Those are
+screenshot evidence from past sessions.
 
 ---
 
@@ -365,74 +364,74 @@ it. Keep that; it is the reason the codebase is navigable at this size.
 
 ## 8. Open threads
 
-- **Commit the uncommitted day.** See section 3.
-- **The live prompt file was polluted with the test harness fixture, and has been
-  repaired — but understand the mechanism, because it recurs.**
-  `prompts/simulation_prompts.json` was found carrying `harness.generic.json`
-  verbatim for the blocks that decide how the game plays:
+- **The QA loop, and what it left open.** On 2026-09-20 the app was played
+  through the harness four times (8 turns each) with every frame read against
+  its `history.json` entry, the server log and the generated panels; the fixes
+  and the evidence are the top section of `CHANGELOG.md`. Read that before
+  chasing any of the below. Still open from it, in the order they matter:
+  - **`relocated` is 1-for-2 on its own test sentence.** "explore deeper into
+    this space": once the model wrote *"you push past the perimeter and move
+    deeper"* and answered `relocated=False`; once `True`. `resolve_hard_transition`
+    trusts the flag absolutely. Worth letting the prose or the movement
+    classifier veto a `False` when both say "moved".
+  - **The prose sensor can jump hidden→alerted in one clause** (`heat 0->4
+    [prose]` on *"the facility's defenses begin to scan the hall"*) while the
+    frame witness reads `signal 0`. Prose deliberately escapes the frame
+    ceiling; +4 from invented flavour is the narrator's word choice deciding
+    the dial again.
+  - **The level plate is reference slot 1 on every frame**, and three files
+    state three intents about that slot (`game_identity`: setting leads;
+    `gemini_image_utils`: the player's sheet keeps slot 1; `engine`: plates
+    ride behind the previous frame). The hard-cut A/B did not implicate it on
+    its own, but settle the intent in one place. And the plate on this
+    machine's active level has four armed figures in it — a plate is WHERE,
+    and one with people in it casts them.
+  - **The active experience (`untitled-experience-3`) has the 266-char harness
+    placeholder for a world bible** (`world_initial_state`). That one is the
+    World's to author; the Level sheet carries the place, but the narrator and
+    the encounter roster work from a blank bible. Its pacing is also
+    misconfigured — the engine warns `escalate_at=2, critical_at=5 are POINTS,
+    not turns` at boot. Consider whether `somewhere` should be active;
+    `tools/demo_check.py` exists to settle exactly this.
+  - One Gemini image call took **81s** against a 135s timeout (every other
+    turn 8–13s); a retry at ~40s would usually beat the tail.
+    `state.json.tmp → state.json` hits `WinError 5` on most turns and retries
+    fine. `test_world_authoring` (6) and `test_somewhere_snapshot` (1) are red
+    on this machine for environmental reasons (they read the live cast sheet /
+    assert `somewhere` is active).
 
-  | key | was | restored to |
-  |---|---|---|
-  | `action_consequence_instructions` | 451 | 15,188 |
-  | `world_initial_state` | 266 | 9,712 |
-  | `image_camera_rules` | 1,391 | 1,430 |
-  | `player_choice_generation_instructions` | 754 | 4,486 (merged, see below) |
+- **The live prompt file is a union of game doctrine and World authoring, and
+  a World bind rewrites it.** Understand this before editing it: whatever you
+  put in `prompts/simulation_prompts.json` lasts until the next New Game binds
+  the active World's copy over it. The guard in `worlds_store` (`DOCTRINE_KEYS`)
+  now substitutes the factory copy for a stored value that is the harness
+  fixture, byte-for-byte OR the fixture plus lines the factory itself carries
+  (a World on this machine had the fixture with the ALREADY DONE paragraph
+  spliced in, which exact match called "authored"). Worth checking whether
+  `DOCTRINE_KEYS` should also cover `image_camera_rules` — polluted once, not
+  in the tuple — and whether `world_initial_state` being the fixture should
+  at least be said out loud at boot.
 
-  The game was playing the fixture for how an action becomes a consequence and
-  for what kind of place this is — no fairness doctrine, no death rules, no world
-  bible. That is the reported symptom *"it feels random sometimes, like the
-  prompts get randomly generated incorrectly"*, and it is not random.
+- **The four red tests in `test_experience_mode.TestPacingFairnessHardening`
+  are a test written for a trim that was never applied — not dropped doctrine.**
+  Three of the four assert phrases verbatim from
+  `docs/plans/PROMPT_TRIM_PROPOSAL.md`, whose first line is "NOT LIVE. Nothing
+  in this file has been applied"; the doctrine they are looking for is present
+  in the live file in its long form ("INJURY IS THE DEFAULT CONSEQUENCE, NOT
+  DEATH", the ≈30% stillness-beat block). `git log -S` shows those phrases
+  were only ever added, to the test, in `262876d`. Fix three assertions to the
+  shipped wording. The fourth (`test_time_of_day_is_not_a_writer_dial`) is the
+  real one: the live consequence prompt still carries the phase-linked
+  darkening ("when the phase escalates, the world may darken one tier"), which
+  is the writer dial that invented a new sky in `visual_scene` on top of the
+  engine rewriting `time_of_day`.
 
-  Restored from `HEAD`, not from the defaults file, so authored work survived.
-  Three things were deliberately **not** restored, and the reasoning matters more
-  than the fix:
-
-  - `gemini_flipbook_4panel_prefix` — HEAD's copy is the **stale 4×4** prompt
-    (`flipbook.prefix_is_stale` fires at 2, 4 and 8 frames). The live value is the
-    shipped replacement. Restoring HEAD would have undone
-    `tools/retire_stale_flipbook_prompts.py`. A shorter value is not automatically
-    pollution.
-  - `narrator_direction` — live is *longer* than HEAD (3,681 vs 2,360): new work.
-  - `player_character` / `setting_reference` / `camera_perspective` — the cast
-    sheet, which this session's character-sheet work touches.
-
-  `player_choice_generation_instructions` was **merged** rather than replaced:
-  HEAD had the authored doctrine but not the repeat-suppression block
-  (`ALREADY DONE … {recent_choices}`), and the live file had only that block on
-  top of the fixture. Both were wanted.
-
-  The uncommitted `worlds_store.harness_doctrine_in()` guard stops a World
-  *re-installing* this on bind, which is the durable half of the fix. Worth
-  checking whether the worlds on disk still carry gutted copies, and whether
-  `DOCTRINE_KEYS` should also cover `world_initial_state` and `image_camera_rules`
-  — both were polluted here and neither is in that tuple.
-
-- **Four tests in `test_experience_mode.TestPacingFairnessHardening` are red, and
-  they are a design question, not a bug.** A fifth
-  (`test_choice_slot_is_randomized`) went green with the restore above. The
-  remaining four assert phrases that are absent from the live file **and** from
-  the shipped defaults: "INJURY IS THE DEFAULT, NOT DEATH", "The rest end on
-  stillness", "The evening of this run is already set", "would call it cheap". So
-  that doctrine is gone from the defaults too — no restore will fix them. Decide
-  per test whether it was deliberately reworded (fix the assertion) or dropped by
-  accident (restore the doctrine), which is the more interesting possibility. Read
-  the changelog entry "🧪 A permanently-red test made honest" first.
-
-- **The active experience is a scratch one, and its pacing is misconfigured.**
-  Boot logs `untitled-experience-3` as active, and the engine itself warns:
-  `escalate_at=2, critical_at=5 are POINTS, not turns` — a scanning run adds 2 per
-  turn, so it hits critical on turn 3 and every beat after that is written as a
-  last stand. The engine suggests setting "Critical at" to about 9 in the editor's
-  Pacing sheet. Consider whether `somewhere` should be the active experience
-  instead; `tools/demo_check.py` exists to settle exactly this.
-- `docs/plans/` is mostly **shipped work**, kept as design records. Every file now
-  opens with a **Status** line; trust it over the body, and never implement a plan
-  marked shipped. Genuinely open: `FATE_ROLL_VISUAL_PLAN.md` (showing the player
-  the dice the server already rolls), `PROMPT_TRIM_PROPOSAL.md` (measured payload
-  reduction, never applied), and the "fully local models" arc at the end of
-  `DESKTOP_APP_ROADMAP.md`. `GAME_DESIGN_LAYERS_PLAN.md` is worth reading as a
-  cautionary tale: it documents a spec block that was built and then **removed**
-  for only ever reaching the writing and never what the player sees.
+- `docs/plans/` is mostly **shipped work**, kept as design records. Every file
+  opens with a **Status** line; trust it over the body, and never implement a
+  plan marked shipped. Genuinely open: `FATE_ROLL_VISUAL_PLAN.md`,
+  `PROMPT_TRIM_PROPOSAL.md` (see above — the tests assumed it), and the "fully
+  local models" arc at the end of `DESKTOP_APP_ROADMAP.md`.
+  `GAME_DESIGN_LAYERS_PLAN.md` is worth reading as a cautionary tale.
 - `worlds/` has accumulated a dozen `new-level*` / `world-N` scratch snapshots
   around the two that matter (`somewhere.json`, `world.json`). Worth a tidy,
   carefully — these are authoring data.

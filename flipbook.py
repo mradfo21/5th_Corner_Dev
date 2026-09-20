@@ -388,8 +388,24 @@ def prefix_is_stale(text: str, frames) -> bool:
     return bool(counts) and frames not in counts
 
 
-def grid_prompt(frames, seconds: float = 2.0) -> str:
+def grid_prompt(frames, seconds: float = 2.0, cut: bool = False) -> str:
     """The shape-specific half of the flipbook instruction.
+
+    ``cut`` — this turn is a HARD TRANSITION: the engine has already decided the
+    character left the place the reference shows (MOVE TO, a relocating typed
+    action, a door). Every other line of this prompt is written for one
+    unbroken take, and it said so in the strongest terms it had: "PANEL 1: the
+    very next instant after the reference image — same camera height, same
+    direction, same landmarks. A viewer … must not see a cut." Handed that on
+    a cut turn, with the previous panel as the first reference and the render
+    prompt's "The camera is in a NEW PLACE" four thousand characters further
+    down, the model did what the nearer, more concrete rule said: "Sprint
+    toward the dark threshold" rendered the same corridor with the door still
+    ahead, and "Move to the doorway" rendered the same hatch at 0.97
+    continuity. The still path, given the identical prompt and references,
+    relocated four times out of four — the grid rules were the only
+    difference. With ``cut`` the panels are still one take, but the take
+    begins INSIDE the destination.
 
     This is generated rather than authored because it is the one part of the
     flipbook prompt that is a function of the grid: the old prompt was prose
@@ -439,7 +455,9 @@ def grid_prompt(frames, seconds: float = 2.0) -> str:
         f"draw them, or anything like them, anywhere in the render.\n\n"
         f"{order} Panel 1 is the earliest moment, panel {frames} is the "
         f"latest. TIME ADVANCES across the panels: they carry the action from "
-        f"where the reference image left off through to its completion, and by "
+        + ("the moment of arrival in the NEW place" if cut else
+           "where the reference image left off")
+        + f" through to its completion, and by "
         f"panel {frames} the world has moved on. Each step forward should be "
         f"big enough to see — a viewer must never wonder whether two panels are "
         f"the same moment. It is still ONE unbroken shot: time moves, the "
@@ -449,9 +467,22 @@ def grid_prompt(frames, seconds: float = 2.0) -> str:
         f"one motion, not as {frames} separate pictures of the same subject. If "
         f"the panels were shuffled the animation would be wrong, so where a "
         f"panel sits in the grid is where it sits in time.\n\n"
-        f"PANEL 1: the very next instant after the reference image — same "
-        f"camera height, same direction, same landmarks. A viewer watching the "
-        f"reference and then panel 1 must not see a cut.\n"
+        + (
+            f"THIS TURN IS A CUT. The reference image is the place the character "
+            f"has just LEFT — it is not where panel 1 happens. Panel 1 is the "
+            f"first frame inside the DESTINATION the scene names: they have "
+            f"already arrived, it fills the depth in front of them, and what "
+            f"surrounded them a moment ago is behind them or gone. From the "
+            f"reference keep ONLY the film stock, the light and palette (unless "
+            f"the scene says the light changed), and the person. Do not keep its "
+            f"walls, its floor, its landmarks or its camera position. A panel "
+            f"that still shows the place they left is a FAILED panel.\n"
+            if cut else
+            f"PANEL 1: the very next instant after the reference image — same "
+            f"camera height, same direction, same landmarks. A viewer watching the "
+            f"reference and then panel 1 must not see a cut.\n"
+        )
+        + 
         f"PANEL {frames}: the action has visibly happened. Whatever was being "
         f"approached has been reached, whatever was being opened is open. This "
         f"is the frame the shot HOLDS on, so it must be a clean, settled "
@@ -462,7 +493,9 @@ def grid_prompt(frames, seconds: float = 2.0) -> str:
         f"LOCKED BETWEEN PANELS (this is what makes it read as one shot):\n"
         f"- The camera does not move, cut, pan, zoom or change height. Every "
         f"panel is the same lens from the same spot.\n"
-        f"- The SETTING holds still: walls, doors, vehicles, machinery and the "
+        f"- The SETTING holds still"
+        + (" once panel 1 has established the new place" if cut else "")
+        + f": walls, doors, vehicles, machinery and the "
         f"horizon stay the same size in the same place. The place does not "
         f"rebuild itself between panels.\n"
         f"- Things that MOVE are free to. Whatever the scene calls for can enter "

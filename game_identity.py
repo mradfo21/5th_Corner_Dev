@@ -3217,9 +3217,18 @@ def reference_annotation(
     set_paths = set(setting_reference_paths(spec))
     lines: List[str] = []
     if any(p in set_paths for p in paths):
+        # "…and do NOT copy anyone standing in it." The plate on the active
+        # level of the machine this was found on is a concept still with four
+        # armed figures in it, and it rides as reference slot 1 on every frame
+        # — so a second armoured figure kept walking into the corridor, SCAN
+        # tagged it "character", MOVE TO drew the player's twin face to face
+        # with him, and the encounter that followed was against a man in the
+        # player's own suit. A plate is WHERE; the people in it are not cast.
         lines.append(
             "• One reference is a LOCATION PLATE — a photo of the place this run happens in. "
-            "Copy its architecture, materials, palette, and mood. Do NOT copy its framing."
+            "Copy its architecture, materials, palette, and mood. Do NOT copy its framing, "
+            "and do NOT copy any person, figure or creature standing in it — they are not "
+            "in this scene. The only people in this frame are the ones the scene names."
         )
     if any(p in char_paths for p in paths):
         who = display_name(spec)
