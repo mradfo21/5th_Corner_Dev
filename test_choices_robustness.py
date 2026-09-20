@@ -22,6 +22,7 @@ Run hermetically:
 """
 
 import os
+import re
 import sys
 import json
 import unittest
@@ -388,6 +389,164 @@ class TestChoiceImageResolvesSessionFrames(unittest.TestCase):
         self.assertIn("_resolve_image_path", block)
         self.assertIn("_sniff_image_mime", block)
         self.assertNotIn('Path("images") / image_url.replace("/images/", "")', block)
+
+
+class TestStallChoicesAreCaughtByShapeNotSpelling(unittest.TestCase):
+    """The stall list was phrase-literal, so it only caught the exact wordings
+    someone had already seen. A live run offered — and the harness played —
+    "Press yourself against ribbed wall", a dead turn that shares no marker
+    with the "press your back against the wall" already on the list."""
+
+    def setUp(self):
+        import choices
+        self.choices = choices
+
+    def test_braced_against_a_surface_is_a_dead_turn(self):
+        for stall in (
+            "Press yourself against ribbed wall",
+            "Hug the tunnel wall",
+            "Press your back against the wall",
+            "Flatten yourself against the rock",
+            "Cling to the rusted ledge",
+            "Hunker behind the low stone wall",
+            "Pin your shoulder against the hatch",
+        ):
+            with self.subTest(stall=stall):
+                self.assertTrue(self.choices.is_meaningless_choice(stall))
+
+    def test_real_actions_are_not_swept_up(self):
+        # These all contain a bracing verb or a surface noun and must survive.
+        for good in (
+            "Smash through the fleshy wall",
+            "Throw yourself through the window",
+            "Crawl beneath the pipe rack",
+            "Duck through the low opening",
+            "Vault into the dark tunnel",
+            "Kick open rusted gate",
+            "Wrench free the metal grate",
+        ):
+            with self.subTest(good=good):
+                self.assertFalse(self.choices.is_meaningless_choice(good))
+
+
+class TestTheSlateRemembersWhatWasAlreadyPlayed(unittest.TestCase):
+    """The slate is built from the rendered frame, and img2img keeps that frame
+    visually continuous — so the same landmarks stay on screen and the model
+    re-derives the same options from them. A live 12-turn run offered a version
+    of "vault the chain link fence" on six consecutive turns and the player
+    crossed the same fence four times.
+
+    The cause was plumbing, not the model: `recent_choices` was hardcoded to ''
+    at every engine call site AND the choice template had no {recent_choices}
+    slot, so both the prompt and the de-dupe filters were inert.
+    """
+
+    def setUp(self):
+        import choices
+        self.choices = choices
+
+    def test_a_reworded_repeat_is_dropped(self):
+        kept = self.choices.drop_recently_done(
+            ["Vault over the chain link fence", "Sprint toward the red mesa"],
+            ["Vault the chain link fence"],
+        )
+        self.assertNotIn("Vault over the chain link fence", kept)
+        self.assertIn("Sprint toward the red mesa", kept)
+
+    def test_it_never_hands_back_an_empty_slate(self):
+        # A repeated option still beats no buttons at all.
+        kept = self.choices.drop_recently_done(
+            ["Vault the chain link fence"], ["Vault the chain link fence"],
+        )
+        self.assertTrue(kept)
+
+    def test_no_memory_is_a_passthrough(self):
+        opts = ["Vault the fence", "Sprint to the mesa"]
+        self.assertEqual(self.choices.drop_recently_done(opts, []), opts)
+        self.assertEqual(self.choices.drop_recently_done(opts, ""), opts)
+
+    def test_normalize_accepts_the_shapes_callers_actually_pass(self):
+        self.assertEqual(self.choices.normalize_recent(""), [])
+        self.assertEqual(self.choices.normalize_recent(None), [])
+        self.assertEqual(self.choices.normalize_recent("x"), ["x"])
+        self.assertEqual(self.choices.normalize_recent(["x", "y"]), ["x", "y"])
+
+    def test_the_template_has_a_slot_for_it_in_every_bound_copy(self):
+        """`prompts/simulation_prompts.json` is a derived scratch pad — binding
+        a World writes that World's frozen snapshot over it. The first attempt
+        at this fix patched only the live file and reverted the moment the
+        harness picked a World. The slot has to exist in every copy or it is
+        not really there. (Same trap as TestTheBoundWorldsCarryTheShippedVoice
+        in test_narrator_grounding.)"""
+        root = Path(__file__).parent
+        key = "player_choice_generation_instructions"
+
+        def template_of(path):
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                return None
+            if isinstance(doc.get(key), str):
+                return doc[key]
+            prompts = doc.get("prompts")
+            if isinstance(prompts, dict) and isinstance(prompts.get(key), str):
+                return prompts[key]
+            return None
+
+        checked = 0
+        stale = []
+        candidates = [root / "prompts" / "simulation_prompts.json",
+                      root / "prompts" / "simulation_prompts.defaults.json"]
+        candidates += sorted(p for p in (root / "worlds").glob("*.json")
+                             if not p.name.endswith(".frame.json"))
+        for path in candidates:
+            tmpl = template_of(path)
+            if tmpl is None:
+                continue
+            checked += 1
+            if "{recent_choices}" not in tmpl:
+                stale.append(path.name)
+        self.assertGreater(checked, 1, "found no choice templates to check")
+        self.assertEqual(
+            stale, [],
+            "these copies will overwrite the slate's memory on the next "
+            "Play/reset: " + ", ".join(stale))
+
+    def test_every_mid_game_call_site_passes_the_memory(self):
+        """This is the regression that matters: the argument existed, the
+        filters consumed it, and every call site passed ''. Only the two intro
+        paths may pass nothing — at the opening there is no history to repeat."""
+        src = Path(__file__).parent.joinpath("engine.py").read_text(encoding="utf-8")
+        lines = src.splitlines()
+        empty_at = [i for i, l in enumerate(lines) if "recent_choices=''" in l]
+        wired_at = [i for i, l in enumerate(lines)
+                    if "recent_choices=recent_actions_taken(state)" in l]
+        self.assertGreaterEqual(len(wired_at), 2, "mid-game slates lost their memory")
+
+        def enclosing(idx):
+            for j in range(idx, -1, -1):
+                m = re.match(r"^\s*def (\w+)", lines[j])
+                if m:
+                    return m.group(1)
+            return "?"
+
+        still_empty = sorted(enclosing(i) for i in empty_at)
+        self.assertEqual(
+            still_empty, ["generate_intro_choices_deferred", "generate_intro_turn"],
+            f"a mid-game slate is still being built with no memory: {still_empty}",
+        )
+
+    def test_recent_actions_come_back_newest_last_and_without_the_beat(self):
+        import engine
+        state = {"recent_events": [
+            "Vault the fence -> chain-link rattles",
+            "Kick the hood -> metal buckles",
+        ]}
+        self.assertEqual(
+            engine.recent_actions_taken(state),
+            ["Vault the fence", "Kick the hood"],
+        )
+        self.assertEqual(engine.recent_actions_taken({}), [])
 
 
 if __name__ == "__main__":

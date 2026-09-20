@@ -1,0 +1,35 @@
+{
+  "id": "somewhere",
+  "name": "SOMEWHERE",
+  "start_world": "w-somewhere",
+  "worlds": [
+    {
+      "id": "w-somewhere",
+      "name": "SOMEWHERE",
+      "slug": "somewhere",
+      "x": 0,
+      "y": 0
+    }
+  ],
+  "cutscenes": [],
+  "transitions": [],
+  "sound": {
+    "palette": "tape",
+    "muted": [],
+    "volume": 1.0
+  },
+  "lore": {
+    "enabled": true,
+    "notes": "HORIZON — WHAT CAME BEFORE. Four Corners, 1993.\n\nTHE COMPANY\nHorizon worked the red mesa country where Utah, Arizona, Colorado and New Mexico meet. Above ground: extraction rigs, industrial complexes, research outposts perched on cliff edges and set back into the shade of the mesas. Below ground, considerably more, and none of it on a county map.\nThe method was acid. Ore was dissolved where it lay and the liquor pumped up. The catch ponds are still out in the desert holding filtered uranium and salt brine, which makes them the rarest thing in that landscape: standing water.\nThe ponds date from the seventies. The permits, the checkpoint contracts and the reclamation bonds were all signed out of the same office, and every permit in the valley carries a Horizon signature.\n\nTHE DIG\nHorizon drilled deeper than mining needs. The deep-earth drilling equipment is still down there, rusted and warped out of true.\nIn 1989 the deep dig went in under one of the acid sites that was never listed. Miles down, they reached something. The company paper calls it The Gate. A black hole, buried, and it did not get there by drilling.\nNothing about The Gate was ever reported. The site kept running.\n\nTHE ACCIDENT\n\"A mysterious industrial accident\" is the phrase in the filings, and it is doing a great deal of work. Thousands are dead or unaccounted for, and none of them died the way mining kills people.\nThe red biome came up out of the dig. It travels like infected tissue — along floors, up walls, into drilling steel and reactor housing, fusing with whatever it touches. What it makes of people and animals is worse than what it makes of metal.\nA reactor room went during the evacuation. The scorch is still on the walls, and the emergency lights are still on.\nThe evacuation was not orderly. Personal effects are still in the warehouses.\n\nTHE COVERUP\nHorizon's answer was paperwork. Files went missing, footage was erased, witnesses were paid off or silenced. Locals who talked vanished or turned up mutilated, and the county recorded both as accidents.\nWhatever The Gate is, Horizon decided the world would not be told, and had money enough to make that hold for a while.\n\nTHE QUARANTINE\nThe military came late and came hard. The valley is sealed now — chain-link, checkpoints, decontamination zones at the choke points — and the forbidden zone is marked by warning signs and by checkpoints that have already been abandoned once.\nThe raids are not aimed at the biome. They are hunting Horizon mercenaries and rounding up the company's leadership.\nPerimeter guards wear black tactical gear and red night-vision goggles, and treat anyone inside the wire as an intruder.\nHorizon's own security is still out here as well, and nobody has told it the company lost.\n\nWHO ELSE IS OUT HERE\nActivists and rebels who came to break the quarantine and get the story out.\nMiners who stayed on after the accident, and are not right.\nOther journalists. Some of them got further in than this.\nDesert animals that have been drinking from the ponds.\n\nTHE STORY THIS PLACE IS HIDING\nNot the biome. The biome is a symptom. The question is what The Gate is, how long it has been down there, and what Horizon understood about it before the accident — because the evidence says they kept digging after they knew.\n\nUSING THIS\nThe player knows none of it and must find it. It surfaces in documents, in dates stamped on equipment, in signage, in what a body is wearing, and in what the narrator happens to know. One fact at a time, never a block.",
+    "documents": [],
+    "x": -734.1600000000001,
+    "y": -111.71999999999994
+  },
+  "threat": {
+    "escalate_at": 4,
+    "critical_at": 9,
+    "beat_normal": "BEAT: put a character or a direct threat in view early — a patrol, a figure, a voice — don't let the opening stay empty.",
+    "beat_escalating": "BEAT: pressure is rising. Push the situation forward.",
+    "beat_critical": "BEAT: the situation is critical. Offer a way through or a last stand."
+  }
+}

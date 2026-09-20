@@ -1,4 +1,1036 @@
+# 🔧 CHANGELOG - September 18, 2026
+
+## ✅ FIXED: the simulator was under orders not to let you leave
+
+Reported: *"I'm noticing I can get stuck in rooms... it feels like when I click
+a choice or make a custom action it should always succeed. I wonder sometimes
+if the simulator literally thinks I couldn't open the door."*
+
+It did not think the action failed. It had been told not to let anyone move.
+
+The template spends fifteen thousand characters insisting otherwise — **CUSTOM
+(FREE WILL) ACTIONS ARE SACRED**, *"FORBIDDEN: You try to [action] but…"*,
+*"Change location → You are now THERE"*. But the runtime then appended this,
+second-to-last in the assembled prompt, immediately before the output
+instructions:
+
+> Do NOT change locations unless the choice explicitly moves through a door,
+> entrance, or exit. **Stay in the same environment.**
+
+Last word, most concrete, and it won. The codebase had already caught this
+exact mechanism once — there is a comment above the fate block noting that the
+template's "A MOVE ALWAYS COMPLETES" rule "was already in the payload and
+lost, because this block is later and far more concrete". Same thing was
+happening again, one block further down.
+
+Told to keep the player where they were but still to write an interesting
+beat, the model changed something ABOUT the room instead. That is where the
+slammed door in the bug report came from: the player had opened it the turn
+before, asked to go deeper, and the world shut it behind them. Never a
+judgement that they failed — an obedient answer to a standing order not to
+leave, with a reason invented to justify it.
+
+The exemption never helped either, because corridors, yards, gaps and stairs
+are not doors. And the block only appears once there is a previous vision
+analysis, which is why the first move of a run usually worked and then the
+walls closed in.
+
+What the instruction is actually for is continuity: no teleporting, no
+drifting somewhere unrelated. That is worth keeping, and it is **not the same
+instruction as "do not move"**. It now constrains where the player may arrive
+rather than whether they may:
+
+> Anywhere they arrive has to be somewhere this place could plausibly lead,
+> reachable on foot from here, with the place they left still behind them. Do
+> not cut to an unrelated location. When the action does NOT move them, keep
+> the ground, landmarks and layout exactly as described above.
+
+Also removed a dead `image_context` string that was assigned and never used.
+It said the same wrong thing ("You are HERE. Do NOT teleport yourself"), so
+the next person to notice the unused variable would have fixed a bug by
+reintroducing one. And the OUTPUT CONTRACT still opened "EXACTLY these three
+fields" while the closing recap asked for four — `relocated` is now declared
+in the contract, which matters, since that is the field deciding whether the
+player moved.
+
+Played it back: the same four-step sequence that produced the bug — open the
+door, explore deeper, explore deeper, keep going — now relocates on every
+turn and actually travels. Receiving bay, then a hallway stretching into
+darkness, then twenty feet in with a corridor mouth looming, then the corridor
+itself with "a pair of glowing, non-human eyes reflected in the gloom at the
+far end". Three non-movement actions afterwards ("look around carefully",
+"photograph the red growth", "listen for movement") all correctly stayed put,
+which is the counterweight that matters: loosening this had to not turn every
+turn into a teleport.
+
+## ✅ FIXED: you typed "explore deeper" and it put you back where you started
+
+Reported from a live run: *"I used a custom action, it played the animation of
+moving forward, but then it popped back to the previous frame."*
+
+The bug capture has it exactly. The previous turn's final frame and the new
+one are the same room, same camera, same pose — the only difference is the
+ceiling light going from intact to shattered. Not a playback fault: the
+flipbook held its last frame correctly. The new frame simply **was** the old
+frame, because the turn rendered as an img2img refine of the room the player
+was trying to leave.
+
+`is_hard_transition()` returned False for "explore deeper into this space",
+and it fails that phrase three separate ways: `deeper` is a continuation word
+and suppresses every detector outright, `explore` is not in the move-verb
+list, and `space` is not in the space-noun list. This is the gap the MOVE verb
+already closed for itself — MOVE gets a real signal from the client
+(`is_move`) precisely because inferring a relocation from wording was a coin
+flip. Typed free-will never got one, so it was still guessing.
+
+Word lists cannot be finished. But the consequence model has just written the
+beat and already knows whether it moved anyone, so it is now asked — one more
+field on the JSON it was already returning, no extra call and no extra
+latency — and the renderer follows that instead of second-guessing the
+player's phrasing. Both the INTERACT/typed and curated-pill branches now go
+through one `resolve_hard_transition`, which keeps the egress override (running
+for the exit is a departure whatever the prose says) and falls back to the old
+classifier when the model did not answer. `None` is kept distinct from `False`
+throughout: a call that failed has no opinion about where the player ended up.
+
+It fixes the other direction too. A beat that keeps the player in the room can
+no longer be rendered as a new location just because their wording tripped a
+keyword — picture and prose now agree either way, which is the actual defect.
+
+Verified by playing it: the same sentence that produced the bug now logs
+`[HARD TRANSITION] consequence says relocated=True` and comes back with
+"Jason Fleece is crouched in the dirt on the far side of a tall, weathered
+chain-link fence" — through the fence, in a new shot, instead of standing in
+the same dark room with a different light fitting.
+
+## ✅ NEW (prototype): say the action instead of typing it
+
+A microphone sits left of the free-will box. Click it, speak, click it again.
+The words appear **while you are still talking**.
+
+That last part is the whole design, and it is why this does not record audio
+and ship it somewhere to be transcribed. It uses the browser's own
+`SpeechRecognition`, which streams interim guesses and revises them as it goes
+— so the line builds in the box in real time, the way Cursor's does. A
+record-then-upload round trip cannot do that at any speed: you would sit
+watching nothing until the file finished. It also needs no API key, no server
+route and no per-use cost. (Chrome does send the audio to Google to do the
+recognition. It just does that itself, from the browser, with nothing for us
+to wire up or pay for.)
+
+Two states and no ambiguity, because a recording control that is vague about
+whether it is recording is worse than none: idle is the same quiet green as
+the rest of the prompt row; live is red, pulsing, and carried on the caret and
+the input underline too, so it reads with your eyes on the text rather than
+the button. Words still being guessed at are italic and dimmed until the
+engine commits to them, so "heard" and "still deciding" look different.
+
+The details that make it feel finished rather than bolted on:
+
+- It **appends** to whatever you had already typed instead of clobbering it.
+- Engines stop listening at the first breath, so `continuous` plus a restart
+  in `onend` keeps it going through the pauses people actually leave. Without
+  that, dictating one sentence takes three clicks.
+- Speech obeys the same 200-character limit as typing. `maxlength` is not
+  enforced for programmatic writes, so a ramble would otherwise sail past it.
+- Escape stops listening and **keeps the line** — closing the box on the same
+  key would throw away something you had spoken but not yet read back. A
+  second Escape closes it.
+- Sending, closing the box, or a one-minute ceiling all release the
+  microphone. One still listening after its box is gone is the worst bug this
+  could have.
+- A blocked microphone says so. A silent pause does not — `no-speech` fires
+  constantly while somebody thinks mid-sentence, and treating that as failure
+  would end the recording every time the player hesitated.
+- No engine, no button. A dead microphone is worse than no microphone, so it
+  ships hidden and only appears once the JS has actually found one.
+
+### The native engine cannot be trusted on its own
+
+Reported immediately: **"error network, you click and it never works."**
+
+`SpeechRecognition` being *present* says nothing about whether it *works*.
+Chromium builds ship the API without Google's speech key, so every attempt
+dies with `network` the instant it starts; corporate DNS does the same thing
+to real Chrome. There is no capability check for this — the API answers
+`true` either way and you find out by trying.
+
+So there is a second path, and the player never sees the seam. The first
+`network` failure flips a session flag, hands over to `MediaRecorder`
+mid-click with the button still red, and posts the clip to a new
+`/api/transcribe` (Gemini, audio in, text out). Slower — you wait on an upload
+instead of watching words appear — but it answers, and an answer beats a
+microphone that silently never does anything. Every later click in that
+session goes straight to recording rather than replaying the dead end. A
+"transcribing…" state covers the upload, because only this path has that gap
+and an unlabelled pause there reads as a dead button.
+
+Verified against the real model: Windows TTS saying "Climb the fence and drop
+into the yard" came back as exactly that.
+
+### ...and then it invented an action nobody spoke
+
+Feeding it one second of pure silence returned **"I'm going to go to the
+tavern."**
+
+The prompt caused it. It explained that the clip was "a player saying what
+they want their character to do next in a game" — so, told what kind of
+sentence to expect and handed no audio, the model produced one. A dictation
+box that invents an action the player never said is far worse than one that
+mishears them, because the player has no way to tell which happened.
+
+The prompt now describes the job and says nothing about games, players or
+characters, and asks for a literal `NO_SPEECH` sentinel rather than an empty
+reply — models are reliably bad at returning nothing and much better at
+returning a specific token. The sentinel and the phrasings a model reaches for
+instead of it (`silence`, `inaudible`, `unintelligible`) are all mapped to
+empty before they can reach the box. The client also refuses to upload a clip
+under 2 KB or 350 ms, so a fumbled double-click is never an opportunity to
+confabulate.
+
+Silence, three seconds of silence, and room-tone noise now all return nothing,
+stable across repeated runs, while real speech still transcribes exactly.
+
+## ✅ FIXED: the picture never told you it could be touched
+
+SCAN is how you interact with anything in this world. It was the least
+discoverable thing in the game.
+
+The hotspots were the only signal on screen that the picture was touchable at
+all — and they only appeared **after** you had already guessed to tap it, then
+took themselves away again five seconds later. A player who never made that
+guess never learned the verb existed. The image is the game, and nothing about
+the image said so.
+
+So the frame reads itself the moment it lands, and the options announce
+themselves: a scanline travels the shot, the labels twinkle in on a stagger,
+and they **stay** for as long as the shot does.
+
+**The budget is unchanged, and that matters.** Scanning was manual because
+Gemini image recognition is the most expensive thing we do. That discipline is
+kept exactly: **one detection pass per picture**, never a poll and never a
+loop. The pass is claimed before it fires (triggerScan is async, and a second
+arm landing mid-flight would otherwise buy a second call) and released again if
+nothing actually went out — in realtime the video can be mid-re-anchor with
+nothing honest to capture, and spending the scene's only pass on that would
+leave the shot with no hotspots at all. Tapping SCAN still re-reads the current
+shot on demand.
+
+**The fade is gone.** It existed on the theory that tags could go stale, but
+they can't: every path that changes what is on screen already tears them down
+(`setScene`, `onMovementStart`, and every instrument that takes the view). All
+the TTL actually did was hide the player's options again while the picture they
+describe was still sitting right there. A positive `__SCAN_TTL_MS__` opts back
+in, which is what the e2e fade test now exercises.
+
+Two seams, because there are two renderers and only one of them paints:
+`markScenePainted()` for stills — the only place that honestly means "a picture
+is on screen", since it runs after the image has decoded and swapped in — and
+`Renderer.applyScene`'s reactor branch for realtime, which **never paints a
+still the player looks at**. The video is the picture; the still there is only
+a floor staged behind it. That second seam was found the hard way: armed off
+the stills hook alone, a live session came up with no hotspots at all, and the
+browser said so plainly — every guard clear, `pending: false`, and both scene
+layers with no background ever set.
+
+### What playing it found
+
+Two things, and only the browser could show either of them.
+
+**A live session came up with no hotspots at all.** Armed off the stills hook
+alone, realtime got nothing — and the page said so plainly: every guard clear,
+`pending: false`, and both scene layers with no background ever set. Realtime
+**never paints a still the player looks at**. The video is the picture; the
+still staged there is only a floor behind it. Hence the second seam.
+
+**And the worse one: the start menu was scanning itself.** The menu paints a
+real rendered still as its backdrop, through `setScene`, like any other
+picture — so the game spent a Gemini detection call and hung six hotspots over
+the main menu on **every single boot**. Exactly the cost the one-pass budget
+exists to protect, burned before the player had pressed anything.
+
+Nothing could have caught that: the realtime e2e page never paints a still, so
+every automated check agreed the feature was fine. It took booting the real
+client and counting the requests. A picture being on screen is not the same
+thing as a picture you are playing, and `inPlay()` is now the difference —
+start menu and Watch mode both refuse the read. Entering play arms it
+separately, because a resumed session returns without rendering anything and
+that arm is the only one it will ever get.
+
+Confirmed by playing it: four turns against the live backend, **zero SCAN taps
+and zero menu detects**, every scene revealing its own hotspots for exactly one
+call each, every turn committed by clicking one of them.
+
+### And then it started answering questions nobody asked
+
+Reported straight after: **"NOTHING TO INTERACT WITH HERE"** sitting under the
+choices, pulsing, on arrival in a quiet room.
+
+That line is a perfectly good answer to a SCAN the player pressed. Volunteered
+by the automatic pass it is the scene telling you not to bother — and since
+the pass now happens the moment you arrive, that is how the room greeted you.
+The automatic read asked nothing on the player's behalf, so it reports
+nothing; only a deliberate tap gets an answer.
+
+Dropping the fade made it worse in a way that was easy to miss: the hint used
+to be cleared by the same timer that took the tags away. With that gone, one
+empty SCAN left the message up for the rest of the scene. The tags persist
+because the picture they describe is still there; a hint answers the tap you
+just made and is then over, so it now takes itself down.
+
+There is a happy side effect for the system above. Auto-scan means a SCAN pass
+now lands on every scene, so the detection witness gets both sensors every
+turn — the log reads `witness (scan+vision)` throughout that run instead of
+vision alone, and heat climbed to suspicious and stopped there, held by the
+unseen ceiling, because nothing in that factory ever looked up.
+
+## ✅ FIXED: being "suspicious" was decided by the narrator's word choice
+
+The detection ladder — hidden / suspicious / alerted / hunted — was real state.
+It persisted, it biased the fate roll, it forced a flee option onto the slate,
+it drove the HUD chip. Its only *sensor* was a hand-written table of about sixty
+phrases matched against the turn's prose.
+
+So it was a closed loop: the model deciding whether the model got seen. Phrase
+it *"the guard's attention settles on your position"* instead of *"spots you"*
+and nothing moved. Write a calm sentence while a figure stands in the doorway
+and the heat quietly bled off. The dial was not lying about anything it knew —
+it just could only hear, and the game is a picture.
+
+Two vision passes already look at the frame the player is looking at, and both
+threw the answer away:
+
+- **`/api/detect`** (the SCAN tap) returns `kind` and a normalized box per
+  object. Counting the animate ones and measuring the nearest box is arithmetic
+  on a payload already paid for.
+- **`_vision_analyze_all`** — the read behind `/api/observe` and behind every
+  still the game renders — needed **one extra line in a prompt it was already
+  sending**: `WATCHERS: <count> | <facing|away|none> | <near|mid|far>`.
+
+Neither adds an API call. A reading is stamped on state as a **witness** and
+consumed by the next `apply_detection`, on the same 0..4 scale the phrase table
+uses, so it lands in the existing arithmetic rather than beside it. The louder
+of the two sensors wins — prose is kept, because a still cannot show footsteps
+closing behind you, and because a text-only turn has nothing else.
+
+The other half matters as much: **a body in frame now stops heat cooling.**
+Bleeding off under a calm sentence is correct in an empty room and a lie when
+somebody is standing within reach, and the prose sensor could not tell those
+apart. Fleeing still beats everything, so being seen stays recoverable.
+
+Care taken where it is easy to get wrong: a failed vision call and "nobody is
+there" are different answers, and only the second one cools. A cached analysis
+written before `WATCHERS` existed reads as *no reading*, never as an empty room.
+The SCAN witness is taken **before** the anti-loop gate blanks the object list,
+so being hunted cannot be what convinces the engine the yard is empty. And a
+witness expires with its turn — the same staleness rule the SCAN label cache
+already uses, because a frame you have left is an opinion about somewhere else.
+
+`/api/status` now reports `detection_source`, and the chip reads
+**`SUSPICIOUS · SEEN`** when the picture is what moved it. A number that answers
+what is on screen is one the player can act on.
+
+### What playing it actually found
+
+Four runs through `playtest_interactive.py` against the live backend, and the
+frame sensor's real value turned out to be as an *instrument*: it made three
+separate ratchets visible that nothing had been able to see before.
+
+**The two passes were ranked instead of merged.** The scene analysis reported
+`3 | away | mid` — three things, backs turned. The SCAN detector reported three
+animate boxes at `unknown`, because boxes have no orientation. Higher score
+won, `unknown + near` (2) beat `away + mid` (0), and the engine concluded the
+player was being watched at close range by things it had just been told were
+facing the other way. **Hidden to hunted in four turns, in a yard where nothing
+had looked up.** They are not rivals to rank; they are differently blind. Each
+field now comes from whichever pass can answer it — count from the larger,
+orientation from the only sensor that has any, distance from the literal
+geometry, nouns from the only pass that returns them.
+
+**A back turned was still worth heat.** It scored 1 at close range, which
+compounds. But the dial measures what the world KNOWS, and a thing that has not
+looked at you knows nothing however close it is standing. Backs turned now
+score **zero at every distance**, and the exposure is priced through
+`witness_holds` instead: being close to something oblivious does not make you
+more noticed, it stops you becoming less noticed. That split is what lets a
+player cross a yard full of unaware bodies and stay hidden until one turns
+round — which is the entire reason to have a hidden state. A ceiling backs it
+up: a frame in which nothing has looked at the player **cannot pass
+suspicious**, whatever produced the gain. Prose still escapes it, because a
+single frame cannot show footsteps closing from behind.
+
+**And the one that needed no sensor at all.** `interaction` adds +1 for
+meddling, and because any gain skips the cooling branch, a turn that interacted
+could never cool. SCAN's MOVE TO *and* INTERACT both count as interaction — so
+a player exploring with the SCAN verbs gained heat every single turn and shed
+it never. Measured: **ten turns alone in an empty utility corridor, prose
+signal 0 and frame signal 0 on every one of them, nobody in any frame, and the
+game reported HUNTED.** That is the invented-stakes bug this entire system
+exists to remove, wearing the one costume nobody had thought to check — and it
+was invisible until there was a second sensor to contradict it. Meddling is
+loud only when something is there to hear it; in a frame positively read as
+empty it holds the dial instead of climbing it. A *missing* reading still
+counts as loud, because a vision call that failed is not evidence of an empty
+room.
+
+The last run: twelve turns, heat climbed to suspicious and **parked there**,
+because nothing ever looked. Earlier in the same session, the moment the
+analysis returned `2 | facing | near`, alerted → hunted in one beat.
+
+There was a second-order win in it too. `anti_loop_gated` went from 5/12 turns
+to 0 and `scan_committed` from 7/12 to 12/12 — SCAN suppresses itself while the
+run is `DETECT_HUNTED`, so the phantom hunt had been quietly taking the scan
+tool away from a player nothing was chasing.
+
+## ✅ NEW: what walks up on you answers the run you actually had
+
+Encounters read lane, stance, kind, condition, fate and enemy state — and not
+the one dial the player spends the whole run watching. A run could be hunted
+across three locations and the moment something arrived it rolled exactly like
+a run that had never been seen. That is what made detection a readout instead
+of a stake. The travel clock is untouched; what it *produces* is not.
+
+- **Odds.** Hidden is initiative: it did not know you were there. Hunted is the
+  inverse — it is here *because* it followed you, so `escape` falls hard and
+  `wounded` / `die` climb. The level is pinned when the fight opens, so a
+  multi-round exchange cannot get easier because the dial cooled between
+  rounds. Lanes carrying an explicit `die: 0` keep it; being watched on the way
+  in must not quietly make talking to an opportunist lethal.
+- **Opening.** The brief is told what the world knew. Hidden buys the beat
+  *before* being noticed, which is the only thing that makes hiding worth
+  doing. Hunted arrives already committed, and stance is forced rather than
+  left to the model to remember.
+- **Who.** At alerted or worse the roster draw is the wrong story — a
+  coincidence, when nothing about it is coincidental any more. If the last look
+  at the frame named a living thing, **that** is what turns up, through the
+  `target` path the brief already had.
+
+Unknown levels roll the old numbers exactly, so every encounter record written
+before this keeps its odds rather than being handed a stealth bonus it never
+earned.
+
+## ✅ FIXED: the camera put the player back on their feet, undoing what they did
+
+"Custom action got the character into the truck, but then the truck was not part
+of the choices — as if the game isn't taking the response of the custom action
+and injecting it into the world simulator."
+
+It WAS reaching the world. Both halves worked:
+
+- prose: *"You scramble into the driver's seat... you slam your foot onto the accelerator and the truck lurches forward"*
+- `visual_scene`: *"The pickup truck speeds across the red desert... approaching a massive industrial building 300 feet ahead"*
+
+And the frame that came back was **a man standing at a fence holding a camera.**
+
+The third-person contract demands, as hard rules, a body "fully visible — head
+to feet", showing "the walk", at "roughly a third to a half of the frame height",
+held in a "medium-wide / full-body band". Not one of those is possible inside a
+cab. Every rule described a person ON FOOT and none said when they stop being
+one, so the camera contract — the more emphatic instruction, repeated five ways —
+won, and stood him back up.
+
+Then the rest followed honestly. Choices are generated from the PICTURE, by
+design, so the next slate offered "Sprint toward the industrial complex" and
+"Vault over the chain link fence". The player's action had been erased by the
+renderer, and the slate was faithfully describing the frame it was given.
+
+`image_rules` now carries the exception the framing always needed: **in or on
+something, that IS the shot.** A vehicle, a machine, water, a crawlspace, cover —
+frame that with them in it; they may be a head and shoulders behind glass or a
+silhouette in a cab. "Do NOT stand them back up in the open to satisfy 'full
+body'. What the player DID decides where they are; the camera only decides where
+it stands." The full-body band now says out loud that it is for a character on
+foot.
+
+Verified by typing it: "get in the truck and drive" now renders the truck in
+motion with the character in the cab, and the slate that follows reads **Brake
+hard and slide sideways / Swerve truck toward fence line / Leap from the moving
+truck** — against sprint, vault, kick-through-fence before.
+
+
+## ✅ FIXED: EXIT took two presses, everywhere
+
+The button armed on the first press, relabelled itself to **AGAIN**, and only
+quit on a second press within 3.2 seconds. On every screen that has an exit —
+the rail, the start menu, the picker.
+
+The reason was real: EXIT stops the SERVER, and a render runs in its own process
+and would happily keep buying frames after you walked away, so a misclick had a
+price. But the guard charged every deliberate exit to prevent an accident on a
+button that sits alone in a corner of the screen. A confirmation people pay
+dozens of times to prevent something that happens approximately never is a tax,
+not a safety feature.
+
+One press now. Everything the exit actually does is untouched: the live renderer
+is still closed rather than hidden, the veil still reports what was stopped, and
+a REFUSED shutdown (hosted, or the route not armed) still says "still running"
+instead of pretending to have quit.
+
+`markArmed` is deliberately still there and still knows how to write AGAIN. If a
+misclick ever does cost somebody a render, restoring the guard is one line in
+`press()` — not a reconstruction of a deleted feature. A test says so, in place
+of the one that used to assert the first press did nothing.
+
+## 🧑 The opening's character plate is no longer silently optional
+
+"The opening montage showed a default photojournalist... it didn't match the
+custom character."
+
+The montage itself was innocent — verified unpeopled, four object shots, goal on
+the skyline. The stranger was in the **first playable frame**, which is a
+different render and is supposed to have a person in it: you. That beat is drawn
+from montage panels that deliberately contain nobody, so the character plate is
+the only thing telling it who to draw — and the reference list for that call read
+two panels and a layout guide. No plate. The model duly invented "a
+photojournalist" out of the bible.
+
+The hand-off is now reported either way: the plate and its filename when it is
+there, and `log_error` when it is not, because the failure looked exactly like
+success in the log. `demo_check.py` fails on it too, so a demo cannot start with
+an invented protagonist and nobody told.
+
+
+## 🎨 ...and so does the PLAY transition, which is where they actually were
+
+Enlarging the menu washes did not remove the three gradients, because the ones
+you look at when you press PLAY are not the menu's. They belong to the **Buck
+veil** — the transition itself — which drifts three mint blooms across the
+screen while the destination swaps underneath.
+
+They were `54 / 62 / 46vmax`, and the animation opened them at **scale
+0.22–0.4**. That second number is the one that mattered: an element can be
+larger than the screen and still read as a small circle if the transition starts
+it at a quarter size. Three of them, growing and drifting, with their own edges.
+
+Now 150 / 170 / 130vmax, opening at scale 0.88–0.95 and swelling to ~1.3–1.4.
+Still a bloom that grows and drifts; it just begins already wider than the frame,
+so what crosses the screen is the middle of a wash rather than a ball of light
+with a rim.
+
+Measured during the transition rather than after it — the blooms exist for 1.34s,
+so a screenshot of the settled picker never sees them, which is exactly how they
+survived the first attempt. Smallest bloom on screen at any sampled moment:
+**2124px against a 1642px viewport**.
+
+## 🎨 The menus sit on one gradient field instead of three smudges
+
+Every full-screen menu — `#start-menu`, `#watch-mode`, `.exit-veil` — is lit by
+the same washes: one overhead and one in each bottom corner. The corner pair was
+sized at **50% / 40%** of the viewport, which is smaller than the screen, so they
+read as two smudges in the corners of an otherwise flat card. Moving between two
+menus then looked like a cut between two backgrounds rather than a move within
+one room.
+
+Ten times larger: `--menu-wash-bl: 500% 400%`, `--menu-wash-br: 450% 350%`. Each
+corner wash is now bigger than the screen, so what is on display is the middle of
+one enormous gradient — a continuous field the menus move over.
+
+Tokens rather than nine hand-tuned numbers across three rules, because the point
+is that the screens AGREE. Change it in `:root` and every menu follows; a test
+asserts all three reference the shared token and that both radii are larger than
+the viewport, so one screen cannot quietly drift back to a blob.
+
+Measured after, because "bigger" has a failure mode at the far end — a wash so
+large it goes flat and stops being a gradient at all. Green channel reads 16.5 in
+the bottom corners against 51.8 at the top: a spread of 35, still very much a
+field with a direction to it.
+
+
+## 🚦 `python tools/demo_check.py --boot` — why the first run is the broken one
+
+"When I try and demo the game, it always has bugs or is broken... after a few
+rounds it seems to work normally."
+
+That is not the model warming up. **A first run INHERITS things**, and by round
+three the live run has overwritten all of them — which is exactly why it settles
+down. On this machine, right now, it was inheriting eleven sessions, one of them
+with an encounter left open: a demo booting straight into a fight nobody
+started.
+
+The tool checks the things that have actually broken a first run in this repo,
+each traceable to a real incident from the last two days:
+
+| Checked | The incident |
+|---|---|
+| `GEMINI_API_KEY` | mock mode looks exactly like a broken demo |
+| the live character is not the factory one | a stranger walked the level on 09-18 |
+| the character plate is on DISK, not just named | `reference_images` naming a file that did not exist |
+| the Level sheet is enabled and filled | `shots=0`, montage never played |
+| **every World** carries an authored character | binding one overwrites your sheet on the way in |
+| no stale 4×4 flipbook prompt anywhere | authored art direction dropped every turn |
+| `tunables.json` is not blank | it is gitignored, so a test that wrote `{}` left nothing to restore — Flipbook silently OFF |
+| flipbook ON implies a Gemini provider | otherwise every turn is quietly a still |
+| no session carries a previous run | the actual first-run-is-broken mechanism |
+
+Then it **plays the game**. Everything above is a file check, and a file check
+cannot tell you the game works — this project has been burned by green reports
+with a visibly broken feature more than once (see
+`docs/operations/TESTING_USE_THIS.md`). With `--boot` it drives the real app over
+CDP and asserts what a person in the room would see: the run reaches a playable
+turn, there is a picture and it is not black, prose arrived, there are choices to
+press, the montage staged more than zero shots, it has a goal to head toward, and
+nothing errored on the client. It prints READY only after seeing all of that, and
+exits non-zero otherwise so it can gate a script.
+
+Cleaning is limited to the two things a reset should touch — `sessions/` and
+`.cache/` — and never authoring data. The repair tools for that are separate, and
+listed in `docs/operations/RESET_INSTRUCTIONS.md`, which was still telling people
+to restart `bot.py`, a file this project has not had for a long time.
+
+
+## 🗡️ The confrontation slate says what you are about to do
+
+The rows read `attack` / `flee` / `reason` — the LANE, one word each — while the
+model had written "Crush his throat with camera" underneath and thrown it away.
+
+That was the right call when it was made, and the code says why: a vivid line the
+picture cannot honour is a broken promise. Promise "Shatter his skull against
+wall", render two people standing apart, and the text is what the player
+believes. Across a four-round fight that promise had to survive being re-read
+every round against a plate that had not moved.
+
+It is not a four-round fight any more. One exchange, a committed verb usually
+ends it where it stands, and the resolve plate is generated FROM that verb — so
+the picture has to honour the line exactly once, which is the case it was always
+best at. Three identical words every fight was the least dramatic thing on
+screen.
+
+The lane did not go away; it moved. It is what the server rolls against, so it
+rides above the verb as a small dim eyebrow — the verb tells you what you are
+doing, the eyebrow tells you which odds you are accepting:
+
+```
+    ATTACK
+ 1  Crush his throat with camera
+    FLEE
+ 2  Sprint through the desert brush
+    REASON
+ 3  Surrender the digital memory card
+```
+
+Typography moved with it. Uppercase at 0.26em tracking is label setting, right
+for one word and wrong for a sentence — "CRUSH HIS THROAT WITH CAMERA" that way
+is a shout that wraps. The row is sentence-set now and the eyebrow carries the
+label look.
+
+**Caught by looking, not by the diff:** the first attempt rendered nothing.
+`content: attr(data-lane)` only reads the pseudo-element's OWN originating
+element, and the attribute was on the button while the `::before` was on the
+text span inside it. The rule matched, computed at the right size and the right
+colour, and drew an empty string — a screenshot showed three verbs and no
+eyebrows while every computed style said it was working.
+
+
+## ✅ FIXED: a typed action could be refused by the game arguing with itself
+
+"I tried a custom action 'fly to antartica' and it didn't even try." It did try
+— and that was the bug. It came back as:
+
+> You attempt to take flight, but your body remains pinned to the unforgiving
+> red earth beneath the truck.
+
+Which is, word for word, the shape `action_consequence_instructions` already
+forbids in capitals: `NO "you try but fail."` /
+`FORBIDDEN RESPONSES TO CUSTOM ACTIONS: "You try to [action] but..." → NO!
+They DO the action!` / `The player's action HAPPENS - don't negate it`.
+
+The rule was not missing. It was being **contradicted**, by the FREE WILL block
+that `_generate_combined_dispatches` injects immediately next to the action:
+
+> 3. Show the ATTEMPT - the physical movements, the effort
+
+An attempt is a thing that can fail. Handed an action it judged impossible, the
+model wrote the attempt failing — obeying the instruction sitting closest to the
+action and ignoring the one fifteen thousand characters away. Two prompts
+disagreed and the wrong one won.
+
+Rewritten so both halves say the same thing: **the action HAPPENS**, never "you
+try to" / "you attempt to" / "you start to" / a body that "remains"; the
+consequence is where cost and attention land; and when the ask is beyond a human
+body, **the world supplies the means** — a vehicle, a rope, a stranger, a
+machine, luck that gets paid for. "Refusing outright is the one answer that is
+always wrong: it tells the player their idea did not count." The player's own
+precedent made the case — "get picked up by a superhero" was honoured with a
+figure in a kinetic suit, while "fly to antarctica" was denied. Same kind of
+ask, opposite answers.
+
+Verified live on the same action:
+
+> You flag down a passing cargo plane and scramble aboard its landing gear, the
+> freezing wind stripping heat from your body as you ascend. As you touch down
+> in Antarctica... Through the static of your radio, you hear the distant,
+> guttural growl of something shifting beneath the permafrost.
+
+That one paragraph also exercises three other changes from today: a non-desert
+biome (the removed biome ban), a journey to another continent written rather
+than cut (the rewritten movement rule), and something HEARD before it is seen
+(the retired sound ban).
+
+### Worth knowing: the world bible is not what a turn actually reads
+
+Chasing this turned up something separate and larger. `world_prompt` is seeded
+from `world_initial_state` at reset and then **rewritten every turn by world
+evolution**. In the captured bug's state, at turn 3, it was 6,800 chars against
+the bible's 9,736 and contained *none* of the movement rules — neither the ones
+removed today nor the ones that replaced them. Edits to the bible shape the
+opening and then wash out. That is worth knowing before anyone spends another
+afternoon editing it to change late-run behaviour.
+
+
+## 🗿 Every run now walks toward something, and you can see it
+
+"The goal system is completely non functional ... the goal needs to be a large
+distant object / monolith / structure ... making sure we always have a goal
+generated can really help the experience stay focused."
+
+Three separate faults, and each one alone was enough to hide the goal:
+
+**1. There usually wasn't one.** `setting_reference.goal` was blank, so
+`level_goal()` walked back to the first landmark and the montage established
+"toward 'chain-link fence'" — a fence the player was already standing at — or,
+with no landmarks, "toward '(no goal authored)'".
+
+`_goal_for_this_run` now guarantees one. Critically it drafts into the RUN, not
+into the Level sheet: `_ensure_level_sheet_is_filled` was on the boot path for
+one afternoon, invented "The Kettle Yard" out of the Four Corners bible and
+persisted it over the author's own words. An authored goal is still used
+verbatim and never second-guessed; only a blank one gets a draft, cached in
+state so it costs one call per playthrough and stays the same landmark all the
+way through it. `prompts/simulation_prompts.json` is never touched.
+
+**2. What it asked for was too small.** The draft prompt said "visible from a
+distance", which a door in the next room technically is. It now demands a single
+massive structure on the skyline — tower, rig, dam, dish, stack, hull — that can
+be seen from miles off, and explicitly rules out doors, rooms, vehicles, crates,
+signs and equipment, which are things the player would already be standing at.
+
+**3. The montage was told twice over not to show it.** The shotlist said "Do not
+name the goal outright" and the grid prompt said "it does not have to appear in
+every panel" — so it appeared in none. A run walking toward an extraction spire
+was shown a fence, a padlock, a trailer and a pile of badges. The widest panel
+now has to carry it on the skyline, unreached and uncaptioned; the other three
+are still the place around it.
+
+The first playable frame gets it for free — that frame is img2img'd from the
+widest panel — but "for free" was doing no work while the same block asked for
+something unreadable approaching in the far distance. Given two things for one
+horizon the model kept the one it had been told about and dropped the one it had
+to read out of the reference, so `_KEEP_THE_HORIZON` now says the skyline
+structure stays put, same size, same place, unreached, and is not to be replaced
+with weather.
+
+Verified on a live boot: drafted *"The monolithic ventilation spire of Sector
+Four looms over the mesa"*, shot one came back as "a vast valley floor leads the
+eye toward the distant, monolithic silhouette", and the first playable frame
+opens on the player standing in the open with the facility on the horizon.
+
+
+## ⚔️ A confrontation is two exchanges at the outside, and usually one
+
+"Encounters take far too long, and make very little sense and aren't dramatic
+enough. They need to last 1-2 turns max." Those are not three complaints, they
+are one: **winning required climbing `ready → staggered → down`**, so it took a
+minimum of two landed confronts and routinely four. A measured playtest ran four
+rounds at ~35s each — two minutes standing in one spot.
+
+And that ladder is where the incoherence came from. The slate promises "ONE
+committed, extreme act of violence — the thing that cannot be undone". The
+consequence writes it: the skull is crushed, the body drops. Then the state
+machine said `ready`, the same three lanes came back, and the player was invited
+to kill a man they had just killed. The drama was being written and then revoked
+one beat later.
+
+- **`CONFRONT_FINISH_CHANCE = 0.62`** — a committed verb can now put them down
+  where they stand, with no intermediate rung. Failing that they are at least
+  `staggered`: a landed blow always shows, and can no longer leave them
+  untouched.
+- **`ENCOUNTER_MAX_ROUNDS = 2`** — the last exchange settles it whatever the
+  dice say. The odds alone only ever made a long tail less likely, never
+  impossible, and "unlikely" over a hundred fights is a two-minute standoff
+  somebody has to sit through.
+- The cap covers the lanes that cannot settle a body either: evade, and talking
+  at a creature that does not talk. Both end with the player getting clear.
+  **Death is never rewritten** — how a run ends is the roll's call, not a pacing
+  rule's.
+
+Measured over 3000 simulated fights per lane, then confirmed in the real app:
+
+| pressing | 1 round | 2 rounds | longest |
+|---|---|---|---|
+| confront | 68% | 32% | 2 |
+| evade | 70% | 30% | 2 |
+| parley | 38% | 62% | 2 |
+| rotating lanes (the 4-round case) | 68% | 32% | 2 |
+
+A live fight now ends in **1 round / 44s**, against 4 rounds / ~150s before.
+
+## ✅ FIXED: every vest in the world was the player's vest
+
+`look_clones_player` rejected any description containing "vest" whenever the
+player's sheet owned the word "press" or "vest" — and with a PRESS-vest
+protagonist that is every vest there is. Hazmat, tactical, hunting, "a man in a
+green quilted vest": all read as the player cloned, all thrown out. It quietly
+cost the encounter roster most of its workwear, which is its own answer to "the
+encounters aren't dramatic enough".
+
+Dropping it loses nothing. A PRESS vest is still caught by the signature-word
+rule, and anything reusing two of the player's own features is still caught by
+the two-hit rule. What is no longer caught is a garment sharing one generic
+noun, which was never evidence of anything. This had been failing
+`test_ordinary_strangers_still_pass` on HEAD.
+
+
+## ✂️ ...and it no longer fences the map or the sky
+
+Three more prohibitions out of `world_initial_state`, across the same 13 files:
+
+| removed | what survives |
+|---|---|
+| `, always grounded in the Four Corners/Utah landscape` | "Each location should feel distinct, with unique terrains, visuals, and textures." |
+| `—no storms or thunderclouds at the start` | "The story begins at 6:30pm, golden hour, with dusty wind and warm sunlight, and a clear or lightly clouded sky." |
+| `, but never mention storms or clouds` | "Scenes may include dynamic weather and environmental conditions—fog, shifting light, dust, or wind—to create challenges..." |
+
+The direction stays, the ceiling goes. The weather ban was also arguing with the
+bible's own instruction two paragraphs later to favour "dramatic weather events
+(dust storms, rare rain, sudden wind)" — a world that asks for dust storms and
+forbids storms in the same document.
+
+`test_the_shipped_world_bans_the_storm_family` asserted the opposite of this and
+had to be inverted; it read the LIVE prompts rather than a fixture. The reader it
+was really protecting — the one that stopped "no storms" being matched as "storm"
+and painting purple lightning into eight frames — is untouched and still pinned
+against its own fixture, plus a new test proving a ban somebody else's bible
+writes is still obeyed.
+
+## ✂️ The world bible no longer bans every biome but one
+
+Removed from `world_initial_state`:
+
+> The landscape is always high desert: red mesas, arid terrain, sparse
+> vegetation, and open skies. Never depict forests, dense woods, or non-desert
+> biomes.
+
+"It's going to restrict creativity, even though it's useful for our current
+scene." The Four Corners is still described at length two sentences earlier —
+the valley, the red mesas, the plunging canyons — so the place survives as
+SETTING. What is gone is the law that made every other landscape undrawable for
+the rest of the game's life.
+
+Applied to **13 files**, not one. A World snapshot carries its own copy of the
+prompt layers and binding one installs that copy as live, so editing only
+`prompts/simulation_prompts.json` is an edit that reverts the next time somebody
+picks a World — the same trap that put the shipped default character back in the
+opening this morning. `simulation_prompts.defaults.json` is in the list too:
+skip it and every newly created World inherits the ban again.
+
+New tool: `tools/edit_prompt_everywhere.py`, which is how to make any bible edit
+stick. Matching is literal — a regex over authored prose is how you delete half
+a sentence you meant to keep — and it refuses to write anything at all when the
+text is not found, so a typo cannot read as "already clean".
+
+**Deliberately left alone:** `world_evolution_instructions` still says "NEVER
+invent new biomes". That one is not a creative ceiling, it is a per-turn
+consistency guard — it stops the desert you are standing in from becoming a
+forest between two turns of the same scene. Removing it would not open the game
+up, it would make the ground unstable.
+
+
+## ✅ THE TITLE CARD IS BLACK, AND IT STOPPED FLASHING INTO THE RUN
+
+Two complaints, one picture, two completely different mechanisms.
+
+**The wallpaper.** The start menu papered itself with the last run's final
+frame (`Signal`: `current_image_url`, falling back to the Level plate), put
+through `brightness(0.72) contrast(1.14)` with the VHS grain and scanlines over
+the top. It turned a good photograph into mud, and made the title screen a
+different picture every launch — of a run you had already finished. Switched off
+at `apply()`, the one choke point that paints it (`const WALLPAPER = false`);
+`#start-menu` already had its own designed gradient, and that is the card now.
+
+Only the wallpaper went. Signal still warms that still and hands it to the scene
+layer on the way into a run (`lock` / `hold` / `takeHold`) — which is what keeps
+a plain start off a black void — and still paints the Watch TV's ghost.
+
+**The one-second glitch between the montage and the first frame** was the SAME
+image arriving by the other route: `Signal.lock` deliberately paints it onto the
+real scene layer on the way in. `applyDest` only STARTS the swap — `setScene`
+waits for the new image to load — and the cutscene popped its overlay the
+instant `applyDest` returned. So the montage lifted while the first frame was
+still decoding and uncovered the menu wallpaper underneath it for exactly as
+long as that took.
+
+The montage now holds until the destination frame has genuinely PAINTED
+(`onNextScenePainted`), bounded at 4.5s so a frame that never lands cannot trap
+the player inside the montage, and skipped entirely when a cutscene has no
+destination to wait for.
+
+
+## ✅ FIXED: an encounter was the one place in the run with no film look
+
+Reported as "all the grain / post process effects disappear during encounters",
+and it is the same fault as the loading circle below, found by pulling the
+thread: everything painted OVER the picture lives between z-index 2 and 20, and
+`#moment-overlay` is **33**. So the instant a Moment opened, the whole look of
+the game was painted underneath it.
+
+| layer | in play | inside a Moment |
+|---|---|---|
+| `.danger-chroma` | 6 | 34 |
+| `#scene-glitch` (VCR snow) | 7 | 35 |
+| `#vhs-overlay` (grain + scanlines) | 8 | 36 |
+| `.danger-vignette` | 8 | 36 |
+| `#processing-veil` (the loader) | 20 | 37 |
+
+Relative order is preserved, so the stack reads exactly as it does in normal
+play, and everything stays below the encounter flare (50) and the capture
+cinema (70) — those are supposed to own the screen while they run.
+
+Nothing here FORCES an effect on: every one of those layers is `opacity: 0`
+until its own system enables it (`.vhs-on`, the danger states), so VHS off is
+still off inside a fight.
+
+Measured rather than asserted: frame texture (mean neighbouring-pixel
+difference, which is what grain and scanlines ARE) came back 3.311 in normal
+play and 3.301 during an encounter — a ratio of 1.00.
+
+## ✅ FIXED: the loading circle went away exactly when it was needed most
+
+Reported as "having it gone makes me think the app isn't responding". A fight
+hid the turn tracker — and a fight is a full image generation, so the player sat
+in front of a motionless picture for ~30 seconds with nothing anywhere saying
+the machine was alive. The encounter's OPENING is the worst of the two: the
+standoff plate is generated while the screen deliberately holds black.
+
+Two halves, and the first one alone would have looked fixed while changing
+nothing a player can see:
+
+- **CSS.** `body.moment-encounter` was setting `#processing-veil` and
+  `#ceremony` to `opacity: 0`. Dropped. The stale turn UI (wheel, verb bar,
+  choice stack) still goes — its slate is not the offer during a fight.
+- **Z-INDEX.** The loader sits at 20 and `#moment-overlay` at 33, so merely
+  un-hiding it painted the circle *underneath the letterbox*: present in the
+  DOM, invisible to the player. `body.moment-active` lifts it to 34 — still
+  under the encounter flare (50) and the capture cinema (70), which own the
+  screen when they run.
+
+A cutscene still hides it. That one is playing, and the wait is the content.
+
+**`Ceremony.begin({ passive: true })`** is what drives it. Passive is not
+cosmetic: the normal `begin()` claims `state.processing`, and an encounter that
+claimed it would have its NEXT round refused — `pick()` bails on
+`state.processing` — stranding the fight. The turn gate keeps one owner; this
+mode borrows the picture and nothing else. `settle()` is the matching exit, and
+`failResolve` aborts, so a dead round cannot leave a circle turning over a live
+slate.
+
+Verified by photographing the corner during a real encounter rather than by
+reading the diff — two earlier attempts "passed" against a client loaded before
+the edit, and a third used `elementFromPoint` on an element that is
+`pointer-events: none` and therefore can never be returned by it.
+
+## 🧪 A permanently-red test made honest
+
+`test_the_hud_sits_top_right_not_across_the_frame` split the stylesheet on
+`#processing-veil {`, which first matches a DESCENDANT selector ending in the
+same token (`body.moment-cutscene #processing-veil`). It had been reading that
+override's three lines instead of the base rule and failing on a stylesheet that
+was correct — on HEAD, before any of this. Anchored to the start of a line.
+
 # 🔧 CHANGELOG - September 17, 2026
+
+## ✅ FIXED: a fight could strand you in a half-typed action
+
+Reported as "getting stuck in custom action after encounter". Three things had
+to line up, and a rolled encounter lines them up on its own: it can interrupt
+ANY turn, so it can open while you are mid-sentence in the wheel's typed-action
+box. `Encounter.start()` never closed that box — it is a different instrument
+from the Moment's own prompt bar — and on the way out the release sets
+`state.processing` for the aftermath turn. Back in the world, every road was
+shut at once:
+
+| you press | what happened |
+|---|---|
+| Enter | `submitCustomAction` returned on `state.processing`, silently |
+| SCAN | disabled: `closeFreeWill` never ran, so `state.freeWillOpen` held |
+| a choice | the wheel is behind the box |
+
+Nothing on screen did anything, and nothing said why. A fight now closes the
+box as it takes the screen — the half-written line was aimed at a world that no
+longer exists — and a submit that cannot land says so and KEEPS what you wrote,
+instead of reading as a dead key.
+
+## ✅ FIXED: a flipbook turn was cut along lines the model had not drawn
+
+Asked for a 2×2, the image model returned a **3×3 of nine panels**, and
+`split_grid` divided it into quarters anyway. Every "frame" was a collage of two
+and a quarter panels with the grid dividers still running through it. It landed
+on an encounter plate, which is the worst place for it: that image IS the fight.
+
+Nothing could see it. The turn resolved, four frames existed, they differed from
+each other, playback reported four of four painted, and the panel-motion numbers
+looked healthy *because* the collages differ. It was found by looking at a
+screenshot.
+
+`flipbook.detect_grid_shape()` now reads the layout the model actually drew, off
+the dividers it drew too — scoring candidate splits rather than hunting for
+lines, because a divider is as often a bright edge as a dark one and the panels
+themselves are darker than the seams. `split_grid` cuts along that.
+
+**Upward only.** A detection finding FEWER panels than were asked for is far
+likelier to be a seam we cannot see than a model that drew fewer: two
+near-identical panels of the same sky share an edge with no contrast across it,
+and a real 2×2 opening duly read as 2×1. Splitting that as drawn would put two
+frames in every panel — this same fault, pointing the other way.
+
+## ✅ FIXED: every world's authored flipbook prompt was being thrown away
+
+`prefix_is_stale` keeps a prompt that hard-codes a grid we are not drawing out
+of the request, which is why this broke nothing and said nothing — and why
+twelve of them survived. A flipbook playtest logged "authored prefix describes
+another grid" on **every single turn**: the world's own art direction was
+reaching the model on none of them.
+
+The live prompt file and eleven Worlds all carried the pre-settings "16-FRAME /
+4×4 GRID" text. Retired with `tools/retire_stale_flipbook_prompts.py`, which
+checks every supported frame count rather than the one currently selected — a
+prompt that is honest at 2×2 and stale at 4×4 still dies the moment somebody
+moves the slider. `test_no_shipped_world_carries_a_prompt_that_gets_dropped`
+stops the next world being authored against 4×4.
+
+Measured after: panel-to-panel motion went from ~0.94–0.96 to ~0.78–0.87 (lower
+is more movement between frames).
+
+## ✅ FIXED: a turn that resolved behind the viewfinder lost its motion
+
+CAMERA owns the plate, so `applyScene` returns early while the camera is up. It
+kept the turn's still and dropped its frames: the world moved and the only
+record of it the player ever saw was the picture they landed back on. Measured
+on a playtest as "4 frames sent, 1 painted". The frames are now held and played
+when the camera comes down, onto the restored still — the sequence ends on that
+same still, so this adds the motion without changing where the scene settles.
+Only a turn resolving DURING the camera session is owed one; raising the camera
+clears any leftover, or it would replay the previous turn under the wrong still.
+
+## 🧪 The harness stopped crying wolf, and learned to watch flipbook
+
+Two of `playtest_app.py`'s own checks were filing findings against a game that
+was working:
+
+- **The encounter slate.** It diffed the visible rows between rounds, but a
+  confrontation deliberately shows the LANE — attack / flee / reason — and is
+  *supposed* to read the same every round (see `LANE_WORDS`). Three findings a
+  fight, against a system working as designed. What moving options look like
+  from outside is a new PLATE each round, which `wait_plate` already requires.
+- **The encounter budget.** A flat 150s expired mid-generation on a fight the
+  server had ALREADY resolved on round four, and the run reported "never
+  resolved". Every exchange is a real generation, so the budget is now per
+  ROUND. The harness timing out is not the game failing.
+
+New: `FlipbookWatch` tells apart the three ways a flipbook turn can end up
+looking like a plain still — the engine never drew a grid, the client dropped
+it, or the panels are the same picture. It taps `Renderer.applyScene` for what
+the server sent and a MutationObserver on the scene layers for what actually
+reached the screen, because a 1.5s screenshot poll cannot see 420ms frames go by.
 
 ## ✅ FIXED: you could not call your character Jason Fleece
 

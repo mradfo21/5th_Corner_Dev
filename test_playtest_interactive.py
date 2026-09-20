@@ -98,7 +98,24 @@ class TestChoosePayloadFieldsMatchTheClient(unittest.TestCase):
     def test_photo_targeting_stays_a_read_only_probe(self):
         # It polls /api/detect every ~2.5s while the camera is armed; opting that
         # loop into the cache would put a locked state write on a hot path.
-        self.assertIn('postJSON("/api/detect", { frame: cap.frame })', CLIENT_JS)
+        #
+        # `purpose: "scan"` IS that opt-in — api_detect caches the labels on
+        # state for that value and for nothing else — so the guarantee is that
+        # the viewfinder poll does not send it. Asserted as that property
+        # rather than as an exact call shape: this used to match the literal
+        # `{ frame: cap.frame }`, which stopped existing the moment the call
+        # grew a second field, and the test then went red while the property it
+        # exists to protect still held.
+        calls = [l.strip() for l in CLIENT_JS.splitlines()
+                 if 'postJSON("/api/detect"' in l]
+        viewfinder = [c for c in calls if "viewfinder" in c]
+        self.assertTrue(viewfinder, f"no viewfinder detect poll found in {calls}")
+        for call in viewfinder:
+            self.assertIn("frame: cap.frame", call)
+            self.assertNotIn("purpose", call)
+        # ...and the SCAN path, which is entitled to write, still opts in.
+        self.assertTrue(any('purpose: "scan"' in c for c in calls),
+                        "the SCAN detect call stopped opting into the cache")
 
     def test_interact_action_payload(self):
         objs = [{"label": "oil pump", "cx": 0.5, "cy": 0.5, "w": 0.2, "h": 0.2}]

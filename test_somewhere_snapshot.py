@@ -75,16 +75,46 @@ class TestSomewhereSnapshotOnDisk(unittest.TestCase):
         self.assertEqual(exp.get("start_world"), worlds[0].get("id"))
 
     def test_experience_keeps_the_somewhere_clock(self):
-        # SOMEWHERE was retuned to a much more forgiving-length clock —
-        # escalate at turn 2, peak at turn 5 — so a shorter run still gets a
-        # full arc instead of spending most of its turns pinned at "normal".
+        """SOMEWHERE wants a brisk arc: escalate around turn 2, peak around
+        turn 5, so a short run still gets a shape instead of sitting at
+        "normal" the whole way.
+
+        That is the intent, and the marks are NOT those turn numbers. They are
+        threat POINTS, and a turn adds one — except a SCAN tap (MOVE TO /
+        INTERACT), which adds 1 + MAX_RISK_THREAT_BOOST = 2, and SCAN taps are
+        how the game is mostly played. So the arc above is delivered by 4 / 9,
+        which is exactly what experience_store.PRODUCT_* and the editor's own
+        help text say SOMEWHERE uses.
+
+        This test used to assert 2 / 5 — the turn numbers, entered into a
+        points field. Live data had drifted further still, to 2 / 4. Played,
+        that put a run at "escalating" on turn 1 and "critical" on turn 2, and
+        then left it there: a 9-turn harness run finished with 8 turns at
+        critical, UNLUCKY on most of them, and a turn-2 consequence that
+        invented a gunshot wound "where you were grazed earlier" to satisfy the
+        critical beat directive. The ladder was gone before the story started.
+        """
+        import experience_store as xs
         exp = json.loads(EXPERIENCE_PATH.read_text(encoding="utf-8"))
         threat = exp.get("threat") or {}
-        self.assertEqual(threat.get("escalate_at"), 2)
-        self.assertEqual(threat.get("critical_at"), 5)
+        self.assertEqual(threat.get("escalate_at"), xs.PRODUCT_ESCALATE_AT)
+        self.assertEqual(threat.get("critical_at"), xs.PRODUCT_CRITICAL_AT)
         self.assertIn("BEAT:", str(threat.get("beat_normal") or ""))
         self.assertIn("BEAT:", str(threat.get("beat_escalating") or ""))
         self.assertIn("BEAT:", str(threat.get("beat_critical") or ""))
+
+    def test_the_clock_delivers_the_arc_it_is_written_for(self):
+        """The arithmetic, pinned — so the next person to retune the marks can
+        see what they buy instead of guessing in turns."""
+        import engine
+        import experience_store as xs
+        per_scan_turn = 1 + engine.MAX_RISK_THREAT_BOOST
+
+        def arrives(mark):
+            return -(-mark // per_scan_turn)  # ceil
+
+        self.assertEqual(arrives(xs.PRODUCT_ESCALATE_AT), 2)
+        self.assertEqual(arrives(xs.PRODUCT_CRITICAL_AT), 5)
 
 
 class TestPlayBindsSomewhere(unittest.TestCase):

@@ -654,6 +654,173 @@ def test_companion_regenerate_voice_endpoint():
     assert r2.get_json().get("reason") == "no_description"
 
 
+# ---------------------------------------------------------------------------
+# TALKING TO SOMEONE HAS TO DO SOMETHING
+#
+# A conversation used to be a closed loop: the transcript lived in the browser,
+# /api/talk/end counted the conversation and threw the words away, and the next
+# turn was generated as though the player had stood there in silence. INTERACT
+# already worked the other way — the press commits a turn and the dive holds
+# until the world answers — which is why reaching out felt like it landed and
+# speaking did not.
+# ---------------------------------------------------------------------------
+
+def _wipe(sid, **state):
+    st = engine._load_state(sid) or {}
+    st.pop("last_conversation", None)
+    st.update(state)
+    engine._save_state(st, sid)
+    return st
+
+
+def test_a_finished_conversation_is_stamped_onto_the_turn_it_caused():
+    sid = "test_talk_turn"
+    _wipe(sid, turn_count=7)
+    engine._record_turn_conversation(sid, "miner", [
+        {"role": "user", "text": "Who else has been through here?"},
+        {"role": "them", "text": "Two men in a white truck."},
+    ])
+    rec = (engine._load_state(sid) or {}).get("last_conversation")
+    assert rec["with"] == "miner"
+    assert rec["turn"] == 7          # the turn it is the consequence of
+    assert [ln["role"] for ln in rec["lines"]] == ["you", "them"]
+    assert rec["lines"][1]["text"] == "Two men in a white truck."
+
+
+def test_a_conversation_only_colours_the_turn_it_belongs_to():
+    """A stale exchange must not shape a beat three moves later."""
+    sid = "test_talk_turn_stale"
+    _wipe(sid, turn_count=7)
+    engine._record_turn_conversation(sid, "miner", [
+        {"role": "user", "text": "Show me the way down."},
+    ])
+    st = engine._load_state(sid)
+    assert engine._conversation_for_turn(st) is not None
+    st["turn_count"] = 9             # two turns later
+    assert engine._conversation_for_turn(st) is None
+    assert engine._conversation_directive(st) == ""
+
+
+def test_an_empty_conversation_is_not_recorded():
+    """Opening a channel and closing it without a word is not an action."""
+    sid = "test_talk_turn_empty"
+    _wipe(sid, turn_count=2)
+    engine._record_turn_conversation(sid, "miner", [])
+    engine._record_turn_conversation(sid, "miner", [{"role": "user", "text": "   "}])
+    engine._record_turn_conversation(sid, "miner", ["not a line"])
+    assert (engine._load_state(sid) or {}).get("last_conversation") is None
+
+
+def test_the_consequence_is_told_to_make_the_conversation_land():
+    sid = "test_talk_turn_directive"
+    _wipe(sid, turn_count=4)
+    engine._record_turn_conversation(sid, "miner", [
+        {"role": "user", "text": "Can you show me the way down?"},
+        {"role": "them", "text": "I'll unlock the stair gate."},
+    ])
+    d = engine._conversation_directive(engine._load_state(sid))
+    # Both voices reach the prompt, attributed.
+    assert "PLAYER: Can you show me the way down?" in d
+    assert "MINER: I'll unlock the stair gate." in d
+    # And the requirement that made it feel like an action rather than a scene.
+    assert "IS the action of this turn" in d
+    assert "Write what the conversation CHANGED" in d
+    # The person does not evaporate on hang-up — this is talk's permanence.
+    assert "still here" in d and "visual_scene" in d
+
+
+def test_the_transcript_is_clipped_not_pasted_whole():
+    """The exchange should inform the beat, not become it."""
+    sid = "test_talk_turn_clip"
+    _wipe(sid, turn_count=1)
+    engine._record_turn_conversation(sid, "miner", [
+        {"role": "user", "text": f"line {i} " + ("x" * 500)} for i in range(40)
+    ])
+    rec = (engine._load_state(sid) or {}).get("last_conversation")
+    assert len(rec["lines"]) == engine.CONVERSATION_TURN_LINES
+    assert all(len(ln["text"]) <= 300 for ln in rec["lines"])
+    assert "line 39" in rec["lines"][-1]["text"]   # keeps the END of the talk
+
+
+def test_the_conversation_reaches_the_consequence_prompt():
+    """The directive is wired into the grounding block the consequence LLM
+    actually reads — not built and dropped."""
+    src = (Path(__file__).parent / "engine.py").read_text(encoding="utf-8")
+    block = src[src.index("grounding_block = ("):]
+    block = block[:block.index("\n        )")]
+    assert "_conversation_directive(state)" in block
+
+
+def test_talking_raises_the_stakes_without_counting_as_meddling():
+    """Talk should be able to move the story and draw attention, but prying
+    open a sealed drum is not the same act as asking someone a question."""
+    src = (Path(__file__).parent / "engine.py").read_text(encoding="utf-8")
+    assert 'is_talk = source == "talk"' in src
+    assert 'risk_boost = 2 if is_interaction else (1 if is_talk else 0)' in src
+    # Deliberately NOT an "interaction": that flag also picks the
+    # "handling/entering a specific thing" directive, which is the wrong
+    # sentence for a person the player just spoke to.
+    assert 'is_interaction = source in ("scan_interact", "scan_move", "encounter")' in src
+
+
+def test_hanging_up_commits_a_turn_and_holds_the_moment():
+    """The client half. Hanging up fires a real turn whose action is the
+    conversation, and the Moment stays up until it lands — leaving early
+    would drop the player back on the frame they were already looking at,
+    which is the thing that made talking feel inert."""
+    js = (Path(__file__).parent / "static/js/standalone.js").read_text(encoding="utf-8")
+    settle = js[js.index("function settleAfterTalk("):]
+    settle = settle[:settle.index("\n    }")]
+    assert 'source: "talk"' in settle
+    assert "conversation: transcript.slice(-12)" in settle
+    assert "subject: label" in settle
+    # Held until the turn is genuinely over, not merely painted.
+    assert "Ceremony.isActive" in settle
+    assert "state.awaitingResolution" in settle
+    # …and never held for a turn that was refused, or forever.
+    assert "if (!dispatched) { release(); return; }" in settle
+    assert "SETTLE_MAX_MS" in settle
+    # The payload reaches the server.
+    assert "conversation: actionConversation," in js
+
+
+def test_both_voice_and_text_conversations_are_remembered():
+    """`messages` is the text-mode request body and stays empty for a whole
+    voice call, where lines arrive through the SDK's onMessage. addLine is
+    the one place every spoken line passes through."""
+    js = (Path(__file__).parent / "static/js/standalone.js").read_text(encoding="utf-8")
+    add = js[js.index("function addLine(role, content, opts) {"):]
+    add = add[:add.index("\n    }")]
+    assert "transcript.push(" in add
+    # The client's own error notices are chrome, not something anybody said.
+    assert "opts.record !== false" in add
+    assert '"[the signal drops \\u2014 try again]", { record: false }' in js
+
+
+def test_a_conversation_nobody_spoke_in_does_not_cost_a_turn():
+    js = (Path(__file__).parent / "static/js/standalone.js").read_text(encoding="utf-8")
+    worth = js[js.index("function worthATurn(seconds) {"):]
+    worth = worth[:worth.index("\n    }")]
+    assert 'transcript.some((ln) => ln.role === "user")' in worth
+    # Voice is the exception: the SDK's user transcript can be late or absent.
+    assert 'mode === "voice"' in worth
+
+
+def test_speaking_from_inside_another_moment_does_not_double_spend():
+    """SPEAK in an interact dive returns the player to the dive, which has
+    already committed its own turn and is still waiting on it."""
+    js = (Path(__file__).parent / "static/js/standalone.js").read_text(encoding="utf-8")
+    assert "function nestedInAnotherMoment()" in js
+    assert "window.Moments.depth() > 1" in js
+    guard = js[js.index("if (worthATurn(releasedDuration)"):]
+    guard = guard[:guard.index("}")]
+    assert "!nestedInAnotherMoment()" in guard
+    assert "!state.awaitingResolution" in guard
+    moments = (Path(__file__).parent / "static/js/moments.js").read_text(encoding="utf-8")
+    assert "function depth() { return stack.length; }" in moments
+    assert "\n    depth,\n" in moments
+
+
 if __name__ == "__main__":
     test_conversation_music_profile_is_intimate()
     test_build_portrait_prompt_uses_cinematic_anchor()
@@ -674,4 +841,15 @@ if __name__ == "__main__":
     test_companion_voice_stored_and_preserved()
     test_resolve_image_path_is_session_aware()
     test_companions_endpoint_lists_roster()
+    test_a_finished_conversation_is_stamped_onto_the_turn_it_caused()
+    test_a_conversation_only_colours_the_turn_it_belongs_to()
+    test_an_empty_conversation_is_not_recorded()
+    test_the_consequence_is_told_to_make_the_conversation_land()
+    test_the_transcript_is_clipped_not_pasted_whole()
+    test_the_conversation_reaches_the_consequence_prompt()
+    test_talking_raises_the_stakes_without_counting_as_meddling()
+    test_hanging_up_commits_a_turn_and_holds_the_moment()
+    test_both_voice_and_text_conversations_are_remembered()
+    test_a_conversation_nobody_spoke_in_does_not_cost_a_turn()
+    test_speaking_from_inside_another_moment_does_not_double_spend()
     print("ok")

@@ -27,7 +27,11 @@ class TestTapeHelpers(unittest.TestCase):
         engine._record_recent_event(st, "Vault the fence", phrase)
         block = engine._previous_beat_block(st)
         self.assertIn(phrase, block)
-        self.assertIn("PREVIOUS BEAT", block)
+        # The block is finished history, and has to say so. Headed "PREVIOUS
+        # BEAT" with no framing, the consequence model read it as a cue and
+        # continued it instead of playing the choice.
+        self.assertIn("ALREADY PLAYED", block)
+        self.assertIn("Do not re-narrate", block)
         self.assertEqual(len(st["recent_events"]), 1)
 
     def test_tape_caps_at_ten(self):
@@ -151,7 +155,7 @@ class TestConsequenceCall(unittest.TestCase):
             return '{"visual_scene": "Chain-link immediately ahead.", "player_alive": true}'
 
         with patch.object(engine, "_ask", fake_ask):
-            dispatch, vision, alive, extras = engine._generate_combined_dispatches(
+            dispatch, vision, alive, extras, _relocated = engine._generate_combined_dispatches(
                 "Force the door",
                 {"world_prompt": "A yard.", "recent_events": ["Vault -> rusted chain-link rattles once"]},
             )
@@ -159,12 +163,35 @@ class TestConsequenceCall(unittest.TestCase):
         self.assertIn("Chain-link immediately ahead.", vision)
         self.assertEqual(extras, [])
         prompt, kw = sent[0]
-        self.assertIn("PREVIOUS BEAT", prompt)
+        self.assertIn("ALREADY PLAYED", prompt)
         self.assertIn("rusted chain-link rattles once", prompt)
         self.assertNotIn("fourth field `next_choices`", prompt)
         self.assertIn("THE ACTION COMPLETED", prompt)
         self.assertIn("Force the door", prompt)
         self.assertEqual(kw.get("response_schema"), engine._CONSEQUENCE_RESPONSE_SCHEMA)
+
+    def test_finished_beats_are_read_before_the_choice_not_after(self):
+        """Ordering is the whole fix. With the played-out beats sitting last —
+        immediately above the output contract — the model continued them:
+        "Kick through the fence mesh" came back as "Your kick buckles the
+        hood", which was the previous turn's action. The choice has to be the
+        last thing it reads before it writes."""
+        sent = []
+
+        def fake_ask(prompt, **kw):
+            sent.append(prompt)
+            return '{"dispatch": "d", "visual_scene": "v", "player_alive": true}'
+
+        with patch.object(engine, "_ask", fake_ask):
+            engine._generate_combined_dispatches(
+                "Force the door",
+                {"world_prompt": "A yard.", "recent_events": ["Vault -> rusted chain-link rattles once"]},
+            )
+        prompt = sent[0]
+        self.assertLess(
+            prompt.index("ALREADY PLAYED"), prompt.index("PLAYER CHOICE"),
+            "finished beats must be framed as history ABOVE the choice, not read last",
+        )
 
     def test_narrative_and_caption_are_two_channels(self):
         # The schema once declared only visual_scene, so structured output made
@@ -180,7 +207,7 @@ class TestConsequenceCall(unittest.TestCase):
             )
 
         with patch.object(engine, "_ask", fake_ask):
-            dispatch, vision, alive, _ = engine._generate_combined_dispatches(
+            dispatch, vision, alive, _, _relocated = engine._generate_combined_dispatches(
                 "Force the door", {"world_prompt": "A yard."},
             )
         self.assertIn("drop answers back", dispatch)
@@ -192,7 +219,7 @@ class TestConsequenceCall(unittest.TestCase):
             return '{"visual_scene": "Chain-link immediately ahead.", "player_alive": true}'
 
         with patch.object(engine, "_ask", fake_ask):
-            dispatch, vision, _, _ = engine._generate_combined_dispatches(
+            dispatch, vision, _, _, _relocated = engine._generate_combined_dispatches(
                 "Force the door", {"world_prompt": "A yard."},
             )
         self.assertEqual(dispatch, vision)

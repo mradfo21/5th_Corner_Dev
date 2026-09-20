@@ -21,6 +21,7 @@ Run with:
     python -m unittest test_encounter_custom_action -v
 """
 
+import json
 import os
 import unittest
 from pathlib import Path
@@ -190,6 +191,113 @@ class TestTheClientOffersIt(unittest.TestCase):
         self.assertIn("customChoiceOpen()", fn)
 
 
+class TestATypedActionIsNeverRefused(unittest.TestCase):
+    """Reported twice: "I asked for a custom action to go to kansas city and it
+    didn't do it", then "I tried 'fly to antartica' and it didn't even try".
+
+    The second one came back as "You attempt to take flight, but your body
+    remains pinned to the unforgiving red earth" — which is verbatim the shape
+    `action_consequence_instructions` already forbids in capitals. The rule was
+    not missing; it was being contradicted by the FREE WILL block injected right
+    next to the action, which said "Show the ATTEMPT". An attempt is a thing
+    that can fail, so anything the model judged impossible came back failing.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = (ROOT / "engine.py").read_text(encoding="utf-8", errors="replace")
+        block = cls.src.split("free_will_header = (", 1)[1] \
+                       .split("\n            )", 1)[0]
+        # The PROMPT only, as the MODEL receives it. Two things get in the way
+        # of reading it off the source: the comment above the fix quotes the
+        # old wording it replaced, and a sentence long enough to matter is
+        # split across adjacent string literals, so searching the raw file for
+        # it finds nothing however present it is.
+        import re
+        prompt = "\n".join(ln for ln in block.splitlines()
+                           if not ln.strip().startswith("#"))
+        cls.header = re.sub(r'"\s*\n\s*"', "", prompt)
+
+    def test_the_block_no_longer_asks_for_an_attempt(self):
+        self.assertNotIn("Show the ATTEMPT", self.header)
+        self.assertIn("The action HAPPENS", self.header)
+
+    def test_it_names_the_exact_phrasings_that_came_back(self):
+        low = self.header.lower()
+        for banned in ("you try to", "you attempt to", "you start to", "remains"):
+            with self.subTest(phrase=banned):
+                self.assertIn(banned, low)
+
+    def test_an_impossible_action_is_made_possible_not_denied(self):
+        """The precedent is the player's own: "get picked up by a superhero"
+        was honoured — a figure in a kinetic suit hauled them into the air —
+        while "fly to antarctica" was refused. Same kind of ask, opposite
+        answers. The world supplies the means and charges for it."""
+        low = self.header.lower()
+        self.assertIn("the world supplies the means", low)
+        self.assertIn("charge for it", low)
+        self.assertIn("refusing outright is the one answer that is always wrong",
+                      low)
+
+    def test_the_consequence_prompt_still_agrees_with_it(self):
+        """Both halves have to say the same thing, or whichever sits closer to
+        the action wins — which is exactly how this bug worked."""
+        prompts = json.loads(
+            (ROOT / "prompts" / "simulation_prompts.json").read_text(
+                encoding="utf-8"))
+        rules = prompts["action_consequence_instructions"]
+        self.assertIn('NO "you try but fail."', rules)
+        self.assertIn("The player's action HAPPENS", rules)
+
+
+class TestAFightNeverStrandsThePlayerInATypedAction(unittest.TestCase):
+    """Reported as "getting stuck in custom action after encounter".
+
+    The WHEEL's typed-action box (`#custom-input`, opened by the Custom row) is
+    a different instrument from the Moment's own prompt bar, and nothing used to
+    close it when a fight took the screen. A rolled encounter can interrupt any
+    turn, so it can land while somebody is mid-sentence — and on the way out the
+    release sets `state.processing` for the aftermath turn. That left every road
+    shut at once: Enter did nothing (submitCustomAction returned on
+    state.processing, silently), and SCAN stayed disabled because
+    `state.freeWillOpen` was never cleared.
+    """
+
+    def _encounter_start(self):
+        return CLIENT_JS.split("async function start(opts) {", 1)[1] \
+                        .split("\n    async function ", 1)[0]
+
+    def test_opening_a_fight_closes_the_typed_action_box(self):
+        self.assertIn("closeFreeWill(true)", self._encounter_start())
+
+    def test_it_closes_before_the_fight_takes_the_screen(self):
+        """After the guards — a fight that does not start must not clear the
+        box out from under a player who is still writing into a live world."""
+        fn = self._encounter_start()
+        before, after = fn.split("closeFreeWill(true)", 1)
+        self.assertIn("if (active || resolving || state.processing", before,
+                      "the box is closed before start() has decided to run")
+        self.assertIn("Moments.push", after,
+                      "the box is still open when the Moment takes the screen")
+
+    def test_a_submit_that_cannot_land_says_so(self):
+        """Silence is what made a busy pipeline read as a dead key."""
+        fn = CLIENT_JS.split("function submitCustomAction(e) {", 1)[1] \
+                      .split("\n  // ----", 1)[0]
+        gate = fn.split("if (state.processing) {", 1)
+        self.assertEqual(len(gate), 2,
+                         "submitCustomAction still returns silently when busy")
+        self.assertIn("showRendererToast", gate[1].split("}", 1)[0])
+
+    def test_the_line_they_wrote_is_not_thrown_away(self):
+        """The turn lands in seconds; retyping it is a punishment for timing."""
+        fn = CLIENT_JS.split("function submitCustomAction(e) {", 1)[1] \
+                      .split("\n  // ----", 1)[0]
+        busy = fn.split("if (state.processing) {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("customInput.value", busy)
+        self.assertNotIn("closeFreeWill", busy)
+
+
 class TestTheSharedMomentChromeSupportsIt(unittest.TestCase):
     """The row and the bar live in Moments, so any Moment could offer one."""
 
@@ -217,6 +325,54 @@ class TestTheSharedMomentChromeSupportsIt(unittest.TestCase):
         fn = MOMENTS_JS.split("function clearChoices(", 1)[1] \
                        .split("\n  function ", 1)[0]
         self.assertIn("customState = null", fn)
+
+
+class TestTheSlateSaysWhatYouAreAboutToDo(unittest.TestCase):
+    """The rows used to read attack / flee / reason — the LANE, one word each.
+
+    That was right while a fight ran four rounds: a vivid line the picture
+    cannot honour is a broken promise, and it had to survive being re-read every
+    round against a plate that had not moved. A fight is one exchange now, a
+    committed verb usually ends it, and the resolve plate is generated FROM that
+    verb — so the picture has to honour the line exactly once. Three identical
+    words every fight was the least dramatic thing on screen, and the model had
+    already written something far better underneath them.
+    """
+
+    def _show_choices(self):
+        return CLIENT_JS.split("function showChoices(", 1)[1] \
+                        .split("\n    function ", 1)[0]
+
+    def test_the_row_reads_the_written_verb(self):
+        fn = self._show_choices()
+        self.assertIn("label: text || laneWord(lane, idx)", fn,
+                      "the slate is still showing the lane instead of the verb")
+
+    def test_the_lane_still_rides_along(self):
+        """It is what the server rolls against: the verb tells you what you are
+        doing, not the odds you are accepting."""
+        self.assertIn("laneWord: laneWord(lane, idx)", self._show_choices())
+
+    def test_the_eyebrow_is_readable_by_attr(self):
+        """`content: attr(data-lane)` only reads the pseudo-element's OWN
+        element. With the attribute on the button alone the rule matched,
+        computed at the right size and colour, and drew an empty string."""
+        self.assertIn("body.dataset.lane = eyebrow", MOMENTS_JS)
+        self.assertIn(".moment-choice-text[data-lane]::before", CSS)
+        self.assertIn("content: attr(data-lane)", CSS)
+
+    def test_a_sentence_is_not_set_like_a_label(self):
+        """Uppercase at 0.26em tracking was right for one word. "CRUSH HIS
+        THROAT WITH CAMERA" set that way is a shout that wraps."""
+        row = CSS.split(
+            "body.moment-encounter .moment-choice:not(.moment-choice-custom) "
+            ".moment-choice-text {", 1)[1].split("}", 1)[0]
+        self.assertIn("text-transform: none", row)
+        self.assertNotIn("text-transform: uppercase", row)
+        # ...and the label look moves to the eyebrow, where one word belongs.
+        brow = CSS.split(".moment-choice-text[data-lane]::before {", 1)[1] \
+                  .split("}", 1)[0]
+        self.assertIn("text-transform: uppercase", brow)
 
 
 class TestItLooksLikeWatchAndNotLikeAMenu(unittest.TestCase):

@@ -36,6 +36,35 @@ def latest_prompt(items):
     return None
 
 
+def clear_any_cutscene(base, items, timeout=300):
+    """Play out an opening cutscene the way the browser does, or nothing moves.
+
+    An authored opening (or the level's approach montage) parks the choice
+    slate and sets `experience_cutscene_id`, and `/api/choose` answers 409
+    `cutscene_playing` for as long as it is set. The browser plays the shots
+    and then POSTs /api/cutscene/complete, which is what installs the opening
+    establishing beat and releases the slate. No headless driver in this repo
+    ever called it.
+
+    So a run against an Experience whose start node is a Cutscene sat on two
+    feed items forever. It surfaced three different ways and none of them said
+    "cutscene": this file crashed on `'NoneType' object has no attribute
+    'get'`, autoplay quietly fell back to its canned "Look around" for every
+    turn (so "every turn resolves" was measured on typed actions and never on
+    a generated slate), and the interactive driver degraded to button presses.
+
+    Returns the feed after the cutscene is done.
+    """
+    if not any((i or {}).get("type") == "cutscene" for i in (items or [])):
+        return items
+    print("[cutscene] opening montage — completing it as the client would")
+    try:
+        post_json(base, "/api/cutscene/complete", {}, timeout=timeout)
+    except Exception as e:
+        print(f"[cutscene] complete failed: {e}")
+    return get_json(base, "/api/feed?since_id=0")
+
+
 def wait_for_turn(base, since_id, timeout_s=90):
     start = time.time()
     while time.time() - start < timeout_s:
@@ -94,7 +123,22 @@ def capture_session(base: str, turns: int, strategy: str = "mixed") -> dict:
     session["images_enabled"] = images_on
 
     reset_items, reset_elapsed = post_json(base, "/api/reset", {})
+    reset_items = clear_any_cutscene(base, reset_items)
     intro = latest_prompt(reset_items)
+    if intro is None:
+        # The opening slate is derived from the first RENDERED frame, not from
+        # the shot description (_spawn_scene_choices_reground), so it reaches
+        # the feed after /api/reset has already answered. Reading it straight
+        # out of the reset response crashed the whole capture step with
+        # `'NoneType' object has no attribute 'get'` 28 seconds in — taking the
+        # rest of the full harness run with it. Every per-turn path in this
+        # file already waits with wait_for_turn; only the opening did not.
+        reset_items, _waited, _status = wait_for_turn(base, 0, timeout_s=180)
+        intro = latest_prompt(reset_items)
+    if intro is None:
+        raise SystemExit(
+            "the opening choice slate never arrived — /api/reset answered but no "
+            "player_choice_prompt appeared on the feed within 180s")
     if images_on:
         reset_items = wait_for_scene_image(base, 0, reset_items)
     session["reset"] = {

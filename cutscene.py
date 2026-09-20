@@ -252,10 +252,18 @@ SHOTLIST_INSTRUCTIONS = (
     "a company sign' is a shot. 'A sense of unease' is not.\n"
     "- Each of the four is a DIFFERENT subject at a DIFFERENT scale. Do not give "
     "four shots of the same thing.\n"
-    "- Do not name the goal outright and do not show it reached.\n"
+    # The goal used to be excluded here outright ("do not name the goal"), and
+    # excluded again in the grid prompt ("it does not have to appear in every
+    # panel"). Between the two it appeared in none of them: a run was told it
+    # was walking toward an extraction spire and then shown a fence, a padlock,
+    # a trailer and some badges. The montage's whole job is to make the player
+    # want to walk somewhere, and it was never showing them where.
+    "- Do not show the goal REACHED, entered or opened, and do not caption it. "
+    "It stands on the horizon, far off, with ground still to cross.\n"
     "\n"
     "The four roles, in order — match each subject to its role:\n"
-    "1. THE WIDEST VIEW: the scale of the place and what has been done to it.\n"
+    "1. THE WIDEST VIEW: the scale of the place, WITH THE GOAL ON THE SKYLINE — "
+    "small, distant, unmistakable, the thing the eye goes to.\n"
     "2. A MACRO DETAIL: one small worn or marked object, filling the frame.\n"
     "3. A BUILT THING, STANDING EMPTY: architecture as portrait, frontal, nobody.\n"
     "4. WHAT WAS LEFT BEHIND: the evidence that this was abandoned in a hurry.\n"
@@ -644,12 +652,17 @@ def build_cutscene_prompt(
     if goal:
         if opening:
             bits.append(
-                f"WHAT THE PLAYER CAME HERE FOR: {goal.rstrip('. ')}. It is NOT "
-                "REACHED, NOT ENTERED and NOT OPENED in any panel. Where it appears "
-                "at all it is far off and small — a thing on the horizon the player "
-                "still has to walk to. It does not have to appear in every panel; "
-                "a landscape or a detail that only implies it is better than four "
-                "panels all pointing at the same building."
+                f"WHAT THE PLAYER CAME HERE FOR: {goal.rstrip('. ')}.\n"
+                "IT MUST BE VISIBLE, ON THE HORIZON, IN THE WIDEST PANEL. That "
+                "panel is the establishing shot and this is the thing it "
+                "establishes: small in frame, far off across open ground, "
+                "dominating the skyline it sits on. A montage that never shows "
+                "it has failed — the player is about to spend the level walking "
+                "toward something, and this is where they are shown what.\n"
+                "It is NOT REACHED, NOT ENTERED and NOT OPENED in any panel, and "
+                "it is never captioned or labelled. The other three panels do "
+                "not need it: they are the place around it, and four panels all "
+                "pointing at the same building is worse than one that lands."
             )
         else:
             bits.append(

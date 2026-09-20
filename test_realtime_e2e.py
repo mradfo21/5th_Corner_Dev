@@ -45,11 +45,24 @@ try:
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False
 
-# INTERACT is shelved until the live world model reacts visibly to a poke (see
-# INTERACT_ENABLED in standalone.js). Read the switch rather than hard-coding
-# it, so flipping the button back on also un-skips the tests that cover it.
-INTERACT_ENABLED = "const INTERACT_ENABLED = true;" in (
-    ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
+# INTERACT under the LIVE renderer is still shelved: there it injects a realtime
+# event into the running world model, which reacts too weakly for the poke to
+# read. On stills it shipped as a Moment instead — a different code path, and
+# not what this file drives (every test here is a realtime page).
+#
+# This used to sniff for `const INTERACT_ENABLED = true;`, a constant that has
+# not existed since the gate became the conditional `interactEnabled()`. So the
+# sniff answered False for the wrong reason and quietly skipped these tests
+# while also asserting the button is absent — which it is, in realtime, by
+# design. Reading the real gate means the skip says what it means, and flipping
+# realtime back on un-skips the coverage instead of leaving it dark.
+_CLIENT_SRC = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
+_INTERACT_GATE = _CLIENT_SRC[
+    _CLIENT_SRC.index("function interactEnabled()"):
+    _CLIENT_SRC.index("const SCAN_ACTIONS")
+]
+#: Does the SCAN bar offer INTERACT while the realtime renderer is showing?
+INTERACT_ENABLED = "scanInRealtime()" not in _INTERACT_GATE
 
 
 # A 1x1 transparent PNG as a data URL — uploadStill() fetches the scene image,
@@ -1002,7 +1015,8 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
-    @unittest.skipUnless(INTERACT_ENABLED, "INTERACT is shelved (INTERACT_ENABLED)")
+    @unittest.skipUnless(INTERACT_ENABLED,
+                         "INTERACT is shelved under the live renderer (interactEnabled)")
     def test_realtime_interact_steers_without_a_cached_scene_base(self):
         """Regression: INTERACT must inject a LIVE world interaction even when the
         standalone layer never cached a scene bible (Renderer.lastBase/lastScene
@@ -1054,11 +1068,21 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
-    def test_hotspots_are_gated_behind_the_scan_button(self):
-        """Detection is gated behind the SCAN button (Gemini recognition is our
-        biggest cost). With a scene on screen but SCAN not pressed, NOTHING
-        detects and no tags render. Pressing SCAN fires exactly one /api/detect
-        pass and the interaction hotspots (starfield tags) appear."""
+    def test_nothing_detects_until_there_is_a_scene_to_detect(self):
+        """A scene now reads itself when it lands, so the player does not have
+        to know the SCAN verb exists to be shown what they can touch. The
+        budget that made it manual is unchanged — one pass per picture — and
+        the floor under it is this: NO picture means NO pass.
+
+        This page boots the renderer and stops at the start menu, which is
+        exactly that floor. Nothing has been rendered, so nothing may be
+        detected however long we wait.
+
+        The manual SCAN half lives in test_a_scene_reads_itself_the_moment_it
+        _lands, which has a scene to press it against. It used to be asserted
+        here by clicking #scan-btn, but the button is not actionable behind
+        this page's start menu and that click has been timing out since long
+        before the automatic pass existed."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -1079,22 +1103,115 @@ class TestRealtimeRenderer(unittest.TestCase):
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            # The SCAN button exists (it's how you scan now).
+            # The SCAN button still exists — the automatic pass supplements it,
+            # it does not replace the ability to re-read a shot.
             self.assertIsNotNone(page.query_selector("#scan-btn"), "the SCAN button must exist")
-            # Give any (erroneous) ambient detection a beat to fire, then assert
-            # none did and no tags are on screen — scanning is strictly manual.
+            # No scene has been rendered, so the auto-scan has nothing to arm
+            # off — firing here would burn a detect call on a start menu,
+            # every single boot. `done` is the direct read of "this scene has
+            # spent its pass", so this does not depend on how long we wait.
             page.wait_for_timeout(800)
-            self.assertEqual(len(detects), 0, f"nothing may detect before SCAN is pressed. logs:\n{self._dump_logs()}")
+            self.assertEqual(page.evaluate("window.__AutoScan.debug().done"), False,
+                             "no scene has rendered — there is nothing to read")
+            self.assertEqual(len(detects), 0,
+                             f"nothing may detect before a scene exists. logs:\n{self._dump_logs()}")
             self.assertEqual(page.evaluate("document.querySelectorAll('#scan-tags .scan-tag').length"), 0,
-                             "no hotspots may render before SCAN is pressed")
-            # Press SCAN -> exactly one detect pass -> tags render.
-            self._scan_now(page)
-            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=12000)
-            self.assertGreaterEqual(len(detects), 1, f"pressing SCAN must run detection. logs:\n{self._dump_logs()}")
-            self.assertFalse(page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"),
-                             "the hotspot overlay must be live after a scan")
+                             "no hotspots may render before a scene exists")
+            # The overlay stays down too — an empty hotspot layer over a start
+            # menu is the same bug wearing a different face.
+            self.assertTrue(page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"),
+                            "the hotspot overlay must stay down until there is a scene")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (scan-gated) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_a_scene_reads_itself_the_moment_it_lands(self):
+        """The interactivity this exists to fix.
+
+        SCAN is how you touch anything in this world, and it was the least
+        discoverable thing in the game: the hotspots were the only signal that
+        the picture could be touched at all, they only appeared once you
+        already knew to ask for them, and then they took themselves away again
+        five seconds later.
+
+        So the frame reads itself. This drives the renderer directly rather
+        than playing a turn, because the seam under test is "a picture landed"
+        and nothing else."""
+        page = self.browser.new_page()
+        self._logs = []
+        page.on("console", lambda m: self._logs.append(f"{m.type}: {m.text}"))
+        page.on("pageerror", lambda e: self._logs.append(f"PAGEERROR: {e}"))
+        detects = []
+
+        def detect_handler(route):
+            detects.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "objects": [{"label": "wooden crate", "cx": 0.3, "cy": 0.4, "w": 0.2, "h": 0.2},
+                            {"label": "oil drum", "cx": 0.7, "cy": 0.5, "w": 0.2, "h": 0.2}]}))
+
+        page.route("**/api/detect", detect_handler)
+        page.route("**/api/feed*", lambda r: r.fulfill(
+            status=200, content_type="application/json", body="[]"))
+        try:
+            page.goto(f"{self.base_url}/standalone?renderer=image", wait_until="domcontentloaded")
+            page.wait_for_function("!!window.Renderer", timeout=15000)
+            page.wait_for_timeout(1200)
+            # Get into PLAY. A booted page sits on the start menu, and the
+            # menu is a picture you are not playing — the auto-scan refuses to
+            # read one (see inPlay), which is the whole point of the test
+            # below this one.
+            page.evaluate("""() => {
+              document.body.classList.remove('start-menu-on', 'mode-watch', 'awaiting-first-scene');
+              document.body.classList.add('mode-play');
+              const m = document.getElementById('start-menu');
+              if (m) m.remove();
+            }""")
+
+            # A picture lands. Nobody taps anything.
+            page.evaluate(
+                "url => window.Renderer.applyScene(url, 'a dock at dusk', {})",
+                TINY_PNG_DATA_URL)
+            page.wait_for_function(
+                "document.querySelectorAll('#scan-tags .scan-tag').length >= 2", timeout=12000)
+            self.assertFalse(
+                page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"),
+                "the hotspot overlay must come up on its own")
+
+            # Exactly one pass. The cost discipline that made this manual is
+            # the thing most likely to be lost, so give a stray poll a long
+            # beat to expose itself.
+            page.wait_for_timeout(4000)
+            self.assertEqual(len(detects), 1,
+                             f"a scene reads itself ONCE — no polling, no loop. "
+                             f"saw {len(detects)}. logs:\n{self._dump_logs()}")
+
+            # And they stay. The old TTL took them away after 5s, which hid
+            # the player's options again while the picture was still there.
+            page.wait_for_timeout(4000)
+            self.assertGreaterEqual(
+                page.evaluate("document.querySelectorAll('#scan-tags .scan-tag').length"), 2,
+                "hotspots must persist for as long as the shot does")
+
+            # A new picture buys one more pass, and only one.
+            page.evaluate(
+                "url => window.Renderer.applyScene(url, 'a corridor', {hard_transition: true})",
+                TINY_PNG_DATA_URL)
+            page.wait_for_timeout(4000)
+            self.assertEqual(len(detects), 2,
+                             f"a new scene gets its own single pass. saw {len(detects)}")
+            self.assertGreaterEqual(
+                page.evaluate("document.querySelectorAll('#scan-tags .scan-tag').length"), 2,
+                "the new shot must have its own hotspots")
+
+            # The button still re-reads the current shot on demand.
+            page.evaluate("document.getElementById('scan-btn').click()")
+            page.wait_for_timeout(2500)
+            self.assertEqual(len(detects), 3,
+                             f"tapping SCAN must still re-read the shot. saw {len(detects)}")
+        except Exception:
+            print("\n=== CONSOLE LOG (auto-scan) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
@@ -1374,11 +1491,14 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.close()
 
     def test_scanned_hotspots_fade_out_on_their_own(self):
-        """After a scan lands, the hotspots FADE OUT on their own after
-        SCAN_TTL_MS so they can never go stale — the overlay tears itself down
-        and the player must press SCAN again for a fresh read."""
+        """The timed fade still works when it is asked for.
+
+        It is no longer the default — the tags describe the picture, the
+        picture is still on screen, and taking them away on a timer hid the
+        player's options again — but a positive __SCAN_TTL_MS__ opts back in,
+        and that opt-in has to keep working."""
         page = self._new_realtime_page()
-        # Short TTL so the fade happens quickly (override the test-wide long TTL).
+        # A short positive TTL: this is what re-enables the fade at all now.
         page.add_init_script("window.__SCAN_TTL_MS__ = 700;")
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},

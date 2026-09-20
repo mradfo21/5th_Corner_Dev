@@ -159,10 +159,22 @@ def resolve_aspect_ratio(requested: str = None) -> str:
 # request was ever sent. Editing those sections had no effect on the image.
 #
 # Gemini's image models take a text part far larger than this (tens of
-# thousands of tokens), so the cap is now a sanity bound rather than a real
+# thousands of tokens), so the cap is a sanity bound rather than a real
 # constraint. Deduplicating the two templates (see prompts_store) also brought
 # the assembled prompt back under it.
-MAX_PROMPT_CHARS = 24000
+#
+# ...and it has since drifted back over: a typed-action playtest logged a 28,409
+# char prompt against a 24,000 cap, quietly dropping 4,400 characters of exactly
+# the sections named above. The camera contract is stamped on immediately before
+# this cut (game_identity.apply, below), and it is the block that decides whether
+# a player who typed "get in the truck and drive" is drawn in the cab or standing
+# back on his feet beside it — so the tail going missing reads, from the sofa, as
+# the game ignoring what you typed.
+#
+# Raising the bound rather than trimming the prompt: the sections are wanted, the
+# model accepts them, and a cap that truncates in silence is worse than no cap.
+# Keep the warning — it is what caught this the second time.
+MAX_PROMPT_CHARS = 60000
 
 # Track last corrected image for continuity
 _last_corrected_image = None
@@ -979,6 +991,7 @@ def generate_gemini_img2img(
     spec: dict | None = None,
     include_people: bool = False,
     hold_cast: bool = False,
+    cast_plates: list[str] | None = None,
     image_size: str | None = None,
     model: str | None = None,
 ) -> str:
@@ -1018,6 +1031,15 @@ def generate_gemini_img2img(
             standing in this room."
         object_subject: When True with ``portrait_mode``, the crop is a
             machine/object. Hold those pixels and do not invent a person.
+        cast_plates: Close-ups of subjects the player has ALREADY been shown at
+            length — the INTERACT dive's plate — that must appear in this wide
+            scene as the same face/object. Rides as an extra labeled reference
+            next to ``identity_paths``, never mixed into the continuity list: a
+            close-up read as "the previous frame" makes the model reproduce its
+            framing and return another close-up instead of a scene. The reason
+            this exists at all is that a subject is a few dozen pixels tall in a
+            wide frame, which is not enough to redraw them from, so the return
+            leg of a dive recast the character the dive had just introduced.
         style_only_swatch: When True, `reference_image_path` points at a
             `make_style_swatch()` output — the previous frame blurred past
             recognition — rather than a legible photo. Swaps in a continuity
@@ -1043,12 +1065,25 @@ def generate_gemini_img2img(
         image_paths = list(reference_image_path or [])
     identity_paths = [p for p in (identity_paths or []) if p]
     identity_set = set(identity_paths)
+    cast_plates = [p for p in (cast_plates or []) if p and p not in identity_set]
+    cast_set = set(cast_plates)
     # Character / level plates FIRST. Gemini copies the person in slot 1;
     # putting the previous still there is why MOVE TO redrew the leftover guy
     # even when a woman plate was attached last. Continuity frames follow,
     # labeled as the previous place, not as who to draw.
     if identity_paths and not hold_cast:
         image_paths = identity_paths + [p for p in image_paths if p not in identity_set]
+    # Close-up plates sit immediately behind the player's own sheet and ahead of
+    # the continuity frames, for the same slot-order reason: trailing plates
+    # lose. The player's sheet keeps slot 1 so the protagonist is never the one
+    # recast; the discovered subject takes the next slot so their likeness beats
+    # the forty pixels of them in the previous frame; place and light follow.
+    if cast_plates:
+        image_paths = (
+            [p for p in image_paths if p in identity_set]
+            + cast_plates
+            + [p for p in image_paths if p not in identity_set and p not in cast_set]
+        )
     image_paths = image_paths[:6]
     
     print(f"[GOOGLE GEMINI] Image editing mode with {len(image_paths)} reference image(s)", flush=True)
@@ -1097,8 +1132,20 @@ def generate_gemini_img2img(
             }
         }
         image_parts.append(encoded)
-        if identity_seed or identity_paths or game_identity.is_viewfinder_spec(spec):
-            if style_only_swatch and img_path not in identity_set:
+        if identity_seed or identity_paths or cast_plates or game_identity.is_viewfinder_spec(spec):
+            if img_path in cast_set:
+                # Unlabeled, a close-up is just "the previous frame" — and the
+                # model obliges by continuing its framing, which turns the
+                # return leg of a dive into a second close-up.
+                label = (
+                    "CLOSE-UP OF A SUBJECT ALREADY IN THIS SCENE — copy this "
+                    "exact face, build, hair, clothing, materials and wear. "
+                    "This is WHO/WHAT is there, not a previous game frame and "
+                    "not the player character. Do NOT copy its framing or "
+                    "background: place this subject into the wide scene the "
+                    "instruction describes."
+                )
+            elif style_only_swatch and img_path not in identity_set:
                 label = (
                     "COLOR/LIGHT SWATCH — palette only. No person, no place, "
                     "no composition to copy."
@@ -1477,6 +1524,11 @@ def generate_gemini_img2img(
         )
         structured_prompt = structured_prompt + game_identity.keep_character_instruction(
             spec, has_character_plate=has_plate,
+            # Without this the character sheet's own wording ("a previous frame
+            # may show a different person — ignore that person") reads as an
+            # order to discard the close-up plate, and whoever survives gets
+            # dressed in the player's outfit.
+            extras_are_strangers=bool(cast_plates),
         )
         structured_prompt = structured_prompt + game_identity.keep_place_instruction(
             spec,
@@ -1491,6 +1543,8 @@ def generate_gemini_img2img(
                 identity_paths and game_identity.setting_reference_paths(spec)
             ),
         )
+    if not (portrait_mode or ensemble_mode or hold_cast or include_people
+            or game_identity.shows_character(spec) or cast_plates):
         anti_person = "\n\n🚨 CRITICAL - REMOVE ANY PEOPLE FROM REFERENCE IMAGE:\n\n" \
                      "The REFERENCE IMAGE may contain a person/character - this is WRONG. Your job is to REMOVE THEM.\n\n" \
                      "GENERATE THE EXACT SAME SCENE but with the person DELETED. Show ONLY the environment.\n\n" \
@@ -1503,7 +1557,27 @@ def generate_gemini_img2img(
                      "- Character visible in any way\n\n" \
                      "ONLY SHOW: Environment, objects, vehicles, structures, sky, ground, debris, fire, smoke - NO HUMANS."
         structured_prompt = structured_prompt + anti_person
-    
+
+    if cast_plates:
+        # The dive showed the player this subject up close and the scene has to
+        # hand back the same one. Two failure modes to close, and they pull in
+        # opposite directions: drop the subject entirely (the environment paths
+        # above spend a lot of words asking for empty plates), or copy the
+        # close-up's framing and return a portrait instead of a scene.
+        structured_prompt = structured_prompt + (
+            "\n\n🫱 THE SUBJECT FROM THE CLOSE-UP IS IN THIS SCENE:\n"
+            "A CLOSE-UP reference is attached of something the player has just "
+            "been looking at in this very place. It is still here and it is "
+            "still the same one: copy its face, build, hair, clothing, "
+            "materials and wear from that close-up. Do not recast it, do not "
+            "substitute something similar, do not remove it from the frame.\n"
+            "It is NOT the player character and must not be dressed as them.\n"
+            "The output is the WIDE SCENE, not the close-up again. Put this "
+            "subject into the space at whatever distance the instruction "
+            "describes — a portrait, or a frame filled by this subject alone, "
+            "is wrong."
+        )
+
     # Mode-specific "don't do this" — look lives in image_art_direction.
     # Do not name REC / timecode / VHS HUD; that draws a viewfinder.
     if ensemble_mode:
@@ -1538,10 +1612,19 @@ def generate_gemini_img2img(
             "\n\nNot an empty scene, not a missing second person, "
             "not a different person than the ones described."
         )
+    elif cast_plates:
+        # The default for a bodiless camera is "no person in frame", which would
+        # delete the very subject the dive just introduced.
+        negative_emphasis = (
+            "\n\nNot a missing subject, not a different one than the close-up, "
+            "not a portrait, not a frame filled by the subject alone."
+        )
     else:
         negative_emphasis = (
             "\n\nNo person in frame: no head, shoulders, back, hands, or silhouette."
         )
+    if cast_plates and "close-up" not in negative_emphasis:
+        negative_emphasis += " Not a different subject than the close-up."
 
     full_prompt = structured_prompt + negative_emphasis
 

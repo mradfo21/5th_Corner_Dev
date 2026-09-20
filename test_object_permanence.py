@@ -258,8 +258,13 @@ class TestWiring(unittest.TestCase):
         self.assertIn('"subject": action_subject', self.engine_src)
 
     def test_the_client_sends_the_detected_label(self):
-        self.assertIn("makeChoice(phrase, null, { source, moveTarget, subject: obj.label })",
-                      self.client_src)
+        # Asserted on the argument rather than the whole call, which was
+        # pinned as one literal line and broke the moment the SCAN tap grew a
+        # third option to pass (see test_interact_plate_handoff).
+        tap = self.client_src.split("const source = action.id === \"move\"", 1)[1]
+        commit = tap[:tap.index("if (dive) dive.armTurn(")]
+        self.assertIn("makeChoice(phrase, null, {", commit)
+        self.assertIn("subject: obj.label", commit)
         self.assertIn("subject: actionSubject", self.client_src)
 
 

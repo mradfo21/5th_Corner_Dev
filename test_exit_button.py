@@ -231,22 +231,40 @@ class TheButtonIsWiredToTheRoute(unittest.TestCase):
         self.assertIn("body.xp-open:has(#xp-exit) #start-exit", (ROOT / "static" / "css" / "standalone.css").read_text(
             encoding="utf-8", errors="replace"))
 
-    def test_the_first_press_says_again_on_the_button(self):
-        """The renderer toast sits under the start menu, so arming must
-        change the button itself or the player thinks EXIT is dead."""
+    def test_the_two_press_guard_is_one_line_from_coming_back(self):
+        """EXIT is a single press now, but the labelling path it needed is
+        deliberately still here — `markArmed` is the one place that writes the
+        button's text and tooltip, and it still knows how to say AGAIN.
+
+        Kept because the guard was protecting something real (EXIT stops the
+        server, and a render is a paid process): if a misclick ever does cost
+        somebody a render, restoring it is a line in `press()` and a line here,
+        not a reconstruction of a deleted feature.
+        """
         quit_block = self.js.split("const Quit = (function ()", 1)[1][:4000]
         self.assertIn('btn.textContent = on ? "AGAIN" : "EXIT"', quit_block)
+        self.assertIn("function markArmed(on)", quit_block)
 
     def test_the_button_calls_the_shutdown_route(self):
         self.assertIn('postJSON("/api/shutdown"', self.js)
         self.assertIn('el.btnExit.addEventListener("click"', self.js)
 
-    def test_one_press_only_arms_it(self):
-        """A misclick on EXIT should not end the session."""
+    def test_one_press_quits(self):
+        """It used to take two: the button armed, relabelled to AGAIN, and quit
+        on a second press within 3.2s — because EXIT stops the server and a
+        misclick would kill a paid render.
+
+        That guard charged every exit on every screen to prevent an accident on
+        a button sitting alone in a corner. Reported as "somehow the exit button
+        is required to be pressed twice, game-wide". A confirmation people pay
+        dozens of times to prevent something that happens approximately never is
+        a tax, not a safety feature.
+        """
         self.assertIn("function press()", self.js)
         quit_block = self.js.split("const Quit = (function ()", 1)[1][:4000]
-        self.assertIn("if (armed) { commit(); return; }", quit_block)
-        self.assertIn("arm();", quit_block)
+        press = quit_block.split("function press()", 1)[1].split("}", 1)[0]
+        self.assertIn("commit();", press)
+        self.assertNotIn("arm();", press, "EXIT still arms instead of quitting")
 
     def test_it_closes_the_live_renderer_before_going(self):
         """The world model is a paid stream; hiding it is not stopping it."""
@@ -360,26 +378,17 @@ class PressingItInABrowserActuallyQuits(unittest.TestCase):
         self.page.evaluate("document.getElementById('menu-toggle').click()")
         self.page.wait_for_selector("#btn-exit", state="visible", timeout=10000)
 
-    def test_one_press_arms_but_does_not_quit(self):
-        self.page.click("#btn-exit")
-        self.page.wait_for_selector("#btn-exit.arming", timeout=3000)
-        time.sleep(1.0)
-        self.assertTrue(alive(self.base),
-                        "a single press took the whole app down")
+    def test_the_button_never_asks_again(self):
+        """The AGAIN relabel is what the two-press guard looked like from the
+        outside. Nothing should arm."""
+        self.assertNotIn("arming", self.page.evaluate(
+            "() => document.getElementById('btn-exit').className"))
+        self.assertNotEqual(self.page.evaluate(
+            "() => document.getElementById('btn-exit').textContent.trim()"),
+            "AGAIN")
 
-    def test_the_arming_lapses_so_a_misclick_is_harmless(self):
-        self.page.click("#btn-exit")
-        self.page.wait_for_selector("#btn-exit.arming", timeout=3000)
-        # It disarms itself a few seconds later; the exact window is the
-        # module's business, so just wait past it.
-        self.page.wait_for_selector("#btn-exit.arming", state="detached",
-                                    timeout=8000)
-        self.assertTrue(alive(self.base))
-
-    def test_zz_two_presses_close_the_app(self):
+    def test_zz_one_press_closes_the_app(self):
         """Named to sort last: it stops the server the other tests need."""
-        self.page.click("#btn-exit")
-        self.page.wait_for_selector("#btn-exit.arming", timeout=3000)
         self.page.click("#btn-exit")
 
         # The player should be told, not left looking at a frozen game.

@@ -126,6 +126,7 @@
     choices: document.getElementById("choices-container"),
     customForm: document.getElementById("custom-form"),
     customInput: document.getElementById("custom-input"),
+    customMic: document.getElementById("custom-mic"),
     freeWillBtn: document.getElementById("free-will-btn"),
     realtimeBtn: document.getElementById("realtime-btn"),
     scanBtn: document.getElementById("scan-btn"),
@@ -530,6 +531,7 @@
     viewfinderFailed: false,    // restage failed — stay veiled, do not uncover 3P
     viewfinderToken: 0,         // bumped on close so a late render cannot swap scenes
     gameplayStillUrl: null,     // 3P still to restore instantly when PHOTO closes
+    gameplaySequence: null,     // flipbook frames of a turn that resolved while the camera was up
     viewfinderUrl: null,        // FP plate currently shown under the viewfinder
     viewfinderLiveFrame: false, // viewfinder plate was restaged from a live reactor grab
     viewfinderLive: false,      // in-camera reactor scene has been applied (FP live feed)
@@ -549,8 +551,11 @@
     scanMoveTimer: null,        // debounced re-detect after the cursor settles (realtime)
     scanSrcSize: null,          // {w,h} of the last scanned source (video or still), for cover-mapping tags
     scanPrewarm: { objects: [], size: null, ts: 0 }, // last detection cached (for tag positioning / re-scan diffing)
-    scanFadeTimer: null,        // TTL timer: fade the hotspots out a few seconds after a manual scan
+    scanFadeTimer: null,        // TTL timer: only armed when __SCAN_TTL_MS__ opts back into the old timed fade
     scanFadeOutTimer: null,     // the fade animation -> teardown timer (after tags start leaving)
+    autoScanDone: false,        // this scene has already spent its one automatic detection pass (see AutoScan)
+    scanSweepTimer: null,       // clears the one-shot scanline class after it runs
+    scanHintTimer: null,        // takes the scan hint down; it is a message, not an affordance
     moving: false,              // camera is TRANSLATING (WASD / strafe) — OCR hotspots hide; look-only must not tear them down
     moveSettleTimer: null,      // after movement stops, wait for the view to settle before re-detecting hotspots
     moveFadeTimer: null,        // MOVE TO: delayed fade-to-black kickoff so the live world stops drifting during the trip
@@ -2363,6 +2368,9 @@
     // that genuinely never renders a frame.
     markBootTurnLanded();
     try { updateScanButton(); } catch (_) {} // turn's over — SCAN is live again
+    // ...and the shot the turn landed on gets read, even when the turn kept
+    // the same picture (so setScene never fired and never armed a pass).
+    try { AutoScan.rearm(); } catch (_) {}
     Ceremony.reset();
   }
 
@@ -2378,12 +2386,27 @@
   // lands. The ceiling is the safety valve: a stalled first turn must never
   // strand the UI behind the gate (the turn watchdog handles recovery).
   const BOOT_GATE_MAX_HOLD_MS = 20000;
+  // ...and an absolute ceiling on top of it, because the Moment check below
+  // re-arms the first one and a Moment that never finishes re-armed it
+  // FOREVER. The opening cutscene is a Moment, and it can genuinely fail to
+  // complete: its shots are generated, /api/cutscene/complete is what pops it,
+  // and nothing recovers a run where that never lands. The result is the worst
+  // failure state in the app — the boot gate hides #menu-toggle, #control-rail
+  // and #danger-health outright, so the player is left on a black screen with
+  // no chrome and no way to reach reset. Twenty-five of the realtime e2e tests
+  // were sitting in exactly that state, timing out on a menu button that CSS
+  // had set to display:none.
+  //
+  // Generous, because a real montage is four shots held four seconds each plus
+  // the generation that made them, and it must not be cut off. But finite.
+  const BOOT_GATE_ABSOLUTE_MS = 120000;
 
   function markSceneAwaiting() {
     state.sceneVisible = false;
     document.body.classList.add("awaiting-first-scene");
     state.bootGateHeld = true;
     state.bootTurnLanded = false;
+    state.bootGateSince = Date.now();
     armBootGateCeiling();
   }
 
@@ -2396,14 +2419,17 @@
       // them. Firing here would put the rail and danger bar up over the middle
       // of it. Wait it out instead; the gate releases when the montage hands
       // off to turn one.
+      const heldFor = Date.now() - (state.bootGateSince || 0);
       try {
-        if (window.Moments && Moments.isActive && Moments.isActive()) {
+        if (heldFor < BOOT_GATE_ABSOLUTE_MS &&
+            window.Moments && Moments.isActive && Moments.isActive()) {
           armBootGateCeiling();
           return;
         }
       } catch (_) {}
-      console.warn("[standalone] boot gate released on timeout — waited for " +
-                   "scene=" + state.sceneVisible + " turn=" + state.bootTurnLanded);
+      console.warn("[standalone] boot gate released on timeout — waited " +
+                   Math.round(heldFor / 1000) + "s for scene=" +
+                   state.sceneVisible + " turn=" + state.bootTurnLanded);
       releaseBootGate(true);
     }, BOOT_GATE_MAX_HOLD_MS);
   }
@@ -2436,6 +2462,11 @@
     // A painted scene is a picture worth fading up to. On a run that opens with
     // a cutscene the first shot gets there first; this covers the plain start.
     try { OpeningFade.ready("scene painted"); } catch (_) {}
+    // The frame reads itself, so the player can SEE what they can touch
+    // without having to know the SCAN verb exists. One pass per picture —
+    // see AutoScan. Armed before the realtime early-return below, because a
+    // live session needs its options announced just as much as a still one.
+    try { AutoScan.arm(); } catch (_) {}
     try {
       if (typeof scanInRealtime === "function" && scanInRealtime()) return;
     } catch (_) {}
@@ -2555,6 +2586,40 @@
     }
   }
 
+  // One-shot subscribers for "this turn's consequence prose has arrived".
+  //
+  // The INTERACT dive puts it under the close-up. Measured against the live
+  // server, the consequence lands at ~3s and the new scene at ~19s — so
+  // without this the dive is sixteen seconds of a picture that never answers,
+  // while the sentence saying what the player just caused sits behind the
+  // letterbox where the HUD is hidden.
+  const consequenceWaiters = [];
+
+  function onNextConsequence(fn) {
+    if (typeof fn === "function") consequenceWaiters.push(fn);
+  }
+
+  function flushConsequenceWaiters(text) {
+    if (!consequenceWaiters.length) return;
+    const due = consequenceWaiters.splice(0, consequenceWaiters.length);
+    for (const fn of due) {
+      try { fn(text); } catch (_) {}
+    }
+  }
+
+  // The first sentence of a longer beat, for somewhere with room for one line.
+  // Whole sentences only — a hard character cut mid-clause reads as the text
+  // being broken rather than as it being brief.
+  function clipToSentence(text, max) {
+    const cap = max || 120;
+    const t = String(text || "").replace(/\s+/g, " ").trim();
+    if (!t) return "";
+    const end = t.search(/(?<!\.)[.!?](?!\.)/);
+    const first = end >= 0 ? t.slice(0, end + 1) : t;
+    if (first.length <= cap) return first;
+    return first.slice(0, cap - 1).trimEnd() + "\u2026";
+  }
+
   function markSceneVisible() {
     if (state.sceneVisible) return;
     state.sceneVisible = true;
@@ -2608,17 +2673,27 @@
   // stream live, chunk rendered) show on the sub-line.
   // ------------------------------------------------------------------
   const Ceremony = (function () {
+    // Order mirrors the SERVER's turn pipeline, which renders the picture
+    // BEFORE it reads it back for vision + choices:
+    //   consequence LLM (~2s) → image render (~8-22s) → vision + choices (~3s)
+    // The guide image used to sit last, after "Actions Generating". Because
+    // reach() is monotonic and nothing between the consequence and the finished
+    // still advances the circle in stills mode, the tracker sat lit on
+    // CONSEQUENCE for the whole render — median 8.8s, p90 21.9s — and the
+    // consequence took the blame for the image's wait. It belongs here, where
+    // the time actually goes, so the long pole is the step that spins.
     const STEPS = [
       { key: "action",        label: "Action selected",       hud: "ACTION",       glyph: "\u25C9", sound: "cereAction" },
       { key: "consequence",   label: "Consequence generated", hud: "CONSEQUENCE",  glyph: "\u2726", sound: "cereConsequence" },
       { key: "world_update",  label: "World updating",        hud: "UPDATING",     glyph: "\u27F3", sound: "cereWorldUpdate" },
+      { key: "guide_image",   label: "Guide image rendering", hud: "IMAGE",        glyph: "\u25A6", sound: "cereWorldUpdate" },
       { key: "world_respond", label: "World responding",      hud: "RESPONDING",   glyph: "\u25C8", sound: "cereWorldRespond" },
       { key: "actions",       label: "Actions generating",    hud: "ACTIONS",      glyph: "\u22D4", sound: "cereActions" },
-      { key: "guide_image",   label: "Guide image rendering", hud: "IMAGE",        glyph: "\u25A6", sound: "cereWorldUpdate" },
     ];
     const IDX = {};
     STEPS.forEach((s, i) => { IDX[s.key] = i; });
-    const IMG_STEP = STEPS.length - 1;      // the guide-image step (last)
+    const IMG_STEP = IDX["guide_image"];
+    const LAST_STEP = STEPS.length - 1;
     const DWELL_MS = 460;      // minimum time each step is shown (so it registers)
     // After the turn resolves we hold the corner circle on green until the
     // new frame actually loads, then fade it out.
@@ -2635,8 +2710,17 @@
     let dwellTimer = null;
     let doneTimer = null;
     let noteTimer = null;
-    let completing = false; // animating through the logic steps toward the guide-image wait
+    let completing = false; // animating through the remaining steps toward the finish
     let awaitingImage = false; // parked on the guide-image step, waiting for the still
+    let imgTicker = null;   // ticks the sub-line while parked on the guide-image step
+    let imgT0 = 0;          // when that park began, for the elapsed read-out
+    // PASSIVE: the circle is reporting work that is NOT the turn pipeline — an
+    // encounter round generating its plate, for instance. Same visuals, none of
+    // the input gating: `begin` normally claims state.processing, and an
+    // encounter that claimed it would refuse the player's NEXT lane (pick()
+    // bails on state.processing) and strand the fight if a resolve ever failed.
+    // The turn gate has one owner; this mode only borrows the picture.
+    let passive = false;
 
     function build() {
       if (built || !el.ceremonySteps) return;
@@ -2675,40 +2759,59 @@
 
     function pump() {
       if (dwellTimer) return;                 // still dwelling on the current step
-      if (cur >= target) {                    // caught up on the logic steps
-        if (completing) enterGuideImageWait(); // …now park on the guide-image step
+      if (cur >= target) {                    // caught up
+        // Landed on the guide-image step with no still yet: park there as a live
+        // spinner. That IS the long pole, so this is where the wait belongs.
+        if (cur === IMG_STEP && !completing && !state.turnImageLoaded
+            && state.imagesEnabled !== false) enterGuideImageWait();
+        else if (completing) resolveGuideImage();
         return;
       }
+      endGuideImageWait();                    // advancing again — stop the ticker
       enter(cur + 1);
       dwellTimer = setTimeout(() => { dwellTimer = null; pump(); }, DWELL_MS);
     }
 
-    // Once the logic steps (…Actions Generating) have animated through, PARK on
-    // the guide-image step as an active spinner — so the wait for the (slow)
-    // still reads as live progress, not a frozen app. Resolves when the image
-    // arrives (imageLoaded) or the fallback fires.
+    // PARK on the guide-image step as an active spinner while the still renders,
+    // ticking the elapsed seconds on the sub-line — so a slow render reads as
+    // live progress rather than a frozen app. Left behind when the scene lands
+    // (which advances the circle to World Responding) or resolved by the
+    // fallback if no image ever arrives.
     function enterGuideImageWait() {
-      completing = false;
+      if (awaitingImage) return;   // already parked — don't restart the clock
       awaitingImage = true;
-      enter(IMG_STEP); // guide-image dot goes active/pulsing
+      if (cur !== IMG_STEP) enter(IMG_STEP); // guide-image dot goes active/pulsing
+      imgT0 = Date.now();
       api.note("\u25A6 Rendering the guide image\u2026", { tick: false });
-      // If the still is already here (or there's no image to wait for), resolve now.
-      if (state.turnImageLoaded || state.imagesEnabled === false) resolveGuideImage();
+      clearInterval(imgTicker);
+      imgTicker = setInterval(() => {
+        const s = Math.round((Date.now() - imgT0) / 1000);
+        api.note("\u25A6 Rendering the guide image\u2026 " + s + "s", { tick: false });
+      }, 1000);
+      // Never spin forever: if the still never lands, resolve anyway after a
+      // generous window (image gen is legitimately slow).
+      clearTimeout(state.finishTimer);
+      state.finishTimer = setTimeout(() => resolveGuideImage(), GUIDE_IMAGE_FALLBACK_MS);
     }
 
-    // The guide image landed (or the fallback fired): mark everything done, flash
+    function endGuideImageWait() {
+      awaitingImage = false;
+      clearInterval(imgTicker); imgTicker = null;
+    }
+
+    // The turn is done (or the fallback fired): mark everything done, flash
     // green, then fade the bar back to the play button.
     function resolveGuideImage() {
-      if (!awaitingImage && cur >= IMG_STEP && el.ceremony && el.ceremony.classList.contains("resolved")) return;
-      awaitingImage = false;
+      if (!awaitingImage && cur >= LAST_STEP && el.ceremony && el.ceremony.classList.contains("resolved")) return;
+      endGuideImageWait();
       completing = false;
       clearTimeout(dwellTimer); dwellTimer = null;
       if (el.ceremonySteps) {
         Array.from(el.ceremonySteps.children).forEach((n) => { n.classList.remove("active", "beat"); n.classList.add("done"); });
       }
-      cur = STEPS.length - 1;
+      cur = LAST_STEP;
       if (el.ceremony) el.ceremony.classList.add("resolved");
-      api.note("\u2713 Guide image ready", { tick: false });
+      api.note("\u2713 Turn resolved", { tick: false });
       Sound.cereDone();
       active = false;
       clearTimeout(doneTimer);
@@ -2718,23 +2821,27 @@
 
     const api = {
       // Show the tracker fresh and enter the first step (action selected).
-      begin() {
+      // `opts.passive` reports work that is not the turn pipeline (see above).
+      begin(opts) {
         build();
         clearTimeout(doneTimer); clearTimeout(dwellTimer); dwellTimer = null;
         clearTimeout(state.finishTimer);
         active = true;
         completing = false;
-        awaitingImage = false;
+        endGuideImageWait();
+        passive = !!(opts && opts.passive);
         cur = -1; target = -1;
-        state.processing = true;
-        state.turnResolved = false;
-        state.turnImageLoaded = false;
-        if (el.actionWheel) el.actionWheel.classList.add("turn-active");
-        document.body.classList.add("turn-active");
-        try { closeTouch(); } catch (_) {} // put the camera away with the rest of the hubs
-        try { hideGuideThumbnail(); } catch (_) {}
-        try { hideCaptureThumbnail(); } catch (_) {}
-        try { updateScanButton(); } catch (_) {} // dim SCAN while the turn runs
+        if (!passive) {
+          state.processing = true;
+          state.turnResolved = false;
+          state.turnImageLoaded = false;
+          if (el.actionWheel) el.actionWheel.classList.add("turn-active");
+          document.body.classList.add("turn-active");
+          try { closeTouch(); } catch (_) {} // put the camera away with the rest of the hubs
+          try { hideGuideThumbnail(); } catch (_) {}
+          try { hideCaptureThumbnail(); } catch (_) {}
+          try { updateScanButton(); } catch (_) {} // dim SCAN while the turn runs
+        }
         // Reset all chips to pending.
         if (el.ceremonySteps) {
           Array.from(el.ceremonySteps.children).forEach((n) => n.classList.remove("active", "done", "beat"));
@@ -2776,17 +2883,14 @@
       // flash green, sound the affirmation, then fade. Releases input gating.
       complete() {
         if (!active) { hideVeil(); return; }
-        // ANIMATE through the logic steps (World Responding, Actions Generating)
-        // in sequence, THEN park on the guide-image step as a live spinner until
-        // the still actually renders (enterGuideImageWait / resolveGuideImage) —
-        // so the final image-gen wait shows progress instead of a frozen app.
-        // Choices are already live, so release input right away.
-        target = IMG_STEP - 1; // animate up to "Actions Generating"
+        // ANIMATE through whatever steps are left (the picture has landed by
+        // now, so this is normally World Responding → Actions Generating), then
+        // mark everything done and fade. Choices are already live, so release
+        // input right away.
+        target = LAST_STEP;
         completing = true;
         state.processing = false; // choices are live — let the player act
         state.turnResolved = true;
-        // Never spin forever: if the guide image never lands, resolve anyway
-        // after a generous window (image gen is legitimately slow).
         clearTimeout(doneTimer);
         clearTimeout(state.finishTimer);
         state.finishTimer = setTimeout(() => resolveGuideImage(), GUIDE_IMAGE_FALLBACK_MS);
@@ -2797,11 +2901,15 @@
       // resolved, fade the progress bar back to the play button.
       imageLoaded() {
         state.turnImageLoaded = true;
-        // If we're parked on the guide-image step waiting for the still, this is
-        // the signal to complete + fade. (If it arrives before we've parked, the
-        // flag above lets enterGuideImageWait resolve immediately.)
-        if (awaitingImage) resolveGuideImage();
-        else this._tryFinish();
+        // The still is on screen, but the turn is NOT over — vision + choices
+        // still run behind it. Stop the spinner and let the scene_image beat
+        // (World Responding → Actions Generating) carry the circle onward.
+        if (awaitingImage) {
+          endGuideImageWait();
+          this.note("\u2713 Guide image ready", { tick: false });
+          if (completing) { resolveGuideImage(); return; }
+        }
+        this._tryFinish();
       },
 
       _tryFinish() {
@@ -2817,11 +2925,21 @@
         doneTimer = setTimeout(hideVeil, FADE_AFTER_IMAGE_MS);
       },
 
+      // Passive work finished: the same "everything done" flourish and fade,
+      // without going near the turn gate. `complete()` is the turn pipeline's
+      // door and releases input; this one only puts the picture away.
+      settle() {
+        passive = false;
+        if (!active) { hideVeil(); return; }
+        resolveGuideImage();
+      },
+
       // Tear down without the resolve flourish (error / game over / reset).
       abort() {
         active = false;
         completing = false;
-        awaitingImage = false;
+        endGuideImageWait();
+        passive = false;
         clearTimeout(dwellTimer); dwellTimer = null;
         clearTimeout(doneTimer); doneTimer = null;
       },
@@ -2978,8 +3096,12 @@
     if (!(opts && opts.fromSequence)) sceneSequence.stop();
     state.currentStillUrl = imageUrl; // remember for stills-mode SCAN capture
     // A new scene is on screen: any hotspots from the previous shot are now
-    // stale, so drop them. Scanning is manual (behind the SCAN button) — we
-    // don't auto-detect the new scene; the player taps SCAN for a fresh read.
+    // stale, so drop them. The new picture gets its own single detection pass
+    // once it has actually painted — see AutoScan, armed from
+    // markScenePainted(). This is the only place that clears the spent flag,
+    // so the other teardown paths (movement, instruments) can cancel a pending
+    // pass without handing out a fresh one.
+    state.autoScanDone = false;
     closeScan();
     updateScanButton();
     const silent = !!(opts && opts.silent);
@@ -3975,6 +4097,12 @@
         const incoming = scene.imageUrl || "";
         if (incoming && incoming.indexOf("viewfinder_") < 0) {
           state.gameplayStillUrl = incoming;
+          // Keep the MOTION too, not just where it ended. A turn can resolve
+          // while the viewfinder is up, and this branch used to drop its
+          // frames on the floor — the world moved and the only record the
+          // player ever saw of it was the still they landed back on. Held for
+          // the put-away below, which plays it onto the uncovered 3P scene.
+          state.gameplaySequence = sequence || null;
         }
         return;
       }
@@ -3996,6 +4124,13 @@
         // painted; claiming it here (the moment we had a URL) is what let the
         // HUD come up over a black screen.
         if (scene.imageUrl) setScene(scene.imageUrl, { silent: true, instant: true });
+        // Realtime never paints a still the player actually looks at — the
+        // video is the picture, and setScene here only stages a floor behind
+        // it. So markScenePainted's auto-scan arm never fires on this path,
+        // and a live session came up with no hotspots at all. The world
+        // re-anchoring to a new scene IS this renderer's "new picture".
+        // Ordered after setScene, which clears the spent flag.
+        try { state.autoScanDone = false; AutoScan.arm(); } catch (_) {}
         const steer = () => {
           const next = this.liveScene({ hard: scene.hardTransition }) || scene;
           if (next && next.prompt) window.ReactorRenderer.applyScene(next);
@@ -10669,15 +10804,25 @@
   // way to be sure nothing keeps spending after you walk away. A render in
   // particular runs in its own process and would happily keep buying frames.
   //
-  // Two presses, not a confirm() dialog: the native window is frameless and a
-  // system modal there looks like a fault, so the button arms itself instead
-  // and disarms on its own if the first press was a misclick.
+  // ONE press. It used to take two — the button armed itself, relabelled to
+  // AGAIN, and quit on the second press within 3.2s, because EXIT stops the
+  // server and a misclick would kill a paid render mid-flight.
+  //
+  // That guard cost every single exit, on every screen, to protect against a
+  // misclick on a button that lives alone in a corner: "somehow the exit button
+  // is required to be pressed twice, game-wide". A confirmation people hit
+  // dozens of times to prevent an accident that happens approximately never is
+  // not a safety feature, it is a tax. The veil still reports what was stopped
+  // on the way out, and a REFUSED shutdown (hosted, or not armed) still says so
+  // rather than pretending.
   const Quit = (function () {
-    const ARM_MS = 3200;
-    let armed = null;      // timer id while waiting for the second press
     let going = false;
 
     function markArmed(on) {
+      // Kept as the one place that writes the button's label and tooltip.
+      // Nothing arms any more, so `on` is always false — the parameter stays so
+      // restoring the two-press behaviour is a one-line change here and in
+      // press(), rather than a reconstruction.
       const title = on ? "Press again to quit" : "Exit — close the app and stop the server";
       [el.btnExit, el.startExit, el.xpExit].forEach((btn) => {
         if (!btn) return;
@@ -10689,15 +10834,7 @@
     }
 
     function disarm() {
-      clearTimeout(armed);
-      armed = null;
       markArmed(false);
-    }
-
-    function arm() {
-      markArmed(true);
-      try { showRendererToast("Press again to quit", 3000); } catch (_) {}
-      armed = setTimeout(disarm, ARM_MS);
     }
 
     function veil(stateText, note) {
@@ -10781,11 +10918,10 @@
 
     function press() {
       if (going) return;
-      if (armed) { commit(); return; }
-      arm();
+      commit();
     }
 
-    return { press, commit, isArmed: () => !!armed };
+    return { press, commit, isArmed: () => false };
   })();
 
   // ── RENDER REVIEW ──────────────────────────────────────────────────────
@@ -12316,7 +12452,30 @@
       };
     }
 
+    // THE TITLE CARD IS BLACK.
+    //
+    // The menu used to wallpaper itself with the last run's final frame, put
+    // through brightness(0.72) with the VHS grain and scanlines on top. That
+    // did two things nobody asked for: it turned a perfectly good photograph
+    // into mud, and it made the title screen a different picture every launch
+    // — of a run you had already finished. #start-menu has its own designed
+    // gradient underneath, and that is the card now.
+    //
+    // Only the WALLPAPER is switched off. Everything else Signal does still
+    // runs: it still warms the current still and hands it to the scene layer
+    // on the way into a run (lock / hold / takeHold), which is what stops a
+    // plain start opening on a black void, and it still paints the Watch TV's
+    // ghost. Flip this to re-enable the wallpaper; nothing else has to change.
+    const WALLPAPER = false;
+
     function apply() {
+      if (!WALLPAPER) {
+        // showStill("") clears both layers and drops `has-media`, so the title
+        // is styled for a card rather than for a photograph behind it.
+        stopVideo();
+        startCycle([]);
+        return;
+      }
       const src = sourceFor(peekMode);
       if (src.video && startVideo(src.video)) return;
       if (src.frames && src.frames.length) {
@@ -12594,6 +12753,13 @@
       document.body.classList.remove("mode-watch");
       document.body.classList.add("mode-play");
       try { WatchMode.leave(); } catch (_) {}
+      // Entering play is its own "there is a picture now" moment. The
+      // auto-scan refuses to read a scene while the menu is up (see inPlay),
+      // so a shot that painted behind the menu — or one still on screen from
+      // a resumed session — needs arming here or it never gets its hotspots.
+      // Harmless when a fresh scene is about to render: that scene arms again
+      // when it paints, and the budget is claimed once either way.
+      try { AutoScan.arm(); } catch (_) {}
       if (!booted) { booted = true; try { bootstrap(); } catch (_) {} }
     }
 
@@ -12607,6 +12773,9 @@
       document.body.classList.remove("mode-watch");
       document.body.classList.add("mode-play");
       try { WatchMode.leave(); } catch (_) {}
+      // Same as settlePlay: the resume path below returns without rendering
+      // anything, so this is the only arm a continued session ever gets.
+      try { AutoScan.arm(); } catch (_) {}
       if (alreadyPlay && !forceReset) return Promise.resolve();
       booted = true;
       try { return Promise.resolve(resetGame()); }
@@ -16616,6 +16785,16 @@
         // consequence, so it doesn't advance the pipeline.)
         if (state.awaitingResolution && item.type !== "player_action") {
           Ceremony.reach("consequence");
+          // Anything holding a full-screen Moment over this turn has been
+          // showing the player nothing since they acted. Hand it the words.
+          flushConsequenceWaiters(item.content || "");
+          // The server's very next move is to render the picture, and that is
+          // the long pole of the turn. Walk the circle on to the guide-image
+          // step now so it spins (with an elapsed read-out) over the render
+          // instead of sitting lit on CONSEQUENCE with nothing moving.
+          // Realtime keeps its own beats — world_update / world_respond come
+          // off the stream events — so only stills mode self-advances here.
+          if (Renderer.mode !== "reactor") Ceremony.reach("guide_image");
           // Start making the bed the flipbook will play over. This is the same
           // signal the ceremony trusts for "the consequence landed" — the
           // dispatch prose arrives as a narrative_event and falls to this
@@ -16870,6 +17049,25 @@
     }, ms);
   }
 
+  // How this action reached the world, in the narrator's vocabulary.
+  //
+  // Every route in — a curated choice, a hotspot you walked to, a hotspot you
+  // opened, a sentence you typed, an encounter you survived — used to arrive
+  // at the narrator as one anonymous string of choice text. So the voice had
+  // no way to tell "you put your hands on the drum" apart from "you said
+  // something nobody offered you", and it answered both with the same kind of
+  // line. This is the difference between narrating the room and narrating
+  // the player.
+  function narratorDeed(source, subject) {
+    const kind =
+      source === "typed" ? "custom" :
+      source === "scan_interact" ? "interact" :
+      source === "scan_move" || source === "camp_leave" ? "move" :
+      source === "encounter" ? "encounter" :
+      source === "talk" ? "talk" : "choice";
+    return { kind: kind, target: subject || "" };
+  }
+
   async function makeChoice(choiceText, contextItemId, opts) {
     if (state.processing || state.gameOver) return;
     try {
@@ -16885,6 +17083,14 @@
     // commitScanAction. Null for typed and generated choices, which name no
     // specific thing the picture is obliged to keep.
     const actionSubject = (opts && opts.subject) || null;
+    // An INTERACT dive is drawing a close-up of `actionSubject` right now, on
+    // its own request. The server holds this turn's scene render for that
+    // close-up and carries it in as a reference, so the subject comes back as
+    // the same one — see _arm_interact_plate (engine.py).
+    const awaitingCloseUp = !!(opts && opts.awaitingCloseUp);
+    // The transcript of a conversation that has just ended, when hanging up
+    // is what committed this turn. Null for every other kind of action.
+    const actionConversation = (opts && opts.conversation) || null;
     // The world answers the button. One funnel for every way an action is
     // committed — a curated choice, SCAN MOVE / INTERACT, a typed action,
     // leaving camp — so none of them are silent. Curated choices were
@@ -16907,7 +17113,7 @@
     // best. Skipped for a MOVE TO, which has its own two-line transition a few
     // lines below and would otherwise cancel it on the busy check.
     if (!moveTarget) {
-      try { Narrator.onCommit(choiceText); } catch (_) {}
+      try { Narrator.onCommit(choiceText, narratorDeed(actionSource, actionSubject)); } catch (_) {}
     }
     // MOVE TO always ends somewhere the camera wasn't now — the engine gives
     // every scan_move action an unconditional hard cut (see is_move in
@@ -17025,6 +17231,11 @@
         investigation_frame: investigationFrame,
         source: actionSource,
         subject: actionSubject,
+        awaiting_closeup: awaitingCloseUp || undefined,
+        // A finished conversation, when the conversation IS the action. The
+        // server stamps it onto the turn so the consequence can be written
+        // from what was actually said (see _record_turn_conversation).
+        conversation: actionConversation,
       });
       renderItems(items); // immediately shows the player_action echo
       beginFastPolling();
@@ -17107,7 +17318,7 @@
       console.warn("[standalone] Narrator.transition failed", err);
     }
     try {
-      RtLog.push("narrator", "\u25B8 MOVE TO \u00B7 bridge + dark truth" + (destinationLabel ? " \u2192 " + destinationLabel : "") +
+      RtLog.push("narrator", "\u25B8 MOVE TO \u00B7 two beats, then two more" + (destinationLabel ? " \u2192 " + destinationLabel : "") +
                  (narrated ? "" : " (silent \u2014 audio not unlocked / no agent)"));
     } catch (_) {}
     // The fade only makes sense when the LIVE video would otherwise drift
@@ -18571,6 +18782,10 @@
   function snapshotPlayWorld() {
     state.gameplayStillUrl = state.currentStillUrl ||
       (Renderer.lastScene && Renderer.lastScene.imageUrl) || null;
+    // Only a turn that resolves DURING this camera session has motion owed to
+    // the player. Carrying one in would replay the previous turn under the
+    // wrong still.
+    state.gameplaySequence = null;
     let livePrompt = null;
     try {
       if (window.ReactorRenderer && typeof window.ReactorRenderer.getPrompt === "function") {
@@ -19737,8 +19952,18 @@
         || null;
       if (restore) setScene(restore, { instant: true });
       else console.warn("[standalone] camera put away with no still to restore");
+      // A turn that resolved behind the viewfinder kept its frames (see
+      // applyScene's camera branch). Play them now the 3P world is uncovered:
+      // the sequence ends on `restore`, which is already painted, so this adds
+      // the motion without changing where the scene settles.
+      const missed = state.gameplaySequence;
+      state.gameplaySequence = null;
+      if (restore && missed) {
+        try { playSceneSequence(missed, restore); } catch (_) {}
+      }
       const steered = retargeted ? restorePlayReactor() : false;
       state.gameplayStillUrl = null;
+      state.gameplaySequence = null;
       state.gameplayPrompt = null;
       state.playCameraSnapshot = null;
       // endCameraFade is the only thing that lifts the camera veil, so every
@@ -19775,6 +20000,7 @@
     try { Sound.cameraOff(); } catch (_) {}
     try { Haptics.soft(); } catch (_) {}
     updateScanButton();
+    try { AutoScan.rearm(); } catch (_) {} // the camera had the view; give the hotspots back
   }
 
   // Turn a viewport position into a human region phrase (used to label evidence).
@@ -19887,21 +20113,26 @@
   }
 
   // ------------------------------------------------------------------
-  // Interaction hotspots — object recognition GATED BEHIND THE SCAN BUTTON.
-  // Gemini image recognition is our biggest cost, so nothing scans on its own:
-  // the player taps SCAN to fire ONE detection pass and the objects the model
+  // Interaction hotspots — ONE object-recognition pass per picture.
+  // Gemini image recognition is our biggest cost, so nothing polls and nothing
+  // loops: each scene gets a single detection pass and the objects the model
   // recognizes surface as floating "starfield" tags anchored where they sit.
   // Hovering near a tag highlights it; clicking it opens an inline action bar to
   // ACT on THAT exact thing — a full turn (consequence + a freshly generated
-  // scene). The tags then FADE OUT on their own after SCAN_TTL_MS so they can
-  // never go stale (and so we don't need more calls to keep them fresh) — the
-  // player taps SCAN again for a new read. Works in BOTH renderers: it reads the
-  // live video frame in realtime mode, or the current still in image mode.
+  // scene). The tags stay for as long as the shot does. Works in BOTH
+  // renderers: it reads the live video frame in realtime mode, or the current
+  // still in image mode.
+  //
+  // That pass used to be spent only when the player tapped SCAN, which made
+  // the entire verb undiscoverable — the tags were the only thing on screen
+  // that said the picture could be touched, and they only appeared once you
+  // already knew to ask. It now fires by itself when a scene lands (AutoScan),
+  // with the same one-pass budget; the button re-reads the same shot on demand.
   //
   // Engineering notes:
-  //  • ONE detection round-trip per SCAN tap (triggerScan) — no continuous
-  //    polling, no per-scene auto-detect, no hover/move re-detect. This is the
-  //    whole point of the button (cost control). It won't fire during a turn.
+  //  • ONE detection round-trip per scene, whether it was automatic or tapped
+  //    — no continuous polling, no hover/move re-detect. That budget is the
+  //    cost control, and it still holds. It won't fire during a turn.
   //  • Tags are RECONCILED by label within a pass (kept + repositioned, added
   //    with a twinkle, removed with a fade) so re-scanning never churns the whole
   //    field or yanks a tag out from under the cursor.
@@ -20043,26 +20274,183 @@
     return true;
   }
 
-  // Interaction hotspots are gated behind the SCAN button. Gemini image
-  // recognition is our biggest cost, so instead of scanning continuously we
-  // fire ONE detection pass only when the player taps SCAN. The resulting tags
-  // then fade out on their own after a few seconds so they can never go stale;
-  // the player taps SCAN again for a fresh read. This is the single entry point
-  // for hitting /api/detect from the hotspot overlay — nothing scans on its own.
-  const SCAN_TTL_MS =
-    (typeof window !== "undefined" && window.__SCAN_TTL_MS__) || 5000;
+  // Interaction hotspots run ONE detection pass per picture. Gemini image
+  // recognition is our biggest cost, so this never loops and never polls — but
+  // it is no longer something the player has to know to ask for. See AutoScan
+  // below. This is still the single entry point for hitting /api/detect from
+  // the hotspot overlay.
+  //
+  // The tags used to fade out a few seconds after landing, on the theory that
+  // they could otherwise go stale. They can't: every path that changes what is
+  // on screen already tears them down (setScene, onMovementStart, and every
+  // instrument that takes the view). All the TTL actually did was take the
+  // player's options away again while the picture they describe was still
+  // sitting right there. 0 means they stay for as long as the shot does; a
+  // positive override restores the old fade.
+  const SCAN_TTL_MS = (typeof window !== "undefined"
+    && typeof window.__SCAN_TTL_MS__ === "number") ? window.__SCAN_TTL_MS__ : 0;
+
+  // ── AUTO-SCAN ─────────────────────────────────────────────────────────────
+  // SCAN is how you touch anything in this world, and it was invisible. The
+  // hotspots existed only in the few seconds after you found the button, so a
+  // player who never guessed that the picture was tappable never learned the
+  // verb existed at all. The image IS the game, and nothing about it said so.
+  //
+  // So the frame reads itself the moment it lands, and the options announce
+  // themselves. Exactly one pass per scene: the cost discipline that made
+  // scanning manual in the first place is real, and this keeps it bounded and
+  // predictable — one detect per picture, never a loop — rather than dropping
+  // it. Tapping SCAN afterwards still re-reads the same shot on demand.
+  const AUTO_SCAN =
+    typeof window === "undefined" || window.__AUTO_SCAN__ !== false;
+  // Let setScene's crossfade finish first, so the tags twinkle in over the new
+  // picture instead of the one it is replacing.
+  const AUTO_SCAN_SETTLE_MS = (typeof window !== "undefined"
+    && window.__AUTO_SCAN_SETTLE_MS__) || 700;
+  // A scene routinely lands while the rest of the turn is still resolving —
+  // the image arrives before the choices do. Firing into a blocked view would
+  // just drop the pass in silence (triggerScan's guards are all early
+  // returns), so wait for the view to actually be scannable. Bounded, because
+  // a turn that never settles must not leave a timer running for the session.
+  const AUTO_SCAN_POLL_MS = 350;
+  const AUTO_SCAN_GIVE_UP_MS = 12000;
+
+  const AutoScan = (function () {
+    let timer = null;
+    let deadline = 0;
+
+    function cancel() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      deadline = 0;
+    }
+
+    // Is the player actually PLAYING? A picture being on screen is not the
+    // same thing as a picture being played.
+    //
+    // The start menu paints a real rendered still as its backdrop, and it
+    // paints it through setScene like any other picture — so without this the
+    // game spent a Gemini detection call and hung six hotspots over the main
+    // menu on every single boot. That is the exact cost the one-pass budget
+    // exists to protect, burned before the player had pressed anything.
+    // Found by booting the real client and counting the requests; the
+    // realtime e2e page never paints a still, so it could not have caught it.
+    //
+    // Watch mode is the same argument: those scenes are being watched, not
+    // played, and there is nothing to interact with.
+    function inPlay() {
+      try {
+        const c = document.body.classList;
+        if (c.contains("start-menu-on")) return false;
+        if (c.contains("mode-watch")) return false;
+      } catch (_) {}
+      return true;
+    }
+
+    // Everything triggerScan itself would refuse on. Checked here too so a
+    // blocked view schedules a retry instead of burning this scene's one pass.
+    function blocked() {
+      if (!inPlay()) return true;
+      if (state.gameOver || state.processing || state.awaitingResolution) return true;
+      if (state.scanBusy || state.moving) return true;
+      if (!ambientContextAllowed()) return true;
+      if (!scanAvailable()) return true;   // still hasn't decoded yet
+      return false;
+    }
+
+    function attempt() {
+      timer = null;
+      if (!AUTO_SCAN || state.autoScanDone) return;
+      if (blocked()) {
+        if (Date.now() >= deadline) return;  // give up quietly; SCAN still works
+        timer = setTimeout(attempt, AUTO_SCAN_POLL_MS);
+        return;
+      }
+      // Claim the pass BEFORE firing: triggerScan is async, and a second
+      // arm landing mid-flight would otherwise buy a second detect call
+      // against the same picture.
+      state.autoScanDone = true;
+      // ...but only keep the claim if a request actually went out. In
+      // realtime the video can be mid-re-anchor (the freeze buffer is up and
+      // there is nothing honest to capture), which triggerScan declines —
+      // spending the scene's one pass on that would leave the player with no
+      // hotspots at all for the whole shot.
+      if (triggerScan(null, { auto: true }) === false) {
+        state.autoScanDone = false;
+        if (Date.now() < deadline) timer = setTimeout(attempt, AUTO_SCAN_POLL_MS);
+      }
+    }
+
+    // Called from markScenePainted: a picture is genuinely on screen now.
+    function arm() {
+      if (!AUTO_SCAN || state.autoScanDone) return;
+      cancel();
+      deadline = Date.now() + AUTO_SCAN_GIVE_UP_MS;
+      timer = setTimeout(attempt, AUTO_SCAN_SETTLE_MS);
+    }
+
+    // Handing the world back after something else had it.
+    //
+    // The one-pass budget is per PICTURE, but closeScan() spends nothing — it
+    // just tears the tags down and kills any pending pass. So every instrument
+    // that borrows the screen (a conversation, the camera, the tape, an
+    // interact dive, an encounter) used to return the player to the same shot
+    // with no hotspots on it and no way to get them back except finding the
+    // SCAN button — which is the exact discoverability hole auto-scan was
+    // built to close. Leaving an interaction put the game back in the state
+    // auto-scan is supposed to prevent.
+    //
+    // So a return to the world restores the pass instead of consuming a new
+    // budget: if the tags did not survive whatever just happened, the picture
+    // has not been read yet as far as the player can tell, and it gets read.
+    // Idempotent by construction — a scene whose tags are still up, or whose
+    // pass is already in flight, is already answered.
+    function rearm() {
+      if (!AUTO_SCAN) return;
+      if (state.scanOn) return;    // hotspots survived — the shot is already read
+      if (state.scanBusy) return;  // a pass is in flight; let it land
+      state.autoScanDone = false;
+      arm();
+    }
+
+    // Why a pass has not fired yet, for the e2e suite and for anyone chasing
+    // "the hotspots never came up". Every guard is an early return, so
+    // without this the failure mode is silence.
+    function debug() {
+      return {
+        enabled: AUTO_SCAN,
+        done: !!state.autoScanDone,
+        pending: !!timer,
+        inPlay: (function () { try { return inPlay(); } catch (e) { return "err"; } })(),
+        gameOver: !!state.gameOver,
+        processing: !!state.processing,
+        awaiting: !!state.awaitingResolution,
+        busy: !!state.scanBusy,
+        moving: !!state.moving,
+        contextOk: (function () { try { return !!ambientContextAllowed(); } catch (e) { return "err"; } })(),
+        scannable: (function () { try { return !!scanAvailable(); } catch (e) { return "err"; } })(),
+      };
+    }
+
+    return { arm, cancel, rearm, debug };
+  })();
+  try { window.__AutoScan = AutoScan; } catch (_) {}
 
   // origin (optional): {x, y} viewport point of a world tap — when present we
   // bloom a tactile ripple right there the instant the scan starts. The SCAN
   // button passes none (its own ring pulse is the feedback).
-  function triggerScan(origin) {
-    if (state.gameOver) return;
+  // Returns true when a detection request actually went out, false when a
+  // guard declined it. AutoScan needs to tell those apart: every guard here is
+  // an early return, so a caller that assumes it fired will quietly spend the
+  // scene's one automatic pass on nothing.
+  function triggerScan(origin, opts) {
+    const auto = !!(opts && opts.auto);
+    if (state.gameOver) return false;
     // A full-screen instrument (camera/tape/free-will/conversation) or a turn
     // in flight owns the view — don't scan into it.
-    if (!ambientContextAllowed()) return;
-    if (state.processing || state.awaitingResolution) return;
-    if (state.scanBusy) return; // a pass is already in flight — ignore re-taps
-    if (!scanAvailable()) return; // nothing readable on screen yet
+    if (!ambientContextAllowed()) return false;
+    if (state.processing || state.awaitingResolution) return false;
+    if (state.scanBusy) return false; // a pass is already in flight — ignore re-taps
+    if (!scanAvailable()) return false; // nothing readable on screen yet
     const cap = captureScanFrame();
     if (!cap || !cap.frame) {
       // scanAvailable() said there was something to read, so a miss here is a
@@ -20074,7 +20462,7 @@
         realtime: (() => { try { return scanInRealtime(); } catch (_) { return "?"; } })(),
         still: !!getStillImage(),
       });
-      return;
+      return false;
     }
     // A fresh pass restarts the fade clock and cancels any pending teardown.
     clearTimeout(state.scanFadeTimer); state.scanFadeTimer = null;
@@ -20106,8 +20494,11 @@
         // biggest. The SCAN button (no origin) keeps the old ambient sweep.
         const tapped = origin ? nearestDetectionToPoint(objs, origin) : null;
         reconcileScanTags(objs, tapped);
-        setScanHint(scanHintFor(objs, origin, tapped));
-        if (objs.length) { try { Sound.ping(); } catch (_) {} } // starfield shimmer as tags land
+        setScanHint(scanHintFor(objs, origin, tapped, auto));
+        if (objs.length) {
+          try { Sound.ping(); } catch (_) {} // starfield shimmer as tags land
+          playScanSweep();
+        }
         scheduleScanFade();
       })
       .catch((err) => { console.warn("[standalone] scan detect failed:", err); })
@@ -20116,13 +20507,35 @@
         document.body.classList.remove("scan-busy");
         if (el.scanBtn) el.scanBtn.classList.remove("scanning");
       });
+    return true;
   }
 
-  // Start the "fade out" clock: a few seconds after a scan lands, the hotspots
-  // fade away so they can't linger and go stale (and so we're not tempted to
-  // keep them fresh with more detection calls). Re-armed on each scan.
+  // Run the scanline down the frame as the tags arrive. Restarted rather than
+  // queued on a re-scan, so tapping SCAN twice reads as two sweeps instead of
+  // one that never finishes.
+  function playScanSweep() {
+    const layer = el.scanLayer;
+    if (!layer) return;
+    try { if (prefersReducedMotion()) return; } catch (_) {}
+    layer.classList.remove("sweeping");
+    void layer.offsetWidth;                 // restart the animation
+    layer.classList.add("sweeping");
+    clearTimeout(state.scanSweepTimer);
+    state.scanSweepTimer = setTimeout(() => {
+      state.scanSweepTimer = null;
+      if (el.scanLayer) el.scanLayer.classList.remove("sweeping");
+    }, 1100);                               // a beat past the 0.95s animation
+  }
+
+  // Start the "fade out" clock, when there is one. Off by default: the tags
+  // describe the picture, and the picture is still there, so taking them away
+  // on a timer just hid the player's options again. Every path that genuinely
+  // invalidates them already calls closeScan(). A positive __SCAN_TTL_MS__
+  // brings the old timed fade back.
   function scheduleScanFade() {
     clearTimeout(state.scanFadeTimer);
+    state.scanFadeTimer = null;
+    if (!(SCAN_TTL_MS > 0)) return;
     state.scanFadeTimer = setTimeout(fadeOutScan, SCAN_TTL_MS);
   }
 
@@ -20353,6 +20766,9 @@
   // pending fade timers. Used by the fade-out and whenever an instrument
   // (camera/tape/free-will/conversation) or a scene change takes over.
   function closeScan() {
+    // Whatever is taking the view (a scene change, travel, an instrument) has
+    // invalidated the frame a pending auto-scan was waiting to read.
+    try { AutoScan.cancel(); } catch (_) {}
     clearTimeout(state.scanFadeTimer); state.scanFadeTimer = null;
     clearTimeout(state.scanFadeOutTimer); state.scanFadeOutTimer = null;
     if (!state.scanOn && (!el.scanLayer || el.scanLayer.classList.contains("hidden"))) {
@@ -20362,17 +20778,39 @@
     state.scanOn = false;
     state.scanTagActing = null;
     clearTimeout(state.scanMoveTimer); state.scanMoveTimer = null;
+    clearTimeout(state.scanSweepTimer); state.scanSweepTimer = null;
+    clearTimeout(state.scanHintTimer); state.scanHintTimer = null;
     document.body.classList.remove("scan-busy");
-    if (el.scanLayer) el.scanLayer.classList.add("hidden");
+    if (el.scanLayer) {
+      // Drop the scanline with the layer, or it resumes mid-travel the next
+      // time the overlay is shown.
+      el.scanLayer.classList.remove("sweeping");
+      el.scanLayer.classList.add("hidden");
+    }
     if (el.scanTags) el.scanTags.innerHTML = "";
     state.scanObjects = [];
     updateScanButton();
   }
 
+  // How long a hint stays up. The tags persist because they describe the
+  // picture, which is still there; a hint answers the tap you just made and
+  // is then over. It used to be taken down by the scan fade — which no longer
+  // runs, so without this a single empty SCAN left "NOTHING TO INTERACT WITH
+  // HERE" pulsing under the choices for the rest of the scene.
+  const SCAN_HINT_MS = 4200;
+
   function setScanHint(text) {
     if (!el.scanHint) return;
+    clearTimeout(state.scanHintTimer); state.scanHintTimer = null;
     el.scanHint.textContent = text || "";
     el.scanHint.classList.toggle("hidden", !text);
+    if (!text) return;
+    state.scanHintTimer = setTimeout(() => {
+      state.scanHintTimer = null;
+      if (!el.scanHint) return;
+      el.scanHint.textContent = "";
+      el.scanHint.classList.add("hidden");
+    }, SCAN_HINT_MS);
   }
 
   // What the scan hint should say for this pass. A world tap always resolves
@@ -20381,7 +20819,13 @@
   // (say so), or found nothing near the tap at all (say so) — so tapping the
   // world never again reads as a coin flip between "it worked" and nothing.
   // The SCAN button (no tap origin) keeps its original ambient message.
-  function scanHintFor(objects, origin, tapped) {
+  function scanHintFor(objects, origin, tapped, auto) {
+    // The automatic pass asked nothing on the player's behalf, so it has
+    // nothing to report. "NOTHING TO INTERACT WITH HERE" is a fine answer to
+    // a SCAN the player pressed and a lie about the game when it volunteers
+    // itself on arrival in every quiet room — it reads as the scene telling
+    // you not to bother, sitting there pulsing under the choices.
+    if (auto) return "";
     if (tapped) {
       if (window.Evidence && Evidence.isSpent && Evidence.isSpent(tapped.label)) {
         return "already documented \u2014 " + tapped.label;
@@ -20670,10 +21114,13 @@
   // distinct kinds:
   //   • MOVE — resolves a FULL turn that RELOCATES you: a full change of scenery
   //     (hard transition) to a fresh scene composed around the object, EVERY
-  //     time, unconditionally. MOVE is currently the only object verb on the bar.
-  //   • INTERACT — injects a LIVE realtime event into the running world model (a
-  //     prompt hot-swap) so the world reacts in place, without changing scene.
-  //     Realtime-only shelving; see interactEnabled() below.
+  //     time, unconditionally.
+  //   • INTERACT — on stills, a Moment: dive to a generated close-up of the
+  //     object while a same-place turn runs underneath, then hand the changed
+  //     scene back (openInteractMoment). On the LIVE renderer it instead
+  //     injects a realtime event (a prompt hot-swap) so the world reacts in
+  //     place — which reacts too weakly to read, and is why the verb is still
+  //     shelved there and only there. See interactEnabled() below.
   //   • TALK — opens a live conversation overlay (unchanged).
   // MOVE composes a clean, natural prompt from the verb + the object's own name;
   // the consequence LLM (server-side) turns that intent into an in-world outcome
@@ -20766,8 +21213,9 @@
   // is the whole point of the verb next to MOVE, which is always a hard cut to
   // somewhere new.
   //
-  // The TALK-style ceremony (zoom into the object, choices in a Moment, exit
-  // back out) is not built yet — see docs/plans/INTERACT_MOMENT_PLAN.md.
+  // The TALK-style ceremony (zoom into the object, a generated close-up, and
+  // the world handed back the moment the scene has changed) IS built — see
+  // openInteractMoment / createInteractDive and docs/plans/INTERACT_MOMENT_PLAN.md.
   function interactEnabled() {
     try {
       if (typeof scanInRealtime === "function" && scanInRealtime()) return false;
@@ -21034,7 +21482,17 @@
                   typeof window.Moments.push === "function")
       ? openInteractMoment(obj)
       : null;
-    makeChoice(phrase, null, { source, moveTarget, subject: obj.label });
+    // A dive opened, so a close-up of this subject is being generated right
+    // now on its own request. Telling the server means the scene render holds
+    // for that close-up and carries it as a reference, instead of re-imagining
+    // the character from a wide frame where they are forty pixels tall — which
+    // is how the thing the player just met came back as somebody else. Only
+    // sent when a dive actually opened: a server that assumed it from the verb
+    // would make every harness INTERACT wait for a plate nobody is drawing.
+    makeChoice(phrase, null, {
+      source, moveTarget, subject: obj.label,
+      awaitingCloseUp: !!(dive && dive.referenceFrame),
+    });
     // Everything the dive's exits wait for is that turn, so it has to know one
     // is coming. makeChoice can refuse outright (mid-cutscene, a send that
     // 402s), and a dive waiting on a turn that was never dispatched would sit
@@ -21359,6 +21817,13 @@
     let open = false;
     let subject = null;         // {label, kind, speaks, cx, cy, w, h}
     let messages = [];          // text-mode transcript sent to /api/talk/message
+    // What both sides ACTUALLY said, in either mode, and the thing the turn
+    // fired on hang-up is generated from. `messages` cannot do this job: it is
+    // the text-mode request body and stays empty for a whole voice call, where
+    // the lines arrive through the SDK's onMessage instead. addLine is the one
+    // place every spoken line passes through, so it is the one place to keep.
+    let transcript = [];
+    let settling = false;       // the turn this conversation caused is resolving
     let busy = false;           // text-mode request in flight
     let mode = "text";          // "text" | "voice"
     let convo = null;           // ElevenLabs SDK Conversation instance (voice)
@@ -21807,7 +22272,16 @@
       setTimeout(() => { if (el.talkFloat && !el.talkFloat.classList.contains("talk-float-in")) el.talkFloat.classList.add("hidden"); }, 320);
     }
 
-    function addLine(role, content) {
+    // opts.record === false for the client's own error notices ("[the signal
+    // drops]"), which are chrome rather than something anybody said and must
+    // never end up in the exchange the next turn is generated from.
+    function addLine(role, content, opts) {
+      if (!opts || opts.record !== false) {
+        transcript.push({
+          role: role === "user" ? "user" : "them",
+          text: String(content || "").trim().slice(0, 300),
+        });
+      }
       const line = document.createElement("div");
       line.className = "talk-line talk-" + (role === "user" ? "you" : "them");
       const who = document.createElement("span");
@@ -21847,6 +22321,7 @@
       if (typeof subj.w === "number") subject.w = subj.w;
       if (typeof subj.h === "number") subject.h = subj.h;
       messages = [];
+      transcript = [];
       busy = false;
       mode = "text";
       convo = null;
@@ -22311,7 +22786,10 @@
         pulseOrb();
       } catch (err) {
         console.warn("[talk] message failed:", err);
-        if (open) { typing.remove(); addLine("assistant", "[the signal drops — try again]"); }
+        if (open) {
+          typing.remove();
+          addLine("assistant", "[the signal drops \u2014 try again]", { record: false });
+        }
       } finally {
         busy = false;
         if (open) el.talkInput.focus();
@@ -22324,6 +22802,90 @@
       el.talkOrb.classList.remove("talk-orb-pulse");
       void el.talkOrb.offsetWidth;
       el.talkOrb.classList.add("talk-orb-pulse");
+    }
+
+    // ── TALKING TO SOMEONE HAS TO DO SOMETHING ────────────────────────────
+    // INTERACT already works this way and it is why it feels good: the press
+    // fires a real turn and the dive holds the player until the world has
+    // answered, so reaching out visibly changes the place. SPEAK did not — a
+    // conversation was a closed loop that ended exactly where it started, and
+    // the transcript was thrown away on hang-up.
+    //
+    // So hanging up commits a turn whose action IS the conversation, and the
+    // Moment stays up until it lands. The wait is the point: leaving early
+    // would drop the player back on the frame they were already looking at,
+    // which is the thing that made talking feel inert.
+    const SETTLE_POLL_MS = 400;
+    // Never trap anyone in a letterbox. Mirrors the interact dive's hold-out:
+    // a turn that dies silently must still hand the world back.
+    const SETTLE_MAX_MS = 180000;
+
+    // Enough of a conversation to be worth a turn. The player having said
+    // something is the test — opening a channel and closing it without a word
+    // is not an action, and must not cost a turn (or the money one takes).
+    // Voice is the exception: the SDK's user transcript can be late or absent,
+    // so a call the player plainly held counts on its own.
+    function worthATurn(seconds) {
+      if (transcript.some((ln) => ln.role === "user")) return true;
+      return mode === "voice" && (seconds || 0) >= 8;
+    }
+
+    // A conversation opened from INSIDE another Moment — from camp, say —
+    // belongs to that Moment, and hanging up returns the player to it rather
+    // than to the world. If that Moment has a turn of its own in flight,
+    // firing a second one here would both double-spend and race it.
+    function nestedInAnotherMoment() {
+      try {
+        return !!inMoment && window.Moments.depth && window.Moments.depth() > 1;
+      } catch (_) { return false; }
+    }
+
+    // Hold the Moment until the turn the conversation caused has landed, then
+    // hand the world back. `finish` is the rest of Talk.close(), deferred.
+    function settleAfterTalk(subj, finish) {
+      const label = (subj && subj.label) || "them";
+      const started = Date.now();
+      let painted = false;
+      settling = true;
+      try { onNextScenePainted(() => { painted = true; }); } catch (_) {}
+      try {
+        window.Moments.setNameplate(label, "the world answers\u2026");
+      } catch (_) {}
+
+      // The turn's own ceremony tracks the whole pipeline INCLUDING the wait
+      // for the still, so a frame on screen is not on its own proof the turn
+      // is over — and a turn whose image is filtered, or that the watchdog
+      // gives up on, never paints at all. Both endings have to release.
+      const turnOver = () => {
+        try { if (Ceremony.isActive && Ceremony.isActive()) return false; } catch (_) {}
+        return !state.awaitingResolution && !state.processing;
+      };
+
+      makeChoice("Spoke with the " + label, null, {
+        source: "talk",
+        subject: label,
+        conversation: transcript.slice(-12),
+      });
+      // makeChoice refuses outright in some states (mid-cutscene, a send that
+      // 402s). Nothing is coming then, so do not hold the player for it.
+      const dispatched = state.awaitingResolution;
+
+      const release = () => {
+        clearInterval(poll);
+        settling = false;
+        try { finish(); } catch (e) { console.warn("[talk] settle finish failed:", e); }
+      };
+      if (!dispatched) { release(); return; }
+
+      const poll = setInterval(() => {
+        if (state.gameOver) { release(); return; }
+        if (Date.now() - started > SETTLE_MAX_MS) {
+          console.warn("[talk] the turn never resolved \u2014 letting go anyway");
+          release();
+          return;
+        }
+        if (painted ? !state.processing : turnOver()) release();
+      }, SETTLE_POLL_MS);
     }
 
     function close() {
@@ -22358,45 +22920,71 @@
       document.body.classList.remove("talking");
       document.body.removeAttribute("data-talk-orb");
 
-      // If we animated the character (re-anchored the session onto them), reopen
-      // the ORIGINAL world by id NOW — attach_world paints the env still
-      // instantly (freeze buffer) then reveals the live world, hidden by the
-      // exit glitch + letterbox retract. If we never swapped, this is a no-op
-      // and Moments.pop -> resumeUnderlay simply resumes the paused world.
-      restoreWorldAfterConversation();
+      // Everything from here is the handover back to the world. When the
+      // conversation earned a turn it runs only after that turn has landed,
+      // so the player is let out onto the scene their talking changed rather
+      // than the one they were looking at while they talked.
+      const handBack = () => {
+        // If we animated the character (re-anchored the session onto them), reopen
+        // the ORIGINAL world by id NOW — attach_world paints the env still
+        // instantly (freeze buffer) then reveals the live world, hidden by the
+        // exit glitch + letterbox retract. If we never swapped, this is a no-op
+        // and Moments.pop -> resumeUnderlay simply resumes the paused world.
+        restoreWorldAfterConversation();
 
-      // Pop the Conversation Moment: retract the letterbox, restore the HUD, and
-      // resume the world (Moments.pop -> Renderer.resumeUnderlay). Guarded so a
-      // double-close or missing Moments.js never throws.
-      if (inMoment && window.Moments && typeof window.Moments.pop === "function") {
-        try {
-          if (window.Moments.topType && window.Moments.topType() === "conversation") {
-            window.Moments.pop({ subject: closedSubject });
-          }
-        } catch (e) { console.warn("[talk] Moments.pop failed:", e); }
-      }
-      inMoment = false;
-      try {
-        if (SceneAudio && typeof SceneAudio.endConversation === "function") {
-          SceneAudio.endConversation();
+        // Pop the Conversation Moment: retract the letterbox, restore the HUD, and
+        // resume the world (Moments.pop -> Renderer.resumeUnderlay). Guarded so a
+        // double-close or missing Moments.js never throws.
+        if (inMoment && window.Moments && typeof window.Moments.pop === "function") {
+          try {
+            if (window.Moments.topType && window.Moments.topType() === "conversation") {
+              window.Moments.pop({ subject: closedSubject });
+            }
+          } catch (e) { console.warn("[talk] Moments.pop failed:", e); }
         }
-      } catch (_) {}
+        inMoment = false;
+        try {
+          if (SceneAudio && typeof SceneAudio.endConversation === "function") {
+            SceneAudio.endConversation();
+          }
+        } catch (_) {}
 
-      setTimeout(() => {
-        el.talkOverlay.classList.add("hidden");
-        el.talkLog.innerHTML = "";
-        // The conversation replaced the hotspot overlay — the SCAN button is
-        // available again once it closes (mirrors camera/tape/free-will close).
-        updateScanButton();
-        try { updateCampButton(); } catch (_) {}
-      }, 260);
-      subject = null;
-      messages = [];
-      mode = "text";
-      // Restore what we paused/where focus was.
-      if (wasAutoPlay && !state.gameOver) { wasAutoPlay = false; setAutoPlay(true); }
-      if (lastFocus && typeof lastFocus.focus === "function") { try { lastFocus.focus(); } catch (_) {} }
-      lastFocus = null;
+        setTimeout(() => {
+          el.talkOverlay.classList.add("hidden");
+          el.talkLog.innerHTML = "";
+          // The conversation replaced the hotspot overlay — the SCAN button is
+          // available again once it closes (mirrors camera/tape/free-will close),
+          // and the shot underneath gets re-read so the player lands back in a
+          // world they can touch instead of a bare picture.
+          updateScanButton();
+          try { AutoScan.rearm(); } catch (_) {}
+          try { updateCampButton(); } catch (_) {}
+        }, 260);
+        transcript = [];
+        subject = null;
+        messages = [];
+        mode = "text";
+        // Restore what we paused/where focus was.
+        if (wasAutoPlay && !state.gameOver) { wasAutoPlay = false; setAutoPlay(true); }
+        if (lastFocus && typeof lastFocus.focus === "function") { try { lastFocus.focus(); } catch (_) {} }
+        lastFocus = null;
+      };
+
+      // A conversation the player actually had commits a turn, and the Moment
+      // holds until it lands. settleAfterTalk fires the turn — which narrates
+      // the deed itself through makeChoice — so the exit line below is only
+      // for a conversation that was not worth one.
+      if (worthATurn(releasedDuration) && !state.gameOver && !settling
+          && !nestedInAnotherMoment() && !state.awaitingResolution) {
+        settleAfterTalk(closedSubject, handBack);
+        return;
+      }
+      // Nothing was said. Say one line on the way out and hand the world back.
+      try {
+        const who = (closedSubject && (closedSubject.label || closedSubject.name)) || "";
+        if (who) Narrator.onCommit("Broke off with the " + who, { kind: "talk", target: who });
+      } catch (_) {}
+      handBack();
     }
 
     // Escape handler: collapse the voice menu first if it's open, otherwise
@@ -22449,18 +23037,16 @@
   // on the portrait path keeps the model from inventing a face on something
   // that hasn't got one.
   //
-  // The dive runs WHILE the turn resolves, which is the point: an interact
-  // turn takes ~30s to generate a frame, so the wait becomes the dive instead
-  // of a progress bar. And because the turn is the soft/img2img path, popping
-  // the Moment hands the player back their OWN scene, changed by what they
-  // just did — not a cut to somewhere new the way MOVE is.
+  // The dive runs WHILE the turn resolves, which is the point: the turn takes
+  // ~20s to draw a frame, so the wait becomes the dive instead of a progress
+  // bar. And because the turn is the soft/img2img path, popping the Moment
+  // hands the player back their OWN scene, changed by what they just did —
+  // not a cut to somewhere new the way MOVE is.
   //
-  // The close-up is a place to ACT, not a slide to look at: SPEAK, ATTACK and
-  // LEAVE. SPEAK is live immediately — it is the thing worth doing while the
-  // turn draws. The other two both need the frame that turn is still making
-  // (LEAVE walks out onto it; ATTACK stages the confrontation off it), so they
-  // sit on the slate locked until it paints rather than appearing out of
-  // nowhere or promising a scene that does not exist.
+  // It is a TRANSITION and it leaves on its own: reach out, see the thing,
+  // read what it caused, get handed back the moment the world has changed.
+  // See createInteractDive for why the slate it used to carry was the thing
+  // that made this feel slow.
   // ------------------------------------------------------------------
   (function registerInteractMoment() {
     if (!window.Moments || typeof window.Moments.register !== "function") return;
@@ -22495,8 +23081,8 @@
           if (entry && entry.aborted) return true;
           if (res && res.image_url) {
             // Through the dive, not straight at the chrome: by the time a
-            // close-up lands the player may already be inside a nested SPEAK,
-            // and the dive is what knows not to paint over it.
+            // close-up lands the dive may already have handed the world back
+            // (a fast turn), and the dive is what knows not to paint over it.
             if (dive) { dive.closeUpUrl = res.image_url; dive.render(); }
             else window.Moments.setPortrait(res.image_url);
           } else console.warn("[interact] no close-up:", (res && res.reason) || "unknown");
@@ -22505,10 +23091,9 @@
         }
         return true;
       },
-      // SPEAK nests a Conversation Moment on top of this one, and a nested pop
-      // clears the portrait and the slate on its way out (see Moments.pop).
-      // Redraw both so hanging up returns to the same close-up, still holding
-      // its options, rather than to a blank letterbox.
+      // Nothing nests on the dive any more (SPEAK went with the slate), but a
+      // nested pop clears the portrait on its way out, so redrawing on resume
+      // is what keeps this correct if anything ever does.
       async resume(entry) {
         const dive = entry && entry.payload && entry.payload.dive;
         if (dive) dive.restore();
@@ -22518,8 +23103,8 @@
         try { window.Moments.clearChoices(); } catch (_) {}
         return true;
       },
-      // Esc is the keyboard version of LEAVE: ask to go, which lands on the
-      // regenerated scene rather than dumping the player out where they were.
+      // Esc leaves NOW rather than waiting for the render. The dive exits on
+      // its own anyway; this is for a player who has already seen enough.
       onEsc(entry) {
         const dive = entry && entry.payload && entry.payload.dive;
         if (dive) dive.leave();
@@ -22528,19 +23113,50 @@
     });
   })();
 
-  // The live state of one dive: what the player may do in it, and when.
+  // The live state of one dive.
+  //
+  // THE DIVE IS A TRANSITION, NOT A DESTINATION.
+  //
+  // It used to be a place to stand: a close-up with SPEAK / ATTACK / LEAVE on
+  // it, all three locked until the turn behind it finished, and then the
+  // player had to press one to get out. Timed against the live server, the
+  // close-up lands at ~6s and the turn's new scene at ~19s — so the shape of
+  // it was thirteen seconds looking at a finished picture with three buttons
+  // that could not be pressed, followed by a click to dismiss it.
+  //
+  // That is what "painfully slow" was. Not the turn: a plain curated choice
+  // measures SLOWER (~26s to its scene) and nobody calls that broken, because
+  // the world is on screen answering while it happens. The dive was the only
+  // place in the game that made the wait into a room you had to stand in.
+  //
+  // So it reaches out, shows the thing up close, says what happened the
+  // moment the words exist, and hands the world back on its own the instant
+  // the scene has changed. No slate, no click.
+  //
+  // (SPEAK is not lost — TALK is its own action on the scan tag, for anything
+  // that can speak. ATTACK was dive-only; aiming an encounter at a specific
+  // object goes with the slate.)
+  //
   // Created before the Moment is pushed so the scene-painted subscription is
   // armed before the close-up starts generating — the turn can otherwise land
   // during that fetch and the dive would miss the only beat it waits for.
   function createInteractDive(obj) {
-    // Never trap the player in a close-up, even if the turn goes silent.
+    // Never trap the player in a close-up, even if the turn goes silent. The
+    // turn watchdog normally recovers first (which ends the turn, which ends
+    // the dive); this is the backstop under that.
     const HOLD_MAX_MS = 180000;
-    const started = Date.now();
+    // When no turn is coming — makeChoice refused it — the close-up IS the
+    // whole beat, so hold it long enough to read as one instead of a flash.
+    const NO_TURN_DWELL_MS = 2200;
+    // …and never yank a close-up that has only just appeared.
+    const MIN_ON_SCREEN_MS = 600;
+
+    let shownAt = 0;
+    let armedAt = 0;
     let scenePainted = false;
-    let wantsOut = false;
-    let settledSeen = false;
     let exiting = false;
     let done = false;
+    let consequence = "";
     // Whether an INTERACT turn actually went out behind this dive, told to us
     // by the press once makeChoice has had its say (see commitScanAction).
     let turnArmed = false;
@@ -22549,36 +23165,39 @@
     const dive = { closeUpUrl: null, referenceFrame: null };
 
     // The turn is over, however it ended. Ceremony tracks the whole pipeline
-    // INCLUDING the wait for the still — it stays active while the frame
-    // renders, after the prose and choices have already landed — and every
-    // ending clears it: a clean resolve, a filtered image, an error beat, the
-    // turn watchdog, a refused send (hideVeil calls Ceremony.reset).
+    // INCLUDING the wait for the still, and every ending clears it: a clean
+    // resolve, a filtered image, an error beat, the turn watchdog, a refused
+    // send (hideVeil calls Ceremony.reset).
     function turnOver() {
       try { if (Ceremony.isActive && Ceremony.isActive()) return false; } catch (_) {}
       return !state.awaitingResolution && !state.processing;
     }
 
-    // "There is something to leave onto, and the turn behind this dive is
-    // finished." Both exits hang on it: LEAVE walks out onto that frame, and
-    // ATTACK hands it to the encounter as the plate the fight is staged in.
+    // Time to give the world back.
     //
-    // Painting is the usual signal, but it cannot be the only one. A turn whose
-    // image is content-filtered, or one the watchdog gives up on, ends with no
-    // new frame at all — and a dive watching only for paint sat locked for its
-    // full three-minute hold-out while the world behind it had already moved on
-    // and put fresh choices on the wheel.
-    function settled() {
+    // The new frame being ON SCREEN is the signal — not the whole turn
+    // finishing. Those are several seconds apart (scene ~19s, choices ~22s+),
+    // and the second one buys the player nothing: they are being handed back
+    // to a picture, and choices arriving a beat after it is exactly what an
+    // ordinary turn looks like anyway.
+    //
+    // Paint cannot be the only signal, though. A turn whose image is
+    // content-filtered, or one the watchdog gives up on, ends with no new
+    // frame at all — and a dive watching only for paint sat locked for its
+    // full hold-out while the world behind it had already moved on.
+    function readyToHandBack() {
       if (!turnArmed) return false;
-      if (!turnExpected) return true;
-      return scenePainted ? !state.processing : turnOver();
+      if (!turnExpected) return Date.now() - armedAt >= NO_TURN_DWELL_MS;
+      return scenePainted || turnOver();
     }
 
     // makeChoice refuses a turn outright in some states (mid-cutscene, a send
     // that 402s). A dive waiting on a turn that was never dispatched has
-    // nothing coming, so it opens straight onto its full slate.
+    // nothing coming, so it shows the close-up and leaves.
     function armTurn(dispatched) {
       turnArmed = true;
       turnExpected = !!dispatched;
+      armedAt = Date.now();
       sync();
     }
 
@@ -22599,8 +23218,8 @@
 
     // Leave the dive for good. The pop can be REFUSED — Moments drops it while
     // another Moment is mid-choreography — and a dive that retired itself
-    // anyway would leave the player on a close-up whose slate no longer does
-    // anything. Retire only once the Moment is actually gone.
+    // anyway would leave the player on a close-up nothing is watching. Retire
+    // only once the Moment is actually gone.
     async function exitDive() {
       if (done || exiting) return false;
       exiting = true;
@@ -22611,136 +23230,72 @@
       return true;
     }
 
+    // Esc. The auto-exit is the normal way out, but a player who has seen
+    // enough should never have to wait for the render — bailing early just
+    // lands them on the current frame while the turn keeps resolving behind
+    // it, which is what every ordinary turn already looks like.
     function leave() {
       if (done || exiting) return;
-      if (settled()) { exitDive(); return; }
-      // The changed scene is still developing. Say so instead of popping onto
-      // the frame they were trying to leave.
-      wantsOut = true;
-      apply();
+      exitDive();
     }
 
-    // ATTACK aims the encounter system at THIS object instead of letting it
-    // roll for an antagonist. Leaving the dive first is not just a UI order:
-    // an encounter cannot open under a Moment, and its plate is img2img off
-    // whatever is on screen — so the frame the INTERACT turn just drew becomes
-    // the place the fight happens. That frame stops being the image the player
-    // returns to; the encounter's own aftermath turn regenerates the scene
-    // when the fight resolves, which is why ATTACK waits for the turn to be
-    // over rather than racing it.
-    async function attack() {
-      if (done || exiting || !settled()) return;
-      if (!(await exitDive())) return;
-      let fired = false;
-      try {
-        fired = await Encounter.start({ subject: obj });
-      } catch (e) {
-        console.warn("[interact] attack failed:", e);
-      }
-      // The encounter refuses to open in states the dive cannot see (a coin-op
-      // pause, a fight already running). The player is back in the scene either
-      // way, so say the swing went nowhere rather than leaving it unexplained.
-      if (!fired) showRendererToast("The " + (obj.label || "thing") + " doesn\u2019t answer.");
+    // What the nameplate says. Until the consequence lands there is nothing
+    // to report but the reaching; after it, the sentence the player earned.
+    function status() {
+      if (consequence) return consequence;
+      if (!turnArmed || !turnExpected) return "reaching out\u2026";
+      return scenePainted ? "the scene has changed" : "reaching out\u2026";
     }
 
-    // SPEAK nests a Conversation Moment on top of the dive. Handing Talk the
-    // close-up already on screen pins it as the conversation's opening plate,
-    // so the dive reads as continuing rather than cutting to a shimmer while
-    // Talk develops its own (correctly person-framed) portrait behind it.
-    function speak() {
-      if (done || exiting || state.gameOver) return;
-      // Choosing to talk is choosing to stay. Without this, an Esc that landed
-      // while the frame was still developing stayed pending underneath the
-      // conversation and ejected the player the instant they hung up.
-      wantsOut = false;
-      try {
-        Talk.start(Object.assign({}, obj, {
-          speaks: true,
-          reference_image: dive.closeUpUrl || dive.referenceFrame || undefined,
-        }));
-      } catch (e) {
-        console.warn("[interact] speak failed:", e);
-      }
-    }
-
-    function slate() {
-      const locked = !settled();
-      const waiting = "\u2003\u00b7\u2003the scene is still developing";
-      return [
-        { label: "SPEAK", act: speak },
-        { label: locked ? "ATTACK" + waiting : "ATTACK", locked: locked, act: attack },
-        {
-          label: wantsOut
-            ? "LEAVING\u2003\u00b7\u2003waiting for the scene"
-            : (locked ? "LEAVE" + waiting : "LEAVE"),
-          locked: locked,
-          act: leave,
-        },
-      ];
-    }
-
-    // A nested SPEAK owns the screen while it is open. The dive keeps tracking
-    // the turn underneath, but must not paint over the conversation — it
-    // redraws when the conversation pops and hands the Moment back (resume).
+    // A Moment on top of this one owns the screen; the dive keeps tracking the
+    // turn underneath but must not paint over it.
     function onTop() {
       try {
         return !(window.Moments.topType && window.Moments.topType() !== "interact");
       } catch (_) { return true; }
     }
 
-    // What the nameplate says about the world behind the close-up. A turn that
-    // ended without drawing anything must not claim the scene changed — the
-    // player is about to walk out onto the frame they came in on.
-    function status() {
-      if (wantsOut) return "stepping back\u2026";
-      if (!settled()) return "reaching out\u2026";
-      return scenePainted ? "the scene has changed" : "nothing here moved";
-    }
-
-    // Put the dive back on screen as it should currently look: its close-up,
-    // its status, and the slate with the right things live on it. Safe to call
-    // repeatedly — it is the one path that redraws, so the turn landing, a
-    // conversation ending and the first render all go through it.
+    // Put the dive on screen as it should currently look. Safe to call
+    // repeatedly — it is the one path that redraws, so the close-up landing,
+    // the consequence arriving and the first render all go through it.
     function apply() {
       if (done || exiting || !onTop()) return;
-      if (wantsOut && settled()) { exitDive(); return; }
+      if (!shownAt) shownAt = Date.now();
       const url = dive.closeUpUrl || dive.referenceFrame;
       if (url) { try { window.Moments.setPortrait(url); } catch (_) {} }
       try { window.Moments.setNameplate(obj.label || "\u2014", status()); } catch (_) {}
-      if (!window.Moments || typeof window.Moments.setChoices !== "function") return;
-      try {
-        window.Moments.setChoices(slate(), (item) => {
-          if (item && typeof item.act === "function") item.act();
-        }, {});
-      } catch (_) {}
     }
 
-    // The turn landing is the one event that changes what this slate offers.
-    // Polled as well as subscribed because the frame paints a beat before the
-    // turn finishes processing, and both have to be true.
     function sync() {
-      if (done) return;
-      const now = settled();
-      if (now === settledSeen) return;
-      settledSeen = now;
+      if (done || exiting) return;
       apply();
+      if (!readyToHandBack()) return;
+      if (!onTop()) return;
+      // Do not cut a close-up the player has not had a moment to see. Only
+      // bites when the turn resolves unusually fast or was refused outright.
+      if (shownAt && Date.now() - shownAt < MIN_ON_SCREEN_MS) return;
+      exitDive();
     }
 
     onNextScenePainted(() => { scenePainted = true; sync(); });
+    // The words arrive ~16s before the picture. Show them.
+    onNextConsequence((text) => {
+      consequence = clipToSentence(text, 120);
+      apply();
+    });
 
+    // Polled as well as subscribed: paint and consequence are events, but
+    // "the turn ended without either" is a state, and the minimum-dwell and
+    // hold-out deadlines are clocks. 250ms so the hand-back lands on the
+    // frame rather than up to a second after it.
     const tick = setInterval(() => {
       if (done || exiting) return;
-      // The run ending is not something to sit through in a close-up. Nothing
-      // on the slate works any more — Encounter and Talk both refuse a dead run
-      // — and the death overlay is coming up behind the letterbox. Get out of
-      // its way. enterGameOver closes a conversation but knows nothing about
-      // the Moment stack, so this is the dive's own business.
+      // The run ending is not something to sit through in a close-up. The
+      // death overlay is coming up behind the letterbox; get out of its way.
       if (state.gameOver) { exitDive(); return; }
       sync();
-      // The hold-out only applies to a dive the player is actually sitting in.
-      // Popping it from under an open conversation would tear the Moment stack.
-      if (Date.now() - started > HOLD_MAX_MS && onTop()) exitDive();
-    }, 1000);
+      if (Date.now() - shownAt > HOLD_MAX_MS && shownAt && onTop()) exitDive();
+    }, 250);
 
     dive.render = apply;
     dive.restore = apply;
@@ -22804,8 +23359,10 @@
     let choices = [];
     let plateUrl = null;
     let pinnedFrame = null;
-    // Set only when the player aimed this fight at something they were already
-    // looking at (INTERACT -> ATTACK); null for every rolled encounter.
+    // Set only when a caller aims the fight at something specific rather than
+    // letting it roll for an antagonist. Nothing does today — the aimed path
+    // was INTERACT's ATTACK, which went with the dive's slate — but the wiring
+    // is what any "pick a fight with THAT" verb would come back through.
     let forcedSubject = null;
     let aftermath = null;
     let rollTimer = null;
@@ -23162,12 +23719,21 @@
       });
     }
 
-    // What a confrontation slate SHOWS is the lane, not the sentence. The
-    // written verb still goes to the server and still drives the roll — the
-    // player just isn't shown it, because the picture the fight renders never
-    // matches the line closely enough to survive being read first. Promise
-    // "attack" and a violent frame delivers on it; promise "Shatter his skull
-    // against wall" and anything else is a broken promise.
+    // The slate shows the WRITTEN VERB, with its lane as a quiet eyebrow above
+    // it.
+    //
+    // It used to show the lane alone — attack / flee / reason — because a vivid
+    // line the picture could not honour reads as a broken promise: "Shatter his
+    // skull against wall", and then a frame of two people standing apart. That
+    // reasoning was sound while a fight ran four rounds, since the promise had
+    // to survive being re-read every round against a plate that had not moved.
+    //
+    // A fight is now one exchange (ENCOUNTER_MAX_ROUNDS), a committed verb
+    // usually ends it where it stands, and the resolve plate is generated FROM
+    // that verb — so the picture has to honour the line exactly once, which is
+    // the case it was always best at. Reported as "aren't dramatic enough":
+    // three identical words every fight is the least dramatic thing on screen,
+    // and the model had already written something far better underneath them.
     const LANE_WORDS = { confront: "attack", evade: "flee", parley: "reason" };
     const LANE_ORDER = ["confront", "evade", "parley"];
 
@@ -23192,7 +23758,17 @@
       const mapped = choices.map((c, idx) => {
         const text = typeof c === "string" ? c : (c && (c.text || c.label)) || "";
         const lane = (typeof c === "object" && c && c.lane) || "";
-        return { label: laneWord(lane, idx), text: text, lane: lane };
+        // `label` is what the row READS; `laneWord` rides along as the eyebrow
+        // so the player can still see which of the three answers they are
+        // taking. The lane is what the server rolls against, so it has to stay
+        // legible — the verb alone tells you what you are doing, not the odds
+        // you are accepting.
+        return {
+          label: text || laneWord(lane, idx),
+          laneWord: laneWord(lane, idx),
+          text: text,
+          lane: lane,
+        };
       }).filter((c) => c.text);
       // The three authored verbs, plus a way to do something nobody wrote.
       // What gets typed is posted as the choice and drives the roll, the
@@ -23257,6 +23833,9 @@
       resolveShown = false;
       pendingFinish = null;
       promptAfterResolve = false;
+      // The round is over one way or another and the slate is coming back. A
+      // circle still turning over a live slate is a worse lie than no circle.
+      try { Ceremony.settle(); } catch (_) {}
       clearReleaseWatchdog();
       try { clearTurnWatchdog(); } catch (_) {}
       state.awaitingResolution = false;
@@ -23264,6 +23843,9 @@
     }
 
     function failResolve(err) {
+      // Whatever happens below — billing, a dead plate, a refused send — the
+      // circle must not outlive the round it was reporting on.
+      try { Ceremony.abort(); hideVeil(); } catch (_) {}
       if (err && err.status === 402 && err.body && (err.body.needs_usage || err.body.needs_billing)) {
         try { StartMenu.showMenu(); } catch (_) {}
         try { Accounts.open({ tab: "usage", instant: true }); } catch (_) {}
@@ -23303,6 +23885,16 @@
       // how the standoff bled into its own play-out.
       stopPlateFrames();
       clearAutoPick();
+      // Say that the world is working. A round is a real generation (~30s) and
+      // the slate vanishes the instant a lane is taken, so without this the
+      // player is left looking at a still standoff with nothing moving and no
+      // way to tell a working app from a hung one. PASSIVE: the fight owns its
+      // own input gate, and a ceremony that claimed state.processing would make
+      // pick() refuse the next round.
+      try {
+        Ceremony.begin({ passive: true });
+        Ceremony.reach("consequence");
+      } catch (_) {}
       try { Sound.encounterResolve(); } catch (_) {}
       try { if (Haptics && Haptics.encounterResolve) Haptics.encounterResolve(); } catch (_) {}
       try { if (Sound.heartbeatSetBpm) Sound.heartbeatSetBpm(108); } catch (_) {}
@@ -23344,6 +23936,9 @@
         failResolve(res);
         return;
       }
+      // The plate is back and about to paint. reach() is monotonic, so this
+      // walks the circle through the intervening steps rather than jumping.
+      try { Ceremony.reach("guide_image"); } catch (_) {}
       aftermath = {
         image_url: res.resolve_url,
         prompt: res.prompt || "",
@@ -23387,6 +23982,9 @@
       // the play-out used to run underneath the next round's slate. Let the
       // motion land before the next decision is offered.
       await waitPlateFrames();
+      // The picture of what just happened is on screen and has finished
+      // moving: the work this circle was reporting is done.
+      try { Ceremony.settle(); } catch (_) {}
       if (!active || !resolving) return;
       // Do not send the action still through the world model. liveThePlate
       // restages it as a breathing standoff and recasts the people.
@@ -23456,6 +24054,18 @@
       if (typeof CoinOp !== "undefined" && CoinOp.isPaused && CoinOp.isPaused()) return false;
       if (!window.Moments || typeof window.Moments.push !== "function") return false;
 
+      // The wheel behind a Moment is stale, and its typed-action box is part
+      // of the wheel. Leaving one open was how a player got STUCK IN A CUSTOM
+      // ACTION AFTER A FIGHT: a rolled encounter can interrupt any turn, so it
+      // can land while somebody is mid-sentence. The fight plays over the top,
+      // its release sets state.processing for the aftermath turn, and the box
+      // is still sitting there when the world comes back — at which point
+      // Enter does nothing (submitCustomAction bails on state.processing) and
+      // SCAN stays disabled because freeWillOpen never cleared. No button on
+      // screen does anything. Close it while the fight takes the screen; the
+      // half-written line was aimed at a world that no longer exists.
+      try { closeFreeWill(true); } catch (_) {}
+
       pinnedFrame = captureFullFrame();
       // A confrontation the player PICKED (attacking a scanned object from its
       // close-up) names its own antagonist; the travel clock's encounters roll
@@ -23509,6 +24119,15 @@
       } catch (_) {}
       try { window.Moments.setNameplate("…", "something is here"); } catch (_) {}
 
+      // The LONGEST dead wait in the whole game: the standoff plate is a full
+      // generation and the screen is deliberately holding black for it. Report
+      // it, for the same reason the resolve does — with nothing turning, a
+      // working app and a hung one look identical from the sofa.
+      try {
+        Ceremony.begin({ passive: true });
+        Ceremony.reach("guide_image");
+      } catch (_) {}
+
       let res = null;
       try {
         res = await postJSON("/api/encounter/begin", {
@@ -23520,8 +24139,9 @@
       } catch (err) {
         console.warn("[encounter] begin failed:", err);
       }
-      if (entry && entry.aborted) return false;
+      if (entry && entry.aborted) { try { Ceremony.abort(); hideVeil(); } catch (_) {} return false; }
       if (!res || res.error) {
+        try { Ceremony.abort(); hideVeil(); } catch (_) {}
         try { window.Moments.notify({ text: "The presence fades." }); } catch (_) {}
         finish({ survived: true, aborted: true });
         return false;
@@ -23554,6 +24174,8 @@
         await liveThePlate(plateUrl, res.prompt || "");
       }
       if (entry && entry.aborted) return false;
+      // The standoff is drawn and on screen; the slate is about to be offered.
+      try { Ceremony.settle(); } catch (_) {}
       try { Sound.encounterLock(); } catch (_) {}
       try { if (Haptics && Haptics.encounterLock) Haptics.encounterLock(); } catch (_) {}
       const stance = (brief && brief.character && brief.character.stance) || "hostile";
@@ -23997,6 +24619,27 @@
       }
     }
 
+    // Hold the montage up until the destination frame has genuinely PAINTED.
+    //
+    // applyDest only STARTS the swap: Renderer.applyScene hands off to setScene,
+    // which waits for the image to load before it paints. Popping the overlay
+    // the instant applyDest returns therefore uncovers whatever was on the scene
+    // layer BEFORE the run began — and at boot that is the start menu's held
+    // wallpaper (Signal.lock paints it there on purpose, so a plain start does
+    // not open on a black void). Reported as the menu picture appearing between
+    // the opening cutscene and the first frame, as a glitch, for about a second.
+    //
+    // Bounded: a frame that never paints must not trap the player inside the
+    // montage with no way out.
+    function whenDestPainted(maxMs) {
+      return new Promise((resolve) => {
+        let done = false;
+        const fin = () => { if (!done) { done = true; resolve(); } };
+        try { onNextScenePainted(fin); } catch (_) { fin(); return; }
+        setTimeout(fin, Math.max(0, maxMs || 4000));
+      });
+    }
+
     function playNextCut(hop) {
       if (hop && hop.nextCut && hop.nextCut.cutscene_id) {
         play({
@@ -24040,6 +24683,11 @@
         }
       }
       applyDest(hop);
+      // The montage is the cover. Keep it there until there is a real picture
+      // underneath it to uncover (see whenDestPainted).
+      if (hop.destUrl) {
+        try { await whenDestPainted(4500); } catch (_) {}
+      }
       try {
         if (window.Moments && window.Moments.pop) {
           await window.Moments.pop({ cutscene: true });
@@ -24629,8 +25277,15 @@
       try {
         // speak:false → server returns TEXT + per-line voice + agent config; the
         // browser voices it as a generative agent.
+        const deed = opts.deed || {};
         const res = await postJSON("/api/narrator/worldbuild", {
           multi: opts.multi !== false, speak: false, focus: opts.focus || "",
+          // WHAT the player did and to WHAT. Without these the server has
+          // only the choice text, which reads the same whether you walked up
+          // to a thing, opened it, or said something nobody offered you.
+          acted: opts.acted || "",
+          deed_kind: deed.kind || "",
+          deed_target: deed.target || "",
         });
         if (myGen !== gen) return;
         agentCfg = (res && res.agent) || agentCfg;
@@ -24734,7 +25389,7 @@
     // Deliberately single-voice and deliberately brief: this is a beat to stop
     // the turn feeling dead, not a set piece. Returns false when it declined,
     // so the caller can log why nothing was said.
-    function onCommit(choiceText) {
+    function onCommit(choiceText, deed) {
       const act = String(choiceText || "").trim();
       if (!act) return false;
       if (state.gameOver) return false;
@@ -24744,12 +25399,18 @@
       if (!state.audioUnlocked) return false;
       if (openingBusy()) return false;
       if (busy || playing) return false;
+      // Deliberately a SITUATION, not a content rule. A focus is injected as
+      // "follow these exactly, ahead of any mood note below", so anything
+      // said here outranks the brief — and a focus that described what to say
+      // simply replaced the narrator's voice with its own paraphrase. The
+      // brief owns the line; this only says when it is being spoken.
       narrate({
         multi: false,
-        focus: "The player has just committed to: \"" + act + "\". Speak ONE " +
-               "short line — a dozen words at most — that sits in the silence " +
-               "while the world answers. Do not narrate the outcome; it has " +
-               "not happened yet. Do not restate the action.",
+        acted: act,
+        deed: deed,
+        focus: "This line goes in the silence after the player commits, while " +
+               "the world is still answering. The outcome has not happened " +
+               "yet \u2014 do not narrate it.",
       });
       return true;
     }
@@ -24804,16 +25465,41 @@
       show("narrator", "\u2026");
       Sound.talkOpen();
       const dest = (destination || "").toString().trim().slice(0, 80);
-      const bridgeFocus = dest
-        ? "The player has just committed to travel to the " + dest + ". Speak ONE short, tense bridging line \u2014 the trip in motion, the world closing behind them, the next place looming \u2014 as the scene fades to black."
-        : "The player has just committed to travel to a new location. Speak ONE short, tense bridging line \u2014 the trip in motion, the world closing behind them, the next place looming \u2014 as the scene fades to black.";
-      // "the reporter" is the SHIPPED protagonist. Once someone has authored a
-      // character, naming them here is the difference between a confession from
-      // the player's own character and one from a stranger the game replaced.
-      const who = Camera.subject() || "the reporter";
+      // A trip is the one beat with room for two narrations, so it spends them
+      // as a pair: one on the way out, one a second later over the black.
+      //
+      // The focus says WHEN and WHAT ABOUT. It used to name the SHAPE too —
+      // a fact on the way out and a question behind it — which pinned the most
+      // frequent narration in the game (MOVE TO is the main verb) to the one
+      // pairing the voice already overused, on every single trip. The server
+      // rotates the shapes now and knows which ones are due
+      // (_beat_directive), so naming them here only overrode it with the rut.
+      const where = dest ? "the " + dest : "a new location";
+      const bridgeFocus =
+        "This line goes over the fade to black as the player leaves for "
+        + where + ". It is about where they are going, not where they have been.";
+      // THE SECOND LINE USED TO BE A CONFESSION, AND IT WAS THE WORST THING
+      // THE NARRATOR DID.
+      //
+      // It asked for "the BURIED reason they're really out here... a guilt, a
+      // debt, a person they lost". Nothing in the premise or the lore supplies
+      // one, so the model invented a motive on every single trip — a dead
+      // brother it had never mentioned, a debt from a run that never happened
+      // — and invented a DIFFERENT one next time, because only the last few
+      // lines are held back from it. That is where "I came to find my brother"
+      // came from, and why the voice sounded like a narrator from some other
+      // game had wandered in.
+      //
+      // The second half of the pair, and the answer to the invented brother:
+      // it hangs off the line just given instead of off a private history the
+      // narrator does not have. The ban stays; the shape does not, so this one
+      // takes whichever beats the rotation has for it.
       const truthFocus =
-        "REVEAL A DARK TRUTH. Speak ONE short first-person confession from " + who + " \u2014 the BURIED reason they're really out here. Not the assignment, not the cover story: the private motive they haven't admitted to themselves. A guilt, a debt, a person they lost, a thing they did, a thing they're chasing that will destroy them. Concrete and specific to this world's premise + recent events. Ominous, quiet, honest. First person, one short sentence, no meta.";
-      AgentLog.push("narrator", "transition\u2026", "bridge + dark truth");
+        "A beat after the line before it, over the black. This one comes off "
+        + "what you just said \u2014 go one step further in, do not restate it. "
+        + "INVENT NOTHING about yourself: no backstory, no lost relative, no "
+        + "secret errand of your own.";
+      AgentLog.push("narrator", "transition\u2026", "two beats, then two more");
       try {
         // One request carries BOTH focuses (follow_focus is appended server-
         // side to the primary script's segments) so we never hit the per-IP
@@ -24826,6 +25512,8 @@
           // landed on /api/choose yet. Name the trip so the line is about
           // leaving, not a recap of the still on screen.
           acted: dest ? ("Move to " + dest) : "travel to a new location",
+          deed_kind: "move",
+          deed_target: dest,
         });
         if (myGen !== gen) return;
         agentCfg = (res && res.agent) || agentCfg;
@@ -24891,6 +25579,8 @@
 
   function closeFreeWill(clear) {
     if (!state.freeWillOpen) return;
+    // The box is going away; the microphone must not outlive it.
+    try { Dictation.stop(); } catch (_) {}
     state.freeWillOpen = false;
     state.inputMode = "act";
     el.actionWheel.classList.remove("fw-open", "steer-open");
@@ -24899,6 +25589,7 @@
     if (document.activeElement === el.customInput) el.customInput.blur();
     if (el.actionWheel) el.actionWheel.style.bottom = ""; // drop any keyboard offset
     updateScanButton(); // the SCAN button is available again once the input closes
+    try { AutoScan.rearm(); } catch (_) {}
   }
 
   // "Move forward" — commit to one of the generated actions at random.
@@ -25022,8 +25713,519 @@
     setAutoPlay(!state.autoPlay);
   }
 
+  // ── DICTATION ─────────────────────────────────────────────────────────────
+  // Speak the action instead of typing it.
+  //
+  // Uses the browser's own SpeechRecognition rather than recording audio and
+  // shipping it somewhere to be transcribed. That is the whole reason this
+  // feels instant: words land in the box WHILE you are still talking, because
+  // the engine streams interim guesses and revises them. A record-then-upload
+  // round trip cannot do that at any speed — you would be waiting on a file
+  // to finish before seeing a single character. It also needs no API key, no
+  // server route, and no per-use cost.
+  //
+  // (Chrome does send the audio to Google to do the recognition; it just does
+  // it itself, from the browser, with nothing for us to wire up or pay for.)
+  //
+  // The catch is that support is not universal, so the button stays hidden
+  // until we have actually found an engine. A microphone that does nothing is
+  // worse than no microphone at all.
+  const Dictation = (function () {
+    const Engine = (typeof window !== "undefined")
+      && (window.SpeechRecognition || window.webkitSpeechRecognition);
+    const canRecord = (typeof window !== "undefined")
+      && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+      && typeof window.MediaRecorder !== "undefined";
+    // A mic left running by accident should not listen to the room forever.
+    const MAX_MS = 60000;
+
+    let rec = null;
+    let live = false;       // the player wants to be recording
+    let baseText = "";      // whatever was already in the box when we started
+    let finalText = "";     // everything the engine has committed to this session
+    let stopTimer = null;
+
+    // The native engine being PRESENT says nothing about whether it works.
+    // Plain Chromium ships SpeechRecognition without Google's speech key, so
+    // every attempt dies with `network` the instant it starts; corporate DNS
+    // does the same to real Chrome. There is no capability check for this —
+    // you find out by trying. So the first `network` failure flips this for
+    // the session and every later click goes straight to recording, instead
+    // of making the player watch the same dead end over and over.
+    //
+    // Remembered across reloads, because the first click of every page load
+    // was paying the discovery cost again: the engine takes ~600ms to fail,
+    // the handover then waits on getUserMedia, and the player — who is
+    // already talking, because the button went red immediately — loses the
+    // front of their sentence every single time they reload.
+    const SPEECH_DEAD_KEY = "somewhere.speechDead";
+    let speechDead = false;
+    try { speechDead = localStorage.getItem(SPEECH_DEAD_KEY) === "1"; } catch (_) {}
+    function markSpeechDead() {
+      speechDead = true;
+      try { localStorage.setItem(SPEECH_DEAD_KEY, "1"); } catch (_) {}
+    }
+    let mode = null;        // "speech" | "record"
+    let media = null;       // MediaRecorder
+    let stream = null;      // the mic stream, so we can release it
+    let chunks = [];
+    let startedAt = 0;      // so a fumbled double-click never uploads silence
+    let deviceLabel = "";   // which input the OS gave us, for when it is silent
+
+    // Gemini takes several audio containers; MediaRecorder offers whichever
+    // the browser felt like implementing. Ask for the ones that transcribe
+    // well, in order, and let the browser pick if none are claimed.
+    const RECORD_MIMES = [
+      "audio/webm;codecs=opus",
+      "audio/ogg;codecs=opus",
+      "audio/webm",
+      "audio/ogg",
+      "audio/mp4",
+    ];
+
+    // Dictation is possible if EITHER path can run. Recording alone is a
+    // perfectly good microphone — it just cannot show words as you speak.
+    function available() { return !!Engine || canRecord; }
+
+    // ── is the microphone actually hearing anything? ──────────────────────
+    // The reported bug was "the microphone doesn't work, it just says Didn't
+    // catch that". That message was true and useless. A live microphone with
+    // nobody talking into it still captures room tone; opus encodes room tone
+    // to tens of kilobytes, so the old "is there anything in this clip" check
+    // — blob.size < 2048 — only ever caught DIGITAL silence. Measured in the
+    // browser: four seconds of true silence is 1.2 KB and sails under the
+    // gate, three seconds of an empty room is 48 KB and sails over it. Every
+    // dead-input case therefore uploaded, was paid for, came back empty, and
+    // produced the one message that cannot distinguish a muted microphone
+    // from a mumbled sentence from a failing server.
+    //
+    // So the level gets measured here. It drives the ring on the button, so
+    // the player can SEE the microphone hearing them rather than trusting a
+    // red light, and it decides which failure they are actually having.
+    const SILENT_PEAK = 0.012;  // under the room tone of any real open mic
+    const SPEECH_PEAK = 0.06;   // a voice at arm's length clears this easily
+
+    let audioCtx = null;
+    let analyser = null;
+    let meterTimer = null;
+    let peak = 0;               // loudest sample seen since this clip started
+
+    function setLevel(v) {
+      if (!el.customMic) return;
+      const lvl = Math.max(0, Math.min(1, v || 0));
+      el.customMic.style.setProperty("--mic-level", String(lvl));
+    }
+
+    function startMeter(s) {
+      stopMeter();
+      peak = 0;
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        audioCtx = new AC();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 1024;
+        audioCtx.createMediaStreamSource(s).connect(analyser);
+        const buf = new Float32Array(analyser.fftSize);
+        meterTimer = setInterval(() => {
+          if (!analyser) return;
+          analyser.getFloatTimeDomainData(buf);
+          let frame = 0;
+          for (let i = 0; i < buf.length; i++) {
+            const a = Math.abs(buf[i]);
+            if (a > frame) frame = a;
+          }
+          if (frame > peak) peak = frame;
+          // Square-rooted against the speech threshold: a quiet room still
+          // moves the ring a little and a voice fills it. A meter that only
+          // twitches at a shout reads as a broken meter.
+          setLevel(Math.min(1, Math.sqrt(frame / SPEECH_PEAK)));
+        }, 60);
+      } catch (_) {
+        // Metering is a diagnostic. It must never be the reason dictation
+        // fails — a browser that won't give us an AudioContext still records.
+      }
+    }
+
+    function stopMeter() {
+      clearInterval(meterTimer); meterTimer = null;
+      analyser = null;
+      try { if (audioCtx) audioCtx.close(); } catch (_) {}
+      audioCtx = null;
+      setLevel(0);
+    }
+
+    function setUi(on) {
+      if (el.customMic) el.customMic.classList.toggle("recording", on);
+      if (el.actionWheel) el.actionWheel.classList.toggle("dictating", on);
+      if (el.customMic) {
+        el.customMic.setAttribute(
+          "title", on ? "Stop dictating (click, or press Escape)"
+                      : "Speak your action (click to start, click again to stop)");
+      }
+      if (!on && el.customInput) el.customInput.classList.remove("has-interim");
+    }
+
+    // The recorded path has a gap the native one does not: you stop talking
+    // and then wait on an upload. Saying "transcribing" is the difference
+    // between a considered pause and a dead button.
+    let transcribing = false;
+    let settledWaiters = [];
+    function setBusy(on) {
+      transcribing = !!on;
+      if (el.customMic) el.customMic.classList.toggle("transcribing", on);
+      if (el.actionWheel) el.actionWheel.classList.toggle("transcribing", on);
+      if (el.customInput) {
+        el.customInput.setAttribute(
+          "placeholder", on ? "transcribing\u2026" : "type your own action...");
+      }
+      if (!on && settledWaiters.length) {
+        const waiting = settledWaiters;
+        settledWaiters = [];
+        waiting.forEach((fn) => { try { fn(); } catch (_) {} });
+      }
+    }
+    function isTranscribing() { return transcribing; }
+    function whenSettled(fn) {
+      if (!transcribing) { fn(); return; }
+      settledWaiters.push(fn);
+    }
+
+    // Words, or nothing. Both paths end up here, and both can hand back
+    // something that is not speech — a live run typed "00:00" into the action
+    // box. Anything without a letter in it is an artifact of an engine that
+    // heard nothing, and the player is better served by an untouched box than
+    // by a timestamp they now have to delete.
+    function spoken(text) {
+      const s = String(text || "").trim();
+      return /[^\W\d_]/u.test(s) ? s : "";
+    }
+
+    // maxlength on the input is not enforced for programmatic writes, so the
+    // cap has to be applied here or a long ramble silently exceeds what the
+    // player is allowed to type.
+    function paint(interim) {
+      if (!el.customInput) return;
+      const cap = parseInt(el.customInput.getAttribute("maxlength") || "200", 10);
+      const joined = (baseText + finalText + interim).replace(/\s+/g, " ").trimStart();
+      el.customInput.value = joined.slice(0, cap);
+      el.customInput.classList.toggle("has-interim", !!interim.trim());
+    }
+
+    function start() {
+      if (live) return;
+      if (Engine && !speechDead) startSpeech();
+      else if (canRecord) startRecording();
+      else showRendererToast("Dictation is not available in this browser");
+    }
+
+    // ── path A: the browser's own engine — instant, live text, free ───────
+    function startSpeech() {
+      try {
+        rec = new Engine();
+      } catch (_) {
+        markSpeechDead();
+        if (canRecord) { startRecording(); return; }
+        showRendererToast("Dictation is not available in this browser");
+        return;
+      }
+      rec.lang = (navigator && navigator.language) || "en-US";
+      rec.interimResults = true;   // the reason this feels live
+      // Keep listening through the pauses people leave mid-sentence. Without
+      // this the engine stops at the first breath and dictating one sentence
+      // takes three clicks.
+      rec.continuous = true;
+      rec.maxAlternatives = 1;
+
+      baseText = (el.customInput && el.customInput.value) || "";
+      if (baseText && !/\s$/.test(baseText)) baseText += " ";
+      finalText = "";
+
+      rec.onresult = (ev) => {
+        let interim = "";
+        for (let i = ev.resultIndex; i < ev.results.length; i++) {
+          const r = ev.results[i];
+          if (r.isFinal) finalText += spoken(r[0].transcript) ? r[0].transcript : "";
+          else interim += r[0].transcript;
+        }
+        paint(spoken(interim) ? interim : "");
+      };
+
+      rec.onerror = (ev) => {
+        const err = (ev && ev.error) || "";
+        // A pause with no words in it is not a failure; `continuous` means we
+        // are still listening and the player has not done anything wrong.
+        if (err === "no-speech" || err === "aborted") return;
+        // `network` means the engine cannot reach its speech backend, and it
+        // never will on this browser: Chromium builds without Google's speech
+        // key fail this way on every single attempt. This is THE failure the
+        // recorded path exists for — hand over mid-click, keep the button
+        // red, and the player never learns there were two paths. They clicked
+        // a microphone and it is recording.
+        if (err === "network") {
+          markSpeechDead();
+          console.warn("[standalone] speech engine unreachable (network) \u2014 "
+                       + "switching to recorded dictation for this session");
+          try { rec.onend = null; rec.abort(); } catch (_) {}
+          rec = null;
+          if (canRecord) { startRecording({ resumed: true }); return; }
+          live = false;
+          setUi(false);
+          showRendererToast("Dictation unavailable \u2014 no microphone access");
+          return;
+        }
+        if (err === "not-allowed" || err === "service-not-allowed") {
+          showRendererToast("Microphone blocked \u2014 allow access to dictate");
+        } else {
+          showRendererToast("Dictation stopped: " + (err || "unknown error"));
+        }
+        stop();
+      };
+
+      // Engines stop on their own after a silence even with `continuous` set.
+      // While the player still wants to be recording, pick straight back up —
+      // this is what makes a click-to-start / click-to-stop control behave the
+      // way the player expects rather than dying between sentences.
+      rec.onend = () => {
+        if (!live) return;
+        try { rec.start(); } catch (_) { stop(); }
+      };
+
+      try {
+        rec.start();
+      } catch (_) {
+        markSpeechDead();
+        if (canRecord) { startRecording(); return; }
+        showRendererToast("Could not start dictation");
+        return;
+      }
+      mode = "speech";
+      goLive();
+    }
+
+    // ── path B: record it and let the server transcribe ───────────────────
+    // Slower — you wait on an upload instead of watching words appear — but
+    // it answers, and an answer beats a microphone that never does anything.
+    function startRecording(opts) {
+      const resumed = !!(opts && opts.resumed);
+      if (!canRecord) {
+        live = false; setUi(false);
+        showRendererToast("Dictation is not available in this browser");
+        return;
+      }
+      if (!resumed) {
+        baseText = (el.customInput && el.customInput.value) || "";
+        if (baseText && !/\s$/.test(baseText)) baseText += " ";
+        finalText = "";
+      }
+      // Optimistic: light the button now. getUserMedia can take a moment the
+      // first time (the permission prompt), and a control that does nothing
+      // visible until you have answered a dialog reads as broken.
+      mode = "record";
+      goLive();
+      navigator.mediaDevices.getUserMedia({ audio: true }).then((s) => {
+        if (!live) { releaseStream(s); return; }   // stopped during the prompt
+        stream = s;
+        // Which input the OS actually handed us. When the recording turns out
+        // to be silent this is the only thing that tells the player WHERE to
+        // go and fix it, and it costs nothing to keep.
+        try {
+          const t = s.getAudioTracks()[0];
+          deviceLabel = (t && t.label) || "";
+        } catch (_) { deviceLabel = ""; }
+        const type = RECORD_MIMES.find(
+          (m) => window.MediaRecorder.isTypeSupported
+            && window.MediaRecorder.isTypeSupported(m));
+        try {
+          media = type ? new MediaRecorder(s, { mimeType: type })
+                       : new MediaRecorder(s);
+        } catch (_) {
+          media = new MediaRecorder(s);
+        }
+        chunks = [];
+        startedAt = Date.now();
+        media.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+        media.onstop = () => { transcribe(); };
+        // Timeslice rather than one blob at the end: a recorder that never
+        // fires its final dataavailable (Electron and some mobile builds do
+        // this) otherwise hands back nothing at all, which is indistinguishable
+        // from a player who said nothing.
+        media.start(250);
+        startMeter(s);
+      }).catch((err) => {
+        live = false;
+        setUi(false);
+        const name = (err && err.name) || "";
+        showRendererToast(name === "NotAllowedError"
+          ? "Microphone blocked \u2014 allow access to dictate"
+          : "No microphone available");
+      });
+    }
+
+    function releaseStream(s) {
+      try { (s || stream).getTracks().forEach((t) => t.stop()); } catch (_) {}
+      if (!s) stream = null;
+    }
+
+    // What the server says when it hands back no words. Every one of these
+    // used to arrive as an empty string and be reported as "Didn't catch
+    // that", so a missing API key, a rate limit and a genuine silence were
+    // one indistinguishable message.
+    const REASON_TEXT = {
+      no_speech: "Didn't catch that",
+      too_short: "Too short \u2014 hold the mic while you speak",
+      disabled: "Dictation is switched off on this server",
+      upstream_error: "Transcription service is unreachable",
+      slow_down: "One at a time \u2014 try again in a second",
+      bad_audio: "That recording could not be read",
+    };
+
+    function transcribe() {
+      const blob = chunks.length
+        ? new Blob(chunks, { type: (media && media.mimeType) || "audio/webm" })
+        : null;
+      const heldMs = Date.now() - startedAt;
+      const heardPeak = peak;
+      const device = deviceLabel;
+      chunks = [];
+      stopMeter();
+      releaseStream();
+      media = null;
+      // A fumbled double-click is not a dictation. Duration still decides
+      // this one — a clip too brief to hold a word is not worth a round trip
+      // whatever its level.
+      if (!blob || heldMs < 350) { setBusy(false); return; }
+      // Nothing reached the microphone at all: quieter than the room tone of
+      // any live input, which means the wrong device, a muted one, or a track
+      // the OS opened and never fed. Naming the device is the difference
+      // between a message the player can act on and one they can only resent.
+      if (heardPeak < SILENT_PEAK) {
+        setBusy(false);
+        console.warn("[standalone] dictation heard nothing", { peak: heardPeak, device: device });
+        showRendererToast(device
+          ? "No sound from \u201c" + device + "\u201d \u2014 check your microphone"
+          : "No sound from your microphone \u2014 check your input device");
+        return;
+      }
+      setBusy(true);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        postJSON("/api/transcribe", { audio: String(reader.result || "") })
+          .then((res) => {
+            const said = spoken((res && res.text) || "");
+            console.log("[standalone] dictation (recorded):",
+                        JSON.stringify((res && res.text) || ""),
+                        { peak: heardPeak, bytes: blob.size, reason: (res && res.reason) || "" });
+            if (said) {
+              finalText = said;
+              paint("");
+              focusEnd();
+              return;
+            }
+            // Heard SOMETHING but no words came back. If it never got near
+            // speaking volume, say that instead of blaming the words — it is
+            // the difference between "say it again" and "move closer".
+            const reason = (res && res.reason) || "no_speech";
+            if (reason === "no_speech" && heardPeak < SPEECH_PEAK) {
+              showRendererToast("Too quiet \u2014 speak up or move closer to the mic");
+              return;
+            }
+            showRendererToast(REASON_TEXT[reason] || "Didn't catch that");
+          })
+          .catch(() => { showRendererToast("Transcription failed"); })
+          .finally(() => { setBusy(false); });
+      };
+      reader.onerror = () => { setBusy(false); showRendererToast("Transcription failed"); };
+      reader.readAsDataURL(blob);
+    }
+
+    function goLive() {
+      live = true;
+      setUi(true);
+      try { Sound.open(); } catch (_) {}
+      try { Haptics.soft && Haptics.soft(); } catch (_) {}
+      clearTimeout(stopTimer);
+      stopTimer = setTimeout(() => {
+        if (live) { stop(); showRendererToast("Dictation timed out"); }
+      }, MAX_MS);
+    }
+
+    function focusEnd() {
+      if (!el.customInput) return;
+      el.customInput.focus();
+      // Caret to the end, so typing continues the dictated line rather than
+      // landing in the middle of it.
+      const n = el.customInput.value.length;
+      try { el.customInput.setSelectionRange(n, n); } catch (_) {}
+    }
+
+    function stop() {
+      clearTimeout(stopTimer); stopTimer = null;
+      if (!live) { setUi(false); return; }
+      live = false;             // set first so onend does not restart us
+      if (mode === "record") {
+        // onstop runs transcribe(), which paints the result when it lands.
+        // With no recorder there is nothing to transcribe — the player
+        // stopped while getUserMedia was still resolving — so the meter and
+        // the stream have to be torn down here instead.
+        try {
+          if (media && media.state !== "inactive") {
+            media.stop();
+          } else {
+            stopMeter();
+            releaseStream();
+          }
+        } catch (_) { stopMeter(); releaseStream(); }
+      } else {
+        try { rec && rec.stop(); } catch (_) {}
+        rec = null;
+        // Which engine produced what, because the two paths are
+        // indistinguishable once the text is in the box and they fail
+        // differently. Worth a console line while this is a prototype.
+        console.log("[standalone] dictation (native):", JSON.stringify(finalText));
+        paint("");              // drop any un-finalised tail
+      }
+      mode = null;
+      setUi(false);
+      try { Sound.ping(); } catch (_) {}
+      focusEnd();
+    }
+
+    function toggle() { live ? stop() : start(); }
+    function isLive() { return live; }
+
+    function init() {
+      if (!el.customMic) return;
+      if (!available()) return;   // stays hidden; typing still works
+      el.customMic.classList.remove("hidden");
+      el.customMic.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggle();
+      });
+    }
+
+    return { init, start, stop, toggle, isLive, available, isTranscribing, whenSettled };
+  })();
+  try { window.__Dictation = Dictation; } catch (_) {}
+
   function submitCustomAction(e) {
     e.preventDefault();
+    // Sending is the end of dictating, whether it was the mic or Enter that
+    // finished the line. Stop first so the last finalised words are in the
+    // box before we read it.
+    try { Dictation.stop(); } catch (_) {}
+    // The recorded path finishes AFTER the stop: the clip still has to upload
+    // and come back. Hitting Enter the moment you stop talking therefore read
+    // an empty box and did nothing, and then the words appeared — so the
+    // player pressed Enter on their own action twice. Let the upload land and
+    // send it for them.
+    try {
+      if (Dictation.isTranscribing()) {
+        Dictation.whenSettled(() => submitCustomAction(e));
+        return;
+      }
+    } catch (_) {}
     const text = el.customInput.value.trim();
     if (!text || state.gameOver) return;
     // Realtime SHAPE: steer the live video NOW (works even while a turn resolves).
@@ -25050,8 +26252,15 @@
         return;
       }
     } catch (_) {}
-    // ACT (full turn) stays gated on the pipeline being idle.
-    if (state.processing) return;
+    // ACT (full turn) stays gated on the pipeline being idle. Saying so is the
+    // point: this used to return silently, so a turn still resolving made Enter
+    // look like a dead key, and the box stayed open over an action that was
+    // never sent. Keep what they wrote — the turn lands in seconds and the line
+    // is still the line they wanted.
+    if (state.processing) {
+      showRendererToast("The world is still moving — one moment");
+      return;
+    }
     el.customInput.value = "";
     Sound.submit(); // custom free-will action sent
     closeFreeWill(true); // gate closes on submit
@@ -25152,7 +26361,12 @@
     const chip = document.getElementById("condition-detect");
     const text = document.getElementById("condition-detect-text");
     if (chip) chip.dataset.level = level;
-    if (text) text.textContent = level.toUpperCase();
+    // Say WHY, when the frame is what said so. Detection used to move on the
+    // narrator's word choice alone, which the player cannot see and therefore
+    // cannot play around; "SUSPICIOUS · SEEN" names a fact about the picture
+    // in front of them.
+    const seen = s.detection_source === "frame" && level !== "hidden";
+    if (text) text.textContent = level.toUpperCase() + (seen ? " \u00b7 SEEN" : "");
     // Being noticed is a beat in itself — give it the escalation sting the
     // phase change gets, but only when it gets worse.
     const wasLevel = CONDITION_LEVELS.indexOf(state._lastDetect || "hidden");
@@ -25367,6 +26581,7 @@
     el.tapeOverlay.classList.add("hidden");
     Sound.toggle();
     updateScanButton(); // the SCAN button is available again once the tape deck closes
+    try { AutoScan.rearm(); } catch (_) {}
   }
 
   function toggleSound() {
@@ -25621,7 +26836,13 @@
       return;
     }
     if (document.activeElement === el.customInput) {
-      if (e.key === "Escape") closeFreeWill(true); // Esc closes the gate
+      if (e.key === "Escape") {
+        // While dictating, Esc means "stop listening" — not "throw away what
+        // I just said". Closing the gate on the same key would discard a line
+        // the player spoke but had not read back yet. A second Esc closes it.
+        if (Dictation.isLive()) { Dictation.stop(); return; }
+        closeFreeWill(true); // Esc closes the gate
+      }
       return;
     }
     // A scan tag's action bar is open: Esc collapses it (keeps scanning).
@@ -27047,6 +28268,7 @@
     Movement.refreshHints();
     VerbBar.init();
     HappyOysterOptions.init();
+    Dictation.init();   // reveals the mic only if this browser can actually listen
     // Learn which camera the game was authored with before the first scene
     // lands, so the world is BUILT with it rather than corrected afterwards.
     const cameraReady = Camera.load();

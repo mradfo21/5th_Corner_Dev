@@ -106,6 +106,21 @@ _STALL_MARKERS = (
     "to examine", "to survey", "get a better look", "for a better look",
 )
 
+# The literal list above only catches the exact phrasings it was written for.
+# A live run offered — and the harness played — "Press yourself against ribbed
+# wall", which is the same dead turn as "Press your back against the wall" but
+# shares no marker with it; "Hug the tunnel wall" slips past "hug the wall" for
+# the same reason. These match the SHAPE instead: a bracing verb landing on a
+# surface, with anything in between.
+_STALL_PATTERNS = (
+    # press/pin/flatten/brace/huddle/squeeze yourself (or a body part) against X
+    re.compile(r"\b(press|pin|flatten|brace|huddle|squeeze|wedge|hold|throw)\b"
+               r"[^.]{0,30}\bagainst\b"),
+    # hug / cling to / hunker behind any surface, however it is qualified
+    re.compile(r"\b(hug|cling|hunker|crouch|kneel|lie|duck)\b"
+               r"[^.]{0,30}\b(wall|walls|rock|stone|floor|ground|corner|ledge|surface)\b"),
+)
+
 # Adverbs that commonly PREFIX a choice ("Carefully inspect…", "Quietly watch…"),
 # hiding the real verb from a naive first-word check. We skip these (and any other
 # -ly adverb) to find the ACTUAL action verb.
@@ -145,6 +160,8 @@ def is_meaningless_choice(choice: str) -> bool:
     if any(marker in c for marker in _CAMERA_MARKERS):
         return True
     if any(marker in c for marker in _STALL_MARKERS):
+        return True
+    if any(p.search(c) for p in _STALL_PATTERNS):
         return True
     return False
 
@@ -212,6 +229,41 @@ def enforce_diversity(choices):
             unique.append(c_trunc)
     return unique
 
+
+def normalize_recent(recent_choices):
+    """Coerce the `recent_choices` argument into a list of plain strings.
+
+    Callers have passed a list, a single string, and (for most of this
+    function's life) an empty string. Everything downstream wants a list.
+    """
+    if not recent_choices:
+        return []
+    if isinstance(recent_choices, str):
+        return [recent_choices]
+    return [str(c) for c in recent_choices if c]
+
+
+def drop_recently_done(choices, recent_actions):
+    """Drop options the player has already just performed.
+
+    The slate is generated from the rendered frame, and img2img keeps that
+    frame visually continuous — so the same two landmarks stay on screen turn
+    after turn and the model re-derives the same slate from them. A live run
+    offered "vault the chain link fence" on six consecutive turns and the
+    player crossed the same fence four times, because nothing in the choice
+    path knew what had already been done. The prompt is told as well, but the
+    model does not reliably obey it, so this is the backstop.
+
+    Never returns empty: if every option is a repeat, the caller still needs a
+    slate and a repeated option beats a blank one.
+    """
+    recent = [r.lower() for r in normalize_recent(recent_actions)]
+    if not recent:
+        return list(choices or [])
+    kept = [c for c in (choices or [])
+            if not any(is_too_similar(c.lower(), r) for r in recent)]
+    return kept or list(choices or [])
+
 def generate_choices(
     client = None,  # No longer used - Gemini is called directly
     prompt_tmpl: str = "",
@@ -254,7 +306,8 @@ def generate_choices(
     ).format(
         dispatch=last_dispatch.strip(),
         seen_elements=seen_elements,
-        recent_choices=recent_choices,
+        # Rendered, not repr'd — a bare list interpolates as "['a', 'b']".
+        recent_choices="; ".join(normalize_recent(recent_choices)) or "nothing yet",
         caption=caption,
         image_description=image_description or "",
         time_of_day=time_of_day or "",
@@ -648,6 +701,9 @@ def generate_choices(
         print(f"[CHOICES] All options were camera/observation/waiting — using contextual fallback", flush=True)
     # Final diversity and generic filter
     opts = enforce_diversity(opts)
+    # …and against what the player has ALREADY done, which diversity within a
+    # single slate cannot see (see drop_recently_done).
+    opts = drop_recently_done(opts, recent_choices)
     opts = [c for c in opts if c.lower() not in {"photograph the chaos", "sneak past the guards", "search for hidden passage"}]
     if not opts:
         # Don't fall back to corporate language — use the contextual builder so
@@ -684,12 +740,7 @@ def generate_choices(
     # diverse, grounded, and physical. The critic is a polish step, not a
     # gate; we cannot let it produce an empty slate on the intro turn.
     vision = image_description if image_description else ''
-    recent = []
-    if recent_choices:
-        if isinstance(recent_choices, list):
-            recent = recent_choices
-        elif isinstance(recent_choices, str):
-            recent = [recent_choices]
+    recent = normalize_recent(recent_choices)
     _critic_t0 = time.time()
     if frame_attached and SKIP_CRITIC_WHEN_FRAME_ATTACHED:
         # The slate was generated with the actual rendered frame attached, so
@@ -720,6 +771,8 @@ def generate_choices(
         improved_choices = drop_meaningless_choices(opts) or opts
     if not improved_choices:
         improved_choices = _contextual_fallback()
+    # The critic rewrites options and can walk one straight back into a repeat.
+    improved_choices = drop_recently_done(improved_choices, recent)
     # Critic rewrites ignore the 3–6 word contract; clip before top-up so a
     # collapsed duplicate can be replaced instead of served with an ellipsis.
     improved_choices = clip_choice_slate(improved_choices)

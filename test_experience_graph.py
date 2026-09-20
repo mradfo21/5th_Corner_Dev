@@ -726,8 +726,21 @@ class TestShippedSomewhereLore(unittest.TestCase):
         blob = str(lore.get("notes") or "")
         for doc in lore.get("documents") or []:
             blob += "\n" + str(doc.get("text") or "")
-        for marker in ("Horizon", "The Gate", "Four Corners", "1993", "Jason"):
+        # World facts only. "Jason" used to be on this list and should not be:
+        # the Lore node is HISTORICAL BACKGROUND about the place, and the
+        # protagonist is the cast sheet's job. game_identity.recast /
+        # recast_stored_prompts exist precisely to rename the shipped
+        # protagonist out of world text when a player recasts — and they walk
+        # PROMPTS, not an Experience's lore, so a shipped bible that named him
+        # would be the one copy a recast could not reach. It would then sit
+        # under a different protagonist's sheet contradicting it, which is the
+        # same failure "Give the story log back its own channel" fixed at the
+        # WORLD CONTEXT surface.
+        for marker in ("Horizon", "The Gate", "Four Corners", "1993"):
             self.assertIn(marker, blob, f"shipped lore is missing {marker!r}")
+        self.assertNotIn("Jason", blob,
+                         "the shipped bible must not name a protagonist a "
+                         "recast cannot rename")
         self.assertNotEqual(lore.get("enabled"), False)
 
 

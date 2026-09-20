@@ -83,6 +83,33 @@ def choice_texts(prompt):
     return [c.get("text", "") for c in (prompt.get("choices") or [])] if prompt else []
 
 
+def clear_any_cutscene(base, items, timeout=300):
+    """Play out an opening cutscene the way the browser does, or nothing moves.
+
+    An authored opening (or the level's approach montage) parks the choice
+    slate and sets `experience_cutscene_id`, and `/api/choose` answers 409
+    `cutscene_playing` while it is set. The browser plays the shots and then
+    POSTs /api/cutscene/complete, which installs the opening establishing beat
+    and releases the slate. No headless driver here ever called it.
+
+    This file hid that rather than failing on it: with no intro prompt,
+    `choice_texts(None)` is `[]`, the loop falls through to its canned FALLBACK
+    action, and every run reported "functional: every turn resolves" while
+    having never once been offered a generated slate. Four runs in the full
+    harness all opened on the hardcoded "Look around" for that reason.
+
+    Returns the feed after the cutscene is done.
+    """
+    if not any((i or {}).get("type") == "cutscene" for i in (items or [])):
+        return items
+    print("[autoplay] opening cutscene — completing it as the client would")
+    try:
+        post_json(base, "/api/cutscene/complete", {}, timeout=timeout)
+    except Exception as e:
+        print(f"[autoplay] cutscene complete failed: {e}")
+    return get_json(base, "/api/feed?since_id=0")
+
+
 def is_fallback_text(text):
     t = (text or "").lower()
     return any(m in t for m in FALLBACK_MARKERS)
@@ -169,6 +196,7 @@ def play(base, turns, strategy, turn_timeout, image_grace=25):
         print("[autoplay] image generation OFF — image checks reported, not scored.")
 
     reset_items, reset_dt = post_json(base, "/api/reset", {})
+    reset_items = clear_any_cutscene(base, reset_items)
     intro_prompt = latest_prompt(reset_items)
     if report["images_enabled"]:
         reset_items = wait_for_scene_image(base, 0, reset_items, image_grace)
@@ -250,6 +278,7 @@ def play(base, turns, strategy, turn_timeout, image_grace=25):
             if status == "death":
                 # restart to keep exercising the loop
                 reset_items, _ = post_json(base, "/api/reset", {})
+                reset_items = clear_any_cutscene(base, reset_items)
                 current_prompt = latest_prompt(reset_items)
                 last_id = max((i.get("id", 0) for i in reset_items), default=0)
                 prev_choices = choice_texts(current_prompt)

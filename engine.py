@@ -3284,8 +3284,15 @@ COLOR: <dominant color palette in 5-10 words>
 DESCRIPTION: <detailed description of what is visible, focusing on objects, threats, exits, and anything you could interact with. Be direct and literal. If there are hands, weapons, tools, figures, silhouettes, or creatures visible, mention them explicitly.>
 SPATIAL: <spatial compass — describe: (a) what is DIRECTLY AHEAD at what distance, (b) what is visible to the LEFT, (c) what is visible to the RIGHT, (d) what is underfoot/ground type, (e) camera height estimate (standing/crouching/elevated). Keep under 50 words. Format: "Ahead: <thing> ~<distance>. Left: <thing> ~<distance>. Right: <thing> ~<distance>. Ground: <surface>. <Camera height>.">
 SETTING: <ONE of: outdoor-desert, outdoor-cliff, outdoor-road, outdoor-other, indoor-corridor, indoor-lab, indoor-warehouse, indoor-other, transitional>
+WATCHERS: <count> | <facing|away|none> | <near|mid|far>
 
-Describe ONLY what is actually in this image. Do not assume a desert, a facility, or any location the image does not show."""
+Describe ONLY what is actually in this image. Do not assume a desert, a facility, or any location the image does not show.
+
+WATCHERS answers one thing: could something in this frame see the camera right now.
+• <count>: how many LIVING things are visible (people, figures, silhouettes, creatures, animals). Machines only if clearly pointed this way.
+• <facing>: the NEAREST one's orientation — `facing` toward this camera, `away` if turned off or occupied, `none` if count is 0.
+• <near|mid|far>: that same nearest one's distance — `near` is within a stride, `far` is a distant silhouette.
+Grade the FRAME, not the story: no watchers you cannot see, nobody implied by the setting, and darkness is not somebody hiding in it. `0 | none | far` is the common, correct answer."""
         
         # Model note: gemini-2.0-flash-exp and later gemini-2.0-flash were retired
         # on the current API/key (text calls 404'd while gemini-3.1-flash-lite-image still
@@ -3354,6 +3361,10 @@ Describe ONLY what is actually in this image. Do not assume a desert, a facility
         description  = ""
         spatial      = ""   # NEW: directional compass (ahead/left/right/ground/height)
         setting      = ""   # NEW: environment type (outdoor-desert, indoor-corridor, etc.)
+        watchers     = ""   # NEW: could anything in frame see the camera (see the
+                            # detection ladder's "witness" — this is the sensor that
+                            # makes being seen a fact about the picture rather than a
+                            # phrase the narrator happened to choose)
 
         lines = full_text.strip().split("\n")
         for i, line in enumerate(lines):
@@ -3363,10 +3374,15 @@ Describe ONLY what is actually in this image. Do not assume a desert, a facility
                 color_palette = line.replace("COLOR:", "").strip()
             elif line.startswith("DESCRIPTION:"):
                 description = line.replace("DESCRIPTION:", "").strip()
-                # Capture continuation lines that are NOT other field labels
+                # Capture continuation lines that are NOT other field labels.
+                # Every field label has to be in this stop-list: one that is
+                # missing gets swallowed into the description, which is the
+                # spatial anchor for the NEXT image prompt, so a parse leak
+                # here quietly poisons the render continuity loop.
                 j = i + 1
                 while j < len(lines) and not any(
-                    lines[j].startswith(k) for k in ("SPATIAL:", "SETTING:", "TIME:", "COLOR:")
+                    lines[j].startswith(k) for k in
+                    ("SPATIAL:", "SETTING:", "TIME:", "COLOR:", "WATCHERS:")
                 ):
                     description += " " + lines[j]
                     j += 1
@@ -3374,6 +3390,8 @@ Describe ONLY what is actually in this image. Do not assume a desert, a facility
                 spatial = line.replace("SPATIAL:", "").strip()
             elif line.startswith("SETTING:"):
                 setting = line.replace("SETTING:", "").strip()
+            elif line.startswith("WATCHERS:"):
+                watchers = line.replace("WATCHERS:", "").strip()
 
         # If parsing failed, fall back to raw text
         if not description:
@@ -3385,6 +3403,7 @@ Describe ONLY what is actually in this image. Do not assume a desert, a facility
             "color_palette": color_palette.strip(),
             "spatial":       spatial.strip(),
             "setting":       setting.strip(),
+            "watchers":      watchers.strip(),
         }
 
         # Cache the result
@@ -3765,6 +3784,18 @@ _CONSEQUENCE_RESPONSE_SCHEMA = {
         "dispatch": {"type": "STRING"},
         "visual_scene": {"type": "STRING"},
         "player_alive": {"type": "BOOLEAN"},
+        # Did this beat move the player somewhere else? The renderer used to
+        # guess that from the wording of the choice, and guessed wrong often
+        # enough to break the game: "explore deeper into this space" was read
+        # as staying put (`deeper` suppresses the detector, and neither
+        # `explore` nor `space` is in its word lists), so the turn rendered as
+        # an img2img refine of the frame the player was trying to leave. They
+        # watched a step forward animate and land back in the same room.
+        #
+        # The model has just written the beat, so it already knows. Asking it
+        # here costs nothing — same call, one more field — and it makes the
+        # picture follow the prose instead of second-guessing it.
+        "relocated": {"type": "BOOLEAN"},
     },
     "required": ["dispatch", "visual_scene", "player_alive"],
 }
@@ -5095,6 +5126,11 @@ _TRAVEL_PREPS = [
     'out onto', 'out to', 'back to', 'to the', 'to a ', 'to an ',
     'over the', 'over a ', 'down the', 'up the', 'past the', 'past a ',
     'beyond the', 'behind the',
+    # Getting ON something is a change of place as surely as crossing to it:
+    # "climb onto the roof" leaves the ground. An observational tail still
+    # vetoes it further down (_IN_PLACE_MARKERS covers "climb onto the crate
+    # to get a better look").
+    'onto the', 'onto a ',
 ]
 
 # Locomotion that covers GROUND. Kept separate from _TRANSITION_MOVE_VERBS
@@ -5189,6 +5225,33 @@ def is_hard_transition(choice: str, dispatch: str) -> bool:
               f"'{safe_choice}' - new location (fresh composition, keep lighting/aesthetic)")
         return True
     return False
+
+
+def resolve_hard_transition(choice: str, dispatch: str,
+                            relocated: Optional[bool] = None) -> bool:
+    """Did this turn end somewhere the last frame cannot be edited into?
+
+    `relocated` is the consequence model's own answer, and it wins when it has
+    one. It is answering about the beat it just wrote, where is_hard_transition
+    is guessing from the player's wording — and the guess was wrong often
+    enough to break the game. Reported: "explore deeper into this space"
+    rendered as an img2img refine of the room the player was trying to leave,
+    so a step forward animated and landed back where it started. Three ways to
+    miss in one phrase: `deeper` suppresses the detector outright, `explore` is
+    not in its verb list, and `space` is not in its noun list. Word lists
+    cannot be finished, and the model already knows the answer.
+
+    None means the model did not say (an older save, a failed parse, a
+    degraded turn), and then the wording guess is still better than nothing.
+    Egress still forces a cut either way: running for the exit is a departure
+    whatever the prose decided to describe.
+    """
+    if is_egress_choice(choice):
+        return True
+    if relocated is not None:
+        print(f"[HARD TRANSITION] consequence says relocated={relocated}", flush=True)
+        return bool(relocated)
+    return is_hard_transition(choice, dispatch)
 
 
 def _transition_reason(choice_lower: str) -> tuple[str, str]:
@@ -6025,6 +6088,26 @@ def build_image_prompt(
                 "same light, same landmarks — a NEW vantage and a NEW distance. "
                 "Do not reproduce the reference framing."
             )
+        if travelled:
+            # "A NEW PLACE — a different space" says the camera moved and never
+            # says WHERE, so a travelling hard cut was an unspecified step into
+            # whatever the model felt like inventing. The branch that DOES state
+            # the arrival is `elif travelled` below, and MOVE TO can never reach
+            # it: is_move forces hard_transition unconditionally (see
+            # advance_turn_image_fast), so the one camera block written for
+            # walking to something never renders on the verb that does it. Say
+            # it here as well rather than relaxing the cut — the cut is correct,
+            # it was just silent about the destination.
+            camera += (
+                "\nThe new place is the DESTINATION the scene names, not an "
+                "unspecified step further on. They have arrived: it commands "
+                "the depth in front of them and what surrounded them a moment "
+                "ago is behind them. Do not arrive at some other feature "
+                "because it was nearer or more photogenic, and do not leave the "
+                "destination a distant shape on the horizon. If they were "
+                "outdoors they are still outdoors unless the destination is "
+                "itself the way in."
+            )
     elif softened_move:
         # Asked to change location; the throttle declined a fresh composition.
         # It still travelled — it just travels as a continuation, not a cut.
@@ -6119,8 +6202,15 @@ def build_image_prompt(
     # twice is how a 2,000-word prompt gets built one reasonable addition at a
     # time.
     if prev_vision_analysis and not hard_transition and has_visual_scene:
+        # Clipped at a word and terminated. A live capture had this landing as
+        # "...jeans, and a red  Visual tone: gritty 1993 desert suspense" — the
+        # hard [:150] cut mid-word and the caller appends its tone gloss with a
+        # space, so the model was handed one run-on sentence that stopped dead
+        # on an adjective. An unfinished clause is an invitation to finish it,
+        # which is the last thing a description of the PREVIOUS frame should be.
         prompt = (
-            f"{prompt}\n\nThe previous frame showed: {prev_vision_analysis[:150]}"
+            f"{prompt}\n\nThe previous frame showed: "
+            f"{_clip_sentence(prev_vision_analysis, 150)}"
         )
 
     return _finish(prompt)
@@ -6874,6 +6964,26 @@ def _flipbook_confrontation_block(other: str, look: str, beat: str,
     return block + "=" * 70 + "\n\n"
 
 
+# The first playable frame is img2img'd from the montage's WIDEST panel (see
+# _montage_place_refs), and that panel is now required to carry the level's goal
+# on its skyline. So the goal reaches this frame for free — as long as nothing
+# here quietly drops it. "Same landmarks" was doing that job by implication and
+# losing: the block goes on to ask for something unreadable approaching in the
+# far distance, and given two things to put on one horizon the model kept the
+# one it had just been told about and dropped the one it had to read out of the
+# reference. Reported as "I never see that in the opening montage or opening
+# image".
+_KEEP_THE_HORIZON = (
+    "WHAT IS ON THE HORIZON STAYS ON THE HORIZON.\n"
+    "If the reference photograph has a structure, tower, rig or landmark "
+    "standing on its skyline, it is STILL THERE in this frame: same place in "
+    "the composition, same distance, same size, unreached. It is what the "
+    "character is looking at and what the level is about walking to. Do not "
+    "crop it out, do not move it, do not close the distance to it, and do not "
+    "replace it with weather.\n\n"
+)
+
+
 def _flipbook_establishing_block(frames: int = None, *,
                                  single: bool = False) -> str:
     """A held ESTABLISHING beat: an IDLE, played with the camera locked off.
@@ -6957,7 +7067,7 @@ def _flipbook_establishing_block(frames: int = None, *,
         return (
             "🎬 THE FIRST PLAYABLE FRAME — AN IDLE, CAMERA LOCKED OFF 🎬\n\n"
             "ONE photograph. The moment the player takes control.\n\n"
-            + cast_in +
+            + cast_in + _KEEP_THE_HORIZON +
             "THE POSE: settled, having just stopped walking — weight on one leg, "
             "a hand resting on the gear they already carry, head up and looking "
             "off at something in the far distance. Alive and waiting, not posed "
@@ -6974,7 +7084,7 @@ def _flipbook_establishing_block(frames: int = None, *,
         "🎬 ESTABLISHING SHOT — AN IDLE, CAMERA LOCKED OFF 🎬\n\n"
         f"This is the opening: {seconds:g} seconds of a HELD frame with somebody "
         "alive standing in it. NOT a journey, NOT an action, NOT a camera move.\n\n"
-        + cast_in +
+        + cast_in + _KEEP_THE_HORIZON +
         "THE IDLE, IN ORDER ACROSS THE PANELS:\n"
         + idle +
         "\n"
@@ -7095,6 +7205,7 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
                        two_shot: str = "",
                        two_shot_look: str = "",
                        hold_cast: bool = False,
+                       cast_plates: Optional[list] = None,
                        write_state: bool = True) -> Optional[dict]:
     """Draw this turn as a grid of in-betweens and split it back into frames.
 
@@ -7119,6 +7230,11 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
     hold_cast — the two bodies are ALREADY in the reference and must be copied out
     of it rather than introduced (the resolve beat), matching what the resolve
     still passes.
+
+    cast_plates — close-ups of subjects the player has just been shown at length
+    (the INTERACT dive's plate). Same treatment as identity_paths, for the same
+    reason: flipbook is the default renderer, so a plate that only reached the
+    still path would reach almost none of the turns actually played.
 
     identity_paths — the player's character sheet / level plate from the Cast &
     Camera editor. These ride along as EXTRA labeled references (prepended by
@@ -7285,6 +7401,9 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
                 identity_paths=identity_paths,
                 identity_seed=bool(identity_seed and identity_paths),
                 spec=spec,
+                # The close-up the player just came out of, so the panels animate
+                # the same face they were looking at rather than a new one.
+                cast_plates=cast_plates,
             )
         else:
             # Nothing to continue from and no guide built: a plain grid request.
@@ -7378,13 +7497,18 @@ def _gen_image(*args, session_id: str = 'default', **kwargs) -> Optional[tuple[s
     return result
 
 
-def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: Optional[str] = None, use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False, session_id: str = 'default', history_ref: Optional[list] = None, softened_move: bool = False, identity_spec: Optional[dict] = None) -> Optional[tuple[str, str, Optional[str]]]:
+def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: Optional[str] = None, use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False, session_id: str = 'default', history_ref: Optional[list] = None, softened_move: bool = False, identity_spec: Optional[dict] = None, cast_plates: Optional[List[str]] = None) -> Optional[tuple[str, str, Optional[str]]]:
     """Generate image and return (image_path, prompt_used, video_path).
     
     video_path is None for non-Veo providers or when video generation fails/disabled.
     
     time_of_day: If None, will use state['time_of_day'] for consistency
     session_id: Session ID for storing images in correct directory
+    cast_plates: Close-ups of subjects the player has just been shown at length
+        (the INTERACT dive's plate). They ride as EXTRA labeled references, like
+        the identity plates and for the same reason — a wide frame does not
+        carry enough of a face to redraw it, so without the plate the character
+        the player just met comes back as somebody else.
     history_ref: The caller's session history to collect img2img reference frames
         from. Pass this (rather than relying on the module-global `history`) from
         any multi-user path — a concurrent different-session request can swap the
@@ -7693,6 +7817,29 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
             )
             print(f"[IDENTITY] {len(identity_plates)} reference plate(s) available for this frame")
 
+        # --- CAST PLATES (the close-up the player just came out of) ---
+        # A viewfinder restage is the player's own photograph of the place; a
+        # discovered face has no business being composited into it.
+        cast_plate_paths = [] if game_identity.is_viewfinder_spec(identity_spec) else [
+            str(p) for p in (cast_plates or []) if p and os.path.exists(str(p))
+        ]
+        if cast_plate_paths:
+            prompt_str += (
+                "\n\n🫱 THE SUBJECT YOU JUST LOOKED AT CLOSELY:\n"
+                "One of the attached references is a CLOSE-UP the player has "
+                "just spent a moment studying — the thing they reached out to. "
+                "It is in THIS scene, and it is the same one: copy its face, "
+                "build, hair, clothing, materials and wear from that close-up "
+                "exactly. Do not recast it, do not swap it for something "
+                "similar, and do not leave it out of the frame.\n"
+                "Do NOT copy the close-up's framing. That was a look at one "
+                "thing; this is the wide scene it lives in, so place it in the "
+                "space at the distance the scene describes."
+            )
+            print(f"[CAST PLATE] {len(cast_plate_paths)} close-up plate(s) ride into "
+                  f"this frame: {', '.join(os.path.basename(p) for p in cast_plate_paths)}",
+                  flush=True)
+
         # --- LOGGING ---
         print("[IMG LOG] --- IMAGE GENERATION PARAMETERS ---")
         print(f"[IMG LOG] frame_idx: {frame_idx}")
@@ -7708,6 +7855,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
         print(f"[IMG LOG] prompt_str (full): {safe_prompt}")
         print(f"[IMG LOG] previous_image_path (actual): {prev_img_path if prev_img_path else 'None'}")
         print(f"[IMG LOG] reference_images_list: {len(prev_img_paths_list)} images")
+        print(f"[IMG LOG] cast_plates: {len(cast_plate_paths)} close-up plate(s)")
         print(f"[IMG LOG] use_edit_mode: {use_edit_mode}")
         safe_world = str(world_prompt).encode('ascii', 'replace').decode('ascii')
         print(f"[IMG LOG] world_prompt: {safe_world}")
@@ -7960,6 +8108,10 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                         identity_paths=identity_plates,
                         identity_seed=bool(frame_idx == 0 or hard_transition),
                         spec=identity_spec,
+                        # Flipbook is the default renderer, so a close-up plate
+                        # that only reached the still path would reach almost no
+                        # real turns.
+                        cast_plates=cast_plate_paths,
                     )
                     # A flipbook that didn't come back costs quality, not the
                     # turn: fall through to the ordinary still below.
@@ -8000,6 +8152,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                         identity_seed=bool(hard_transition and identity_plates),
                         identity_paths=identity_plates,
                         spec=identity_spec,
+                        cast_plates=cast_plate_paths,
                     )
                     # SAFETY NET: img2img can come back empty (API timeout on the
                     # slow lite model, a safety block triggered by the accumulated
@@ -8013,7 +8166,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                     # FRESH frame still lands. We lose pixel-perfect img2img
                     # continuity for that one turn, but the world keeps moving —
                     # which mirrors the Krea/fal branches' existing Gemini safety net.
-                    if not result_path and identity_plates:
+                    if not result_path and (identity_plates or cast_plate_paths):
                         # Drop the accumulated continuity frames (the usual
                         # suspects for a timeout or a reference-driven safety
                         # block) but KEEP the player's own plates: falling all
@@ -8021,11 +8174,12 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                         # the character sheet, so the recovery frame is the one
                         # frame in the run their character isn't in.
                         print(f"[IMG GENERATION] img2img returned no image - retrying from the "
-                              f"{len(identity_plates)} identity plate(s) alone", flush=True)
+                              f"{len(identity_plates)} identity plate(s) and "
+                              f"{len(cast_plate_paths)} close-up plate(s) alone", flush=True)
                         result_path = generate_gemini_img2img(
                             prompt=prompt_str,
                             caption=caption,
-                            reference_image_path=identity_plates,
+                            reference_image_path=identity_plates or cast_plate_paths,
                             world_prompt=world_prompt,
                             time_of_day=use_time_of_day,
                             action_context=choice,
@@ -8034,6 +8188,10 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             identity_seed=True,
                             identity_paths=identity_plates,
                             spec=identity_spec,
+                            # The recovery frame is the one frame in the run the
+                            # character sheet used to be missing from; a face the
+                            # player met ten seconds ago deserves the same care.
+                            cast_plates=cast_plate_paths,
                         )
                     if not result_path:
                         print(f"[IMG GENERATION] img2img returned no image - falling back to text-to-image so the scene still advances", flush=True)
@@ -8698,7 +8856,7 @@ def begin_tick() -> dict:
         situation_report,
         n=3,
         seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
-        recent_choices='',
+        recent_choices=recent_actions_taken(state),
         caption=situation_report,
         image_description='',
         world_prompt=state.get('world_prompt', ''),
@@ -8785,6 +8943,30 @@ def _generate_random_starting_time() -> str:
         if game_identity.setting_enabled()
         else "Desert weather + lighting description (clear/cloudy/dusty/overcast + lighting type)"
     )
+    # The level's OWN light, if the sheet names one. Without this the roll only
+    # ever saw the place's name — place_summary() excludes palette on purpose —
+    # so on a level whose plate reads "PALETTE & LIGHT: golden hour, rust, red
+    # dust" it happily returned "7:43pm | weather: thick crimson fog backlit by
+    # flickering floodlights". Both strings then go into every single render for
+    # the whole session, one as the LEVEL PLATE and one as "Lighting:", and the
+    # frame is drawn by whichever the model believes. Worse, "backlit by
+    # flickering floodlights" invents a light SOURCE that is nowhere in an
+    # outdoor desert at golden hour, and img2img carries it for the rest of the
+    # run. The roll is meant to vary the clock and the mood, not overrule the
+    # authored look.
+    palette = ""
+    try:
+        if game_identity.setting_authored():
+            palette = str(
+                (game_identity.authored_setting() or {}).get("palette") or ""
+            ).strip()
+    except Exception:
+        palette = ""
+    if palette:
+        weather_rule = (
+            f"EXACTLY this, copied verbatim, because the level has already "
+            f"decided its light: {palette}"
+        )
     banned = _forbidden_weather(_world_constraint_text())
     if banned:
         weather_rule += (
@@ -8822,10 +9004,44 @@ Generate ONE random variation. Return ONLY the formatted string, no explanation.
             print(f"[INIT] Rolled weather this world rules out "
                   f"({', '.join(violations)}) on attempt {attempt}")
             continue
+        # Asking was not enough. At temp 1.2 this returned "thick crimson fog
+        # backlit by flickering floodlights" and then "thick rolling coastal
+        # fog" on a level whose plate reads "golden hour, rust, red dust" — the
+        # second one on the very next run after the instruction was added, and
+        # coastal fog in the Four Corners desert at that. So when the level has
+        # authored its light, the weather clause is not the model's to choose:
+        # take its time and its mood, which are what the roll is FOR, and seat
+        # the authored palette in the middle. Nothing downstream can catch this
+        # later — the string goes into every render of the session as
+        # "Lighting:", directly against the LEVEL PLATE's own palette line.
+        if palette:
+            result = _reseat_palette(result, palette)
         print(f"[INIT] Generated starting time: {result}")
         return result
     print("[INIT] Falling back to default starting time")
     return INITIAL_TIME_OF_DAY
+
+
+def _reseat_palette(rolled: str, palette: str) -> str:
+    """Put the level's authored light back in a rolled time/weather/mood line.
+
+    Keeps the rolled TIME and MOOD (the variety the roll exists to provide) and
+    replaces the weather clause with the palette. Returns ``rolled`` untouched
+    if it cannot be parsed, since a mangled lighting string is worse than a
+    contradictory one.
+    """
+    parts = [p.strip() for p in str(rolled or "").split("|")]
+    if len(parts) < 3:
+        return rolled
+    time_part, mood_part = parts[0], parts[-1]
+    if not time_part or not mood_part.lower().startswith("mood:"):
+        return rolled
+    was = next((p for p in parts if p.lower().startswith("weather:")), "")
+    seated = f"{time_part} | weather: {palette} | {mood_part}"
+    if was and _permanence_subject(was[len("weather:"):]) != _permanence_subject(palette):
+        print(f"[INIT] Reseated the level's own light over a rolled "
+              f"'{was[len('weather:'):].strip()}'", flush=True)
+    return seated
 
 def extract_scene_elements(*args):
     """Extract key nouns/entities from dispatch, vision, and world state."""
@@ -8992,7 +9208,16 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             # every turn, injecting a first-person-framed instruction block that
             # fought whatever camera perspective the player had actually chosen.
             is_custom_action = source == "typed"
-            risk_boost = 2 if is_interaction else 0
+            # A conversation is a deliberate act on the world too, but it is
+            # not meddling: talking to someone should be able to move the
+            # story and draw attention without carrying the same threat as
+            # prying open a sealed drum. It is deliberately NOT in
+            # `is_interaction` — that flag also selects the "handling/entering
+            # a specific thing" directive, which is the wrong sentence for a
+            # person the player just spoke to (see _conversation_directive,
+            # which carries this turn's requirement and its permanence).
+            is_talk = source == "talk"
+            risk_boost = 2 if is_interaction else (1 if is_talk else 0)
             encounter_released = True
             if source == "encounter":
                 try:
@@ -9207,9 +9432,28 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 turn_state = _load_state(SID)
                 _sync_ambient_state(turn_state, SID)
             else:
+                # INTERACT: hold here until the dive's close-up exists, then
+                # carry it into the scene so the thing the player just looked
+                # at closely is the same thing when the world comes back. Every
+                # other turn gets an empty list without waiting.
+                cast_plates = _await_interact_plate(SID, source, subject)
+                # `caption` is the camera line, `dispatch` is the prose. Passing
+                # the caption to BOTH made them equal, and build_image_prompt
+                # decides whether to send the scene at all by comparing them:
+                # has_visual_scene is `narrative != caption`, so it was False on
+                # every turn of the only path the game plays on, and the
+                # "render exactly this scene" branch was unreachable. Every
+                # frame fell back to the scaffold — a paraphrase of the PREVIOUS
+                # frame plus "render the result of that action" — with
+                # visual_scene generated, logged, and discarded. MOVE TO was
+                # where it showed worst: nothing in the payload named the
+                # destination, so a click on the mesa rendered as a step forward
+                # into an invented shed. Harmless until the two channels were
+                # split apart (dispatch used to BE visual_scene, so passing it
+                # twice was a no-op); the split never reached this call site.
                 scene = _generate_and_append_scene_image(
                     caption=vision_dispatch_text or dispatch_text,
-                    dispatch=vision_dispatch_text or dispatch_text,
+                    dispatch=dispatch_text,
                     choice=choice,
                     frame_idx=int(p1.get("frame_idx", 1)),
                     world_prompt=turn_state.get("world_prompt", ""),
@@ -9217,6 +9461,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     session_id=SID,
                     write_history=False,
                     softened_move=bool(p1.get("softened_move", False)),
+                    cast_plates=cast_plates,
                 )
                 turn_state = _load_state(SID)
                 _sync_ambient_state(turn_state, SID)
@@ -9463,10 +9708,17 @@ def _structure_choices_for_feed(choice_texts: List[str], prompt_text: str = "Wha
 def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, frame_idx: int,
                                      world_prompt: str, hard_transition: bool = False,
                                      session_id: str = 'default', write_history: bool = True,
-                                     softened_move: bool = False):
+                                     softened_move: bool = False,
+                                     cast_plates: Optional[List[str]] = None):
     """Generate the scene image, append the scene_image feed item, and update
     session state. Returns {'img_path','web_url','image_prompt','render_prompt'}
     or None on failure / when image generation is disabled.
+
+    cast_plates — close-ups of characters/objects the player has just been shown
+    at length, carried in as extra labeled references so they come back as the
+    same face. Today that is the INTERACT dive's plate (see
+    _await_interact_plate); anything that puts a generated subject on screen and
+    then hands the scene back has the same problem and the same answer.
 
     write_history controls the history img2img-continuity write:
       • True  — write the image into THIS turn's history entry ourselves. Used by
@@ -9515,6 +9767,7 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                 session_id=session_id,
                 history_ref=local_history,
                 softened_move=softened_move,
+                cast_plates=cast_plates,
             )
             img_path = result[0] if result else None
             # Two different prompts for two different renderers:
@@ -10082,6 +10335,77 @@ def level_sheet_is_hollow(spec: Optional[dict] = None) -> bool:
     return not any(str(setting.get(f) or "").strip() for f in _LEVEL_ANCHOR_FIELDS)
 
 
+def _goal_for_this_run(new_state: dict, authored: str = "") -> str:
+    """The thing on the horizon this run is walking toward. Always something.
+
+    A run with no goal has no shape: the montage establishes "toward
+    '(no goal authored)'", every frame is a place rather than a direction, and
+    the player is left wandering a world that never tells them what it is FOR.
+    Reported as "the goal system is completely non functional ... making sure we
+    always have a goal generated can really help the experience stay focused".
+
+    WHAT THIS DOES NOT DO IS WRITE TO THE LEVEL SHEET. That distinction is the
+    whole design, and it is not stylistic — see _ensure_level_sheet_is_filled,
+    which was on the boot path for one afternoon, invented "The Kettle Yard" out
+    of the Four Corners bible, and persisted it over the author's own words with
+    no prompt and no undo. Model-invented content must never silently replace
+    something a person typed.
+
+    So the draft lands in the RUN, not in the authoring data:
+
+      · an authored goal is used verbatim and nothing is generated,
+      · otherwise this run gets one of its own, cached in state so it costs a
+        single call per playthrough and stays the same landmark all the way
+        through it,
+      · and `prompts/simulation_prompts.json` is never touched either way.
+
+    Never fatal, and never blocking: the montage's own fallback (the first
+    landmark) still stands if the draft fails, which is worse but not broken.
+    """
+    authored = str(authored or "").strip()
+    # An authored goal wins, always. `establishing_shot` may also have handed us
+    # a LANDMARK it fell back to, which is the thing this exists to improve on:
+    # a fence the player is already standing at is a destination in name only.
+    written = str(game_identity.level_goal(fallback=False) or "").strip()
+    if written:
+        new_state["level_goal"] = written
+        return written
+
+    cached = str((new_state or {}).get("level_goal") or "").strip()
+    if cached:
+        return cached
+
+    if not LLM_ENABLED:
+        # ASCII only: this lands on a Windows console whose default codec is
+        # cp1252, and a subprocess reading it back as UTF-8 chokes on a dash.
+        print("[GOAL] no text model - the run opens toward "
+              f"{authored or 'nothing in particular'!r}", flush=True)
+        return authored
+
+    lore = ""
+    try:
+        import experience_store as _xs
+        lore = _xs.lore_brief() or ""
+    except Exception:
+        pass  # no lore is a thinner draft, not a failed one
+    try:
+        drafted = game_identity.draft_level_goal(
+            lore=lore,
+            world_prompt=str((new_state or {}).get("world_prompt") or ""),
+        )
+    except Exception as err:
+        log_error(f"[GOAL] draft failed ({err}) - falling back to "
+                  f"{authored or 'no goal'!r}")
+        return authored
+
+    drafted = str(drafted or "").strip()
+    if not drafted:
+        return authored
+    new_state["level_goal"] = drafted
+    print(f"[GOAL] this run is walking toward: {drafted}", flush=True)
+    return drafted
+
+
 def _ensure_level_sheet_is_filled() -> bool:
     """Draft every EMPTY identity-sheet field from the world bible. EXPLICIT ONLY.
 
@@ -10401,6 +10725,7 @@ def _stage_opening_montage(
     import cutscene as _cutscene
 
     shot = game_identity.establishing_shot()
+    shot["goal"] = _goal_for_this_run(new_state, shot.get("goal"))
     slate = next((it for it in intro_items
                   if (it or {}).get("type") == "player_choice_prompt"), None)
     if slate:
@@ -10532,6 +10857,20 @@ def _generate_opening_establishing(session_id: str, pending: dict) -> Optional[d
             )
         prompt_str = game_identity.apply(
             str(st.get("world_prompt") or ""), "image", identity_spec)
+        # The montage is unpeopled by instruction, so this beat is where the
+        # player first SEES themselves — and it is drawn from montage panels
+        # that contain nobody. If the character plate does not reach this call
+        # the model invents a person out of the bible's "you are a
+        # photojournalist", which is how a stranger kept opening the game.
+        # Silent before; the reference list in the log showed two panels and a
+        # layout guide and nothing said the plate was missing.
+        if plates:
+            print(f"[OPENING IDLE] {len(plates)} identity plate(s): "
+                  f"{[os.path.basename(str(p)) for p in plates]}", flush=True)
+        else:
+            log_error("[OPENING IDLE] NO identity plate — the person in the "
+                      "first playable frame will be invented from the bible, "
+                      "not drawn from the character sheet")
 
         if not flipbook_active(st):
             # Flipbook off: the idle cannot animate, but the run still needs a
@@ -11374,6 +11713,20 @@ def api_choose():
         # OBJECT PERMANENCE block. Only SCAN taps carry one; a typed or generated
         # choice has no identified subject and pins nothing.
         action_subject = _permanence_subject(data.get('subject'))
+        # INTERACT opened a dive, so a close-up of this subject is being
+        # generated right now on another request thread. Arm the handoff before
+        # the turn thread starts, so the scene render holds for that close-up
+        # and carries it as a reference instead of re-imagining the character
+        # from a wide frame (see _arm_interact_plate).
+        #
+        # The client has to say so rather than the server assuming it from the
+        # verb: a dive only opens when the Moments chrome is there, and the
+        # playtest harnesses post `scan_interact` with no client at all.
+        if action_source == "scan_interact" and data.get('awaiting_closeup'):
+            try:
+                _arm_interact_plate(session_id, action_subject)
+            except Exception as e_plate:
+                log_error(f"api_choose: could not arm the interact plate: {e_plate}")
         # Encounter Moment: the feed shows the short verb; the turn LLM gets
         # the character + danger briefing so the aftermath is about THIS interrupt.
         turn_choice_text = player_choice_text
@@ -11394,6 +11747,21 @@ def api_choose():
                             (enc.get("character") or {}).get("label"))
             except Exception as e_enc:
                 log_error(f"api_choose: encounter enrich failed: {e_enc}")
+        # TALK: the conversation that just ended IS this turn's action.
+        #
+        # Everything the two of them actually said rides along on the choose,
+        # rather than being posted separately to /api/talk/end — that call is a
+        # sendBeacon and would race the turn it is supposed to inform. Stored
+        # on state stamped with the turn it belongs to, so the consequence
+        # prompt can pick it up (see _conversation_for_turn) without another
+        # argument threaded through four layers of the pipeline.
+        if action_source == "talk":
+            try:
+                _record_turn_conversation(session_id, action_subject,
+                                          data.get("conversation"))
+            except Exception as e_conv:
+                log_error(f"api_choose: could not record the conversation: {e_conv}")
+
         # LEAVE CAMP must arrive on foot — never in a cab/dashboard POV.
         player_choice_text = _normalize_camp_leave_choice(player_choice_text, action_source)
 
@@ -11894,6 +12262,13 @@ def api_detect():
             viewfinder=viewfinder,
         )
 
+        # Read the detection ladder's witness off this pass BEFORE the
+        # anti-loop gate below empties the list. That gate withholds objects
+        # from the player; it is not a statement that the frame is empty, and
+        # recording a clean witness from a suppressed list would tell the
+        # engine nobody is there at the exact moment a run is being hunted.
+        witness = witness_from_detections(objects)
+
         # SCAN used to be a second front door into the world with no relation
         # to the anti-loop gate `enforce_egress_option` already enforces on the
         # text-choice pills — a run stuck retracing the same room (or being
@@ -11921,11 +12296,17 @@ def api_detect():
         # Remember what this pass named, so the turn the player commits from it
         # is grounded in the things they can actually see. Best-effort: losing
         # the cache costs grounding, never the scan itself.
+        #
+        # The same gate carries the detection witness, for the same reasons:
+        # it is one deliberate tap rather than the ~2.5 s viewfinder poll, and
+        # it reuses this block's existing lock + save, so the frame reading
+        # costs no extra API call, no extra round trip and no extra contention.
         if str(data.get('purpose') or "").strip().lower() == "scan":
             try:
                 with WORLD_STATE_LOCK:
                     st = _load_state(session_id)
                     labels = record_scene_objects(st, objects or [])
+                    record_witness(st, witness)
                     _save_state(st, session_id)
                 if labels:
                     print(f"[SCENE OBJECTS] turn {st.get('turn_count', 0)} on screen: "
@@ -12017,6 +12398,207 @@ def api_danger():
         # Return 200 with a safe reading — the client's loop should not treat
         # a server error as danger. It'll ease back toward SAFE on its own.
         return jsonify({"error": str(e), **safe})
+
+
+# ───────── dictation: speech to text for the free-will box ───────────────────
+# The client tries the browser's own SpeechRecognition first, because it is
+# free, instant, and streams words as you speak. It is also unreliable in a way
+# that cannot be detected up front: plain Chromium builds expose the API but
+# ship without Google's speech key, so every attempt dies with `network` the
+# moment it starts, and corporate DNS does the same thing to real Chrome. The
+# API being present tells you nothing about whether it works.
+#
+# So this is the path that always works: the client records the audio and posts
+# it here. Slower than the native engine (you wait for the upload instead of
+# watching words appear), but it answers, and an answer beats a microphone that
+# silently never does anything.
+TRANSCRIBE_MAX_BYTES = int(os.getenv("TRANSCRIBE_MAX_BYTES") or 8 * 1024 * 1024)
+
+# What a browser MediaRecorder actually produces, plus the obvious uploads.
+_TRANSCRIBE_MIMES = (
+    "audio/webm", "audio/ogg", "audio/wav", "audio/x-wav", "audio/mpeg",
+    "audio/mp3", "audio/mp4", "audio/aac", "audio/flac", "audio/x-m4a",
+)
+
+
+def _transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/webm",
+                      note: Optional[dict] = None) -> str:
+    """Spoken words as text, or "" on any failure.
+
+    `note`, when given, is filled in with a machine-readable `reason` for an
+    empty result. Every way of returning no words used to look identical from
+    the client — a missing API key, a rate limit, a dead upstream and a player
+    who simply did not speak all arrived as "" and were reported to them as
+    "Didn't catch that". That is a message you cannot act on, and it is the
+    reason a working microphone looked broken.
+
+    Deliberately narrow: one short utterance, transcribed literally. The
+    temptation is to let the model tidy the sentence up into a nice game
+    action, and that is exactly wrong — the player said what they said, and a
+    dictation box that rewrites you is worse than one that mishears you,
+    because you cannot tell which happened.
+
+    Never raises. A dictation that fails has to leave the player's typed text
+    alone and say so, not take the request down.
+    """
+    import base64 as _b64
+    import json as _json
+
+    def _why(reason: str) -> str:
+        if note is not None:
+            note["reason"] = reason
+        return ""
+
+    if not LLM_ENABLED or not GEMINI_API_KEY:
+        return _why("disabled")
+    if not audio_bytes or len(audio_bytes) < 512:
+        return _why("too_short")
+    if len(audio_bytes) > TRANSCRIBE_MAX_BYTES:
+        log_error(f"[TRANSCRIBE] audio too large: {len(audio_bytes)} bytes")
+        return _why("bad_audio")
+    mime = (mime_type or "audio/webm").split(";")[0].strip().lower()
+    if mime not in _TRANSCRIBE_MIMES:
+        mime = "audio/webm"
+
+    # Deliberately says NOTHING about games, players or characters.
+    #
+    # The first version of this prompt explained that the clip was "a player
+    # saying what they want their character to do next in a game", on the
+    # theory that context helps recognition. Handed one second of pure
+    # silence, the model answered "I'm going to go to the tavern." — it had
+    # been told what kind of sentence to expect and, with no audio to go on,
+    # it produced one. A dictation box that invents an action the player never
+    # spoke is far worse than one that mishears them, because the player has
+    # no way to tell that is what happened.
+    #
+    # So the prompt describes the job and not the subject matter, and asks for
+    # a sentinel rather than an empty reply: models are reliably bad at
+    # returning nothing, and much better at returning a specific token.
+    prompt = (
+        "Transcribe any speech in this audio clip, word for word.\n\n"
+        "Return ONLY the words actually spoken, as plain text.\n"
+        "- Do not translate, summarise, rephrase or correct the grammar. "
+        "Write what was said, even if it is ungrammatical or unfinished.\n"
+        "- No quotation marks, no speaker labels, no timestamps, no commentary.\n"
+        "- If there is no intelligible speech in the clip - silence, room "
+        "tone, breathing, noise, music - reply with exactly: NO_SPEECH\n"
+        "- Never guess at words you cannot hear, and never invent a plausible "
+        "sentence to fill a silence. A clip with nothing in it is NO_SPEECH."
+    )
+    try:
+        resp = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            "gemini-3.1-flash-lite:generateContent",
+            headers={"x-goog-api-key": GEMINI_API_KEY,
+                     "Content-Type": "application/json"},
+            json={
+                "contents": [{
+                    "parts": [
+                        {"inlineData": {
+                            "mimeType": mime,
+                            "data": _b64.b64encode(audio_bytes).decode("utf-8"),
+                        }},
+                        {"text": prompt},
+                    ],
+                }],
+                "generationConfig": {
+                    "thinkingConfig": {"thinkingBudget": 0},
+                    # Transcription is not a creative act.
+                    "temperature": 0.0,
+                    "maxOutputTokens": 120,
+                },
+                "safetySettings": [
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                ],
+            },
+            timeout=25,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        candidates = result.get("candidates") or []
+        if not candidates:
+            return _why("upstream_error")
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts).strip()
+    except Exception as e:
+        safe_e = str(e).encode("ascii", "replace").decode("ascii")
+        log_error(f"[TRANSCRIBE] failed: {safe_e}")
+        return _why("upstream_error")
+
+    # The model still occasionally wraps the line in quotes or prefixes it
+    # despite being told not to. Strip the wrapper rather than shipping it into
+    # the player's action text.
+    text = text.strip().strip('"').strip("'").strip()
+    if text.lower().startswith("transcription:"):
+        text = text.split(":", 1)[1].strip()
+    # The sentinel, and the ways a model says it when it decides to be helpful
+    # instead of literal. All of them mean the player did not speak, and none
+    # of them may reach the action box as words.
+    flat = text.lower().strip(" .!-")
+    if ("no_speech" in flat
+            or flat in ("no speech", "no speech detected", "silence",
+                        "(silence)", "[silence]", "inaudible", "unintelligible")):
+        return _why("no_speech")
+    # A result with no letters in it is not speech.
+    #
+    # Asked for words and having none, the model reaches for a subtitle
+    # artifact instead of the sentinel: a live run put "00:00" into the
+    # player's action box. The prompt already forbids timestamps, and this is
+    # what came back anyway — so the shape is rejected here rather than
+    # trusted to instructions. Digits alone are never an action in this game;
+    # a real one always has a verb in it.
+    if not re.search(r"[^\W\d_]", text, re.UNICODE):
+        print(f"[TRANSCRIBE] discarded non-speech result: {text[:40]!r}", flush=True)
+        return _why("no_speech")
+    return text[:240].strip()
+
+
+def api_transcribe():
+    """POST /api/transcribe — spoken audio in, plain text out.
+
+    Request JSON:  {"audio": "data:audio/webm;base64,...", "mime": "audio/webm"?}
+    Response JSON: {"text": "...", "reason"?: str}
+
+    `reason` accompanies an empty `text` and says which kind of nothing it is
+    — no_speech / too_short / disabled / upstream_error / slow_down /
+    bad_audio — so the client can tell the player something they can act on.
+
+    Stateless and read-only, like /api/detect: never touches world state,
+    history or choices. Degrades to empty text on ANY failure — a dictation
+    that fails must leave what the player typed alone.
+    """
+    import base64 as _b64, re as _re
+    try:
+        if _rate_limited("transcribe", 0.75):
+            return jsonify({"text": "", "reason": "slow_down", "error": "slow_down"})
+        data = request.get_json(silent=True) or {}
+        audio_b64 = data.get("audio") or ""
+        if not audio_b64:
+            return jsonify({"text": "", "reason": "bad_audio",
+                            "error": "missing audio"}), 400
+        m = _re.match(r"^data:(audio/[^;]+)[^,]*,(.*)$", audio_b64, _re.DOTALL)
+        if m:
+            mime, raw = m.group(1), m.group(2)
+        else:
+            mime, raw = str(data.get("mime") or "audio/webm"), audio_b64
+        try:
+            audio_bytes = _b64.b64decode(raw)
+        except Exception:
+            return jsonify({"text": "", "reason": "bad_audio",
+                            "error": "bad audio encoding"}), 400
+        note: dict = {}
+        text = _transcribe_audio(audio_bytes, mime, note=note)
+        reason = "" if text else (note.get("reason") or "no_speech")
+        print(f"[TRANSCRIBE] {len(audio_bytes)} bytes {mime} -> "
+              f"{len(text)} chars{(' (' + reason + ')') if reason else ''}",
+              flush=True)
+        return jsonify({"text": text, "reason": reason})
+    except Exception as e:
+        log_error(f"[TRANSCRIBE] endpoint failed: {e}")
+        return jsonify({"text": "", "reason": "upstream_error", "error": str(e)})
 
 
 def _write_data_url_image(
@@ -13223,6 +13805,188 @@ def _portrait_cache_key(session_id: str, label: str, world_prompt: str, box: Any
     return (session_id or "default", (label or "").strip().lower(), scene_hash, crop)
 
 
+# ───────── THE INTERACT CLOSE-UP, HANDED TO THE SCENE IT CAME OUT OF ─────────
+# INTERACT is a Moment, not a turn: the dive opens a close-up of the thing the
+# player tapped and the turn that regenerates the scene runs UNDERNEATH it. The
+# client issues both on consecutive lines (openInteractMoment, then makeChoice),
+# so they are two renders of the same subject started at the same instant, with
+# neither aware of the other. The close-up is generated from that subject's own
+# pixels; the scene is generated from a wide frame where the same subject is
+# forty pixels tall. They do not agree, and the disagreement lands at the worst
+# possible moment — the character the player has just been introduced to is a
+# different person by the time the world is handed back.
+#
+# The close-up wins, because it is the picture the player was actually looking
+# at. So the scene render waits for it and then carries it as an extra labeled
+# reference, which is what makes the return a discovery rather than a recast.
+#
+# Both halves are threads in one server (api_choose's turn thread and
+# api_talk_portrait's request thread), so the rendezvous is an in-process Event.
+# It has to tolerate either side finishing first, because nothing orders them.
+#: How long the scene render will hold for a close-up that is still developing.
+#: Costs nothing in felt latency: the dive is on screen for the whole wait and
+#: its own exits are already gated on this turn finishing.
+INTERACT_PLATE_WAIT_S = float(os.getenv("INTERACT_PLATE_WAIT_S", "35"))
+#: How long a published plate stays collectable. Long enough for a slow turn,
+#: short enough that a TALK portrait from earlier in the run can never be
+#: mistaken for this turn's discovery.
+_INTERACT_PLATE_TTL_S = 90.0
+#: session_id -> {"label", "event", "path", "expires", "taken"}
+#:
+#: `taken` means a waiter has CLAIMED this record, not that the record is
+#: finished — the two are different and conflating them broke the ordinary
+#: case. A waiter claims the record and then blocks on its Event, so a publish
+#: landing during that block has to fill THAT record. Treating claimed as
+#: finished sent the publish down the "nobody is waiting" path, where it set a
+#: brand-new Event that nobody held, and the turn waited out the full timeout
+#: while the plate it wanted sat in the map beside it.
+_INTERACT_PLATES: dict = {}
+_INTERACT_PLATE_LOCK = threading.Lock()
+
+
+def _plate_labels_match(a: str, b: str) -> bool:
+    """Whether two subject labels name the same thing.
+
+    The turn is armed from the DETECTED label and the plate is published from
+    whatever label `build_talk_context` settled on, which trims and re-cases
+    it. Exact equality would spend the full timeout every time those two
+    disagree by a definite article.
+    """
+    x, y = _permanence_subject(a), _permanence_subject(b)
+    if not x or not y:
+        return False
+    return x == y or x in y or y in x
+
+
+def _arm_interact_plate(session_id: str, label: str) -> None:
+    """Declare that a close-up is coming, so the turn knows to wait for it.
+
+    Called from api_choose on the INTERACT tap, and ONLY when the client says
+    it actually opened a dive. That condition is the whole reason this is an
+    explicit arm rather than something the render infers from `source`: the
+    playtest harnesses drive `scan_interact` straight at the server with no
+    client and no close-up, and a render that waited on the verb alone would
+    add the full timeout to every one of those turns.
+    """
+    lab = _permanence_subject(label)
+    if not lab:
+        return
+    with _INTERACT_PLATE_LOCK:
+        rec = _INTERACT_PLATES.get(session_id)
+        # The close-up can already be here: /api/talk/portrait answers a cache
+        # hit instantly, and nothing orders it against this request. Arming
+        # blind would throw that plate away and then wait for a second one that
+        # is never generated.
+        already = (
+            rec is not None and not rec.get("taken")
+            and rec["event"].is_set()
+            and time.time() <= float(rec.get("expires") or 0)
+            and _plate_labels_match(rec.get("label", ""), lab)
+        )
+        if already:
+            print(f"[INTERACT PLATE] the close-up for '{lab}' is already here — "
+                  f"nothing to wait for", flush=True)
+            return
+        _INTERACT_PLATES[session_id] = {
+            "label": lab,
+            "event": threading.Event(),
+            "path": None,
+            "expires": time.time() + _INTERACT_PLATE_TTL_S,
+            "taken": False,
+        }
+    print(f"[INTERACT PLATE] armed for '{lab}' — this turn's scene will wait "
+          f"for the close-up (up to {INTERACT_PLATE_WAIT_S:.0f}s)", flush=True)
+
+
+def _publish_interact_plate(session_id: str, label: str, path: Optional[str]) -> None:
+    """Hand a finished close-up to whatever turn is waiting for it.
+
+    `path` is None when the portrait gave up — no crop arrived, generation is
+    off, the budget is spent, a safety filter blocked it. Publishing the failure
+    is deliberate and is half the point: without it a waiter sits out the entire
+    timeout for a plate that was never coming, and INTERACT gets slower the more
+    often the close-up fails.
+    """
+    lab = _permanence_subject(label)
+    with _INTERACT_PLATE_LOCK:
+        rec = _INTERACT_PLATES.get(session_id)
+        live = rec is not None and time.time() <= float(rec.get("expires") or 0)
+        if live and not rec["event"].is_set():
+            if not _plate_labels_match(rec.get("label", ""), lab):
+                # A TALK portrait finishing beside an unrelated INTERACT dive.
+                # Overwriting would strand the waiter on an Event nobody sets.
+                print(f"[INTERACT PLATE] ignoring a plate for '{lab}' — this "
+                      f"session is waiting on '{rec.get('label')}'", flush=True)
+                return
+            # Fill the record the waiter is blocked on, whether or not it has
+            # already claimed it.
+            rec["path"] = path
+            rec["expires"] = time.time() + _INTERACT_PLATE_TTL_S
+            rec["event"].set()
+        elif live and _plate_labels_match(rec.get("label", ""), lab):
+            # Already settled for this subject — first answer wins, so a second
+            # portrait for the same thing cannot swap the plate out from under
+            # a render that is mid-flight.
+            print(f"[INTERACT PLATE] '{lab}' is already settled; keeping the "
+                  f"first close-up", flush=True)
+            return
+        else:
+            # The close-up beat the turn to the rendezvous. Leave it where a
+            # matching await can still collect it.
+            ev = threading.Event()
+            ev.set()
+            _INTERACT_PLATES[session_id] = {
+                "label": lab, "event": ev, "path": path,
+                "expires": time.time() + _INTERACT_PLATE_TTL_S,
+                "taken": False,
+            }
+    print(f"[INTERACT PLATE] published for '{lab}': "
+          f"{os.path.basename(path) if path else 'nothing (the close-up failed)'}",
+          flush=True)
+
+
+def _await_interact_plate(session_id: str, source: Optional[str],
+                          subject: Optional[str]) -> List[str]:
+    """Block until this turn's INTERACT close-up exists, then return it.
+
+    Returns a list because that is what the render takes, and because empty is
+    the ordinary answer — every turn that is not an armed INTERACT tap returns
+    immediately, having waited on nothing.
+    """
+    if source != "scan_interact":
+        return []
+    lab = _permanence_subject(subject or "")
+    if not lab:
+        return []
+    with _INTERACT_PLATE_LOCK:
+        rec = _INTERACT_PLATES.get(session_id)
+        if (rec is None or rec.get("taken")
+                or time.time() > float(rec.get("expires") or 0)
+                or not _plate_labels_match(rec.get("label", ""), lab)):
+            return []
+        rec["taken"] = True
+    t0 = time.time()
+    if not rec["event"].wait(INTERACT_PLATE_WAIT_S):
+        print(f"[INTERACT PLATE] gave up waiting for '{lab}' after "
+              f"{INTERACT_PLATE_WAIT_S:.0f}s — the scene renders without it, so "
+              f"the character may drift on the way back", flush=True)
+        return []
+    waited_ms = int((time.time() - t0) * 1000)
+    path = rec.get("path")
+    if not path:
+        print(f"[INTERACT PLATE] no close-up for '{lab}' ({waited_ms}ms) — "
+              f"nothing to carry into the scene", flush=True)
+        return []
+    resolved = _resolve_image_path(path, session_id)
+    if not resolved or not resolved.exists():
+        print(f"[INTERACT PLATE] close-up for '{lab}' does not resolve on disk: "
+              f"{path}", flush=True)
+        return []
+    print(f"[INTERACT PLATE] held the scene {waited_ms}ms for '{lab}' — "
+          f"{resolved.name} rides into the return frame", flush=True)
+    return [str(resolved)]
+
+
 def api_talk_portrait():
     """Generate (or reuse) a cinematic medium-shot portrait for a TALK subject.
 
@@ -13284,6 +14048,10 @@ def api_talk_portrait():
         with _PORTRAIT_CACHE_LOCK:
             cached = _PORTRAIT_CACHE.get(cache_key)
         if cached:
+            # A cache hit is still this turn's close-up, and a waiting scene
+            # render is entitled to it — arriving instantly is not a reason to
+            # let the character drift.
+            _publish_interact_plate(session_id, label, cached)
             return jsonify({"image_url": cached, "cached": True, "subject": context["subject"]})
 
         ref_path = _save_portrait_reference(reference_b64, session_id) if reference_b64 else None
@@ -13296,6 +14064,9 @@ def api_talk_portrait():
                     pass
                 ref_path = cropped
         if not ref_path:
+            # Tell a waiting INTERACT turn it is waiting for nothing, or the
+            # scene sits out the whole timeout before rendering anyway.
+            _publish_interact_plate(session_id, label, None)
             return jsonify({
                 "image_url": None,
                 "reason": "no_crop",
@@ -13380,6 +14151,7 @@ def api_talk_portrait():
         plate = image_path or ref_path
         companion = None
         web = None
+        durable_url = None
         try:
             durable_url = _persist_companion_image(plate, session_id, label)
             web = durable_url or _to_web_image_url(plate, session_id)
@@ -13403,6 +14175,12 @@ def api_talk_portrait():
                 except Exception:
                     pass
 
+        # The DURABLE copy, not `plate`: the raw generation is sweepable and a
+        # client crop is JPEG bytes, while companion_<slug>.png is a real PNG
+        # kept for exactly this — re-referencing the character into later
+        # scenes (see _persist_companion_image).
+        _publish_interact_plate(session_id, label, durable_url or (web if web else None))
+
         if not web:
             return jsonify({"image_url": None, "reason": "no_image",
                             "subject": context["subject"]})
@@ -13425,7 +14203,100 @@ def api_talk_portrait():
         })
     except Exception as e:
         log_error(f"[TALK PORTRAIT] failed: {e}")
+        # Same reason the no_crop path publishes: a turn holding for a close-up
+        # that has just crashed should render now, not in thirty-five seconds.
+        try:
+            _publish_interact_plate(
+                data.get("session_id", "default") if isinstance(data, dict) else "default",
+                ((data.get("subject") or {}).get("label") if isinstance(data, dict) else "") or "",
+                None,
+            )
+        except Exception:
+            pass
         return jsonify({"image_url": None, "reason": "error", "error": str(e)}), 500
+
+
+# How many lines of a conversation the consequence prompt is shown. Enough to
+# carry what was actually agreed, refused or let slip; short enough that the
+# exchange informs the beat instead of becoming the beat.
+CONVERSATION_TURN_LINES = 12
+
+
+def _record_turn_conversation(session_id: str, label: str, lines) -> None:
+    """Stamp the conversation that just ended onto state, for THIS turn.
+
+    Talking to someone used to change nothing: the transcript lived in the
+    browser, `/api/talk/end` counted the conversation and threw the words
+    away, and the next turn was generated as though the player had stood
+    there in silence. This is the record the consequence reads.
+
+    Stamped with the turn it belongs to so it can only ever inform the turn
+    the conversation caused — a stale exchange must not colour a beat three
+    moves later (see `_conversation_for_turn`).
+    """
+    cleaned = []
+    for item in (lines or [])[-CONVERSATION_TURN_LINES:]:
+        if not isinstance(item, dict):
+            continue
+        text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()[:300]
+        if not text:
+            continue
+        who = "them" if str(item.get("role") or "") != "user" else "you"
+        cleaned.append({"role": who, "text": text})
+    if not cleaned:
+        return
+    with WORLD_STATE_LOCK:
+        st = _load_state(session_id) or {}
+        st["last_conversation"] = {
+            "with": (label or "").strip()[:60],
+            "turn": st.get("turn_count", 0),
+            "lines": cleaned,
+        }
+        _save_state(st, session_id)
+        _sync_ambient_state(st, session_id)
+    print(f"[TALK TURN] conversation with '{label}' ({len(cleaned)} lines) "
+          f"is driving turn {st.get('turn_count', 0)}", flush=True)
+
+
+def _conversation_for_turn(state: dict) -> Optional[dict]:
+    """The conversation this turn is the consequence of, or None.
+
+    The turn counter has not advanced yet when the consequence is written, so
+    a record stamped with the current count is the one the player just had.
+    Anything older belongs to a turn that has already been answered.
+    """
+    rec = (state or {}).get("last_conversation")
+    if not isinstance(rec, dict) or not rec.get("lines"):
+        return None
+    if rec.get("turn") != (state or {}).get("turn_count", 0):
+        return None
+    return rec
+
+
+def _conversation_directive(state: dict) -> str:
+    """What the consequence must make of the conversation just had."""
+    rec = _conversation_for_turn(state)
+    if not rec:
+        return ""
+    who = rec.get("with") or "the person they were talking to"
+    said = "\n".join(
+        f"  {'PLAYER' if ln.get('role') == 'you' else who.upper()}: {ln.get('text')}"
+        for ln in rec.get("lines") or []
+    )
+    return (
+        f"\n\nTHE CONVERSATION THE PLAYER JUST HAD with the {who} — this "
+        f"exchange IS the action of this turn:\n{said}\n"
+        f"Write what the conversation CHANGED. Something has to be different "
+        f"because it happened: they were told where to go, warned off, lied "
+        f"to, given a thing, followed, believed, refused, or noticed by "
+        f"someone else while they stood there talking. Take the most "
+        f"consequential specific thing that was said and make it land in the "
+        f"world — a door that is now open, a name that now means something, a "
+        f"direction the player now has, a debt they now owe.\n"
+        f"Never answer with the conversation simply ending. The {who} is still "
+        f"here and `visual_scene` must show them: this is the moment after "
+        f"they stopped talking, not a cut to somewhere else.\n"
+    )
 
 
 def _record_character_memory(session_id: str, subject: dict, note: str = "") -> dict:
@@ -14978,7 +15849,49 @@ def api_narrator_narrate():
 # a line. Three is the ceiling; the char cap is what actually keeps a bridging
 # beat shorter than the loading it covers.
 _NARRATION_MAX_SENTENCES = 3
-_NARRATION_MAX_CHARS = 240
+# Two beats need room that one line did not. At 240 the clip was dropping the
+# SECOND beat whenever the first ran long — a live run came back "This ledger
+# documented the daily caloric distribution quotas until the blackout of 2154."
+# and nothing else, because the pair together cleared the cap and the clip
+# keeps only what fits. The directive asks for two sentences of at most fifteen
+# words, which lands well inside this; the headroom is only so that a model
+# overshooting that ask costs a few words rather than a whole beat.
+_NARRATION_MAX_CHARS = 320
+
+
+def _strip_narration_staging(text: str, acted: str = "") -> str:
+    """Drop everything in a narration that is not the spoken line.
+
+    Asked for one sentence of dialogue, a model will still hand back a
+    screenplay: a sound cue on its own line ("*Click.*"), or the action echoed
+    as a heading before the real line ("Spoke with the miner.\\n\\nHis teeth
+    were..."). Both were reaching the voice — the clip keeps the FIRST
+    sentence, so the narrator's whole contribution to a turn was the word
+    "Click". The brief asks for neither; this is the guarantee.
+    """
+    t = (text or "").strip()
+    t = re.sub(r"^```[a-z]*\s*", "", t)
+    t = re.sub(r"\s*```$", "", t).strip()
+    flat_acted = re.sub(r"[^a-z0-9 ]", "", (acted or "").lower()).strip()
+    kept = []
+    for raw in t.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        # A cue, not a line: wholly wrapped in emphasis or brackets.
+        if re.fullmatch(r"[\*_\[\(].{0,80}?[\*_\]\)][.!?]*", line):
+            continue
+        # The action restated as a heading before the real line. Only ever
+        # dropped when something else follows it — if the model gave us
+        # nothing but the echo, a weak line still beats no line.
+        flat = re.sub(r"[^a-z0-9 ]", "", line.lower()).strip()
+        if flat_acted and flat == flat_acted and not kept:
+            continue
+        kept.append(line)
+    out = " ".join(kept) if kept else t
+    # Emphasis markers survive into TTS as literal asterisks.
+    out = re.sub(r"[*_`]+", "", out)
+    return re.sub(r"\s+", " ", out).strip()
 
 
 def _clip_narration(text: str, max_sentences: int = 1) -> str:
@@ -15005,7 +15918,246 @@ def _clip_narration(text: str, max_sentences: int = 1) -> str:
     return kept
 
 
-def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") -> list:
+# HOW the player issued this action, phrased for the narrator.
+#
+# It used to be handed one anonymous sentence — "THE PLAYER JUST DID: <text>"
+# — for every route into the game, so walking toward something, opening it,
+# speaking to it, picking an offered option and typing your own sentence all
+# arrived looking identical. A voice that cannot tell those apart answers all
+# of them the same way, which is what made the narrator feel like it was
+# talking over the game instead of about it. Naming the verb is what lets it
+# narrate the player's story rather than the room's.
+#
+# Phrased in the SECOND PERSON, because the brief addresses the narrator as
+# the one living this ("You are {self}, speaking into a tape"). Written in the
+# third person — "They walked toward the pond" — the model took the hint and
+# started addressing the player as "you", which is a different narrator in a
+# different game from the one the VOICE line describes.
+_DEED_PHRASING = {
+    "move": "walked toward {t}",
+    "interact": "put your hands on {t}",
+    "talk": "spoke to {t}",
+    "photo": "photographed {t}",
+    "leave": "walked away from {t}",
+    "choice": "took one of the options in front of you",
+    "custom": "did something nobody offered you",
+    "encounter": "answered a threat, face to face",
+    "arrive": "arrived somewhere you have not been",
+    "death": "died here",
+}
+
+
+def _deed_block(kind: str, target: str, acted: str) -> str:
+    """The labelled "what the player just did" block, or "" if we know nothing.
+
+    Deliberately the FIRST thing in the scene slot: the narrator's whole job
+    is now to speak to this, and a brief buries whatever it puts last.
+    """
+    kind = re.sub(r"[^a-z_]", "", str(kind or "").strip().lower())[:24]
+    target = re.sub(r"\s+", " ", str(target or "")).strip()[:120]
+    acted = re.sub(r"\s+", " ", str(acted or "")).strip()[:240]
+    if not acted and not target:
+        return ""
+    phrase = _DEED_PHRASING.get(kind, "")
+    if "{t}" in phrase:
+        phrase = phrase.format(t=target) if target else ""
+    headline = f"You {phrase}." if phrase else ""
+    verbatim = f' In your own words: "{acted}"' if acted else ""
+    # Points AT the fact rather than replacing it. An earlier version of this
+    # block told the narrator to speak to the action's cost and explicitly
+    # not to reach for the history — which answered the wrong complaint and
+    # cost the voice its whole register, turning every line into a caption of
+    # the thing just touched. The history IS the line; this only says which
+    # piece of it to go and get.
+    return (
+        "WHAT YOU JUST DID — reach for the fact that belongs to THIS:\n"
+        f"{headline}{verbatim}\n"
+        "Whatever the background knows about that specific thing — what it "
+        "was for, who ran it, what was done with it, when it stopped — that "
+        "is the fact you set down. Do not narrate the action back, do not "
+        "caption the picture, and do not tell them what it cost.\n"
+        "Do not echo the action back and do not write a sound effect or a "
+        "stage direction before it. Your reply is the spoken line and nothing "
+        "else."
+    ).strip()
+
+
+# ───────── THE NARRATOR'S TWO BEATS ──────────────────────────────────────────
+# FACT / QUESTION was only ever two shapes over one finite pool of facts, and
+# the brief says that pool outright: "ONE LINE OF HISTORY, AND NOTHING ELSE",
+# reached out of a background document a few thousand characters long. Once the
+# obvious facts are spent there is nowhere left to go, so the voice rewords what
+# it already said — which is the reported "repeating lines changing just a few
+# words". Alternating harder cannot fix a shortage of shapes.
+#
+# So a narration is TWO BEATS and the PAIR of shapes rotates. Beat one sets
+# something down; beat two turns on it. History is still the register — FACT is
+# in every other pair — but it now sits beside what he can reason out for
+# himself, what he cannot account for, and (once a cycle) what he came here to
+# reach. Those are his own thinking, which is the other half of the ask: the
+# voice should sound like someone working it out, not like a file being read.
+_BEAT_KINDS = {
+    "FACT": (
+        "set down ONE buried piece of what was done here — what it was for, "
+        "who ran it, what year, what they called it. Flat, as something you "
+        "happen to know. Never a fact you have already given"
+    ),
+    "QUESTION": (
+        "ask the part that does not add up. Plainly, of yourself, and leave it "
+        "hanging. Not a riddle, not a warning, not a question to anyone else"
+    ),
+    "MYSTERY": (
+        "name the thing in front of you that should not be the way it is — "
+        "present tense, no history. What is wrong with this, now. Say it and "
+        "do not explain it"
+    ),
+    "READ": (
+        "say what you make of it. Your own read, out loud: what this means, "
+        "what it tells you, what you have decided about it. You may be wrong"
+    ),
+    "GOAL": (
+        "measure it against what you came here for. Not the mission recited — "
+        "how far off it still is, whether this gets you closer, what it costs "
+        "you to keep going"
+    ),
+    "TALLY": (
+        "count what you actually have. What you know now that you did not, or "
+        "what you still have nothing on"
+    ),
+}
+
+#: Ordered pairs. No shape opens two narrations running, and GOAL comes round
+#: once per cycle — "occasionally", which is what it is worth. Six narrations
+#: is long enough that a player never hears the cycle as a pattern.
+_BEAT_CYCLE = (
+    ("FACT", "QUESTION"),
+    ("MYSTERY", "READ"),
+    ("FACT", "MYSTERY"),
+    ("READ", "GOAL"),
+    ("QUESTION", "FACT"),
+    ("TALLY", "MYSTERY"),
+)
+
+#: Words too common to mean anything as a rut signal.
+_NARRATION_STOPWORDS = frozenset("""
+about after again against already also always another anything around away
+back because been before being below between both came come could down each
+even ever every from gone have here into just keep kept know later left like
+long look made make many more most much never next nobody none nothing
+only other over own place same seen since some something still such take
+than that their them then there these they thing think this those through
+time under until upon very want went were what when where which while will
+with without would your yours
+""".split())
+
+
+def _narration_rut_words(spoken: list, min_hits: int = 2, cap: int = 6) -> list:
+    """Content words this narrator has now leaned on in more than ONE line.
+
+    The complaint is not that a noun recurs — the fence and the mesa are
+    supposed to recur, they are the place. It is that the SUBJECT stops
+    changing: a real run gave three lines running about Horizon signing
+    permits, each a reword of the last. A noun used once is the scene; a noun
+    used twice is a rut, and only the second kind is worth forbidding.
+    """
+    hits: dict = {}
+    for line in spoken:
+        words = {w for w in re.findall(r"[a-z]{4,}", str(line).lower())
+                 if w not in _NARRATION_STOPWORDS}
+        for w in words:
+            hits[w] = hits.get(w, 0) + 1
+    ranked = sorted((w for w, n in hits.items() if n >= min_hits),
+                    key=lambda w: (-hits[w], w))
+    return ranked[:cap]
+
+
+def _beat_directive(spoken: list, goal: str = "", spoken_count: int = -1) -> str:
+    """Name the two shapes this narration owes, and what it may not lean on.
+
+    TOLD, never inferred. The brief used to ask the narrator to "read ALREADY
+    SAID THIS RUN and see which one you did last", which makes every line
+    depend on the model classifying its own previous output — and it does not:
+    left to infer it gave four questions in a row, three of them the same
+    Horizon paraphrase. The server knows how many lines have gone by, so it
+    picks the shapes and says them.
+
+    Appended LAST on purpose, and explicit that it outranks the shape rules
+    above it. The authored brief ends on "ONE LINE OF HISTORY" and "ONE short
+    sentence", both emphatic and both last — so anything that means to change
+    the shape has to say it does, the same way the radio-play format block does.
+
+    `spoken_count` is how many narrations this run has produced, and it has to
+    be a real counter rather than `len(spoken)`. `narrator_recent` is capped at
+    NARRATOR_MEMORY entries, so its length stops growing — and with a memory of
+    six and a cycle of six, the index pinned itself at `6 % 6 == 0` from the
+    seventh narration on. Every later line in the run got FACT then QUESTION,
+    which is the exact rut this rotation exists to break, and it looked from
+    the outside like the rotation being ignored. -1 means "no counter was
+    passed"; fall back to the length, which is right for a short run.
+    """
+    spoken = [str(s).strip() for s in (spoken or []) if str(s).strip()]
+    idx = len(spoken) if spoken_count < 0 else spoken_count
+    first, second = _BEAT_CYCLE[idx % len(_BEAT_CYCLE)]
+    # No goal authored, so the slot would ask him to measure against nothing.
+    # Spend it on his own read instead of wasting the turn in the rotation.
+    if "GOAL" in (first, second) and not (goal or "").strip():
+        first, second = ("READ" if first == "GOAL" else first,
+                         "TALLY" if second == "GOAL" else second)
+
+    out = [
+        "\nTHIS NARRATION IS TWO BEATS — this is the shape, and it replaces any "
+        "one-sentence or one-line rule above.",
+        "TWO SHORT SENTENCES, at most fifteen words each. Spoken aloud, the "
+        "whole thing is over in about eight seconds. Cut an adjective before "
+        "you cut a noun.",
+        "The second turns on the first — it does not restate it, and it does "
+        "not answer it tidily.",
+        "This is you thinking, not a report being read: say it the way it "
+        "occurs to you.",
+    ]
+    if "GOAL" in (first, second) and (goal or "").strip():
+        out.append(f"WHAT YOU CAME HERE FOR: {str(goal).strip()[:200]}")
+    if spoken:
+        opening = " ".join(spoken[-1].split()[:3])
+        out.append(f'Your last line began "{opening}". Do not begin this one '
+                   f"that way.")
+        rut = _narration_rut_words(spoken)
+        if rut:
+            out.append(
+                "You have already built more than one line on: "
+                + ", ".join(rut)
+                + ". Do not make either beat about those again — find a "
+                  "different thing in this world to be talking about."
+            )
+    # The two beats go LAST, after every constraint, because the thing the
+    # model reads last is the thing it does. They were above these lines and a
+    # measured run drifted back to fact-then-question by the sixth narration
+    # even while being told otherwise — the same "last wins" that made the
+    # shapes a tail in the first place, one level down.
+    out += [
+        "THE TWO BEATS, IN THIS ORDER:",
+        f"BEAT ONE — {first}: {_BEAT_KINDS[first]}.",
+        f"BEAT TWO — {second}: {_BEAT_KINDS[second]}.",
+    ]
+    return "\n".join(out) + "\n"
+
+
+def _narrator_goal() -> str:
+    """What the player came here to reach, if the level names it.
+
+    `place_summary()` deliberately leaves this out, so the one voice that could
+    use it — the one speaking the player's own thoughts — never saw it.
+    """
+    try:
+        if game_identity.setting_authored():
+            return str((game_identity.authored_setting() or {}).get("goal") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "",
+                     deed_kind: str = "", deed_target: str = "") -> list:
     """Generate a short, story-aware world-building narration as a list of
     {character, text} segments. `multi` lets it hand off between cast voices.
 
@@ -15046,17 +16198,22 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") 
     # previous pick (or a recaption of the still they are leaving).
     acted = (acted or "").strip() or (st.get("last_choice") or "").strip()
     scene_bits = []
-    if acted:
-        scene_bits.append(
-            f"THE PLAYER JUST DID: {acted}. Speak to that action's consequence, "
-            f"not a recap of the still they were already looking at."
-        )
+    deed = _deed_block(deed_kind, deed_target, acted)
+    if deed:
+        scene_bits.append(deed)
     if still:
+        # Labelled as something NOT to describe back. The narrator is the one
+        # voice that can say the part of a moment the picture cannot, and it
+        # spent every line captioning the frame because the frame was the only
+        # thing in its brief that looked like a subject.
         if (focus or "").strip():
             scene_bits.append(f"WHERE THEY WERE LEAVING: {still}")
         else:
-            scene_bits.append(still)
-    scene = " ".join(scene_bits)
+            scene_bits.append(
+                "WHAT IS ON SCREEN (they can already see this — do not "
+                f"describe it back to them): {still}"
+            )
+    scene = "\n\n".join(scene_bits)
     # The cheap signals that genuinely differ turn to turn. Without them the
     # only thing separating two narrations is model temperature.
     now = []
@@ -15072,7 +16229,8 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") 
     if det_level > DETECT_HIDDEN:
         now.append(f"you are {DETECT_NAMES[det_level]}")
     if now:
-        scene = (scene + " — " if scene else "") + "; ".join(now)
+        line = "RIGHT NOW: " + "; ".join(now)
+        scene = (scene + "\n\n" + line) if scene else line
     recent = []
     for entry in hist[-3:]:
         ch = (entry.get("choice") or "").strip()
@@ -15087,10 +16245,37 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") 
     # lines it must not land on again are the only reliable way to move it off
     # them. Kept short — this is a nudge, not a transcript.
     spoken = [str(s).strip() for s in (st.get("narrator_recent") or []) if str(s).strip()]
+    # OPENINGS ONLY, never the whole sentences. This block is why the rut was
+    # so hard to break: four complete, well-formed lines under a "do not
+    # repeat" heading are still four EXAMPLES, and few-shot pull beats a
+    # negative instruction every time. Measured, on the same prompt and the
+    # same model: a fresh session gave six different shapes across six
+    # narrations, while a session whose remembered lines were all
+    # fact-then-question gave eight fact-then-questions in a row — obeying the
+    # instruction not to reuse the words while copying the shape it was being
+    # shown. Telling it harder did not work; removing the demonstration did.
+    #
+    # A stem is enough for the job that is actually left here. It identifies a
+    # line well enough to catch a literal restart, and the two guards that do
+    # the real work are elsewhere: the rut words ban the SUBJECT (see
+    # _narration_rut_words) and the beat rotation names the SHAPE.
+    stems = []
+    for line in spoken[-3:]:
+        words = line.split()
+        stems.append(" ".join(words[:6]) + ("…" if len(words) > 6 else ""))
     avoid_block = (
-        "\nALREADY SAID THIS RUN — do not repeat these, or any paraphrase of them:\n- "
-        + "\n- ".join(spoken[-4:]) + "\n"
-    ) if spoken else ""
+        "\nALREADY SAID THIS RUN — these are how your last lines OPENED. Do "
+        "not open this way again, and do not say those lines again in other "
+        "words:\n- " + "\n- ".join(stems)
+        + "\nThey are not examples. Nothing about their shape is a template.\n"
+    ) if stems else ""
+    # NOT folded into avoid_block. `{avoid}` sits near the top of the authored
+    # brief, above the long WHAT YOU SAY / HOW YOU SAY IT sections — and those
+    # end with "ONE LINE OF HISTORY", which is emphatic and, being last, wins.
+    # Putting the beat shapes there produced three facts in a row; they have to
+    # be the final instruction in the prompt, so they go on as a tail below.
+    alternation = _beat_directive(spoken, _narrator_goal(),
+                                  spoken_count=int(st.get("narrator_beat") or 0))
 
     fallback = [{"character": "narrator",
                  "text": "The light was going. Nobody had been through here in a long time."}]
@@ -15108,7 +16293,10 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") 
     # asks for multi — so the one prompt in the editor with a whole panel to
     # itself ("The Narrator → What it says") had no effect on the one button a
     # player presses to hear it. Editing it looked exactly like editing nothing.
-    scene_block = (chr(10) + chr(10) + "CURRENT SCENE: " + scene) if scene else ""
+    # The blocks label themselves now (the deed first, the frame after it), so
+    # there is no outer "CURRENT SCENE:" heading to wrap them in — that
+    # heading is what told the narrator the frame was the subject.
+    scene_block = (chr(10) + chr(10) + scene) if scene else ""
     focus_block_line = ""
     if (focus or "").strip():
         # Named separately from the mood note so an authored template can put it
@@ -15140,7 +16328,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") 
         )
         prompt = (authored + "\n\n" + shape) if authored else (
             f"You script {world_label} PREMISE: {premise}"
-            f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}{focus_block}\n{avoid_block}\n"
+            f"{scene_block}{recent_block}{focus_block}\n{avoid_block}\n"
             f"Write a SHORT radio-play style world-building narration: 2 to 5 lines that hand off between "
             f"these voices where it fits: {cast_names}. Keep it atmospheric, ominous, concrete — no meta, "
             f"no stage directions. EACH LINE IS EXACTLY ONE SHORT SENTENCE. Respond with ONLY a JSON array, "
@@ -15163,7 +16351,8 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") 
                     # One sentence PER LINE here — the radio play gets its
                     # length from the handoff between voices, not from stacking
                     # sentences inside a single voice's line.
-                    one = _clip_narration((it.get("text") or "").strip()[:400])
+                    one = _clip_narration(
+                        _strip_narration_staging((it.get("text") or "")[:400], acted))
                     if one:
                         segs.append({"character": (it.get("character") or "narrator").strip().lower(),
                                      "text": one})
@@ -15182,7 +16371,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") 
     # not baked in here: it was three hardcoded f-strings, so the one voice that
     # talks directly to the player was the one voice you couldn't write.
     if authored:
-        return _narrator_one_line(authored, fallback)
+        return _narrator_one_line(authored + "\n" + alternation, fallback, acted)
 
     if (focus or "").strip():
         prompt = (
@@ -15190,8 +16379,9 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") 
             f"speaking quietly to yourself. PREMISE: {premise}"
             f"{scene_block}{recent_block}\n\n"
             f"INSTRUCTIONS FOR THIS LINE: {focus.strip()}\n{avoid_block}\n"
-            f"Speak in FIRST PERSON. Output EXACTLY ONE short, plain sentence — nothing more. "
-            f"No meta, no stage directions, no purple prose. Follow the INSTRUCTIONS above exactly."
+            f"Speak in FIRST PERSON, as your own thinking. Plain words. "
+            f"No meta, no stage directions, no purple prose. Follow the INSTRUCTIONS above exactly, "
+            f"and take the shape of the line from the beats named at the end."
         )
     else:
         # Direct the VOICE, never the content. The shipped line used to command
@@ -15203,14 +16393,15 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") 
             f"You are the NARRATOR of {world_label} You are {narrator_self} "
             f"speaking quietly to yourself. PREMISE: {premise}"
             f"{scene_block}{recent_block}\n{avoid_block}\n"
-            f"Speak in FIRST PERSON. Output EXACTLY ONE short, plain sentence — nothing more. "
-            f"React to what is IN FRONT OF YOU RIGHT NOW: name something specific from the "
-            f"current scene, or from what just happened. Do NOT restate the mission, do NOT "
-            f"summarise the premise, and do NOT describe your general mood — the line must only "
-            f"make sense in THIS moment and nowhere else. "
-            f"No meta, no stage directions, no purple prose."
+            f"Speak in FIRST PERSON, as your own thinking — the way it occurs to you, "
+            f"not the way a report reads. Plain words. "
+            f"Name something specific from what is in front of you or from what just happened. "
+            f"Do NOT recite the mission, do NOT summarise the premise, and do NOT describe your "
+            f"general mood — it must only make sense in THIS moment and nowhere else. "
+            f"No meta, no stage directions, no purple prose. "
+            f"Take the shape of the line from the beats named at the end."
         )
-    return _narrator_one_line(prompt, fallback)
+    return _narrator_one_line(prompt + "\n" + alternation, fallback, acted)
 
 
 def _authored_narrator_brief(**fields) -> str:
@@ -15232,7 +16423,7 @@ def _authored_narrator_brief(**fields) -> str:
         return ""
 
 
-def _narrator_one_line(prompt: str, fallback: list) -> list:
+def _narrator_one_line(prompt: str, fallback: list, acted: str = "") -> list:
     """Ask for the narrator's line and clip it to a beat. Shared by the authored
     path and the shipped fallback so both behave identically.
 
@@ -15245,9 +16436,9 @@ def _narrator_one_line(prompt: str, fallback: list) -> list:
         return [{"character": s["character"],
                  "text": _clip_narration(s["text"], _NARRATION_MAX_SENTENCES)}
                 for s in fallback]
+    spoken = _strip_narration_staging((line or "")[:600], acted)
     return [{"character": "narrator",
-             "text": _clip_narration((line or "").strip()[:600],
-                                     _NARRATION_MAX_SENTENCES)}]
+             "text": _clip_narration(spoken, _NARRATION_MAX_SENTENCES)}]
 
 
 NARRATOR_MEMORY = 6
@@ -15270,6 +16461,11 @@ def _remember_narration(script: list, session_id: str) -> None:
             st = _load_state(session_id)
             kept = [str(x) for x in (st.get("narrator_recent") or []) if str(x).strip()]
             st["narrator_recent"] = (kept + lines)[-NARRATOR_MEMORY:]
+            # Counted separately from the list it is remembered in, because the
+            # list is CAPPED and the beat rotation is driven off this. Reusing
+            # the list's length froze the rotation at one pairing the moment the
+            # cap was reached — see _beat_directive.
+            st["narrator_beat"] = int(st.get("narrator_beat") or 0) + 1
             _save_state(st, session_id)
             _sync_ambient_state(st, session_id)
     except Exception as e:
@@ -15280,7 +16476,12 @@ def api_narrator_worldbuild():
     """Generate a story-aware world-building narration and (optionally) speak it.
 
     Request JSON: {"focus"?: str, "follow_focus"?: str, "acted"?: str,
+                   "deed_kind"?: str, "deed_target"?: str,
                    "multi"?: bool, "speak"?: bool, "session_id"?}
+
+    `deed_kind` / `deed_target` say HOW the player acted and on WHAT — see
+    _DEED_PHRASING. Without them every route into the game reads to the
+    narrator as the same anonymous event.
     Response: {"segments": [{character, text, voice_id?, audio?}], "voice": bool}
     With speak=false (or no key) it returns text-only segments the client can
     display and/or send to /api/narrator/narrate later. Read-only."""
@@ -15300,11 +16501,27 @@ def api_narrator_worldbuild():
         multi = bool(data.get("multi"))
         speak = data.get("speak", True)  # legacy: server-side TTS audio inline
         session_id = data.get("session_id", "default")
-        script = _narrator_script(focus, multi, session_id, acted=acted)
+        deed_kind = re.sub(r"\s+", " ", str(data.get("deed_kind") or "")).strip()[:24]
+        deed_target = re.sub(r"\s+", " ", str(data.get("deed_target") or "")).strip()[:120]
+        script = _narrator_script(focus, multi, session_id, acted=acted,
+                                  deed_kind=deed_kind, deed_target=deed_target)
         if follow_focus:
-            follow_script = _narrator_script(follow_focus, False, session_id, acted=acted)
+            # Remembered BEFORE the follow-up is asked for, not after both.
+            # Every per-line guard reads `narrator_recent` — the beat rotation,
+            # the "do not begin this one that way" opening, the rut words — so
+            # generating both from one snapshot meant the second line was
+            # written blind to the first: same rotation index, same forbidden
+            # opening, nothing saying they had to differ. Two lines in one
+            # breath, and the likeliest pair in the game to sound like one
+            # sentence said twice. This is also what lets the client stop
+            # hardcoding "fact, then question" to force them apart.
+            _remember_narration(script, session_id)
+            follow_script = _narrator_script(follow_focus, False, session_id, acted=acted,
+                                             deed_kind=deed_kind, deed_target=deed_target)
+            _remember_narration(follow_script, session_id)
             script = list(script or []) + list(follow_script or [])
-        _remember_narration(script, session_id)
+        else:
+            _remember_narration(script, session_id)
         # Attach the resolved voice per line so the client's generative agent
         # knows which voice to speak each segment in.
         for seg in script:
@@ -15537,12 +16754,20 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
             print(f"[OBSERVE] reground worker start: {fpath}", flush=True)
             vision = ""
             v_setting = v_spatial = ""
+            v_witness = None
             try:
                 vres = _vision_analyze_all(fpath)  # has an internal 30s timeout
                 if isinstance(vres, dict):
                     vision    = (vres.get("description") or "").strip()
                     v_setting = (vres.get("setting") or "").strip()
                     v_spatial = (vres.get("spatial") or "").strip()
+                    # Could anything in that frame see the player. Same call,
+                    # one more parsed line — see WATCHERS in _vision_analyze_all
+                    # and "the witness" beside the detection ladder. None when
+                    # the field is missing, which is what a pre-WATCHERS cache
+                    # entry and a failed vision call both look like; neither is
+                    # allowed to assert an empty room.
+                    v_witness = witness_from_vision(vres)
             except Exception as e:
                 log_error(f"[OBSERVE] vision failed: {e}")
             print(f"[OBSERVE] vision len={len(vision)}", flush=True)
@@ -15556,6 +16781,7 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
                 # Realtime has no scene_image beat to score off, so this read
                 # of the live frame is also what the ambience is built from.
                 st['current_vision'] = vision
+                record_witness(st, v_witness)
                 # This vision text describes the frame that was ACTUALLY
                 # rendered, which is the only honest answer to "did the object
                 # the player touched survive the turn?" — the consequence text
@@ -15795,17 +17021,35 @@ def _permanence_directive(subject: str, is_move: bool) -> str:
     fix asks for the same guarantee (the object is provably in the new
     frame) without ever using the word that made "centered and dominant"
     the easy answer.
+
+    The replacement then overcorrected into a different failure: it described
+    the object as sitting "in the room the player just crossed into ... on its
+    wall, floor, or surface". That is a true sentence about a steel door or a
+    control panel and a nonsense one about a mesa, a water tower or a parked
+    truck — and those are exactly what SCAN detects outdoors. Handed
+    subject='mesa', the model did the only thing that sentence permits: it
+    invented an enclosure, put the player inside it, and hung the mesa behind
+    it as a backdrop. The guarantee here is that the object is provably in the
+    new frame and is the thing the player REACHED, so the wording has to hold
+    for a landform in open desert as readily as for a hatch in a corridor.
     """
     subj = _permanence_subject(subject)
     if not subj:
         return ""
     survives = (
-        f"the {subj} visible in the room the player just crossed into, sitting "
-        f"in place — on its wall, floor, or surface — with that room's own "
-        f"geometry around it (other walls, floor, depth, whatever else is in "
-        f"there), the way it would actually look from a few steps away. Not a "
-        f"close-up of the {subj} alone with nothing else in frame; that is a "
-        f"product photo, not a person arriving somewhere"
+        f"the {subj} as the thing the player has ARRIVED AT — near enough that "
+        f"it commands the depth in front of them, with the place it actually "
+        f"stands in around it (its ground, its surroundings, whatever else is "
+        f"there), the way it would look from a few steps away. What \"a few "
+        f"steps away\" means depends on the {subj}: something you could reach "
+        f"out and touch is at arm's length, something the size of a building "
+        f"or a landform is seen from its foot. Do NOT move the {subj} into a "
+        f"room, an interior or an enclosure it was not already part of, and do "
+        f"NOT leave it as a distant shape while some nearer structure takes "
+        f"the foreground — that is the one failure this requirement exists to "
+        f"prevent. Not a close-up of the {subj} alone with nothing else in "
+        f"frame either; that is a product photo, not a person arriving "
+        f"somewhere"
         if is_move else
         f"the {subj} still visible and CHANGED BY the action — opened, moved, "
         f"damaged, reacting — not absent"
@@ -15878,10 +17122,17 @@ def _action_directive(is_interaction: bool, is_move: bool, subject: str,
             "because this is a new scene. Fleeing, sprinting, or scrambling "
             "away is still travel, not a turn-and-confront beat, even under "
             "threat. "
-            "When the destination is a door, hatch, vent, threshold, entrance, "
-            "shed, stair, or other opening, visual_scene is the space on the "
-            "FAR SIDE of it — the interior or the other room — not another "
-            "exterior shot of its face. Arriving means they crossed through. "
+            "When the destination is ITSELF an opening — a door, hatch, vent, "
+            "threshold, entrance, stair — visual_scene is the space on the FAR "
+            "SIDE of it, not another exterior shot of its face: arriving means "
+            "they crossed through. When it is anything else — a landform, a "
+            "vehicle, a tank, a mast, a body, a stretch of open ground, the "
+            "outside of a structure — they arrive AT it and stop there, and "
+            "they stay outdoors if they were outdoors. Do not manufacture an "
+            "interior, an enclosure or a doorway for them to have passed "
+            "through, and do not swap the destination for a nearer or more "
+            "photogenic thing beside it: the place they end up is the place "
+            "they said they were going. "
             "When the camera shows the player character, `visual_scene` must "
             "name them in the place (what they are doing there), not only the "
             "empty room ahead of their eyes. "
@@ -15943,7 +17194,7 @@ def _resolve_permanence(st: dict, vision_text: str) -> None:
 
 
 # ───────── COMBINED dispatch generator (saves 1 API call) ─────────────────────
-def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL", is_interaction: bool = False, subject: str = "", is_move: bool = False, environment_streak: int = 0, is_custom_action: bool = False) -> tuple[str, str, bool, list]:
+def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL", is_interaction: bool = False, subject: str = "", is_move: bool = False, environment_streak: int = 0, is_custom_action: bool = False) -> tuple[str, str, bool, list, Optional[bool]]:
     """
     Generate BOTH narrative dispatch AND vision dispatch in ONE API call.
     Now supports multimodal input - can see the current frame!
@@ -15951,7 +17202,13 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
     Args:
         fate: Luck modifier - "LUCKY", "NORMAL", or "UNLUCKY"
 
-    Returns: (dispatch, vision_dispatch, player_alive, provisional_choices)
+    Returns: (dispatch, vision_dispatch, player_alive, provisional_choices,
+              relocated)
+
+    `relocated` is the model's own answer to "did the beat I just wrote move
+    them somewhere else", or None when it did not say. The renderer uses it
+    instead of guessing a location change out of the choice wording — see the
+    hard_transition read in advance_turn_image_fast.
 
     provisional_choices is a best-effort list of next-action options produced in
     THIS same call (see the OUTPUT CONTRACT addendum below). The turn loop can
@@ -15972,24 +17229,50 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             if last_entry.get("vision_analysis"):
                 prev_vision_analysis = last_entry["vision_analysis"][:300]
 
+        # This block lands second-to-last in the assembled prompt, immediately
+        # before the output instructions, which makes it the most recent and
+        # most concrete thing the model reads. It used to say "Do NOT change
+        # locations unless the choice explicitly moves through a door,
+        # entrance, or exit. Stay in the same environment." — and it won,
+        # against a template that spends 15,000 characters insisting actions
+        # always succeed and "Change location → You are now THERE".
+        #
+        # So the player got stuck in rooms. Told to keep them where they were
+        # but still to write an interesting beat, the model changed something
+        # ABOUT the room instead: a live run answered "explore deeper into
+        # this space" by slamming shut the door the player had opened the turn
+        # before. It never decided they failed; it was obeying a standing
+        # order not to leave, and inventing a reason. The "unless it's a door"
+        # exemption never helped, because corridors, yards, gaps and stairs
+        # are not doors.
+        #
+        # What the block is actually for is continuity — no teleporting, no
+        # drifting to an unrelated place — and that is not the same
+        # instruction as "do not move". It now constrains where they can
+        # arrive rather than whether they may.
         spatial_context = ""
         if prev_vision_analysis:
             spatial_context = (
                 f"\n\nCURRENT VISUAL SCENE (the camera is HERE — visible state of the "
                 f"world right before your action): {prev_vision_analysis[:300]}\n"
-                f"Do NOT change locations unless the choice explicitly moves through a "
-                f"door, entrance, or exit. Stay in the same environment. Your "
-                f"`visual_scene` field must describe how THIS scene evolves after the "
-                f"action — preserve ground type, environment, and visible landmarks."
+                f"Anywhere they arrive has to be somewhere this place could plausibly "
+                f"lead, reachable on foot from here, with the place they left still "
+                f"behind them. Do not cut to an unrelated location. When the action "
+                f"does NOT move them, keep the ground, landmarks and layout exactly "
+                f"as described above."
             )
 
         prev_context = _previous_beat_block(state)
         world_prompt = state.get('world_prompt', '')
         
-        image_context = ""
-        if current_image:
-            image_context = "🖼️ ATTACHED IMAGE = CURRENT LOCATION. You are HERE. Do NOT teleport yourself.\n\n"
-        
+        # (An `image_context` string used to be built here — "ATTACHED IMAGE =
+        # CURRENT LOCATION. You are HERE. Do NOT teleport yourself." — and
+        # never used. Removed rather than wired up: it says the same thing
+        # that used to pin the player in place, so the next person to notice
+        # the dead variable would have been fixing a bug by reintroducing one.
+        # Where the player is is already established by the attached frame and
+        # by CURRENT VISUAL SCENE above.)
+
         # Detect timeout penalties
         is_timeout_penalty = any(phrase in choice.lower() for phrase in [
             "crushes you", "hits you", "attacks you", "shoots you", "tears into you",
@@ -16024,12 +17307,32 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
                 "CRITICAL INSTRUCTIONS FOR FREE WILL:\n"
                 "1. The player IS PERFORMING this exact action RIGHT NOW\n"
                 "2. Describe them DOING the action in the active camera mode "
-                "(third-person follow shows their body doing it; first-person shows the attempt from their eyes)\n"
-                "3. Show the ATTEMPT - the physical movements, the effort\n"
-                "4. THEN show the immediate consequence/result\n"
-                "5. Example: If they say 'Kick door' → 'You draw back your leg and slam your boot into the door. [result]'\n"
-                "6. Example: If they say 'Climb fence' → 'You grab the chain-link and haul yourself up. [result]'\n"
-                "7. Make their command REAL and VISIBLE in the text\n\n"
+                "(third-person follow shows their body doing it; first-person shows it from their eyes)\n"
+                # This used to read "Show the ATTEMPT - the physical movements,
+                # the effort", and that one word undid the whole block. An
+                # ATTEMPT is a thing that can fail, so an action the model
+                # judged impossible came back as the attempt failing: "fly to
+                # antarctica" produced "You attempt to take flight, but your
+                # body remains pinned to the unforgiving red earth" — which is
+                # verbatim the pattern action_consequence_instructions already
+                # forbids ('NO "you try but fail"', 'FORBIDDEN: "You try to
+                # [action] but..."'). Two prompts disagreed and the one sitting
+                # next to the action won.
+                "3. The action HAPPENS. Write it LANDING, not being attempted. "
+                "Never 'you try to', 'you attempt to', 'you start to', or a "
+                "body that 'remains' where it was\n"
+                "4. THEN show what the world does about it - that is where cost, "
+                "damage, noise and attention belong\n"
+                "5. BEYOND A HUMAN BODY? THE WORLD SUPPLIES THE MEANS. Flying, "
+                "crossing a continent, calling in help - something in the "
+                "fiction makes it possible: a vehicle, a rope, a stranger, a "
+                "machine, a door that was unlocked, luck that will be paid for. "
+                "Invent the means, let the action succeed, and charge for it in "
+                "the consequence. Refusing outright is the one answer that is "
+                "always wrong - it tells the player their idea did not count\n"
+                "6. Example: If they say 'Kick door' → 'You draw back your leg and slam your boot into the door. [result]'\n"
+                "7. Example: If they say 'Climb fence' → 'You grab the chain-link and haul yourself up. [result]'\n"
+                "8. Make their command REAL and VISIBLE in the text\n\n"
                 "Your dispatch MUST start by showing them performing this specific action.\n"
             )
         
@@ -16150,6 +17453,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             f"STORY PHASE: {phase_str} — {phase_directive}\n"
             f"{onscreen_directive(onscreen)}"
             f"{interaction_directive}"
+            f"{_conversation_directive(state)}"
             f"{stagnation_directive(environment_streak)}"
         )
 
@@ -16167,10 +17471,25 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             # first-person perspective", which is an instruction to write the
             # wrong shot when the camera is behind the character.
             f"\n\n{game_identity.apply(free_will_header, 'raw')}"
-            f"PLAYER CHOICE: '{choice}'\n"
+            # Finished history goes ABOVE the choice, never below it. Read last,
+            # it was what the model continued instead of acting on the choice.
+            f"{prev_context}"
+            f"\nPLAYER CHOICE: '{choice}'\n"
             f"THE ACTION COMPLETED. The attached image is WHERE THEY WERE when "
             f"they chose. visual_scene is the camera AFTER this action — do not "
             f"recaption the attached still.\n"
+            f"Write THIS action's outcome. If your first sentence could have "
+            f"been written before the player picked it, you have written the "
+            f"wrong beat.\n"
+            # Several rusted things are usually in frame at once, and the model
+            # would act on a neighbour: "Sprint toward rusted truck" came back
+            # as scrambling behind the rusted TANK, and "Move to the chain link
+            # fence" as wrenching open the pickup's door. Naming the object is
+            # the whole content of a MOVE TO / SCAN action, so it has to bind.
+            f"If the PLAYER CHOICE names a specific object, THAT object is the "
+            f"one the beat acts on — not a similar one elsewhere in frame. Do "
+            f"not substitute a neighbouring prop because it is nearer or more "
+            f"interesting.\n"
             # Interpolated raw, this is the one surface the director's sheet
             # never reached: the world document still carried the shipped
             # protagonist's name, so the model was told who the player is by
@@ -16178,9 +17497,8 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             f"WORLD CONTEXT: {game_identity.recast(world_prompt)}\n"
             f"{grounding_block}"
             f"{fate_modifier}"
-            f"{spatial_context}"
-            f"{prev_context}\n\n"
-            "Return JSON with all three fields from the OUTPUT CONTRACT:\n"
+            f"{spatial_context}\n\n"
+            "Return JSON with all four fields from the OUTPUT CONTRACT:\n"
             "  dispatch — the prose the player reads. 2-3 sentences. What the "
             "action cost, what it changed, what the place does back. Write the "
             "beat, not the camera position: never open with the protagonist's "
@@ -16189,6 +17507,12 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             "sentences, only what is physically visible, no feelings, no sound. "
             "Do not recaption the attached still.\n"
             "  player_alive — true or false.\n"
+            "  relocated — true if the beat you just wrote leaves them "
+            "somewhere the camera could not see from where they started: "
+            "another room, the far side of a door, further down a passage. "
+            "False if they are still standing in the same place, however much "
+            "changed around them. Answer for the beat you wrote, not for what "
+            "the action asked for.\n"
             "dispatch and visual_scene must not be the same sentence. "
             "No next_choices."
         )
@@ -16249,6 +17573,11 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         dispatch = ""
         visual_scene = ""
         player_alive = True
+        # None means "the model did not say", which is different from False —
+        # the caller falls back to the old wording guess rather than assuming
+        # the player stayed put. See the hard_transition read in
+        # advance_turn_image_fast.
+        relocated = None
         provisional_choices: list = []
         
         try:
@@ -16256,6 +17585,8 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             data = json_lib.loads(result)
             visual_scene = (data.get("visual_scene") or "").strip()
             player_alive = data.get("player_alive", True)
+            if isinstance(data.get("relocated"), bool):
+                relocated = data["relocated"]
             # The feed reads `dispatch`; the image model reads `visual_scene`.
             # Only fall back to the caption when the model actually withheld
             # the prose — assigning one to the other unconditionally is what
@@ -16300,7 +17631,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         dispatch = _clip_sentence(dispatch, 700)
         vision_dispatch = _clip_sentence(vision_dispatch, 400)
         
-        return dispatch, vision_dispatch, player_alive, provisional_choices
+        return dispatch, vision_dispatch, player_alive, provisional_choices, relocated
         
     except Exception as e:
         try:
@@ -16309,8 +17640,10 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             print(f"[COMBINED DISPATCH ERROR] (error contains special characters)")
         import traceback
         traceback.print_exc()
-        # Fallback to safe defaults
-        return "You make a tense move in the chaos.", "The desert stretches ahead.", True, []
+        # Fallback to safe defaults. `relocated` is None, not False: a call
+        # that failed has no opinion about where the player ended up.
+        return ("You make a tense move in the chaos.",
+                "The desert stretches ahead.", True, [], None)
 
 # ───────── degraded turns, told in-world ─────────────────────────────────────
 # When dispatch generation fails, `_ask` returns a sentinel string — "Signal
@@ -16493,15 +17826,358 @@ def _as_int(value, fallback: int = 0) -> int:
 
 
 def get_detection(state: dict) -> dict:
-    """The detection record, defaulted for a state that predates the system."""
+    """The detection record, defaulted for a state that predates the system.
+
+    This rebuilds the record from a fixed set of fields rather than copying it,
+    so anything parked on `state["detection"]` that is not listed here is
+    dropped on the next apply_detection write. The frame reading is kept at
+    `state["detection_witness"]` for exactly that reason — see record_witness.
+    """
     det = state.get("detection")
     if not isinstance(det, dict):
         det = {}
     heat = max(0, min(DETECT_HEAT_MAX, _as_int(det.get("heat"))))
+    source = str(det.get("source") or "").strip().lower()
     return {"heat": heat,
             "level": max(0, min(DETECT_HUNTED,
                                 _as_int(det.get("level"), detection_level(heat)))),
-            "since_turn": _as_int(det.get("since_turn"))}
+            "since_turn": _as_int(det.get("since_turn")),
+            # Which sensor last moved the dial: "frame" when the picture showed
+            # somebody, "prose" when the narration said so, "noise" when it was
+            # only the player's own meddling, "" when nothing did. The HUD
+            # shows it so being seen is legible as a fact about the picture
+            # rather than a number that drifts.
+            "source": source if source in ("frame", "prose", "noise") else ""}
+
+
+# ───────── the witness: what the PICTURE says, not what the prose says ───────
+# _DETECT_SIGNALS above reads the narrator's word choice. That is the only
+# sensor a text turn has, but it is also a closed loop — the model decides
+# whether the model got seen — and it is why the dial read as invented. Phrase
+# it as "the guard's attention settles on your position" instead of "spots you"
+# and nothing moves; write a calm sentence while a figure stands in frame and
+# the heat quietly bleeds off.
+#
+# Two vision passes already look at the frame the player is actually looking
+# at, and both were throwing this answer away:
+#
+#   • /api/detect (the SCAN tap) returns `kind` and a normalized box per
+#     object. Counting the animate ones and measuring the nearest box is pure
+#     arithmetic on a payload we already paid for.
+#   • _vision_analyze_all (the observe reground) needed one extra line in a
+#     prompt it was already sending — see WATCHERS in that function.
+#
+# Neither adds an API call or a millisecond to the turn's critical path. A
+# reading is stamped onto state as a "witness" and consumed by the next
+# apply_detection, on the SAME 0..4 scale _DETECT_SIGNALS uses, so it lands in
+# the existing arithmetic rather than beside it.
+
+# Which detector kinds can look back at you. `machine` is excluded on purpose:
+# a camera on a pole is a watcher, but the detector labels far more things
+# `machine` than are pointed anywhere, and a sensor that fires on every pump
+# and generator in frame is the ambient-prose failure again in a new coat.
+WITNESS_ANIMATE_KINDS = frozenset({"person", "character", "creature", "animal"})
+
+# Normalized box height for the nearest animate thing. Above NEAR it is
+# standing over you; below MID it is a silhouette across the yard.
+WITNESS_NEAR_H = 0.55
+WITNESS_MID_H = 0.22
+
+# How much a frame RAISES heat, keyed (facing, distance). `unknown` is the
+# SCAN detector, which reports geometry but not orientation — deliberately
+# graded between `facing` and `away` rather than guessing either way.
+#
+# Everything with its back turned scores zero, at every distance. The dial
+# measures what the WORLD KNOWS, and a thing that has not looked at you knows
+# nothing however close it is standing. Being close to it is still a fact about
+# your position, and that is what `witness_holds` is for: exposure without
+# perception stops you getting less noticed, rather than making you more so.
+# Splitting it this way is what lets a player walk a yard full of oblivious
+# bodies and stay hidden until one of them turns round — which is the entire
+# reason to have a hidden state at all.
+_WITNESS_GAIN = {
+    ("facing", "near"): 3,   # as bad as "spots you": it is close and looking
+    ("facing", "mid"): 2,    # as bad as "turns toward you"
+    ("facing", "far"): 1,
+    ("unknown", "near"): 2,
+    ("unknown", "mid"): 1,
+    ("unknown", "far"): 0,
+    ("away", "near"): 0,
+    ("away", "mid"): 0,
+    ("away", "far"): 0,
+}
+
+# A frame nothing is facing cannot push past this on its own, which is one
+# short of `alerted`. Alerted means the world HAS SEEN the player; a picture in
+# which nothing has looked at them is not evidence of that, however crowded or
+# close it is. Getting past suspicious needs either something that actually
+# looked, or prose reporting what a single frame cannot show — footsteps
+# closing from behind, a radio call, a door opening off-camera.
+#
+# Without this, a scene that simply contains people ratchets: a live run walked
+# a yard of backs-turned creatures from hidden to hunted in four turns, each
+# turn adding a little and nothing ever having looked up.
+WITNESS_UNSEEN_CEILING = DETECT_THRESHOLDS[DETECT_ALERTED] - 1
+
+_WITNESS_FACING = ("facing", "away", "unknown", "none")
+_WITNESS_DISTANCE = ("near", "mid", "far")
+
+
+def _witness(watchers: int, facing: str, distance: str, source: str,
+             turn: int = 0, label: str = "") -> dict:
+    """One normalized reading of the frame. Never raises on junk input.
+
+    `label` names the nearest animate thing when the reading came from the SCAN
+    detector, which is the only pass that returns nouns. It is what lets an
+    encounter at high heat be the thing the player actually saw rather than a
+    fresh roster draw — see onscreen_threat_target in encounter.py.
+    """
+    watchers = max(0, _as_int(watchers))
+    facing = str(facing or "").strip().lower()
+    distance = str(distance or "").strip().lower()
+    if facing not in _WITNESS_FACING:
+        facing = "unknown"
+    if distance not in _WITNESS_DISTANCE:
+        distance = "far"
+    if watchers <= 0:
+        facing, distance, label = "none", "far", ""
+    return {"watchers": watchers, "facing": facing, "distance": distance,
+            "source": str(source or "frame"), "at_turn": _as_int(turn),
+            "label": str(label or "").strip()[:60]}
+
+
+def witness_signal(witness: Optional[dict]) -> int:
+    """How much attention the FRAME drew, on the _DETECT_SIGNALS scale."""
+    if not isinstance(witness, dict):
+        return 0
+    watchers = max(0, _as_int(witness.get("watchers")))
+    if watchers <= 0:
+        return 0
+    facing = str(witness.get("facing") or "unknown").strip().lower()
+    distance = str(witness.get("distance") or "far").strip().lower()
+    gain = _WITNESS_GAIN.get((facing, distance), 0)
+    # A crowd looking at you is worse than one person looking at you, but a
+    # crowd with its back turned is still just scenery.
+    if gain and watchers >= 3:
+        gain += 1
+    return max(0, min(4, gain))
+
+
+def witness_holds(witness: Optional[dict]) -> bool:
+    """Does this frame forbid cooling even though it raises nothing?
+
+    The other half of the fix. Heat bleeding off under a calm sentence is
+    correct in an empty room and a lie when there is somebody standing in the
+    doorway, and the prose sensor could not tell those apart.
+
+    `near` only, deliberately. This started as near-or-mid, which in a live run
+    meant a yard with anything at all in the middle distance could never cool —
+    and since these scenes almost always have something in the middle distance,
+    that is a dial with no way down rather than a dial that answers the room.
+    Within reach is the claim worth making; a shape across the yard is scenery
+    and is allowed to bleed off.
+
+    This is the whole answer for a body that is close and facing away, which
+    scores no gain at all (see _WITNESS_GAIN): standing next to something that
+    has not noticed you does not make the world know more about you, but it is
+    very obviously not how you become less noticed either.
+    """
+    if not isinstance(witness, dict):
+        return False
+    if max(0, _as_int(witness.get("watchers"))) <= 0:
+        return False
+    return str(witness.get("distance") or "far").strip().lower() == "near"
+
+
+def witness_from_detections(objects: Optional[list], turn: int = 0) -> Optional[dict]:
+    """A reading off a SCAN pass. Geometry only — the detector has no opinion
+    about which way anything is facing, so this is always `unknown`.
+
+    Returns None when the payload is unusable, which is NOT the same as a clean
+    frame: a detector that failed must leave the dial alone, not assert that
+    nobody is there. See record_witness.
+    """
+    if not isinstance(objects, (list, tuple)):
+        return None
+    animate = []
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        if str(obj.get("kind") or "").strip().lower() in WITNESS_ANIMATE_KINDS:
+            animate.append(obj)
+    if not animate:
+        return _witness(0, "none", "far", "scan", turn)
+
+    def _height(obj: dict) -> float:
+        try:
+            return max(0.0, min(1.0, float(obj.get("h") or 0)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    nearest = max(animate, key=_height)
+    tallest = _height(nearest)
+    if tallest >= WITNESS_NEAR_H:
+        distance = "near"
+    elif tallest >= WITNESS_MID_H:
+        distance = "mid"
+    else:
+        distance = "far"
+    return _witness(len(animate), "unknown", distance, "scan", turn,
+                    label=str(nearest.get("label") or ""))
+
+
+# "2 | facing | near" — see the WATCHERS block in _vision_analyze_all's prompt.
+_WATCHERS_COUNT_RE = re.compile(r"-?\d+")
+# The format asks for a digit and usually gets one, but "none" for an empty
+# frame is the obvious thing to write instead and it is a real answer, not a
+# failed read. Without this it parsed as "no reading" and an empty room could
+# never cool the dial.
+_WATCHERS_ZERO_RE = re.compile(r"\b(none|nobody|no one|no-one|nothing|zero)\b")
+
+
+def witness_from_vision(vision: Any, turn: int = 0) -> Optional[dict]:
+    """A reading off the observe reground's scene analysis.
+
+    Accepts the whole result dict or just its `watchers` string. Returns None
+    when the field is absent — which is the normal case for a cached analysis
+    written before the field existed, and for any vision call that failed.
+    """
+    if isinstance(vision, dict):
+        raw = vision.get("watchers")
+    else:
+        raw = vision
+    raw = str(raw or "").strip()
+    if not raw:
+        return None
+    parts = [p.strip().lower() for p in raw.split("|")]
+    head = parts[0] if parts else ""
+    count_match = _WATCHERS_COUNT_RE.search(head)
+    if count_match:
+        watchers = max(0, int(count_match.group(0)))
+    elif _WATCHERS_ZERO_RE.search(head):
+        watchers = 0
+    else:
+        return None
+    facing = parts[1] if len(parts) > 1 else "unknown"
+    distance = parts[2] if len(parts) > 2 else "far"
+    return _witness(watchers, facing, distance, "vision", turn)
+
+
+def merge_witness(prior: dict, incoming: dict) -> dict:
+    """Combine two readings of the SAME frame, field by field.
+
+    The two passes are not rivals to be ranked — they are differently blind,
+    and picking the higher score let the blinder one win. Measured in a live
+    run: the scene analysis reported "3 | away | mid" (three things, backs
+    turned) and the SCAN detector reported three animate boxes at `unknown`
+    orientation, because boxes have no orientation. `unknown + near` scores 2,
+    `away + mid` scores 0, so the higher score won and the engine concluded the
+    player was being watched at close range by something it had just been told
+    was facing the other way. Four turns from hidden to hunted, in a yard where
+    nothing had looked up.
+
+    So each field is taken from whichever pass can actually answer it:
+
+    • watchers — the larger count. Both looked at the same picture, so the more
+      thorough read is the better one.
+    • facing   — a KNOWN orientation always beats `unknown`, and between two
+      known ones `facing` beats `away`. Only the scene analysis reports this at
+      all, which makes it the whole ballgame: it is the difference between
+      somebody looking at you and somebody with their back to you, and it is
+      most of the gain table. Two passes disagreeing usually means they locked
+      onto different bodies, and one of them having looked up is the fact that
+      matters.
+    • distance — the nearer of the two. The detector's box height is literal
+      where the analysis is judging, and being wrong toward caution here costs
+      a point of heat rather than a missed threat.
+    • label    — whoever has one. Only the detector returns nouns.
+
+    Fields are only taken from a reading that actually saw somebody: a pass
+    that found an empty frame reports `none | far`, which must not be mistaken
+    for an observation about the figures the other pass did find.
+    """
+    watchers = max(_as_int(prior.get("watchers")), _as_int(incoming.get("watchers")))
+    if watchers <= 0:
+        return _witness(0, "none", "far",
+                        incoming.get("source") or prior.get("source") or "frame")
+
+    seeing = [w for w in (prior, incoming) if _as_int(w.get("watchers")) > 0]
+    known = {str(w.get("facing") or "").strip().lower() for w in seeing}
+    facing = "facing" if "facing" in known else (
+        "away" if "away" in known else "unknown")
+    distance = "far"
+    for rung in ("near", "mid", "far"):
+        if any(str(w.get("distance") or "far").strip().lower() == rung
+               for w in seeing):
+            distance = rung
+            break
+    label = ""
+    for w in seeing:
+        if str(w.get("label") or "").strip():
+            label = str(w["label"]).strip()
+            break
+    sources = [str(w.get("source") or "") for w in (prior, incoming)]
+    source = "+".join(sorted({s for s in sources if s})) or "frame"
+    return _witness(watchers, facing, distance, source, label=label)
+
+
+def record_witness(state: dict, witness: Optional[dict],
+                   for_turn: Optional[int] = None) -> Optional[dict]:
+    """Stamp a frame reading onto state for the next apply_detection.
+
+    Kept OUT of the `detection` record on purpose: get_detection rebuilds that
+    dict from a fixed set of fields every turn, so anything else parked in
+    there is silently dropped on the next write.
+
+    `for_turn` defaults to the current turn, which is right for every pass that
+    reads a frame the player is looking at NOW (the SCAN tap, the observe
+    reground). The still path is the exception: it reads the frame it has just
+    finished rendering, which the player will not act on until the turn after,
+    so it stamps one ahead. See the call site in advance_turn_choices_deferred.
+
+    Several passes can land inside one turn — the observe reground at the
+    decision point, then a SCAN tap before the player commits — and they are
+    MERGED rather than ranked, because each can answer something the other
+    cannot. See merge_witness. Overwriting with the latest instead would let a
+    player who scanned an empty patch of floor erase the figure the reground
+    saw ten seconds earlier, which is precisely the kind of "the game forgot"
+    this system exists to stop.
+    """
+    if not isinstance(state, dict) or not isinstance(witness, dict):
+        return None
+    turn = (int(state.get("turn_count", 0) or 0) if for_turn is None
+            else _as_int(for_turn))
+    witness = dict(witness)
+    prior = state.get("detection_witness")
+    if isinstance(prior, dict) and _as_int(prior.get("at_turn"), -1) == turn:
+        witness = merge_witness(prior, witness)
+    witness["at_turn"] = turn
+    state["detection_witness"] = witness
+    print(f"[DETECT] witness ({witness['source']}): {witness['watchers']} "
+          f"{witness['facing']} {witness['distance']} "
+          f"-> signal {witness_signal(witness)}", flush=True)
+    return witness
+
+
+def current_witness(state: dict) -> Optional[dict]:
+    """This turn's frame reading, or None if there isn't a fresh one.
+
+    A witness describes ONE frame. Once the turn it was taken on has resolved,
+    that frame is gone and the reading is an opinion about somewhere the player
+    no longer is — the same staleness rule scene_objects_for_turn enforces on
+    the SCAN label cache, and for the same reason.
+    """
+    if not isinstance(state, dict):
+        return None
+    witness = state.get("detection_witness")
+    if not isinstance(witness, dict):
+        return None
+    try:
+        if _as_int(witness.get("at_turn"), -1) != int(state.get("turn_count", 0) or 0):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return witness
 
 
 def apply_detection(state: dict, dispatch: str, *, interaction: bool = False,
@@ -16511,13 +18187,41 @@ def apply_detection(state: dict, dispatch: str, *, interaction: bool = False,
 
     Returns (detection, rose) where `rose` says the level went up, which is a
     tension event the same way a new injury is.
+
+    Two sensors, and the louder one wins: the narrator's prose (_DETECT_SIGNALS)
+    and the frame the player is looking at (see "the witness" above). Prose is
+    kept rather than replaced because it is all a still or text-only turn has,
+    and because it can report things a single frame cannot — footsteps closing
+    behind you are not in the picture. The frame is what stops the dial being
+    decided by word choice.
     """
     det = get_detection(state)
     was_heat, was_level = det["heat"], det["level"]
 
-    gain = detection_signal(dispatch)
-    if interaction:
-        gain += 1                      # meddling is loud
+    witness = current_witness(state)
+    heard = detection_signal(dispatch)
+    seen = witness_signal(witness)
+    gain = max(heard, seen)
+
+    # Meddling is loud — but only if something is there to hear it.
+    #
+    # This was an unconditional +1, and because any gain at all skips the
+    # cooling branch below, a turn that interacted could never cool. SCAN's
+    # MOVE TO and INTERACT both count as interaction, so a player exploring
+    # with the SCAN verbs gained heat every single turn and shed it never.
+    # Measured in a live run: ten turns alone in an empty utility corridor,
+    # prose signal 0 and frame signal 0 on every one of them, nobody in any
+    # frame — and the game reported HUNTED. That is the invented-stakes bug
+    # this whole system exists to remove, wearing the one costume nobody had
+    # thought to check.
+    #
+    # `unheard` requires a POSITIVE reading of an empty frame. A missing
+    # witness (offline, or a vision call that failed) is not evidence the room
+    # is empty, so it keeps the old behaviour.
+    unheard = bool(interaction) and heard <= 0 and (
+        witness is not None and _as_int(witness.get("watchers")) <= 0)
+    if interaction and not unheard:
+        gain += 1
     if fate == "UNLUCKY" and gain:
         gain += 1                      # bad luck arrives as attention
 
@@ -16528,17 +18232,54 @@ def apply_detection(state: dict, dispatch: str, *, interaction: bool = False,
         heat = max(0, was_heat - DETECT_COOL_FLEEING)
     elif gain:
         heat = min(DETECT_HEAT_MAX, was_heat + gain)
+        if (heard <= 0 and witness is not None
+                and str(witness.get("facing") or "") != "facing"):
+            # The prose said nothing, and the picture says nothing has looked
+            # at the player. Cap one rung below `alerted`, whatever produced
+            # the gain — the frame, the meddling bonus, or bad luck on top of
+            # them. Keying this on the frame term alone left the hole the
+            # meddling bonus walked straight through: one creature with its
+            # back turned, a valve to open every turn, and the run climbed to
+            # hunted anyway.
+            #
+            # Never below where the dial already was, so this clamps a climb
+            # without undoing an earlier turn that genuinely got them seen.
+            heat = min(heat, max(was_heat, WITNESS_UNSEEN_CEILING))
+    elif witness_holds(witness) or unheard:
+        # Nothing raised it, but the player is not getting quieter either:
+        # either there is a body within reach, or they just made noise in a
+        # room that happens to be empty. Neither is how you become un-seen.
+        heat = was_heat
     else:
         heat = max(0, was_heat - (DETECT_COOL_MOVING if is_move else DETECT_COOL))
 
+    # Which sensor actually moved the dial, for the HUD and for tuning. A
+    # player who can see that the number answers the picture will believe it;
+    # one watching it move for reasons they cannot observe will not — which is
+    # why "prose" is never claimed for a turn the prose said nothing about.
+    if gain and seen > 0 and seen >= heard:
+        det["source"] = "frame"
+    elif gain and heard > 0:
+        det["source"] = "prose"
+    elif gain:
+        det["source"] = "noise"        # the meddling bonus, with both sensors quiet
+    elif heat == was_heat and witness_holds(witness):
+        det["source"] = "frame"
+    elif heat == was_heat and unheard:
+        det["source"] = "noise"
+    else:
+        det["source"] = ""
+
     level = detection_level(heat)
     det["heat"], det["level"] = heat, level
+    why = f" [{det['source']}]" if det.get("source") else ""
     if level != was_level:
         det["since_turn"] = int(state.get("turn_count", 0) or 0)
         print(f"[DETECT] {DETECT_NAMES[was_level]} -> {DETECT_NAMES[level]} "
-              f"(heat {was_heat}->{heat})", flush=True)
+              f"(heat {was_heat}->{heat}){why}", flush=True)
     elif heat != was_heat:
-        print(f"[DETECT] {DETECT_NAMES[level]}, heat {was_heat}->{heat}", flush=True)
+        print(f"[DETECT] {DETECT_NAMES[level]}, heat {was_heat}->{heat}{why}",
+              flush=True)
 
     state["detection"] = det
     # in_combat was dead state that /api/status reported every turn. Alerted or
@@ -16590,8 +18331,35 @@ def _record_recent_event(state: dict, choice: str, visual_scene: str) -> None:
     state["recent_events"] = events[-10:]
 
 
+def recent_actions_taken(state: Optional[dict], limit: int = 5) -> list:
+    """The last few actions the player actually committed, newest last.
+
+    `recent_events` stores "<choice> -> <visual_scene>" lines; the slate only
+    needs the left half. This is the memory the choice generator never had —
+    `recent_choices` was hardcoded to '' at every call site, so nothing in the
+    choice path could tell that the option it was about to offer had just been
+    played. See drop_recently_done in choices.py.
+    """
+    out = []
+    for line in list((state or {}).get("recent_events") or [])[-limit:]:
+        action = str(line).split(" -> ", 1)[0].strip()
+        if action:
+            out.append(action)
+    return out
+
+
 def _previous_beat_block(state: Optional[dict], history: Optional[list] = None) -> str:
-    """PREVIOUS BEAT for the next world-update call. Empty if the tape is blank."""
+    """Already-played beats, as background for the next call.
+
+    This used to be headed "PREVIOUS BEAT" with no statement of what it was
+    for, and it was interpolated LAST — immediately before the output
+    contract. The model read three finished beats and then wrote the next
+    dispatch, so it frequently just continued them: a live run answered "Kick
+    through the fence mesh" with "Your kick buckles the hood", which was the
+    PREVIOUS turn's action, and answered "Scramble over the rusted truck" by
+    narrating the landing from the fence vault before it. The block is
+    context, not a cue to continue, and it now says so.
+    """
     events = list((state or {}).get("recent_events") or [])[-3:]
     if history:
         last = history[-1] if history else {}
@@ -16601,7 +18369,13 @@ def _previous_beat_block(state: Optional[dict], history: Optional[list] = None) 
     if not events:
         return ""
     lines = "\n".join(f"- {e}" for e in events if e)
-    return f"\n\nPREVIOUS BEAT:\n{lines}\n"
+    return (
+        "\n\nALREADY PLAYED (oldest first) — this is finished history, for "
+        "continuity only. These beats are OVER. Do not re-narrate them, do not "
+        "continue them, and never open your dispatch by describing one of "
+        "them. The player has moved past all of this and is now doing the "
+        f"PLAYER CHOICE below:\n{lines}\n"
+    )
 
 
 def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
@@ -17149,6 +18923,9 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         
         # TIMEOUT PENALTIES: Use penalty text AS dispatch (don't generate new one)
         provisional_choices: list = []
+        # The model's own answer to "did that beat move them", or None when it
+        # did not say. Read below, where the hard cut is decided.
+        relocated = None
         if is_timeout_penalty:
             dispatch = choice  # The penalty text IS the consequence
             vision_dispatch = choice
@@ -17156,7 +18933,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             print(f"[TIMEOUT PENALTY] Using penalty text as dispatch: {dispatch[:100]}")
         else:
             # Camera beat only. Choices are a later call after evolve lands.
-            dispatch, vision_dispatch, player_alive, provisional_choices = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate, is_interaction=interaction, subject=subject, is_move=is_move, environment_streak=env_streak, is_custom_action=is_custom_action)
+            dispatch, vision_dispatch, player_alive, provisional_choices, relocated = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate, is_interaction=interaction, subject=subject, is_move=is_move, environment_streak=env_streak, is_custom_action=is_custom_action)
         
         # SIMPLE DEATH SYSTEM: Just trust the LLM
         state['player_state']['alive'] = player_alive
@@ -17287,25 +19064,19 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             # Egress/flight wording ("Bolt for the nearest way out", ...) is
             # forced to a cut: is_hard_transition was tuned for "enter the
             # door" and never recognizes "bolt"/"sprint"/"climb out".
-            if is_egress_choice(choice):
-                hard_transition = True
-            else:
-                hard_transition = is_hard_transition(choice, dispatch)
+            hard_transition = resolve_hard_transition(choice, dispatch, relocated)
             _save_state(state, session_id)
         else:
             # Curated choice pill. Refine from the frame the player was
-            # looking at (the live capture, once ingested) unless the wording
-            # is a real relocation. Forcing every pill to a hard cut threw
+            # looking at (the live capture, once ingested) unless the beat
+            # actually relocated them. Forcing every pill to a hard cut threw
             # that capture away and the next still left the Reactor scene.
-            if is_egress_choice(choice):
-                hard_transition = True
-            else:
-                hard_transition = is_hard_transition(choice, dispatch)
+            hard_transition = resolve_hard_transition(choice, dispatch, relocated)
             _save_state(state, session_id)
         if state.pop("pending_world_transition", False):
             hard_transition = True
             _save_state(state, session_id)
-        
+
         consequence_img_url = None
         consequence_img_prompt = ""  # Initialize to prevent undefined variable error
         consequence_video_url = None  # Initialize to prevent UnboundLocalError if _gen_image raises before its internal assignment
@@ -17512,7 +19283,8 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
     # spends both on `{image_description}`. That puts the vision call back on the
     # turn's critical path, which is the cost of the buttons describing the
     # picture the player is looking at.
-    _vision_holder = {"description": "", "spatial": "", "setting": ""}
+    _vision_holder = {"description": "", "spatial": "", "setting": "",
+                      "witness": None}
     _vision_ms = {"ms": 0}
 
     def _run_vision():
@@ -17524,6 +19296,10 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
             _vision_holder["description"] = (r.get("description") or "").strip()
             _vision_holder["spatial"]     = r.get("spatial", "") or ""
             _vision_holder["setting"]     = r.get("setting", "") or ""
+            # Could anything in the frame we just drew see the player. This is
+            # the still path's detection sensor, and it rides the read that was
+            # already happening here — see WATCHERS in _vision_analyze_all.
+            _vision_holder["witness"]     = witness_from_vision(r)
         except Exception as e:
             print(f"[VISION] Analysis failed: {e} — keeping the render caption")
         finally:
@@ -17641,7 +19417,10 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
             # What SCAN saw in frame, then discovered entities as world memory —
             # so the slate offers verbs on things the player can actually see.
             seen_elements=grounded_entities(state),
-            recent_choices='',
+            # What the player has ALREADY done, so the slate stops re-offering
+            # it. The frame stays visually continuous under img2img, so without
+            # this the same landmark yields the same option every turn.
+            recent_choices=recent_actions_taken(state),
             caption=vision_dispatch,
             image_description=scene_text_for_slate,
             world_prompt=state.get('world_prompt', ''),
@@ -17661,6 +19440,17 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
     # CHOICE_VISION_WAIT expired. The history entry is the NEXT turn's spatial
     # anchor, so it must not be written from a caption if a real read exists.
     _absorb_vision(VISION_JOIN_TIMEOUT, "the history entry needs it")
+    # The frame this turn just rendered is the one the player sits looking at
+    # while they decide what to do next, so its witness belongs to the NEXT
+    # turn rather than this one. turn_count is still this turn's number here —
+    # the bump lives in _process_turn_background, after this function returns.
+    # Without this the still path has no frame sensor at all and detection
+    # falls back to reading the narrator's word choice, which is the whole
+    # thing the witness exists to stop.
+    if _vision_holder["witness"]:
+        record_witness(state, _vision_holder["witness"],
+                       for_turn=int(state.get("turn_count", 0) or 0) + 1)
+        _save_state(state, session_id)
     # The client's situation_report is the vision reading once we have it.
     if analysis_img_url and vision_analysis_text:
         situation_summary = vision_analysis_text

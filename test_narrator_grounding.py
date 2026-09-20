@@ -30,6 +30,7 @@ Run with:
 
 import json
 import os
+import re
 import shutil
 import unittest
 from pathlib import Path
@@ -160,7 +161,7 @@ class TestTheLiveStateReachesTheLine(NarratorPromptCase):
                   last_choice="Move to the rusted truck")
         p = self.narrate()
         self.assertIn("Move to the rusted truck", p)
-        self.assertIn("THE PLAYER JUST DID", p)
+        self.assertIn("WHAT YOU JUST DID", p)
 
     def test_acted_on_the_request_beats_stale_last_choice(self):
         # MOVE TO narrates on the click, before /api/choose writes last_choice.
@@ -176,14 +177,383 @@ class TestTheLiveStateReachesTheLine(NarratorPromptCase):
         self.assertNotIn("Look at the vent", p)
 
 
-class TestDoNotRepeatYourself(NarratorPromptCase):
+class TestTheNarratorKnowsHowYouActed(NarratorPromptCase):
+    """The narrator is supposed to be narrating YOUR story, and it could not.
 
-    def test_previously_spoken_lines_are_shown_to_the_model(self):
+    Every route into the game — a curated choice, a hotspot you walked to, a
+    hotspot you opened, a person you spoke to, a sentence you typed yourself
+    — arrived as one anonymous string of choice text. A voice that cannot
+    tell those apart answers all of them the same way, which is what made it
+    read as talking over the game rather than about it."""
+
+    def deed(self, kind, target, acted="Do the thing"):
+        engine._narrator_script("", False, SESSION_ID, acted=acted,
+                                deed_kind=kind, deed_target=target)
+        return self.prompts[-1]
+
+    def test_walking_toward_a_thing_reads_as_walking_toward_it(self):
+        self.seed(current_observed_vision=ON_SCREEN)
+        p = self.deed("move", "the rusted truck")
+        self.assertIn("You walked toward the rusted truck.", p)
+
+    def test_handling_a_thing_is_not_the_same_event_as_choosing_one(self):
+        self.seed(current_observed_vision=ON_SCREEN)
+        self.assertIn("You put your hands on the drum.",
+                      self.deed("interact", "the drum"))
+        self.assertIn("You took one of the options in front of you.",
+                      self.deed("choice", ""))
+
+    def test_your_own_words_are_marked_as_your_own(self):
+        self.seed(current_observed_vision=ON_SCREEN)
+        p = self.deed("custom", "", acted="pry the hatch open with the bar")
+        self.assertIn("You did something nobody offered you.", p)
+        self.assertIn("pry the hatch open with the bar", p)
+
+    def test_speaking_to_someone_is_a_deed_too(self):
+        self.seed(current_observed_vision=ON_SCREEN)
+        self.assertIn("You spoke to the warden.",
+                      self.deed("talk", "the warden"))
+
+    def test_the_deed_is_addressed_to_the_voice_living_it(self):
+        """The brief already casts the narrator as the one doing this ("You
+        are {self}, speaking into a tape"). Written in the third person —
+        "They walked toward the pond" — the model took the hint and started
+        addressing the player as "you", which is a different narrator in a
+        different game from the one the VOICE line describes."""
+        self.seed(current_observed_vision=ON_SCREEN)
+        p = self.deed("move", "the rusted truck")
+        self.assertNotIn("They walked", p)
+
+    def test_the_deed_comes_before_the_frame(self):
+        """A brief buries whatever it puts last, and the frame is the thing
+        the narrator must NOT be describing."""
+        self.seed(current_observed_vision=ON_SCREEN)
+        p = self.deed("move", "the rusted truck")
+        self.assertLess(p.index("WHAT YOU JUST DID"),
+                        p.index("flooded stairwell"))
+
+    def test_the_frame_is_labelled_as_something_not_to_describe(self):
+        self.seed(current_observed_vision=ON_SCREEN)
+        self.assertIn("do not describe it back to them", self.deed("move", "x"))
+
+    def test_an_unknown_kind_still_carries_the_words(self):
+        """The client can always add a route the server has not met yet; that
+        must degrade to the verbatim action, never to a crash or an empty
+        block."""
+        self.seed(current_observed_vision=ON_SCREEN)
+        p = self.deed("teleported", "", acted="Step through the gate")
+        self.assertIn("Step through the gate", p)
+        self.assertIn("WHAT YOU JUST DID", p)
+
+
+class TestTheBeatsAreToldNotInferred(NarratorPromptCase):
+    """"Narrator now repeating lines changing just a few words."
+
+    Two things caused that and only one of them was the model.
+
+    The brief asked the narrator to read ALREADY SAID THIS RUN and work out
+    which half of FACT / QUESTION it did last, which makes every line depend
+    on it classifying its own previous output — and it does not: a measured
+    run gave four questions in a row, three of them the same Horizon
+    paraphrase reworded. The server knows how many lines have gone by, so it
+    picks and states the shapes.
+
+    The deeper cause was that there were only ever TWO shapes, over one finite
+    pool: the brief says "ONE LINE OF HISTORY, AND NOTHING ELSE", reached out
+    of a background document a few thousand characters long. Once the obvious
+    facts are spent, rewording is the only move left. Alternating harder
+    cannot fix a shortage of shapes, so a narration is two beats now and the
+    PAIR rotates.
+    """
+
+    def test_a_narration_is_two_beats(self):
+        self.seed(current_observed_vision=ON_SCREEN, narrator_recent=[])
+        p = self.narrate()
+        self.assertIn("THIS NARRATION IS TWO BEATS", p)
+        self.assertIn("BEAT ONE", p)
+        self.assertIn("BEAT TWO", p)
+
+    def test_the_shape_outranks_the_one_sentence_rule_above_it(self):
+        """The authored brief ends on "ONE short sentence". Anything that means
+        to change the shape has to say it does — the radio-play format block
+        makes the same move for the same reason."""
+        self.seed(current_observed_vision=ON_SCREEN, narrator_recent=[])
+        self.assertIn("replaces any one-sentence or one-line rule above",
+                      self.narrate())
+
+    def test_the_first_narration_of_a_run_opens_on_a_fact(self):
+        """History is still the register; it is no longer the only shape."""
+        self.seed(current_observed_vision=ON_SCREEN, narrator_recent=[])
+        self.assertIn("BEAT ONE — FACT", self.narrate())
+
+    def test_the_pair_changes_every_narration(self):
+        """The whole complaint, as a property: no two consecutive narrations
+        may be asked for the same two shapes."""
+        seen = []
+        for n in range(len(engine._BEAT_CYCLE) + 1):
+            self.prompts = []
+            self.seed(current_observed_vision=ON_SCREEN, narrator_beat=n,
+                      narrator_recent=[f"Line number {i}." for i in range(n)])
+            p = self.narrate()
+            pair = re.findall(r"BEAT (?:ONE|TWO) — ([A-Z]+):", p)
+            self.assertEqual(len(pair), 2, p)
+            seen.append(tuple(pair))
+        for a, b in zip(seen, seen[1:]):
+            self.assertNotEqual(a, b, f"two narrations running asked for {a}")
+
+    def test_the_rotation_keeps_turning_past_the_memory_cap(self):
+        """The bug that made the whole rotation look like it did not work.
+
+        `narrator_recent` is capped at NARRATOR_MEMORY, so its length stops
+        growing — and the index came off that length. With a memory of six and
+        a cycle of six it pinned at `6 % 6 == 0` from the seventh narration on,
+        so every later line in a run got FACT then QUESTION. Measured live:
+        eight narrations running, all the same shape, on a session that had
+        already spoken more than six times."""
+        full = [f"Line number {i}." for i in range(engine.NARRATOR_MEMORY)]
+        seen = []
+        for beat in range(engine.NARRATOR_MEMORY,
+                          engine.NARRATOR_MEMORY + len(engine._BEAT_CYCLE)):
+            d = engine._beat_directive(full, "", spoken_count=beat)
+            seen.append(tuple(re.findall(r"BEAT (?:ONE|TWO) — ([A-Z]+):", d)))
+        self.assertEqual(len(set(seen)), len(engine._BEAT_CYCLE),
+                         "the rotation stopped turning once memory was full")
+
+    def test_the_counter_is_kept_apart_from_the_capped_list(self):
+        sid = "narrbeatcount"
+        try:
+            for n in (1, 2, 3):
+                engine._remember_narration(
+                    [{"character": "narrator", "text": f"Line {n}."}], sid)
+                st = engine._load_state(sid)
+                self.assertEqual(st.get("narrator_beat"), n)
+        finally:
+            shutil.rmtree(engine._get_session_root(sid), ignore_errors=True)
+
+    def test_no_shape_opens_two_narrations_running(self):
+        openers = [pair[0] for pair in engine._BEAT_CYCLE]
+        for a, b in zip(openers, openers[1:] + openers[:1]):
+            self.assertNotEqual(a, b, f"{a} opens twice in a row")
+
+    def test_the_second_beat_turns_on_the_first(self):
+        self.seed(current_observed_vision=ON_SCREEN, narrator_recent=[])
+        p = self.narrate()
+        self.assertIn("The second turns on the first", p)
+        self.assertIn("does not restate it", p)
+
+    def test_the_voice_is_his_own_thinking(self):
+        """"it needs to be personalized, like his own internal thinking." """
+        self.seed(current_observed_vision=ON_SCREEN, narrator_recent=[])
+        self.assertIn("This is you thinking, not a report being read",
+                      self.narrate())
+
+    def test_the_last_opening_is_named_so_a_stale_shape_is_caught(self):
+        """The repeats all began the same way. "Do not repeat yourself" never
+        catches a fresh sentence with a reused shape; naming the words does."""
+        self.seed(current_observed_vision=ON_SCREEN,
+                  narrator_recent=["Why would Horizon keep the site open?"])
+        self.assertIn('Your last line began "Why would Horizon"', self.narrate())
+
+    def test_it_is_the_last_thing_the_model_reads(self):
+        """`{avoid}` sits near the top of the brief, above the long WHAT YOU
+        SAY / HOW YOU SAY IT sections — and those end on "ONE LINE OF
+        HISTORY", which is emphatic and, being last, wins. Putting the beat
+        shapes up there produced three facts in a row."""
+        self.seed(current_observed_vision=ON_SCREEN,
+                  narrator_recent=["Horizon signed the permits in 1974."])
+        p = self.narrate()
+        self.assertGreater(p.index("THIS NARRATION IS TWO BEATS"),
+                           p.index("ONE LINE OF HISTORY"))
+        self.assertLess(p.rstrip().rindex("BEAT TWO"), len(p.rstrip()) - 1)
+
+    def test_it_is_pure_and_safe_on_junk(self):
+        for spoken in ([], ["A flat statement."], [""], None,
+                       ["x"] * (len(engine._BEAT_CYCLE) * 3)):
+            with self.subTest(spoken=spoken):
+                self.assertIn("BEAT ONE", engine._beat_directive(spoken or []))
+
+
+class TestTheGoalIsMentionedOccasionally(NarratorPromptCase):
+    """"it needs to reference the goal occasionally."
+
+    The level sheet has a "What you're here for" field and the narrator never
+    saw it: `place_summary()` leaves the goal out by design, so the one voice
+    speaking the player's own thoughts was the one with no idea what it came
+    for. Occasionally is the point — a voice that names the objective every
+    line is the "never summarise the mission" failure the brief already bans.
+    """
+
+    GOAL = "The pump house with the red door, where the manifests are bolted to the wall."
+
+    def _pairs_over_a_cycle(self):
+        return [engine._BEAT_CYCLE[i % len(engine._BEAT_CYCLE)]
+                for i in range(len(engine._BEAT_CYCLE))]
+
+    def test_the_goal_comes_round_once_a_cycle(self):
+        with_goal = [p for p in self._pairs_over_a_cycle() if "GOAL" in p]
+        self.assertEqual(len(with_goal), 1,
+                         "the goal should be occasional, not every line")
+
+    def test_the_goal_text_rides_along_on_that_narration(self):
+        idx = next(i for i, p in enumerate(engine._BEAT_CYCLE) if "GOAL" in p)
+        d = engine._beat_directive([f"Line {i}." for i in range(idx)], self.GOAL)
+        self.assertIn("GOAL", d)
+        self.assertIn("WHAT YOU CAME HERE FOR", d)
+        self.assertIn("pump house", d)
+
+    def test_it_is_never_asked_for_as_a_mission_recap(self):
+        idx = next(i for i, p in enumerate(engine._BEAT_CYCLE) if "GOAL" in p)
+        d = engine._beat_directive([f"Line {i}." for i in range(idx)], self.GOAL)
+        self.assertIn("Not the mission recited", d)
+
+    def test_a_level_with_no_goal_spends_the_slot_on_something_else(self):
+        """Asking him to measure against nothing wastes a turn of the cycle."""
+        idx = next(i for i, p in enumerate(engine._BEAT_CYCLE) if "GOAL" in p)
+        d = engine._beat_directive([f"Line {i}." for i in range(idx)], "")
+        self.assertNotIn("BEAT ONE — GOAL", d)
+        self.assertNotIn("BEAT TWO — GOAL", d)
+        self.assertNotIn("WHAT YOU CAME HERE FOR", d)
+        self.assertIn("BEAT ONE", d)
+
+    def test_the_goal_is_read_off_the_level_sheet(self):
+        src = (ROOT / "engine.py").read_text(encoding="utf-8")
+        fn = src.split("def _narrator_goal(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn('.get("goal")', fn)
+        self.assertIn("setting_authored", fn)
+
+
+class TestARewordIsARepeat(NarratorPromptCase):
+    """"changing just a few words" is the failure a paraphrase ban misses.
+
+    Showing the model its last four lines and saying "or any paraphrase of
+    them" is what already shipped, and it still produced three lines running
+    about Horizon signing permits. A fresh sentence about the same subject
+    passes every check that looks at sentences, so this one looks at subjects.
+    """
+
+    def test_a_noun_used_once_is_the_scene_and_is_left_alone(self):
+        """The fence and the mesa are supposed to recur — they are the place."""
+        self.assertEqual(
+            engine._narration_rut_words(["The fence was cut here."]), [])
+
+    def test_a_noun_used_twice_is_a_rut_and_is_named(self):
+        rut = engine._narration_rut_words([
+            "Horizon signed the permits in 1974.",
+            "Why did Horizon keep signing them?",
+        ])
+        self.assertIn("horizon", rut)
+        self.assertIn("signed", rut + ["signed"])  # stem may differ; horizon is the tell
+
+    def test_common_words_are_not_evidence_of_anything(self):
+        rut = engine._narration_rut_words([
+            "They were here before that.",
+            "There was something here after that.",
+        ])
+        for junk in ("there", "were", "something", "before", "after", "that"):
+            self.assertNotIn(junk, rut)
+
+    def test_the_rut_reaches_the_prompt_as_a_ban(self):
+        self.seed(current_observed_vision=ON_SCREEN, narrator_recent=[
+            "Horizon signed the permits in 1974.",
+            "Why did Horizon keep signing them?",
+        ])
+        p = self.narrate()
+        self.assertIn("already built more than one line on", p)
+        self.assertIn("horizon", p)
+
+    def test_nothing_repeated_yet_adds_no_ban(self):
+        self.seed(current_observed_vision=ON_SCREEN,
+                  narrator_recent=["The fence was cut here."])
+        self.assertNotIn("already built more than one line on", self.narrate())
+
+    def test_it_is_bounded(self):
+        many = [f"Alpha bravo charlie delta echo foxtrot golf hotel {i}."
+                for i in range(8)]
+        self.assertLessEqual(len(engine._narration_rut_words(many)), 6)
+
+
+class TestThePairedNarrationIsNotOneLineTwice(unittest.TestCase):
+    """MOVE TO asks for two narrations in ONE request (`follow_focus`), so the
+    per-IP rate limit is not hit twice.
+
+    Both were generated from the same `narrator_recent` snapshot and only
+    remembered afterwards — so every guard that reads that snapshot (the beat
+    rotation, the forbidden opening, the rut words) gave the second line the
+    identical answer it gave the first. The likeliest pair in the game to come
+    back as one sentence said twice, on the game's most frequent verb.
+    """
+
+    SRC = (ROOT / "engine.py").read_text(encoding="utf-8")
+    CLIENT = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
+
+    def _worldbuild(self):
+        return self.SRC.split("def api_narrator_worldbuild(", 1)[1] \
+                       .split("\ndef ", 1)[0]
+
+    def test_the_first_line_is_remembered_before_the_second_is_asked_for(self):
+        body = self._worldbuild()
+        remember = body.index("_remember_narration(script, session_id)")
+        follow = body.index("follow_script = _narrator_script(")
+        self.assertLess(remember, follow)
+
+    def test_the_second_line_is_remembered_too(self):
+        self.assertIn("_remember_narration(follow_script, session_id)",
+                      self._worldbuild())
+
+    def test_the_client_no_longer_dictates_the_shapes(self):
+        """MOVE TO is the main verb, so pinning it to "the fact, then the
+        question" pinned the most frequent narration in the game to the one
+        pairing the voice already overused."""
+        self.assertNotIn("the fact, then the question", self.CLIENT)
+        self.assertNotIn("This one is the QUESTION hanging off", self.CLIENT)
+
+    def test_but_it_still_says_when_each_line_lands(self):
+        self.assertIn("over the fade to black", self.CLIENT)
+        self.assertIn("A beat after the line before it", self.CLIENT)
+
+    def test_and_still_bans_the_invented_backstory(self):
+        """The invented dead brother came from this focus asking for "a guilt,
+        a debt, a person they lost". The ban stays; only the shape moved."""
+        self.assertIn("INVENT NOTHING about yourself", self.CLIENT)
+
+
+class TestDoNotRepeatYourself(NarratorPromptCase):
+    """Shown as OPENINGS, not as whole lines.
+
+    Four complete sentences under a "do not repeat" heading are four examples,
+    and few-shot pull beats a negative instruction. Measured on the same model
+    and prompt: a fresh session gave six different beat shapes over six
+    narrations; a session whose remembered lines were all fact-then-question
+    gave eight fact-then-questions running, obeying the ban on the words while
+    copying the shape it was being shown. A stem still catches a literal
+    restart, and it is not a form anything can be modelled on.
+    """
+
+    def test_what_was_said_is_shown_to_the_model(self):
         self.seed(current_observed_vision=ON_SCREEN,
                   narrator_recent=["I have to find out what happened here."])
         p = self.narrate()
-        self.assertIn("I have to find out what happened here.", p)
-        self.assertIn("do not repeat", p.lower())
+        self.assertIn("I have to find out", p)
+        self.assertIn("do not open this way again", p.lower())
+
+    def test_it_is_a_stem_and_not_a_copyable_line(self):
+        self.seed(current_observed_vision=ON_SCREEN,
+                  narrator_recent=["I have to find out what happened here."])
+        p = self.narrate()
+        self.assertNotIn("I have to find out what happened here.", p)
+        self.assertIn("…", p)
+
+    def test_nothing_about_their_shape_is_a_template(self):
+        self.seed(current_observed_vision=ON_SCREEN,
+                  narrator_recent=["The dark is thicker down here."])
+        self.assertIn("Nothing about their shape is a template", self.narrate())
+
+    def test_a_short_line_needs_no_ellipsis(self):
+        self.seed(current_observed_vision=ON_SCREEN,
+                  narrator_recent=["Nobody came back."])
+        p = self.narrate()
+        self.assertIn("Nobody came back.", p)
+        self.assertNotIn("Nobody came back.…", p)
 
     def test_nothing_spoken_yet_adds_no_block(self):
         self.seed(current_observed_vision=ON_SCREEN)
@@ -202,6 +572,56 @@ class TestDoNotRepeatYourself(NarratorPromptCase):
                   narrator_recent=["Something moved in the water."])
         p = self.narrate(multi=True)
         self.assertIn("Something moved in the water.", p)
+
+
+class TestOnlyTheSpokenLineIsSpoken(unittest.TestCase):
+    """Asked for one sentence of dialogue, a model hands back a screenplay.
+
+    Observed against the live model: a sound cue on its own line ("*Click.*")
+    and the action echoed as a heading above the real line. Both reached the
+    voice, and because the clip keeps the FIRST sentence, the narrator's
+    entire contribution to that turn was the word "Click"."""
+
+    def test_a_sound_cue_is_not_a_line(self):
+        out = engine._strip_narration_staging(
+            "*Click.*\n\nThe lid groaned like dry bone.")
+        self.assertEqual(out, "The lid groaned like dry bone.")
+
+    def test_a_bracketed_stage_direction_goes_too(self):
+        for cue in ("[static]", "(a door closes somewhere)", "_thud_"):
+            out = engine._strip_narration_staging(cue + "\n\nNobody came back.")
+            self.assertEqual(out, "Nobody came back.", f"{cue!r} survived")
+
+    def test_the_action_echoed_as_a_heading_is_dropped(self):
+        out = engine._strip_narration_staging(
+            "Spoke with the miner.\n\nHis teeth were the same rusted iron.",
+            acted="Spoke with the miner")
+        self.assertEqual(out, "His teeth were the same rusted iron.")
+
+    def test_an_echo_with_nothing_after_it_is_kept(self):
+        """A weak line still beats no line."""
+        out = engine._strip_narration_staging("Spoke with the miner.",
+                                              acted="Spoke with the miner")
+        self.assertEqual(out, "Spoke with the miner.")
+
+    def test_emphasis_markers_never_reach_the_voice(self):
+        """TTS reads them out as asterisks."""
+        self.assertEqual(
+            engine._strip_narration_staging("The water was *still* warm."),
+            "The water was still warm.")
+
+    def test_an_ordinary_line_is_left_alone(self):
+        line = "The water in this pond is too still to be salt."
+        self.assertEqual(engine._strip_narration_staging(line), line)
+
+    def test_the_clip_runs_on_the_cleaned_text(self):
+        """The bug that made this matter: the clip keeps the first sentence,
+        so a cue in front of the line became the whole line."""
+        raw = "*Click.*\n\nThe lid groaned."
+        self.assertEqual(engine._clip_narration(raw), "*Click.")
+        self.assertEqual(
+            engine._clip_narration(engine._strip_narration_staging(raw)),
+            "The lid groaned.")
 
 
 class TestNarrationIsClippedToABeat(unittest.TestCase):
@@ -301,29 +721,138 @@ class TestTheAuthoredDirection(unittest.TestCase):
         self.assertIn("{scene}", self.live["narrator_direction"])
         self.assertIn("specific", self.live["narrator_direction"].lower())
 
-    def test_it_lets_the_narrator_reach_into_the_lore(self):
-        """`_ask(use_lore=True)` has always prepended the Experience bible to
-        this call, but the direction forbade summarising the premise — so the
-        one voice with the whole history in its context could never use any of
-        it, and had nothing to say but a caption of the current frame."""
+    def test_the_line_is_one_buried_fact_out_of_the_lore(self):
+        """The narrator's whole register. `_ask(use_lore=True)` prepends the
+        Experience bible to this call, and a buried fact set down flat is what
+        the voice IS — not a caption of the frame, not the action played back.
+
+        This was briefly replaced with action-consequence narration to answer
+        a complaint about repetition. It answered the wrong thing: the lines
+        stopped repeating and stopped being the narrator."""
         d = self.live["narrator_direction"]
+        self.assertIn("ONE LINE OF HISTORY, AND NOTHING ELSE", d)
         self.assertIn("HISTORICAL BACKGROUND", d)
         self.assertIn("ONE buried piece", d)
-        # Permission without a leash is an info-dump.
-        self.assertIn("info-dump", d.lower())
+        self.assertIn("Do not caption the frame", d)
 
-    def test_the_line_is_history_rather_than_a_caption_of_the_frame(self):
-        """The narrator is the only voice carrying the bible, and describing
-        what is already on screen is the one thing the screen already does. So
-        the line is a fact out of the past: the world gets deeper as the player
-        goes further in, instead of being narrated back at them."""
-        d = self.live["narrator_direction"].lower()
-        self.assertIn("one line of history", d)
-        self.assertIn("do not caption the frame", d)
+    def test_the_fact_is_chosen_by_the_deed_not_by_the_room(self):
+        """The actual defect behind "he repeats himself".
 
-    def test_it_asks_for_one_line(self):
+        The rule was "choose the fact by where the player is standing", which
+        keys off the ROOM — so every line in a room reached for the same
+        shelf of the bible however the player had just acted on it. Keyed off
+        the deed, walking to a thing and prying it open are different
+        questions and pull different facts."""
+        d = self.live["narrator_direction"]
+        self.assertIn("CHOOSE THE FACT BY WHAT THE PLAYER JUST DID", d)
+        self.assertNotIn("Choose the fact by where the player is standing", d)
+        low = d.lower()
+        self.assertIn("walked toward", low)
+        self.assertIn("put their hands on", low)
+        self.assertIn("spoke to", low)
+        # The test of whether the line belongs to this run at all.
+        self.assertIn("would fit their run unchanged", low)
+
+    def test_the_brief_defers_the_shape_to_the_beats(self):
+        """The brief used to carry its own "FACT, THEN QUESTION, THEN FACT"
+        section, with worked examples, while the engine appended a rotation of
+        six shapes as a tail. Two instructions, and the exemplified one won: on
+        a session whose remembered lines were all fact-then-question, eight
+        narrations running came back fact-then-question no matter which beats
+        the tail named. Whichever of the two is more concrete wins, so the
+        brief must not hold a competing shape at all."""
+        d = self.live["narrator_direction"]
+        self.assertNotIn("FACT, THEN QUESTION, THEN FACT", d)
+        self.assertIn("TWO BEATS", d)
+        self.assertIn("named at the very END of this brief", d)
+        # The heading it used to tell the narrator to go and classify for
+        # itself. That block is still supplied — it is `{avoid}`, written by
+        # the engine — but reading it is no longer how the shape gets decided.
+        self.assertNotIn("see which one you did last", d)
+        self.assertIn("{avoid}", d)
+
+    def test_a_non_history_beat_is_allowed_to_be_one(self):
+        """"ONE LINE OF HISTORY, AND NOTHING ELSE" as an unconditional heading
+        is what made every shape collapse back into a fact."""
+        d = self.live["narrator_direction"]
+        self.assertIn("WHEN A BEAT ASKS FOR ANYTHING ELSE", d)
+        self.assertIn("no history required", d)
+
+    def test_it_asks_for_two_short_sentences(self):
+        d = self.live["narrator_direction"]
+        self.assertIn("Two short sentences", d)
+        self.assertIn("fifteen words", d)
+
+    def test_thinking_out_loud_is_not_banned_as_backstory(self):
+        """"it needs to be personalized, like his own internal thinking."
+
+        The no-invented-biography rule was reading as a ban on interiority
+        too, so the voice had nothing left but recitation."""
+        d = self.live["narrator_direction"]
+        self.assertIn("bans BIOGRAPHY, not thinking", d)
+        self.assertIn("what you have decided about it", d)
+
+    def test_it_forbids_inventing_a_backstory(self):
+        """Reported as the narrator sounding "bugged, like the old narrator" —
+        a lost brother it had never mentioned, different every trip. Nothing
+        in the premise or the lore supplies one, so when a brief asked for a
+        buried private motive the model simply made one up.
+
+        The history the narrator may reach for is the WORLD'S, never its own."""
+        low = self.live["narrator_direction"].lower()
+        self.assertIn("never invent a private history for yourself", low)
+        self.assertIn("no lost brother", low)
+
+    def test_a_move_spends_two_narrations(self):
+        """A trip is the one beat with room for two, so it plays them as a
+        pair: one on the way out, one a second later over the black.
+
+        The focus says WHEN and WHAT ABOUT; the SHAPE is the server's, because
+        naming it here pinned the game's most frequent narration — MOVE TO is
+        the main verb — to "the fact, then the question" on every single trip,
+        which is the pairing the voice already overused. The invented-brother
+        ban stays: that came from this focus asking for "a guilt, a debt, a
+        person they lost", and nothing in the lore supplies one."""
+        js = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
+        self.assertNotIn("REVEAL A DARK TRUTH", js)
+        self.assertNotIn("the fact, then the question", js)
+        self.assertIn("over the fade to black", js)
+        self.assertIn("A beat after the line before it", js)
+        self.assertIn("INVENT NOTHING about yourself", js)
+
+    def test_the_move_focuses_fit_inside_the_server_clip(self):
+        """`focus` and `follow_focus` are clipped to 240 chars server-side.
+        A focus that runs past it loses its tail silently, which is how a
+        carefully worded instruction turns into half a sentence."""
+        js = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
+        run = js[js.index("const bridgeFocus ="):js.index("AgentLog.push(\"narrator\", \"transition")]
+        # Every quoted fragment the two focuses are assembled from.
+        parts = re.findall(r'"((?:[^"\\]|\\.)*)"', run)
+        longest_focus = sum(len(p) for p in parts)
+        self.assertLess(longest_focus, 240 * 2 + 80,
+                        "the MOVE TO focuses have grown past what the server keeps")
+
+    def test_a_focus_does_not_overwrite_the_brief(self):
+        """A focus is injected as "follow these exactly, ahead of any mood
+        note below", so it outranks the direction. One that describes WHAT to
+        say therefore replaces the narrator's voice with its own paraphrase —
+        which is how the register got lost. A focus states the situation."""
+        js = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
+        commit = js[js.index("function onCommit(choiceText, deed) {"):]
+        commit = commit[:commit.index("\n    }")]
+        focus = commit[commit.index("focus:"):]
+        self.assertIn("the silence after the player commits", focus)
+        # The things that belong to the brief, not to a per-trigger override.
+        for content_rule in ("say what", "means for the person"):
+            self.assertNotIn(content_rule, focus.lower())
+
+    def test_it_asks_for_a_beat_not_a_monologue(self):
+        """One sentence became two when the shapes became a rotating pair: the
+        first sets something down, the second turns on it. Still a beat — a
+        ceiling of fifteen words each, over in about eight seconds spoken."""
         d = self.live["narrator_direction"].lower()
-        self.assertIn("one short sentence", d)
+        self.assertIn("two short sentences", d)
+        self.assertIn("fifteen words", d)
         self.assertNotIn("two or three sentences", d)
 
     def test_it_carries_every_placeholder_the_engine_supplies(self):
@@ -448,9 +977,11 @@ class TestTheNarratorSpeaksWhenItShould(unittest.TestCase):
     def test_every_committed_choice_gets_a_line(self):
         """"Never again" was literal: the only triggers were the cold open and
         MOVE TO, so an ordinary choice never narrated at all."""
-        self.assertIn("function onCommit(choiceText)", self.js)
-        self.assertIn("Narrator.onCommit(choiceText)", self.js)
-        commit = self.js.split("function onCommit(choiceText) {", 1)[1].split(
+        self.assertIn("function onCommit(choiceText, deed)", self.js)
+        self.assertIn(
+            "Narrator.onCommit(choiceText, narratorDeed(actionSource, actionSubject))",
+            self.js)
+        commit = self.js.split("function onCommit(choiceText, deed) {", 1)[1].split(
             "\n    }", 1)[0]
         for guard in ("state.gameOver", "Talk.isOpen()", "state.audioUnlocked",
                       "openingBusy()", "busy || playing"):

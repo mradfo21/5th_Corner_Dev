@@ -151,6 +151,50 @@ def do_choice(page, log, turn):
     return picked
 
 
+# ── TYPED ACTIONS ───────────────────────────────────────────────────────────
+# The free-will input is the part of this game with the fewest rails, and every
+# gate it passes through has at some point quietly refused it: a prompt that
+# asked for "the ATTEMPT" and got a failure, a world bible that forbade leaving
+# the valley, a camera contract that stood a driver back up on his feet.
+#
+# Each entry is (what the player types, the words the WORLD should still be
+# using once the turn lands). The second half is the check that matters. A
+# typed action can be written perfectly into the prose and then dropped by the
+# frame that follows — and the choice slate, which is generated FROM that frame,
+# then honestly describes a world the action never reached. That is what "the
+# game isn't taking my custom action" looks like from the sofa.
+# `holds` is the important distinction, and the first version of this got it
+# wrong and filed three false alarms. An action that changes WHERE the player is
+# or WHAT THEY ARE ON has to still be true on the next slate — you do not stop
+# being in a truck because a turn went by. A one-off act does not: smashing a
+# window is finished the moment it is done, and a slate that has moved on to
+# what comes next is correct, not forgetful. Demanding persistence from both
+# reports a working game as broken, which is worse than not checking.
+CUSTOM_BATTERY = [
+    # Travel that changes what the player is ON. The reported failure.
+    ("get in the truck and drive",
+     ("truck", "cab", "wheel", "driv", "engine", "tire", "windshield"), True),
+    # Changing height — the other way to stop being a figure standing on dirt.
+    ("climb up onto the roof",
+     ("roof", "ledge", "edge", "above", "below", "rooftop", "down"), True),
+    # Beyond a human body, and to somewhere the bible has never heard of.
+    ("fly to antarctica",
+     ("ice", "snow", "cold", "frozen", "antarc", "white", "freez"), True),
+    # Destroying something in the frame. Over when it is over.
+    ("smash the nearest window",
+     ("glass", "window", "shard", "broke", "smash", "shatter"), False),
+    # Talking at somebody: neither movement nor violence.
+    ("shout for whoever is out there",
+     ("shout", "voice", "call", "echo", "answer", "heard", "yell"), False),
+]
+
+
+def honoured(text, words):
+    """Which of the expected words the world is using."""
+    low = (text or "").lower()
+    return [w for w in words if w in low]
+
+
 def continuity(path_a, path_b):
     """How much of the composition survived, 1.0 = same framing, 0.0 = unrelated.
 
@@ -227,6 +271,11 @@ CAMERA = r"""
 # "resolved in 1.5s" (one poll) and why moving the photo from turn 2 to turn 4
 # turned it into a 153s STUCK on a run that was perfectly alive.
 READ_ONLY_ACTIONS = {"photo"}
+
+# How long ONE exchange of a confrontation is allowed to take. A round is a
+# roll, a resolve plate and an aftermath beat, so it costs about what a turn
+# costs. The fight's whole budget is this times the rounds it has played.
+ENCOUNTER_ROUND_S = int(os.environ.get("PT_ENCOUNTER_ROUND", "75"))
 
 # Console output that says something true about the machine or the account rather
 # than about the code. Reactor answering 402 credits_depleted is the standing
@@ -688,7 +737,13 @@ def play_out_encounter(page, log, findings=None):
     rounds = []  # the full slate offered each round, to catch a stale one
     last_frame = ""  # the plate this round must replace before we choose again
     t0 = time.time()
-    while time.time() - t0 < 150:
+    # Budget per ROUND, not per fight. Every exchange is a real generation
+    # (~35s on the stills path) and a fight is not guaranteed to end in one:
+    # the enemy has to be worn down, and the odds of settling only climb with
+    # the round number. A flat 150s expired mid-generation on a fight the
+    # server had ALREADY resolved on round four, and the run reported "never
+    # resolved" for it — the harness timing out is not the game failing.
+    while time.time() - t0 < ENCOUNTER_ROUND_S * max(1, committed + 1):
         enc = page.evaluate(ENCOUNTER_STATE)
         mean, dark = analyse(page.screenshot())
         if is_black(mean, dark):
@@ -734,18 +789,15 @@ def play_out_encounter(page, log, findings=None):
             slate = [a(c) for c in enc["choices"]]
             rounds.append(slate)
             log(f"    round {len(rounds)} slate: {slate}")
-            if len(rounds) > 1 and slate:
-                # The last row is always "do something else - type it".
-                prev, here = set(rounds[-2][:-1]), set(slate[:-1])
-                if here and here == prev:
-                    msg = (f"encounter round {len(rounds)}: identical slate to the "
-                           f"previous round - the options did not move with the fight")
-                    log(f"    !! {msg}")
-                    if findings is not None and msg not in findings:
-                        findings.append(msg)
-                elif here & prev:
-                    log(f"    note: {len(here & prev)} option(s) carried over "
-                        f"from the previous round")
+            # DO NOT compare these between rounds. What a confrontation slate
+            # SHOWS is the lane — attack / flee / reason — and it is supposed to
+            # read the same every round; the written verb behind it is
+            # deliberately not put on screen (see LANE_WORDS in standalone.js:
+            # "promise 'Shatter his skull against wall' and anything else is a
+            # broken promise"). This check used to diff the visible text and
+            # filed three findings a fight against a system working as designed.
+            # What moving options actually look like from out here is a new
+            # PLATE each round, which wait_plate already requires.
             log(f"    encounter choice: {a(enc['choices'][pick])}")
             try:
                 page.click(f".moment-choice >> nth={pick}", timeout=6000)
@@ -756,8 +808,305 @@ def play_out_encounter(page, log, findings=None):
             continue
         time.sleep(2.0)
 
-    log(f"    !! encounter never resolved ({black} black samples)")
+    log(f"    !! encounter still going after {committed} round(s) and "
+        f"{time.time() - t0:.0f}s ({black} black samples)")
     return None
+
+
+FLIPBOOK_TAP = r"""
+() => {
+  if (window.__ptFlip) return true;
+  const R = window.Renderer;
+  if (!R || typeof R.applyScene !== "function") return false;
+  window.__ptFlip = { beats: [], paints: [], t0: Date.now() };
+  // What the SERVER delivered. A flipbook turn carries its in-between frames
+  // on the beat (metadata.sequence); a still turn carries none, and the two
+  // have to be told apart before anything is blamed on playback.
+  const orig = R.applyScene.bind(R);
+  R.applyScene = function (imageUrl, prompt, meta) {
+    try {
+      const seq = meta && (meta.sequence || meta.flipbook);
+      const frames = seq ? (Array.isArray(seq) ? seq : (seq.frames || [])) : [];
+      window.__ptFlip.beats.push({
+        at: Date.now() - window.__ptFlip.t0,
+        still: imageUrl || "",
+        frames: (frames || []).slice(),
+        frame_ms: (seq && !Array.isArray(seq)) ? (Number(seq.frame_ms) || 0) : 0,
+      });
+    } catch (e) {}
+    return orig(imageUrl, prompt, meta);
+  };
+  // What the SCREEN actually showed. Playback swaps the background-image on
+  // the two scene layers (paintSequenceFrame), so the style attribute is the
+  // only honest record that a frame reached the player — a CDP screenshot at
+  // 1.5s intervals cannot see 420ms frames go by.
+  const seen = new MutationObserver((recs) => {
+    for (const r of recs) {
+      const t = r.target;
+      const m = /url\(["']?([^"')]+)["']?\)/.exec(t.style.backgroundImage || "");
+      if (!m) continue;
+      const p = window.__ptFlip.paints;
+      if (p.length && p[p.length - 1].url === m[1]) continue;
+      p.push({ at: Date.now() - window.__ptFlip.t0, url: m[1], layer: t.id });
+    }
+  });
+  for (const id of ["sceneA", "sceneB"]) {
+    const n = document.getElementById(id);
+    if (n) seen.observe(n, { attributes: true, attributeFilter: ["style"] });
+  }
+  return true;
+}
+"""
+
+FLIPBOOK_DRAIN = r"""
+() => {
+  const f = window.__ptFlip;
+  if (!f) return null;
+  const out = { beats: f.beats, paints: f.paints };
+  f.beats = [];
+  f.paints = [];
+  return out;
+}
+"""
+
+
+def frame_bytes(origin, url):
+    """Fetch one generated frame off the running server."""
+    from urllib.request import urlopen
+    from urllib.parse import urljoin
+    try:
+        with urlopen(urljoin(origin + "/", url), timeout=20) as r:
+            return r.read()
+    except Exception:
+        return None
+
+
+def panel_motion(origin, urls, cache):
+    """How much each panel differs from the one before it.
+
+    A flipbook is only worth the wait if the panels are the in-between frames
+    of one motion. Four panels of the same pose animate as a freeze, which
+    looks to a player exactly like the turn didn't happen — and no state flag
+    anywhere reports it, because the turn resolved and the frames exist.
+
+    Reported as continuity numbers (1.0 = the same picture) rather than a
+    verdict, for the reason continuity() gives.
+    """
+    ims = []
+    for u in urls:
+        if u not in cache:
+            raw = frame_bytes(origin, u)
+            try:
+                cache[u] = Image.open(io.BytesIO(raw)).convert("L").resize((64, 64)) \
+                    if raw else None
+            except Exception:
+                cache[u] = None
+        ims.append(cache[u])
+    if any(i is None for i in ims):
+        return None, ims.count(None)
+    scores = []
+    for a_im, b_im in zip(ims, ims[1:]):
+        pa, pb = list(a_im.getdata()), list(b_im.getdata())
+        mad = sum(abs(x - y) for x, y in zip(pa, pb)) / float(len(pa))
+        scores.append(round(1.0 - (mad / 255.0), 3))
+    return scores, 0
+
+
+class FlipbookWatch:
+    """Did this turn actually draw, deliver and PLAY a flipbook?
+
+    Three separate things, and every one of them has its own failure that
+    looks identical from the outside — a turn that resolved onto a still:
+
+      · the engine never drew a grid (refused generation, still fallback),
+      · the grid arrived but the client dropped it (the reactor branch used to
+        eat every sequence before it reached the stills renderer),
+      · the frames played but are the same picture (a grid of one pose).
+    """
+
+    def __init__(self, origin, enabled):
+        self.origin = origin
+        self.enabled = enabled
+        self.turns = []          # (turn, frame_count, painted, motion)
+        self._cache = {}
+
+    def install(self, page, log):
+        try:
+            ok = page.evaluate(FLIPBOOK_TAP)
+        except Exception as exc:
+            log(f"!! could not watch flipbook playback: {a(str(exc))[:80]}")
+            return False
+        if not ok:
+            log("!! Renderer not up yet — flipbook playback is going unwatched")
+        return bool(ok)
+
+    def turn(self, page, log, findings, turn, action):
+        try:
+            drained = page.evaluate(FLIPBOOK_DRAIN)
+        except Exception:
+            return
+        if not drained:
+            return
+        beats = [b for b in drained["beats"] if b["frames"]]
+        painted = [p["url"] for p in drained["paints"]]
+        if not beats:
+            if self.enabled and action not in READ_ONLY_ACTIONS:
+                log("  flipbook: no sequence on this turn — it drew a plain still")
+                self.turns.append((turn, 0, 0, None))
+            return
+
+        seq = beats[-1]
+        urls = seq["frames"]
+        # A frame counts as played when its own URL was painted onto a scene
+        # layer. Substring, because the style URL is absolute and the beat's
+        # is the server-relative path.
+        hit = sum(1 for u in urls if any(u.split("/")[-1] in p for p in painted))
+        motion, missing = panel_motion(self.origin, urls, self._cache)
+        self.turns.append((turn, len(urls), hit, motion))
+
+        log(f"  flipbook: {len(urls)} frames at {seq['frame_ms'] or 420}ms, "
+            f"{hit} of them painted"
+            + (f", panel-to-panel {motion}" if motion else ""))
+
+        if len(urls) < 2:
+            findings.append(f"turn {turn}: flipbook delivered {len(urls)} frame(s) "
+                            f"- there is no motion in a one-frame sequence")
+            return
+        if missing:
+            findings.append(f"turn {turn}: {missing} flipbook frame(s) would not "
+                            f"load from the server")
+        if hit < 2:
+            findings.append(
+                f"turn {turn}: the server sent {len(urls)} flipbook frames but "
+                f"only {hit} reached the screen - the motion was dropped between "
+                f"the beat and the scene layer")
+        elif hit < len(urls):
+            findings.append(
+                f"turn {turn}: flipbook played {hit} of {len(urls)} frames - "
+                f"playback did not reach the frame the action ends on")
+        if seq["still"] and urls and urls[-1].split("/")[-1] not in seq["still"]:
+            findings.append(
+                f"turn {turn}: the turn's still is not the sequence's last panel "
+                f"- the picture will jump when the motion stops")
+        # Essentially the same picture, not merely similar. A real in-between
+        # on this build sits around 0.90-0.98; 0.995 is a grid of one pose.
+        if motion and min(motion) > 0.995:
+            findings.append(
+                f"turn {turn}: the flipbook panels are the same picture "
+                f"(panel-to-panel {motion}) - the turn animates as a freeze")
+
+    def report(self, log, findings):
+        if not self.enabled:
+            log("flipbook is OFF for this run")
+            return
+        drew = [t for t in self.turns if t[1] >= 2]
+        log(f"\n=========== FLIPBOOK ============")
+        log(f"  turns that drew a sequence: {len(drew)} of {len(self.turns)}")
+        for turn, n, hit, motion in self.turns:
+            log(f"  turn {turn}: {n} frames, {hit} painted"
+                + (f", motion {motion}" if motion else ""))
+        if self.turns and not drew:
+            findings.append(
+                "flipbook is ON but not one turn drew a sequence - every turn "
+                "fell back to a plain still")
+
+
+def do_custom(page, log, typed):
+    """Type an action into the wheel's free-will box and commit it.
+
+    Waits for the wheel to be BOTH present and idle first. Typing into a turn
+    that is still resolving gets an HTTP 409 from /api/choose, and the first
+    version of this did exactly that on turn one — then every later turn in the
+    run "resolved" in 1.5s with no frames, and the report blamed the game for
+    dropping four typed actions it had never actually been given.
+    """
+    for _ in range(40):
+        try:
+            ready = page.evaluate(
+                "() => !document.body.classList.contains('turn-active')"
+                " && !!document.querySelector('.choice-btn-custom')")
+        except Exception:
+            ready = False
+        if ready:
+            break
+        time.sleep(1.0)
+    else:
+        log("    the wheel never came back — nothing to type into")
+        return None
+    try:
+        page.click(".choice-btn-custom", timeout=10000)
+        page.wait_for_selector("#custom-input", state="visible", timeout=8000)
+        page.fill("#custom-input", typed, timeout=8000)
+        page.click("#custom-submit", timeout=8000)
+    except Exception as exc:
+        log(f"    could not type an action: {a(str(exc))[:90]}")
+        return None
+
+    # Wait for the turn to START before anyone waits for it to finish.
+    #
+    # The ACT line is appended to the prose feed the instant it is submitted,
+    # and wait_advance's test is "prose grew AND the turn is not active" — so
+    # in the gap between the submit and the ceremony setting `turn-active`,
+    # both are true and the turn reads as already resolved. Measured: four
+    # turns in a row "resolved in 1.5s" with no frames, the harness typed the
+    # next action into a turn that was still running, /api/choose answered 409,
+    # and the run reset itself mid-battery. Every one of those was filed
+    # against the game.
+    for _ in range(20):
+        time.sleep(0.5)
+        try:
+            if page.evaluate(
+                    "() => document.body.classList.contains('turn-active')"):
+                break
+        except Exception:
+            continue
+    return f"TYPED: {typed}"
+
+
+def judge_custom(page, log, findings, turn, typed, words, fresh, holds):
+    """Did the world DO it, and — when it relocated the player — is it still
+    true a beat later?
+
+    Two separate failures with one symptom. The prose can carry the action and
+    the next frame drop it (the camera used to stand a driver back on his feet),
+    or the prose can refuse it outright ("you attempt to take flight, but...").
+    A player cannot tell those apart and should not have to.
+    """
+    did = honoured(fresh, words)
+    log(f"    carried out: {did or 'NO — none of ' + str(list(words))}")
+    if not did:
+        findings.append(
+            f"turn {turn}: typed '{a(typed)}' and the world did not do it — "
+            f"none of {list(words)} appear in what followed")
+
+    # The slate for the NEXT decision is generated by this turn, from the frame
+    # this turn drew. If the action changed what the player is doing, standing
+    # on, or holding, the slate is where that shows up — or does not.
+    slate = []
+    for _ in range(16):
+        time.sleep(1.0)
+        try:
+            slate = [s for s in page.evaluate(
+                "() => Array.from(document.querySelectorAll("
+                "'.choice-btn:not(.choice-btn-custom)'))"
+                ".map(n => (n.dataset.choiceText || n.innerText || '').trim())") if s]
+        except Exception:
+            slate = []
+        if slate:
+            break
+    log(f"    next slate: {[a(s) for s in slate]}")
+    if not slate or not holds:
+        # A one-off act is finished. A slate that has moved on to what comes
+        # next is correct, not forgetful.
+        return
+    kept = honoured(" ".join(slate), words)
+    if kept:
+        log(f"    the world is still in it: {kept}")
+    else:
+        findings.append(
+            f"turn {turn}: '{a(typed)}' RELOCATED the player and was then "
+            f"undone — the next slate ({[a(s) for s in slate]}) has no sign of "
+            f"{list(words)}, so the world put them back where they were")
 
 
 def do_scan_action(page, log, prefer="move"):
@@ -846,6 +1195,21 @@ def main():
             page.wait_for_function("() => !!window.Renderer", timeout=60000)
             time.sleep(3)
 
+        # Watch the motion before the run starts, so the opening beat is seen
+        # too. Whether flipbook is ON is the server's answer, not an assumption:
+        # a harness that decides for itself files "no sequences" against a build
+        # that was never asked to draw any.
+        origin = page.evaluate("() => location.origin")
+        try:
+            status = json.loads(frame_bytes(origin, "/api/status") or b"{}")
+            status = status.get("data") or status
+            fb_on = bool((status.get("flipbook") or {}).get("enabled"))
+        except Exception:
+            fb_on = False
+        log(f">>> flipbook is {'ON' if fb_on else 'OFF'} on the server")
+        flip = FlipbookWatch(origin, fb_on)
+        flip.install(page, log)
+
         if not start_run(page, log):
             log("!! could not start a run")
             return
@@ -861,6 +1225,13 @@ def main():
         # watches for the button coming back instead.
         plan = ["choice", "choice", "scan_move", "photo", "scan_interact",
                 "encounter", "act"]
+        # PT_CUSTOM=1 drives the typed-action battery instead of the verb
+        # rotation. Free will is the part of the game with the fewest rails and
+        # the most gates that can quietly refuse it, so it gets a run of its
+        # own rather than one "act" turn in seven.
+        if os.environ.get("PT_CUSTOM") == "1":
+            plan = ["custom"] * len(CUSTOM_BATTERY)
+            log(f">>> TYPED-ACTION RUN: {len(CUSTOM_BATTERY)} actions")
 
         for turn in range(1, TURNS + 1):
             s = page.evaluate(STATE)
@@ -884,7 +1255,12 @@ def main():
             os.environ["PT_TAG_INDEX"] = str(turn)
             did = None
 
-            if action == "choice":
+            typed, words, holds = "", (), False
+            if action == "custom":
+                typed, words, holds = CUSTOM_BATTERY[(turn - 1) % len(CUSTOM_BATTERY)]
+                log(f"  typing: {typed!r}")
+                did = do_custom(page, log, typed)
+            elif action == "choice":
                 did = do_choice(page, log, turn)
                 if did and is_move_choice(did):
                     move_choices[turn] = did
@@ -926,6 +1302,7 @@ def main():
             # game for the timeout.
             if action in READ_ONLY_ACTIONS:
                 log("  read-only verb — the world does not advance on this one")
+                flip.turn(page, log, findings, turn, action)
                 continue
 
             # The INTERACT dive only exists during the turn, so watch it there.
@@ -946,6 +1323,7 @@ def main():
                 log(f"  GAME OVER after {el:.1f}s")
                 break
             log(f"  resolved in {el:.1f}s{f' ({black} black samples)' if black else ''}")
+            flip.turn(page, log, findings, turn, action)
 
             # A hesitation on a turn that then resolved is a FALSE ALARM, not a
             # stall — the recovery UI was dumped over a turn that was still on
@@ -957,6 +1335,10 @@ def main():
             fresh = page.evaluate(STATE)["prose"]
             if fresh.startswith(before):
                 fresh = fresh[len(before):]
+
+            if action == "custom" and did:
+                judge_custom(page, log, findings, turn, typed, words, fresh,
+                             holds)
 
             # Did the world do what was chosen? Only meaningful for a written
             # choice, where the player picked specific words.
@@ -1043,6 +1425,8 @@ def main():
                     "drives it, so this feature is now going untested")
         except Exception:
             pass
+
+        flip.report(log, findings)
 
         log("\n================ SUMMARY ================")
         if findings:

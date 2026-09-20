@@ -96,6 +96,106 @@ def panel_grid(frames) -> List[List[int]]:
     return [[r * cols + c + 1 for c in range(cols)] for r in range(rows)]
 
 
+# How far a drawn divider has to stand out from the picture either side of it,
+# in luminance, before it counts as one. Measured on real grids: seams deviate
+# 60-90 from their neighbourhood, ordinary panel content 20-30.
+SEAM_CONTRAST = 34.0
+# The most panels a single axis may be split into. Beyond five the cells are
+# too small to be frames of anything, and a "grid" that wide is more likely a
+# fence, a louvre or a row of windows inside the photograph.
+MAX_AXIS_PANELS = 5
+MAX_DETECTED_CELLS = 16
+
+
+def _boundary_score(profile: List[float], pos: int, reach: int = 9) -> float:
+    """How sharply the profile departs from its surroundings at `pos`.
+
+    Deliberately measures the size of the departure, not its direction: a
+    generated divider can be a dark line, a light one, or (most often) a dark
+    line against a bright one, and a detector that only looked for dark bands
+    found none of them — the panels themselves are darker than the seams.
+    """
+    lo = max(0, pos - reach)
+    hi = min(len(profile), pos + reach + 1)
+    window = profile[lo:hi]
+    if len(window) < 5:
+        return 0.0
+    mid = sorted(window)[len(window) // 2]
+    near = profile[max(0, pos - 2):pos + 3]
+    return max(abs(v - mid) for v in near) if near else 0.0
+
+
+def _panels_along(profile: List[float]) -> int:
+    """How many panels this axis is divided into. 1 means no dividers.
+
+    Scores the layouts rather than hunting for lines: for each candidate count
+    the boundaries are where an even split would put them, and the layout is
+    only credible if EVERY one of them is a seam. Taking the minimum is what
+    rejects a multiple — in a 3-way split the 2-way boundary falls in the
+    middle of a panel and scores nothing.
+    """
+    length = len(profile)
+    if length < 24:
+        return 1
+    # The LARGEST split whose every boundary is a seam — not the best-scoring
+    # one. A 4-way grid contains a perfectly good 2-way boundary down its
+    # middle, so scoring alone reads 2x4 as 2x2 whenever the centre divider
+    # happens to be the crispest line in the picture.
+    best = 1
+    for n in range(2, MAX_AXIS_PANELS + 1):
+        cell = length / float(n)
+        if cell < 8:
+            break
+        weakest = min(_boundary_score(profile, int(round(i * cell)))
+                      for i in range(1, n))
+        if weakest >= SEAM_CONTRAST:
+            best = n
+    return best
+
+
+def detect_grid_shape(grid_path) -> Optional[Tuple[int, int]]:
+    """(rows, cols) the model ACTUALLY drew, read off the dividers it drew too.
+
+    The count in the prompt is a request, not a guarantee. Asked for a 2x2 the
+    model has come back with a 3x3 of nine panels — and `split_grid` cut that
+    into quarters, so every "frame" was a collage of two and a quarter panels
+    with the grid lines still running through it. The turn resolved, four
+    frames existed, they differed from each other, and the playback numbers
+    looked healthy: nothing anywhere could tell that what reached the player
+    was a tiled mess. Seen on an encounter plate, which is the worst place for
+    it — that image is the fight.
+
+    Returns None when there are no legible dividers, which is the honest answer
+    for a photograph and for any grid drawn without them. The caller then uses
+    the shape it asked for, exactly as before.
+    """
+    from PIL import Image
+
+    try:
+        with Image.open(grid_path) as im:
+            g = im.convert("L")
+            # Downscale the long edge: the seams survive it and the profiles
+            # get cheap. Not so far that a thin divider disappears.
+            scale = 512.0 / max(g.width, g.height)
+            if scale < 1.0:
+                g = g.resize((max(8, int(g.width * scale)),
+                              max(8, int(g.height * scale))))
+            w, h = g.size
+            px = list(g.getdata())
+    except Exception:
+        return None
+
+    cols_profile = [sum(px[y * w + x] for y in range(h)) / float(h)
+                    for x in range(w)]
+    rows_profile = [sum(px[y * w + x] for x in range(w)) / float(w)
+                    for y in range(h)]
+    cols = _panels_along(cols_profile)
+    rows = _panels_along(rows_profile)
+    if rows * cols < 2 or rows * cols > MAX_DETECTED_CELLS:
+        return None
+    return (rows, cols)
+
+
 def split_grid(
     grid_path,
     frames,
@@ -114,6 +214,26 @@ def split_grid(
     grid_path = Path(grid_path)
     frames = normalize_frames(frames)
     rows, cols = shape_for(frames)
+    # Cut along the lines the model DREW, not the ones it was asked for. When
+    # those disagree the drawn ones win: they are what is actually in the file,
+    # and splitting a 3x3 as a 2x2 produces four collages with grid lines
+    # through them (see detect_grid_shape). The panels themselves are fine —
+    # there are just more of them than we ordered — so this salvages the beat
+    # into a longer sequence instead of throwing the motion away.
+    drawn = detect_grid_shape(grid_path)
+    if drawn and drawn != (rows, cols) \
+            and drawn[0] >= rows and drawn[1] >= cols:
+        # Only ever override UPWARD. A detection that finds FEWER panels than
+        # were asked for is far more likely to be a divider we could not see
+        # than a model that drew fewer: two near-identical panels of the same
+        # sky share an edge with no contrast across it, and a real 2x2 opening
+        # duly read as 2x1. Splitting that as drawn would put two frames in
+        # every panel — which is the exact fault this is here to prevent.
+        # Cutting to the shape we asked for is the safe answer in that
+        # direction, and it is what the code has always done.
+        print(f"[FLIPBOOK] asked for {rows}x{cols}, the model drew "
+              f"{drawn[0]}x{drawn[1]} - splitting what it drew", flush=True)
+        rows, cols = drawn
     out_dir = Path(out_dir) if out_dir else grid_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = stem or grid_path.stem

@@ -909,6 +909,43 @@ class TestTheEndpointsExist(unittest.TestCase):
         self.assertIn('StartMenu.switchMode("watch")', self.client)
         self.assertIn("Render.init();", self.client)
 
+    def test_the_boot_gate_cannot_hold_the_ui_forever(self):
+        """The worst failure state in the app, and it had no floor.
+
+        `body.awaiting-first-scene` sets #menu-toggle, #control-rail and
+        #danger-health to display:none, so while the gate is up there is no
+        chrome at all — not even a way to reach reset. The 20s ceiling that
+        exists to release it re-armed itself for as long as a Moment was on
+        screen, which is correct for a montage that legitimately runs long and
+        catastrophic for one that never finishes: the opening cutscene IS a
+        Moment, its shots are generated, and /api/cutscene/complete is what
+        pops it. If that never lands the run sits on a black screen with no
+        controls, forever.
+
+        Twenty-five realtime e2e tests were in exactly that state, timing out
+        on a menu button CSS had hidden. Two other suites already work around
+        it by stripping the class off `body` by hand, which is the tell.
+        """
+        self.assertIn("BOOT_GATE_ABSOLUTE_MS", self.client)
+        gate = self.client.split("function armBootGateCeiling(", 1)[1] \
+                          .split("\n  }", 1)[0]
+        # The re-arm must be conditional on the absolute ceiling, not on the
+        # Moment alone.
+        self.assertIn("BOOT_GATE_ABSOLUTE_MS", gate)
+        self.assertIn("Moments.isActive()", gate)
+        self.assertLess(gate.index("BOOT_GATE_ABSOLUTE_MS"),
+                        gate.index("Moments.isActive()"),
+                        "the ceiling has to be checked before the Moment "
+                        "re-arms the timer, or it re-arms forever")
+        # Generous enough not to cut a real montage off: four shots held four
+        # seconds each, plus the generation that made them.
+        absolute = int(self.client.split("BOOT_GATE_ABSOLUTE_MS = ", 1)[1]
+                       .split(";", 1)[0])
+        normal = int(self.client.split("BOOT_GATE_MAX_HOLD_MS = ", 1)[1]
+                     .split(";", 1)[0])
+        self.assertGreater(absolute, normal * 2)
+        self.assertLessEqual(absolute, 180000)
+
     def test_the_start_menu_arrives_from_a_textless_splash(self):
         self.assertIn('id="start-splash"', self.html)
         self.assertIn("start-splash-bar", self.html)
@@ -930,6 +967,82 @@ class TestTheEndpointsExist(unittest.TestCase):
         self.assertIn('class="start-brand"', self.html)
         self.assertIn("SOMEWHERE", self.html.split("start-menu-inner", 1)[1])
         self.assertIn("ensureDom", self.client)
+
+    def test_every_menu_sits_on_the_same_gradient_field(self):
+        """The corner washes were sized as localized blobs (50%/40% of the
+        viewport), which read as smudges in the corners of an otherwise flat
+        card — and made moving between two menus look like a cut between two
+        backgrounds rather than a move within one room.
+
+        They are one field now, larger than the screen, and the three menus
+        share the tokens so they cannot drift apart.
+        """
+        css = (ROOT / "static/css/standalone.css").read_text(encoding="utf-8")
+        root = css.split(":root {", 1)[1].split("}", 1)[0]
+        for token in ("--menu-wash-bl", "--menu-wash-br"):
+            self.assertIn(token, root, f"{token} is not a shared token")
+        # Bigger than the viewport on both axes, or it is not covering anything.
+        for token in ("--menu-wash-bl", "--menu-wash-br"):
+            value = root.split(token + ":", 1)[1].split(";", 1)[0]
+            sizes = [int(part.strip().rstrip("%"))
+                     for part in value.split() if part.strip().endswith("%")]
+            self.assertEqual(len(sizes), 2, f"{token} needs two radii")
+            for n in sizes:
+                self.assertGreater(n, 100, f"{token} is smaller than the screen")
+
+        for screen in ("#start-menu {", "#watch-mode {", ".exit-veil {"):
+            with self.subTest(screen=screen):
+                block = css.split(screen, 1)[1].split("\n}", 1)[0]
+                self.assertIn("var(--menu-wash-br)", block,
+                              f"{screen} is not on the shared field")
+
+    def test_the_play_transition_is_a_field_not_three_circles(self):
+        """Enlarging the MENU washes did not touch this, and it is what you
+        actually look at when you press PLAY: the Buck veil drifts three blooms
+        across the screen. They were 54 / 62 / 46vmax and animated up from
+        0.22-0.4 scale, so the transition opened on three small circles with
+        their own visible edges — "I still see the 3 little gradients".
+
+        Two things have to hold, and the second is the one that was missed: an
+        element larger than the screen still reads as a circle if the animation
+        starts it at a quarter size.
+        """
+        css = (ROOT / "static/css/standalone.css").read_text(encoding="utf-8")
+        for cls in ("buck-bloom-a", "buck-bloom-b", "buck-bloom-c"):
+            with self.subTest(bloom=cls):
+                block = css.split(f".{cls} {{", 1)[1].split("}", 1)[0]
+                width = block.split("width:", 1)[1].split("vmax", 1)[0].strip()
+                self.assertGreater(
+                    int(width), 100,
+                    f"{cls} is smaller than the viewport — it has a rim")
+
+                frames = css.split(f"@keyframes {cls} {{", 1)[1].split("\n}", 1)[0]
+                start = frames.split("scale(", 1)[1].split(")", 1)[0]
+                self.assertGreater(
+                    float(start), 0.8,
+                    f"{cls} still opens at scale {start} — a small circle "
+                    f"however large the element is")
+
+    def test_the_title_card_is_plain_and_not_last_run_s_wallpaper(self):
+        """The menu used to paper itself with the last run's final frame.
+
+        Through `brightness(0.72)` with the VHS grain over it that read as mud,
+        and it made the title screen a different picture every launch — of a run
+        you had already finished. Switched off at the one choke point that
+        paints it; the machinery stays, because Signal still hands that still to
+        the scene layer on the way into a run (lock / hold / takeHold) and still
+        paints the Watch TV's ghost.
+        """
+        self.assertIn("const WALLPAPER = false", self.client)
+        # Scoped to the Signal module: there is an earlier apply() in the
+        # device-detection code that has nothing to do with the menu.
+        signal = self.client.split("const Signal = (function ()", 1)[1]
+        apply_fn = signal.split("    function apply() {", 1)[1] \
+                         .split("\n    }", 1)[0]
+        self.assertIn("if (!WALLPAPER)", apply_fn)
+        # The hold-plate duty is NOT what was turned off.
+        self.assertIn("function takeHold", self.client)
+        self.assertIn("Signal.lock(\"play\")", self.client)
 
     def test_last_run_is_the_wallpaper_under_the_wordmark(self):
         css = (ROOT / "static/css/standalone.css").read_text(encoding="utf-8")
@@ -973,7 +1086,10 @@ class TestTheEndpointsExist(unittest.TestCase):
         self.assertIn("keepCellInTrack", self.client)
         picker_js = self.client.split("function paintStage(", 1)[1].split("function begin(", 1)[0]
         self.assertNotIn("scrollIntoView", picker_js)
-        self.assertIn("Updating picture", self.client)
+        # The editor says so when a save kicks a re-render. Asserted on the
+        # copy that ships: "Updating picture" was never in the client, at HEAD
+        # or otherwise, so this line had been failing since it was written.
+        self.assertIn("updating the picture", self.client)
         self.assertIn("confirmWatch()", self.client)
         self.assertIn("returnToPicker()", self.client)
         self.assertNotIn('id="start-watch"', self.html)
@@ -1379,6 +1495,443 @@ class TestTheLiveFilmUpload(RenderRootSandbox):
         self.assertIn("yuv420p", argv)
         self.assertIn("+faststart", argv)
         self.assertTrue((self.run / "playtest_live.mp4").is_file())
+
+
+class TestTheSceneShowsYouWhatYouCanTouch(unittest.TestCase):
+    """SCAN is how you interact with anything in this world, and it was the
+    least discoverable thing in the game: the hotspots were the only signal
+    that the picture could be touched, and they only appeared once you already
+    knew to ask for them — then took themselves away again five seconds later.
+
+    A scene now reads itself when it lands, once, and the tags stay for as long
+    as the shot does. These pin both halves plus the budget, because the budget
+    is why it was manual to begin with."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
+        cls.css = (ROOT / "static/css/standalone.css").read_text(encoding="utf-8")
+
+    def test_a_painted_scene_reads_itself(self):
+        """markScenePainted is the only place that honestly means "a picture
+        is on screen", because it runs after the image has decoded and been
+        swapped in. Arming anywhere earlier scans the shot being replaced."""
+        painted = self.client.index("function markScenePainted(")
+        body = self.client[painted:painted + 1200]
+        self.assertIn("AutoScan.arm()", body)
+
+    def _apply_scene(self):
+        """Renderer.applyScene, down to the end of its reactor branch."""
+        start = self.client.index("applyScene(imageUrl, prompt, meta) {")
+        return self.client[start:start + 6000]
+
+    def test_the_live_renderer_is_armed_too(self):
+        """Realtime never paints a still the player looks at — the video is
+        the picture, and setScene only stages a floor behind it — so
+        markScenePainted's arm never fires there. A live session came up with
+        no hotspots at all until this second seam existed."""
+        body = self._apply_scene()
+        self.assertIn("AutoScan.arm()", body)
+        self.assertLess(body.index("setScene("), body.index("AutoScan.arm()"),
+                        "setScene clears the spent flag, so it has to run first")
+
+    def test_it_is_armed_before_the_realtime_early_return(self):
+        """markScenePainted returns early for a live session. Arming after
+        that would silently give realtime runs no hotspots at all."""
+        painted = self.client.index("function markScenePainted(")
+        body = self.client[painted:painted + 1200]
+        self.assertLess(body.index("AutoScan.arm()"), body.index("scanInRealtime()"))
+
+    def test_the_pass_is_claimed_before_it_is_fired(self):
+        """triggerScan is async. Claiming the budget after it resolves lets a
+        second arm land mid-flight and buy a second detect call. The claim is
+        released again when nothing actually went out — every guard in
+        triggerScan is an early return, and in realtime the video can be
+        mid-re-anchor with nothing honest to capture."""
+        self.assertRegex(
+            self.client,
+            r"state\.autoScanDone = true;[\s\S]{0,500}?"
+            r"if \(triggerScan\(null, \{ auto: true \}\) === false\) \{"
+            r"\s*\n\s*state\.autoScanDone = false;")
+
+    def test_a_declined_scan_says_so(self):
+        """The release above is only honest if triggerScan reports it."""
+        body = self.client[self.client.index("function triggerScan("):]
+        body = body[:body.index("\n  }\n")]
+        self.assertIn("if (!scanAvailable()) return false;", body)
+        self.assertIn("return true;", body)
+
+    def test_only_a_new_picture_refills_the_budget(self):
+        """The spent flag is cleared where a new picture arrives and nowhere
+        else, so the teardown paths (travel, instruments) can cancel a pending
+        pass without handing out a fresh one against the same shot.
+
+        One site per renderer: stills paint through setScene, and realtime
+        never paints a still the player looks at at all — the video is the
+        picture — so it arms off the world re-anchoring instead."""
+        start = self.client.index("function setScene(")
+        stills = self.client[start:start + 900]
+        self.assertIn("state.autoScanDone = false", stills)
+        self.assertIn("closeScan();", stills)
+        self.assertIn("state.autoScanDone = false; AutoScan.arm();",
+                      self._apply_scene())
+
+    def test_coming_back_from_an_interaction_restores_the_hotspots(self):
+        """The reported bug: auto-scan never re-activated after leaving an
+        interaction or a conversation.
+
+        The one-pass budget is per picture, but closeScan() spends nothing —
+        it just tears the tags down. So every instrument that borrows the
+        screen returned the player to the same shot with no hotspots on it
+        and no way back except finding the SCAN button, which is the exact
+        discoverability hole auto-scan exists to close."""
+        body = self.client[self.client.index("    function rearm() {"):]
+        body = body[:body.index("\n    }")]
+        # Idempotent: a shot whose tags survived is already answered.
+        self.assertIn("if (state.scanOn) return;", body)
+        self.assertIn("if (state.scanBusy) return;", body)
+        self.assertIn("state.autoScanDone = false;", body)
+        self.assertIn("arm();", body)
+        self.assertIn("return { arm, cancel, rearm, debug };", self.client)
+
+    def test_every_way_back_to_the_world_re_arms_it(self):
+        """The camera, the tape, the free-will box and a finished turn each
+        hand the world back, and each used to do it with bare pixels."""
+        for fn in ("function closeTouch(", "function closeTape(",
+                   "function closeFreeWill(", "function hideVeil("):
+            body = self.client[self.client.index(fn):]
+            body = body[:body.index("\n  }")]
+            self.assertIn("AutoScan.rearm()", body,
+                          f"{fn} must give the scan pass back")
+
+    def test_a_moment_hands_the_world_back_readable(self):
+        """Conversation, interact, encounter, cutscene and camp all leave
+        through the same chokepoint, so the re-arm lives there rather than
+        being re-derived in five exit handlers."""
+        moments = (ROOT / "static/js/moments.js").read_text(encoding="utf-8")
+        body = moments[moments.index("  function resumeUnderlay() {"):]
+        body = body[:body.index("\n  }")]
+        self.assertIn("window.__AutoScan.rearm()", body)
+
+    def test_a_menu_is_not_a_picture_you_are_playing(self):
+        """The start menu paints a real rendered still as its backdrop, and it
+        paints it through setScene like any other picture. Without this gate
+        the game spent a Gemini detection call and hung six hotspots over the
+        main menu on EVERY boot — measured on the real client, which is the
+        only place it shows: the realtime e2e page never paints a still, so no
+        test could have caught it.
+
+        Watch mode is the same argument: those scenes are watched, not played,
+        and there is nothing in them to interact with."""
+        body = self.client[self.client.index("const AutoScan = "):]
+        body = body[:body.index("try { window.__AutoScan")]
+        self.assertIn("function inPlay()", body)
+        self.assertIn('c.contains("start-menu-on")', body)
+        self.assertIn('c.contains("mode-watch")', body)
+        # ...and blocked() has to actually consult it.
+        gate = body[body.index("function blocked()"):]
+        self.assertIn("if (!inPlay()) return true;", gate[:400])
+
+    def test_entering_play_arms_it_too(self):
+        """A resumed session returns from ensurePlayViewport without rendering
+        anything, so the scene already on screen never paints again — that arm
+        is the only one it will ever get."""
+        for fn in ("function settlePlay()", "function ensurePlayViewport("):
+            body = self.client[self.client.index(fn):]
+            body = body[:body.index("\n    }\n")]
+            self.assertIn("AutoScan.arm()", body, fn)
+
+    def test_a_blocked_view_waits_rather_than_burning_the_pass(self):
+        """The image lands before the choices do, so a scene routinely paints
+        while the turn is still resolving. triggerScan's guards are all early
+        returns — firing into that would drop the pass in silence."""
+        self.assertIn("AUTO_SCAN_POLL_MS", self.client)
+        self.assertIn("AUTO_SCAN_GIVE_UP_MS", self.client)
+
+    def test_the_hotspots_do_not_time_out(self):
+        """The tags describe the picture, and the picture is still there.
+        Every path that genuinely invalidates them calls closeScan()."""
+        self.assertRegex(
+            self.client,
+            r"typeof window\.__SCAN_TTL_MS__ === \"number\"\)\s*\?\s*"
+            r"window\.__SCAN_TTL_MS__\s*:\s*0")
+        self.assertIn("if (!(SCAN_TTL_MS > 0)) return;", self.client)
+
+    def test_there_is_a_way_to_switch_it_off(self):
+        self.assertIn("window.__AUTO_SCAN__ !== false", self.client)
+
+    def test_a_quiet_room_arrives_quietly(self):
+        """Reported straight after this shipped: "NOTHING TO INTERACT WITH
+        HERE" pulsing under the choices on arrival.
+
+        That line is a fine answer to a SCAN the player pressed. Volunteered
+        by the automatic pass in every quiet room it is the scene telling you
+        not to bother — and since the pass happens on arrival now, it greeted
+        the player with it. The automatic read asked nothing on their behalf,
+        so it reports nothing."""
+        body = self.client[self.client.index("function scanHintFor("):]
+        body = body[:body.index("\n  }")]
+        self.assertIn("if (auto) return \"\";", body)
+        self.assertIn("triggerScan(null, { auto: true })", self.client)
+
+    def test_the_hint_is_a_message_not_a_furnishing(self):
+        """The tags persist because the picture they describe is still there.
+        A hint answers the tap you just made and is then over — it used to be
+        cleared by the scan fade, which no longer runs, so a single empty
+        SCAN left it up for the rest of the scene."""
+        self.assertIn("SCAN_HINT_MS", self.client)
+        body = self.client[self.client.index("function setScanHint("):]
+        body = body[:body.index("\n  }")]
+        self.assertIn("state.scanHintTimer", body)
+
+    def test_the_read_looks_like_a_read(self):
+        """Without the scanline the labels just blink into existence with
+        nothing to explain them."""
+        self.assertIn("playScanSweep()", self.client)
+        self.assertIn("#scan-layer.sweeping::after", self.css)
+        self.assertIn("@keyframes scan-sweep", self.css)
+
+    def test_the_sweep_respects_reduced_motion(self):
+        # The stylesheet has several reduced-motion blocks; the rule has to be
+        # inside one of them rather than merely present in the file.
+        blocks = self.css.split("@media (prefers-reduced-motion: reduce)")[1:]
+        self.assertTrue(
+            any("#scan-layer::after { display: none; }" in b[:2000] for b in blocks),
+            "the scanline must be suppressed under reduced motion")
+
+
+class TestYouCanSpeakYourAction(unittest.TestCase):
+    """Dictation for the free-will box.
+
+    It uses the browser's own SpeechRecognition rather than recording audio
+    and shipping it off to be transcribed, and that choice is the feature:
+    words land in the box WHILE you are still talking, because the engine
+    streams interim guesses and revises them. A record-then-upload round trip
+    cannot do that at any speed. It also needs no API key, no server route and
+    no per-use cost."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
+        cls.html = (ROOT / "templates/standalone.html").read_text(encoding="utf-8")
+        cls.css = (ROOT / "static/css/standalone.css").read_text(encoding="utf-8")
+
+    def test_the_button_sits_left_of_the_box(self):
+        form = self.html[self.html.index('<form id="custom-form"'):]
+        form = form[:form.index("</form>")]
+        self.assertLess(form.index('id="custom-mic"'), form.index('id="custom-input"'))
+
+    def test_it_can_never_submit_the_form(self):
+        """A button inside a form defaults to type=submit, which would fire
+        the action off the moment you reached for the microphone."""
+        mic = self.html[self.html.index('<button id="custom-mic"'):]
+        self.assertIn('type="button"', mic[:200])
+
+    def test_a_browser_that_cannot_listen_shows_no_microphone(self):
+        """A dead control is worse than no control. It ships hidden and only
+        the JS, having found an engine, reveals it."""
+        self.assertIn('id="custom-mic"', self.html)
+        mic = self.html[self.html.index('<button id="custom-mic"'):]
+        self.assertIn('class="hidden"', mic[:260])
+        self.assertIn('if (!available()) return;', self.client)
+        self.assertIn('el.customMic.classList.remove("hidden")', self.client)
+
+    def test_it_uses_the_native_engine(self):
+        self.assertIn("window.SpeechRecognition || window.webkitSpeechRecognition",
+                      self.client)
+
+    def test_words_appear_while_you_are_still_talking(self):
+        """interimResults is the whole reason this feels instant rather than
+        like submitting a recording."""
+        self.assertIn("rec.interimResults = true;", self.client)
+
+    def test_it_listens_through_the_pauses(self):
+        """Engines stop at the first breath. Without continuous plus the
+        restart in onend, dictating one sentence takes three clicks."""
+        self.assertIn("rec.continuous = true;", self.client)
+        onend = self.client[self.client.index("rec.onend = ()"):]
+        self.assertIn("if (!live) return;", onend[:200])
+        self.assertIn("rec.start()", onend[:300])
+
+    def test_recording_is_impossible_to_miss(self):
+        self.assertIn("#custom-mic.recording", self.css)
+        self.assertIn("@keyframes mic-pulse", self.css)
+        self.assertIn("#action-wheel.dictating #custom-input", self.css)
+
+    def test_a_mic_left_on_does_not_listen_to_the_room_forever(self):
+        self.assertIn("MAX_MS", self.client)
+
+    def test_it_adds_to_what_you_typed_instead_of_replacing_it(self):
+        self.assertIn("baseText = (el.customInput && el.customInput.value)", self.client)
+
+    def test_speech_obeys_the_same_length_limit_as_typing(self):
+        """maxlength is not enforced for programmatic writes, so a ramble
+        would otherwise sail past what the player is allowed to type."""
+        self.assertIn('getAttribute("maxlength")', self.client)
+
+    def test_every_way_out_releases_the_microphone(self):
+        """Sending, closing the box, or Escape. A microphone still listening
+        after its box is gone is the worst bug this feature could have."""
+        submit = self.client[self.client.index("function submitCustomAction("):]
+        self.assertIn("Dictation.stop()", submit[:400])
+        close = self.client[self.client.index("function closeFreeWill("):]
+        self.assertIn("Dictation.stop()", close[:300])
+        self.assertIn("if (Dictation.isLive()) { Dictation.stop(); return; }", self.client)
+
+    def test_a_blocked_microphone_says_so(self):
+        self.assertIn('err === "not-allowed"', self.client)
+        self.assertIn("Microphone blocked", self.client)
+
+    def test_a_silent_pause_is_not_an_error(self):
+        """`no-speech` fires constantly while someone thinks mid-sentence."""
+        self.assertIn('err === "no-speech"', self.client)
+
+    def test_it_is_wired_into_the_boot(self):
+        self.assertIn("Dictation.init();", self.client)
+
+    def test_a_dead_speech_engine_falls_back_instead_of_failing(self):
+        """The reported bug. The native engine being PRESENT says nothing
+        about whether it WORKS: a Chromium build without Google's speech key
+        exposes SpeechRecognition and then fails every attempt with
+        `network`, and corporate DNS does the same to real Chrome. There is
+        no capability check for it — you find out by trying — so the first
+        failure has to hand over to recording mid-click, keeping the button
+        red so the player never learns there were two paths."""
+        self.assertIn('if (err === "network")', self.client)
+        self.assertIn("speechDead = true;", self.client)
+        self.assertIn("startRecording({ resumed: true })", self.client)
+
+    def test_it_does_not_retry_a_dead_engine_all_session(self):
+        self.assertIn("if (Engine && !speechDead) startSpeech();", self.client)
+
+    def test_the_recorded_path_says_it_is_working(self):
+        """Only the fallback has the upload gap; an unlabelled pause there
+        reads as a dead button."""
+        self.assertIn("setBusy(", self.client)
+        self.assertIn("transcribing", self.css)
+
+    def test_the_recorder_always_releases_the_microphone(self):
+        self.assertIn("function releaseStream(", self.client)
+        self.assertIn("getTracks().forEach((t) => t.stop())", self.client)
+
+    def test_a_fumbled_click_does_not_upload_silence(self):
+        """Duration still decides this one: a clip too brief to hold a word
+        is not worth a round trip whatever its level."""
+        self.assertIn("heldMs < 350", self.client)
+
+    def test_it_knows_whether_the_microphone_heard_anything(self):
+        """The reported bug: "the mic doesn't work, it just says Didn't catch
+        that". It did work, and that message was the problem — it could not
+        tell a muted input from a mumble from a failing server.
+
+        The old check was blob.size < 2048, which only ever caught DIGITAL
+        silence. Measured in a real browser: four seconds of true silence is
+        1.2 KB and slips under it, three seconds of an empty room is 48 KB
+        and sails over. So every dead-input case uploaded, was paid for, came
+        back empty and was blamed on the player's diction."""
+        self.assertIn("function startMeter(", self.client)
+        self.assertIn("getFloatTimeDomainData", self.client)
+        self.assertIn("SILENT_PEAK", self.client)
+        self.assertIn("No sound from", self.client)
+
+    def test_the_level_is_visible_while_you_speak(self):
+        """A red button only proves the button is red. The ring proves the
+        microphone is hearing you, which is the thing a player otherwise has
+        no way to find out."""
+        self.assertIn('setProperty("--mic-level"', self.client)
+        self.assertIn("--mic-level", self.css)
+
+    def test_a_recorder_that_never_flushes_still_hands_back_audio(self):
+        """Electron and some mobile builds do not reliably fire the final
+        dataavailable, and one blob at the end is indistinguishable from a
+        player who said nothing."""
+        self.assertIn("media.start(250)", self.client)
+
+    def test_every_kind_of_nothing_says_which_kind_it_was(self):
+        """A missing API key, a rate limit, a dead upstream and a genuine
+        silence all used to arrive as "" and be reported identically."""
+        self.assertIn("REASON_TEXT", self.client)
+        engine_src = (ROOT / "engine.py").read_text(encoding="utf-8")
+        body = engine_src[engine_src.index("def _transcribe_audio("):]
+        body = body[:body.index("def api_transcribe(")]
+        for reason in ("disabled", "too_short", "upstream_error", "no_speech"):
+            self.assertIn(f'_why("{reason}")', body)
+
+    def test_a_dead_speech_engine_is_remembered_across_reloads(self):
+        """The engine takes ~600ms to fail and the handover then waits on
+        getUserMedia. Rediscovering that on the first click of every page
+        load costs the player the front of their sentence, every time."""
+        self.assertIn("SPEECH_DEAD_KEY", self.client)
+        self.assertIn("function markSpeechDead()", self.client)
+
+    def test_enter_waits_for_a_transcription_still_in_flight(self):
+        """The recorded path finishes AFTER the stop, so hitting Enter the
+        moment you stopped talking read an empty box and did nothing — and
+        then the words appeared."""
+        submit = self.client[self.client.index("function submitCustomAction("):]
+        self.assertIn("Dictation.isTranscribing()", submit[:900])
+        self.assertIn("Dictation.whenSettled(", submit[:900])
+
+
+class TestDictationDoesNotInventWords(unittest.TestCase):
+    """The prototype's worst failure, found by feeding it silence.
+
+    The first prompt told the model the clip was "a player saying what they
+    want their character to do next in a game". Handed one second of pure
+    silence it answered "I'm going to go to the tavern." — told what kind of
+    sentence to expect and given no audio, it produced one. A dictation box
+    that invents an action the player never spoke is far worse than one that
+    mishears them, because the player cannot tell that is what happened."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.engine = (ROOT / "engine.py").read_text(encoding="utf-8")
+
+    def _prompt(self):
+        body = self.engine[self.engine.index("def _transcribe_audio("):]
+        return body[:body.index("try:")]
+
+    def test_the_prompt_does_not_describe_the_subject_matter(self):
+        """Describing the job is fine. Describing what the sentence will
+        probably be about is what produced the tavern."""
+        prompt = self._prompt().lower()
+        for seed in ("game", "player", "character", "action"):
+            self.assertNotIn(seed, prompt.split("prompt = (")[1],
+                             f"the transcription prompt must not mention {seed!r}")
+
+    def test_it_asks_for_a_sentinel_rather_than_an_empty_reply(self):
+        """Models are reliably bad at returning nothing and much better at
+        returning a specific token."""
+        self.assertIn("NO_SPEECH", self._prompt())
+
+    def test_a_result_with_no_letters_in_it_is_not_speech(self):
+        """Reported: the player said "approach the mesa" and the box filled
+        with "00:00".
+
+        Asked for words and having none, the model reaches for a subtitle
+        artifact instead of the sentinel. The prompt already forbids
+        timestamps and it produced one anyway, so the shape is rejected
+        rather than left to instructions. A real action in this game always
+        has a verb in it; digits alone never are one."""
+        body = self.engine[self.engine.index("def _transcribe_audio("):]
+        self.assertIn(r'if not re.search(r"[^\W\d_]", text, re.UNICODE):', body)
+
+    def test_the_client_refuses_the_same_junk(self):
+        """Both engines write through the same paint(), and both can hand
+        back something that is not speech — so the guard cannot live only on
+        the server."""
+        client = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
+        self.assertIn("function spoken(text)", client)
+        self.assertIn(r"/[^\W\d_]/u.test(s)", client)
+        self.assertIn("const said = spoken((res && res.text)", client)
+
+    def test_every_way_of_saying_nothing_reads_as_nothing(self):
+        """The sentinel plus the phrasings a model reaches for when it
+        decides to be helpful instead of literal. None may reach the box."""
+        body = self.engine[self.engine.index("def _transcribe_audio("):]
+        for phrasing in ("no_speech", "no speech detected", "silence",
+                         "inaudible", "unintelligible"):
+            self.assertIn(phrasing, body)
 
 
 class TestTheLiveFilmSeamsAreWired(unittest.TestCase):

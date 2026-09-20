@@ -484,11 +484,43 @@ class TestApproachMood(_Isolated):
         self.assertIn("NOBODY is in any of these photographs", text)
         self.assertIn("no glowing anomalies", text)
         self.assertIn("DIFFERENT subject at a DIFFERENT scale", text)
-        self.assertIn("Do not name the goal outright", text)
         # Four roles, matching the four panels.
         for role in ("THE WIDEST VIEW", "A MACRO DETAIL", "A BUILT THING",
                      "WHAT WAS LEFT BEHIND"):
             self.assertIn(role, text, role)
+
+    def test_the_widest_shot_has_to_show_what_we_came_for(self):
+        """The goal was excluded twice over — "do not name the goal outright"
+        here, and "it does not have to appear in every panel" in the grid
+        prompt — so it appeared in none of them. A run told it was walking
+        toward an extraction spire was shown a fence, a padlock, a trailer and
+        some badges. The montage exists to make the player want to walk
+        somewhere; it was never showing them where.
+        """
+        text = cutscene.SHOTLIST_INSTRUCTIONS
+        self.assertIn("WITH THE GOAL ON THE SKYLINE", text)
+        self.assertNotIn("Do not name the goal outright", text)
+        # Still unreached: showing up close is the other way to kill the hook.
+        self.assertIn("Do not show the goal REACHED", text)
+
+    def test_the_grid_prompt_requires_it_in_the_widest_panel(self):
+        text = cutscene.build_cutscene_prompt(
+            "approach", plate_role="destination", has_reference=False,
+            goal="The Extraction Spire over the basin")
+        self.assertIn("The Extraction Spire over the basin", text)
+        self.assertIn("IT MUST BE VISIBLE, ON THE HORIZON, IN THE WIDEST PANEL", text)
+        self.assertNotIn("It does not have to appear in every panel", text)
+        self.assertIn("NOT REACHED", text)
+
+    def test_the_first_playable_frame_keeps_it_on_the_horizon(self):
+        """That frame is img2img'd from the montage's widest panel, so the goal
+        arrives for free — as long as nothing drops it. The block asks for
+        something unreadable approaching in the far distance too, and given two
+        things for one horizon the model kept the one it was told about."""
+        for block in (engine._flipbook_establishing_block(4),
+                      engine._flipbook_establishing_block(single=True)):
+            self.assertIn("WHAT IS ON THE HORIZON STAYS ON THE HORIZON", block)
+            self.assertIn("do not replace it with weather", block.lower())
 
     def test_a_world_with_no_bible_falls_back_instead_of_guessing(self):
         """An empty lore slot must not produce four invented shots."""
@@ -1256,6 +1288,50 @@ class TestTheHandoffBelongsToThisRun(_Isolated):
                          "the new run lands on its own montage")
 
 
+class TestTheMontageIsNotLiftedOntoAStalePicture(unittest.TestCase):
+    """Reported as "that same stupid image appeared in between the opening
+    cutscene and the first frame, as a glitch, for like 1 second".
+
+    It is the START MENU's wallpaper. Signal.lock paints the warmed still onto
+    the real scene layer on the way into a run, deliberately, so a plain start
+    does not open on a black void. But `applyDest` only STARTS the swap —
+    setScene waits for the new image to load before painting it — so popping the
+    montage the instant applyDest returned uncovered that wallpaper for exactly
+    as long as the decode took.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = (Path(__file__).resolve().parent / "static" / "js" /
+                  "standalone.js").read_text(encoding="utf-8", errors="replace")
+
+    def _finish(self):
+        return self.js.split("    async function finish() {", 1)[1] \
+                      .split("\n    function onEsc", 1)[0]
+
+    def test_the_overlay_waits_for_a_real_picture_before_it_pops(self):
+        # Split on the CALL: the comment above it names the function too.
+        fn = self._finish()
+        before, after = fn.split("await whenDestPainted", 1)
+        self.assertIn("applyDest(hop)", before,
+                      "the destination is not even requested before the wait")
+        self.assertIn("Moments.pop", after,
+                      "the montage pops before the frame has painted")
+
+    def test_the_wait_is_bounded(self):
+        """A frame that never paints must not trap the player in the montage."""
+        fn = self.js.split("function whenDestPainted(maxMs) {", 1)[1] \
+                    .split("\n    }", 1)[0]
+        self.assertIn("setTimeout(fin", fn)
+        self.assertIn("onNextScenePainted", fn)
+
+    def test_a_cutscene_with_nowhere_to_go_does_not_wait(self):
+        """A graph cutscene that leads nowhere has no frame to wait for, and
+        sitting out the timeout would just stall on the last shot."""
+        before = self._finish().split("await whenDestPainted", 1)[0]
+        self.assertIn("if (hop.destUrl)", before)
+
+
 class TestTheFirstPlayableFrameRendersBehindTheMontage(_Isolated):
     """The montage is ~20s of held shots. The first playable frame used to be
     started only once the player had watched every one of them out, so the
@@ -1507,6 +1583,82 @@ class TestTheSheetsAreFilledBeforeAnythingRenders(_Isolated):
                    .split("\ndef api_reset", 1)[0]
         self.assertNotIn("_ensure_level_sheet_is_filled()", reset,
                          "no LLM write over authoring data on the boot path")
+
+    def test_every_run_walks_toward_something(self):
+        """"The goal system is completely non functional ... making sure we
+        always have a goal generated can really help the experience stay
+        focused."
+
+        A run with no goal has no shape: the montage established "toward '(no
+        goal authored)'" and every frame was a place rather than a direction.
+        """
+        st = {"world_prompt": "a quarantined site"}
+        with patch.object(gi, "level_goal", return_value=""), \
+             patch.object(gi, "draft_level_goal",
+                          return_value="The drill tower on the ridge."):
+            got = engine._goal_for_this_run(st, "")
+        self.assertEqual(got, "The drill tower on the ridge.")
+        self.assertEqual(st["level_goal"], "The drill tower on the ridge.")
+
+    def test_it_never_writes_over_the_level_sheet(self):
+        """The distinction the whole design rests on.
+
+        `_ensure_level_sheet_is_filled` was on the boot path for one afternoon,
+        invented "The Kettle Yard" out of the Four Corners bible and PERSISTED
+        it over the author's words. This drafts into the RUN instead: the
+        authoring store is not touched, so there is nothing to undo.
+        """
+        st = {}
+        with patch.object(gi, "level_goal", return_value=""), \
+             patch.object(gi, "draft_level_goal", return_value="A tower."), \
+             patch.object(ps, "save_prompts_bulk") as save, \
+             patch.object(gi, "save_spec") as save_spec:
+            engine._goal_for_this_run(st, "")
+        save.assert_not_called()
+        save_spec.assert_not_called()
+
+    def test_an_authored_goal_is_never_second_guessed(self):
+        st = {}
+        with patch.object(gi, "level_goal", return_value="The red pump house."), \
+             patch.object(gi, "draft_level_goal") as draft:
+            got = engine._goal_for_this_run(st, "chain-link fence")
+        self.assertEqual(got, "The red pump house.")
+        draft.assert_not_called()
+
+    def test_one_draft_per_playthrough(self):
+        """Cached in state: the landmark must not change under the player
+        halfway through the run, and it must not cost a call every time."""
+        st = {"level_goal": "The drill tower."}
+        with patch.object(gi, "level_goal", return_value=""), \
+             patch.object(gi, "draft_level_goal") as draft:
+            self.assertEqual(engine._goal_for_this_run(st, ""), "The drill tower.")
+        draft.assert_not_called()
+
+    def test_a_failed_draft_is_not_fatal(self):
+        st = {}
+        with patch.object(gi, "level_goal", return_value=""), \
+             patch.object(gi, "draft_level_goal", side_effect=RuntimeError("no key")):
+            self.assertEqual(engine._goal_for_this_run(st, "the mesa"), "the mesa")
+
+    def test_the_goal_has_to_be_big_and_far_off(self):
+        """"A large distant object / monolith / structure ... to draw the
+        players eye". The draft used to ask only for something "visible from a
+        distance", which a door in the next room technically is."""
+        src = Path(gi.__file__).read_text(encoding="utf-8")
+        prompt = src.split("def draft_level_goal", 1)[1].split("return _clean_text", 1)[0]
+        low = prompt.lower()
+        self.assertIn("big and it must be far away", low)
+        self.assertIn("miles off", low)
+        self.assertIn("horizon", low)
+        # ...and the things that are none of those.
+        for small in ("door", "room", "crate", "sign"):
+            self.assertIn(small, low, f"{small!r} is not ruled out")
+
+    def test_the_montage_is_told_where_this_run_is_going(self):
+        src = Path(engine.__file__).read_text(encoding="utf-8")
+        stage = src.split("def _stage_opening_montage", 1)[1] \
+                   .split("\ndef ", 1)[0]
+        self.assertIn("_goal_for_this_run(new_state", stage)
 
     def test_the_draft_is_still_reachable_on_purpose(self):
         tool = Path(engine.__file__).parent / "tools" / "draft_identity_sheets.py"

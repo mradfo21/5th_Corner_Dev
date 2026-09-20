@@ -57,7 +57,14 @@ MODES = {
 # Turns are effectively open — a "long-form" playtest is the whole point of the
 # studio. The ceiling is just a sanity bound against a fat-fingered input that
 # would spend for hours; it is not meant as a real limit.
-MIN_TURNS, MAX_TURNS = 1, 80
+#
+# 80 contradicted that comment and contradicted the test written in the same
+# commit, which asserts 200 is accepted and only "the absurd (<=0 or into the
+# thousands)" refused. So test_turn_count_is_bounded has never passed — a red
+# test from birth, which is the kind that gets explained away rather than read.
+# The comment above and the test agree with each other; the number was the
+# odd one out.
+MIN_TURNS, MAX_TURNS = 1, 200
 
 # Progress line printed by playtest_interactive.play() at the top of each turn.
 _TURN_RE = re.compile(r"^\s*turn\s+(\d+)/(\d+)\b")

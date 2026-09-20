@@ -696,6 +696,20 @@
     <div id="choices-container"></div>
     <form id="custom-form" autocomplete="off">
       <span class="prompt-caret">&gt;</span>
+      <!-- Dictation. Hidden until the JS confirms the browser actually has
+           speech recognition — a dead microphone is worse than no microphone.
+           type="button" so it can never submit the form. -->
+      <button id="custom-mic" type="button" class="hidden"
+              title="Speak your action (click to start, click again to stop)"
+              aria-label="Dictate your action">
+        <svg class="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <rect x="9" y="2.5" width="6" height="11" rx="3"/>
+          <path d="M5.5 11a6.5 6.5 0 0 0 13 0"/>
+          <path d="M12 17.5V21"/>
+        </svg>
+        <span class="mic-level" aria-hidden="true"></span>
+      </button>
       <input id="custom-input" type="text" placeholder="type your own action..." maxlength="200">
       <button id="custom-submit" type="submit">SEND</button>
     </form>
@@ -752,7 +766,7 @@
          seconds so they never go stale — press SCAN again for a fresh read.
          Gating detection behind a button (instead of scanning continuously)
          keeps the image-recognition cost down. Works in BOTH renderers. -->
-    <button id="scan-btn" type="button" title="Scan — reveal what's interactable in the scene for a few seconds (S)">
+    <button id="scan-btn" type="button" title="Scan — re-read the scene for what's interactable (S)">
       <span class="scan-btn-ico">✦</span><span class="scan-btn-lbl">SCAN</span>
     </button>
     <!-- CAMP: hard-cut to a playable night campsite level (companions + jeep),

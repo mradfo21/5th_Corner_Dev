@@ -431,6 +431,71 @@ def _clip(text: Any, fallback: str, n: int) -> str:
     return cut or raw[:n]
 
 
+def _as_detection(value: Any) -> int:
+    """A detection level as an int in 0..3, whatever was actually stored.
+
+    Encounter records are persisted, hand-edited and replayed, and a fight that
+    crashed on a missing dial would be a far worse bug than one that opened at
+    `hidden`.
+    """
+    try:
+        return max(0, min(3, int(value)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def session_detection(session_id: str = "default") -> int:
+    """How much the world currently knows about the player, as 0..3.
+
+    Read through engine so there is one definition of the ladder. Never
+    raises: an encounter must still happen if state is unreadable.
+    """
+    try:
+        import engine
+        st = engine._load_state(session_id) or {}
+        return _as_detection(engine.get_detection(st).get("level"))
+    except Exception:
+        return 0
+
+
+# Being seen has to change WHAT arrives, not just the odds once it has. Below
+# this the roster draw stands: something wanders across your path and it is a
+# coincidence. At or above it the encounter is not a coincidence any more, so
+# if the last look at the frame found a living thing, THAT is what turns up.
+ONSCREEN_TARGET_LEVEL = 2  # engine.DETECT_ALERTED
+
+
+def onscreen_threat_target(session_id: str = "default",
+                           detection: Optional[int] = None) -> Optional[dict]:
+    """The animate thing the frame last saw, when the player is alerted or worse.
+
+    Returns a `target` dict in the shape build_encounter_brief already accepts
+    (it skips the roster draw and briefs the thing in the photograph), or None
+    to leave the roll alone.
+
+    This is the payoff for the whole witness pipeline: a run that got itself
+    noticed meets the figure it noticed, in the place it noticed them, instead
+    of a stranger drawn from a list. Never raises — a missing witness just
+    means the encounter rolls the way it always did.
+    """
+    try:
+        import engine
+        level = session_detection(session_id) if detection is None \
+            else _as_detection(detection)
+        if level < ONSCREEN_TARGET_LEVEL:
+            return None
+        st = engine._load_state(session_id) or {}
+        witness = engine.current_witness(st)
+        label = _clip((witness or {}).get("label"), "", 60)
+        if not label:
+            return None
+        print(f"[ENCOUNTER] {engine.DETECT_NAMES[level]} — the encounter is the "
+              f"thing on screen: {label}", flush=True)
+        return {"label": label, "source": "witness"}
+    except Exception:
+        return None
+
+
 def _is_clothing_clause_label(text: str) -> bool:
     """True when a nameplate is a gerund clothing phrase, not a person."""
     return bool(_CLOTHING_CLAUSE_RE.match(str(text or "").strip()))
@@ -752,8 +817,18 @@ def look_clones_player(text: str) -> bool:
     # stills camera, so "35mm" is the token that identifies them on sight.
     if words & owned & {"press", "gaiter", "respirator", "camcorder", "35mm"}:
         return True
-    if "vest" in words and ("press" in owned or "vest" in owned):
-        return True
+    # There used to be a rule here that any "vest" at all was the player's,
+    # whenever the sheet owned the word "press" or "vest". With a
+    # PRESS-vest protagonist that is every vest in the world: "a man in a green
+    # quilted vest" was rejected as a clone, and so was every hazmat, tactical
+    # and hunting vest the roster could have put in front of you. It quietly
+    # cost the cast most of its workwear.
+    #
+    # Nothing is lost by dropping it. A PRESS vest is still caught by the
+    # signature-word rule above ("press"), and any description reusing two of
+    # the player's own features is still caught by the two-hit rule below. What
+    # is no longer caught is a garment sharing one generic noun, which was never
+    # evidence of anything.
     # The protagonist's own name, or two of their distinctive features.
     try:
         import game_identity
@@ -1107,6 +1182,12 @@ def normalize_encounter_brief(raw: Any, place_hold: str = "") -> dict:
     # would otherwise reset every round to a fresh standoff.
     enemy_state = str(data.get("enemy_state") or "ready").strip().lower()
     out["enemy_state"] = enemy_state if enemy_state in ENCOUNTER_ENEMY_STATES else "ready"
+    # And preserve the detection level the fight opened on, for the same
+    # reason. align_brief_to_plate runs this rebuild after the plate lands, so
+    # a field only stamped in api_begin would be gone by the time api_resolve
+    # went looking for it — the trap `_sequence` fell into.
+    if data.get("detection") is not None:
+        out["detection"] = _as_detection(data.get("detection"))
     try:
         out["round_no"] = max(1, int(data.get("round_no") or 1))
     except Exception:
@@ -2251,11 +2332,64 @@ def match_encounter_choice(posted_text: str, posted_lane: str,
     return verb, lane
 
 
+# What being already-seen costs when a fight starts, indexed by the detection
+# level the encounter opened on (hidden / suspicious / alerted / hunted).
+#
+# The odds below read lane, stance, kind, condition, fate and enemy state —
+# and, until this, not the one dial the player spends the whole run watching.
+# A run could be hunted for twenty turns and the moment something actually
+# walked up it rolled exactly like a run that had never been seen, which is
+# what made detection a readout rather than a stake.
+#
+# Hidden is initiative: it did not know you were there, so you get the first
+# move and the option of simply not being found. Hunted is the inverse — this
+# thing is here BECAUSE it has been following you, so running away is the one
+# answer it has already solved for.
+_DETECTION_ODDS = (
+    {"survive": 8,  "escape": 8,   "wounded": -8, "die": -8},   # hidden
+    {"survive": 3,  "escape": 3,   "wounded": -3, "die": -3},   # suspicious
+    {"survive": -4, "escape": -8,  "wounded": 8,  "die": 4},    # alerted
+    {"survive": -8, "escape": -18, "wounded": 14, "die": 10},   # hunted
+)
+
+
+def apply_detection_odds(w: dict, detection: Optional[int] = None) -> dict:
+    """Fold the detection level the fight opened on into the outcome weights.
+
+    Mutates and returns `w`. ``None`` means "nobody said", and leaves the
+    weights exactly as they were — which is what an encounter record written
+    before this existed, and any caller that does not care, both look like.
+    `hidden` is a real bonus rather than the baseline, so defaulting an unknown
+    level to 0 would hand every legacy fight a stealth advantage it never
+    earned.
+
+    `die` is only ever RAISED where it was already non-zero: the lanes that
+    carry an explicit `die: 0` (talking down someone opportunistic, confronting
+    a non-hostile person) are saying that this lane cannot kill you, and being
+    watched on the way in should not quietly turn them lethal. It still costs
+    you — through escape and wounded.
+    """
+    if detection is None:
+        return w
+    try:
+        idx = max(0, min(len(_DETECTION_ODDS) - 1, int(detection)))
+    except (TypeError, ValueError):
+        return w
+    for key, delta in _DETECTION_ODDS[idx].items():
+        base = int(w.get(key, 0))
+        if key == "die" and delta > 0 and base <= 0:
+            continue
+        w[key] = base + delta
+    w["survive"] = max(5, int(w.get("survive", 0)))
+    return w
+
+
 def encounter_outcome_weights(lane: str, stance: str = "hostile",
                               kind: str = "person",
                               condition: str = "ok",
                               fate: str = "NORMAL",
-                              enemy_state: str = "ready") -> dict:
+                              enemy_state: str = "ready",
+                              detection: Optional[int] = None) -> dict:
     """Integer weights for survive / escape / wounded / die.
 
     `enemy_state` is what makes this a fight rather than a slot machine. A
@@ -2263,6 +2397,9 @@ def encounter_outcome_weights(lane: str, stance: str = "hostile",
     other person their balance. A confront against a body already staggered is
     the finish. Rolling both the same way is why committing to a verb used to
     change nothing 75% of the time and kill you the other 25%.
+
+    `detection` is how much the world already knew about the player when this
+    started — see _DETECTION_ODDS.
     """
     lane_l = lane if lane in ENCOUNTER_LANES else "confront"
     stance_l = stance if stance in ENCOUNTER_STANCES else "hostile"
@@ -2318,6 +2455,8 @@ def encounter_outcome_weights(lane: str, stance: str = "hostile",
             w["wounded"] = w.get("wounded", 0) + 10
             w["survive"] = max(15, w["survive"] - 10)
 
+    apply_detection_odds(w, detection)
+
     if fate_l == "LUCKY":
         w["die"] = max(0, w.get("die", 0) - 15)
         w["survive"] = w.get("survive", 0) + 10
@@ -2341,6 +2480,26 @@ def encounter_outcome_weights(lane: str, stance: str = "hostile",
 ENEMY_STATE_ROUND_GAIN = 0.14
 ENEMY_STATE_MAX_CHANCE = 0.94
 
+# A confrontation is TWO exchanges at the outside, and usually one.
+#
+# Reported as "encounters take far too long, and make very little sense and
+# aren't dramatic enough". All three are the same fault. Every round is a real
+# generation (~30s), so a four-round fight was two minutes of standing in one
+# place — and the ladder below was what made four rounds ordinary: winning meant
+# climbing ready -> staggered -> down, so it took a MINIMUM of two landed
+# confronts and often four.
+#
+# That is also where the incoherence came from. The slate promises "ONE
+# committed, extreme act of violence - the thing that cannot be undone" and the
+# consequence writes it: the skull is crushed, the body drops. Then the state
+# machine says `ready`, the same three lanes come back, and the player is asked
+# to kill a man they just killed. The drama was being written and then revoked.
+#
+# So a committed verb can FINISH it outright now, and the second exchange always
+# does. Escalation lives inside two beats — swing, and settle — instead of being
+# spread thin across four.
+ENCOUNTER_MAX_ROUNDS = int(os.getenv("ENCOUNTER_MAX_ROUNDS", "2"))
+
 # A landed confront's odds of moving the other body one step. These used to be
 # 0.55 and 0.62, which did not deliver what the docstring below promises: two
 # committed verbs finished a fight only about a third of the time, and the
@@ -2351,6 +2510,10 @@ ENEMY_STATE_MAX_CHANCE = 0.94
 # time and in four about 99.8%.
 CONFRONT_STAGGER_CHANCE = 0.75   # ready -> staggered
 CONFRONT_DOWN_CHANCE = 0.70      # staggered -> down
+# ...and the one that matters most: a committed verb ending it where it stands,
+# with no intermediate rung. This is the beat the choice slate has been
+# promising all along.
+CONFRONT_FINISH_CHANCE = 0.62    # ready -> down, in one
 
 
 def _settle_chance(base: float, round_no: int = 1) -> float:
@@ -2380,19 +2543,34 @@ def advance_enemy_state(lane: str, outcome: str, enemy_state: str = "ready",
         state = "ready"
     if outcome in ("die", "escape") or state in ENCOUNTER_ENEMY_SETTLED:
         return state
+    # The last exchange settles it, whatever the dice say. A fight that can run
+    # a third round is a fight that CAN take two minutes, and the odds below
+    # only ever made that less likely — never impossible. See
+    # ENCOUNTER_MAX_ROUNDS.
+    final = int(round_no or 1) >= ENCOUNTER_MAX_ROUNDS
     roll = rng.random() if rng is not None else random.random()
     if lane == "confront":
+        if final:
+            return "down"
         if state == "staggered":
             return ("down" if roll < _settle_chance(CONFRONT_DOWN_CHANCE, round_no)
                     else "staggered")
-        return ("staggered" if roll < _settle_chance(CONFRONT_STAGGER_CHANCE, round_no)
-                else "ready")
+        # Straight to the ground, no rung in between — the verb the player
+        # picked said it would be. Failing that, they are at least staggered:
+        # a landed blow always shows.
+        if roll < _settle_chance(CONFRONT_FINISH_CHANCE, round_no):
+            return "down"
+        return "staggered"
     if lane == "parley":
         # This is the other way to win, and the only one that does not
         # cost a body. A creature has no use for what the player is
-        # offering, so talking at it changes nothing.
+        # offering, so talking at it changes nothing — on the last exchange
+        # the fight still has to end, and it ends by the player getting clear
+        # (see roll_encounter_outcome), not by the thing being reasoned with.
         if str(kind or "person").strip().lower() == "creature":
             return state
+        if final:
+            return "standing_down"
         chance = 0.55 if str(stance or "").strip().lower() == "opportunistic" else 0.35
         if state == "staggered":
             chance += 0.20
@@ -2407,10 +2585,12 @@ def roll_encounter_outcome(lane: str, stance: str = "hostile",
                            kind: str = "person", condition: str = "ok",
                            fate: str = "NORMAL", rng: Any = None,
                            enemy_state: str = "ready",
-                           round_no: int = 1) -> dict:
+                           round_no: int = 1,
+                           detection: Optional[int] = None) -> dict:
     """Server-owned result. The consequence LLM writes this beat; it does not flip it."""
     weights = encounter_outcome_weights(lane, stance, kind, condition, fate,
-                                        enemy_state=enemy_state)
+                                        enemy_state=enemy_state,
+                                        detection=detection)
     total = sum(weights.values()) or 1
     pick = rng.random() if rng is not None else random.random()
     cursor = 0.0
@@ -2424,6 +2604,17 @@ def roll_encounter_outcome(lane: str, stance: str = "hostile",
     next_enemy = advance_enemy_state(lane, outcome, enemy_state, rng=rng,
                                      stance=stance, kind=kind,
                                      round_no=round_no)
+    # Last exchange, and the other body is still not settled: the only lanes
+    # that can reach here are evade (which ends by getting clear) and talking
+    # at a creature (which never had a chance of landing). Both end the same
+    # way — the player is out of it. Without this the cap would be a cap on
+    # confront alone and a fight could still stall on the lane that is meant to
+    # be the way out. Death is left exactly as rolled; how a run ends is not
+    # something a pacing rule gets to overrule.
+    if (outcome != "die"
+            and int(round_no or 1) >= ENCOUNTER_MAX_ROUNDS
+            and next_enemy not in ENCOUNTER_ENEMY_SETTLED):
+        outcome = "escape"
     if outcome == "die":
         next_cond = prev
         alive = False
@@ -3005,9 +3196,34 @@ def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
     return prompt
 
 
+# How the encounter OPENS, by what the world already knew. Detection was fed
+# to the narrator every turn and to nothing else, so an encounter arrived
+# identically whether the player had spent the run in cover or had been chased
+# through three locations. These are the two ends the ladder is actually for:
+# a hidden player should get the beat before they are noticed — which is the
+# only thing that makes hiding worth doing — and a hunted one should meet
+# something that is here precisely because it followed them.
+_DETECTION_BRIEF = (
+    "THE PLAYER HAS NOT BEEN SEEN. Nothing has been looking for them, and this "
+    "thing does not know they are there: it is occupied with something of its "
+    "own when the frame finds it. Write the moment BEFORE it notices. The "
+    "danger is what happens when it does. Do not open on eye contact.",
+    "SOMETHING IS SEARCHING. This thing is part of that search, or has heard "
+    "about it. It suspects someone is out here and has not confirmed it is the "
+    "player. Write it checking, not charging.",
+    "THE PLAYER HAS ALREADY BEEN SEEN and this thing knows it. It is not "
+    "discovering them; it has come to where they were reported. It arrives "
+    "already certain, and it is not going to be talked out of having looked.",
+    "THIS THING HAS BEEN HUNTING THE PLAYER. It did not stumble across them — "
+    "it followed them here and it has cut them off. It is committed, it is "
+    "hostile, and it already knows which way they would run.",
+)
+
+
 def build_encounter_brief(session_id: str = "default", image_path: Optional[str] = None,
                           place_hold: str = "", vision: Optional[dict] = None,
-                          target: Optional[dict] = None) -> dict:
+                          target: Optional[dict] = None,
+                          detection: int = 0) -> dict:
     """Ask the model for a character + danger grounded on the current frame.
 
     ``target`` is the one case where the encounter is not a roll: the player
@@ -3015,6 +3231,9 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
     arrives is then not a question — it is that thing, already in the
     photograph — so the roster draw is skipped and the brief's only job is to
     say who this thing turns out to be once it fights back.
+
+    ``detection`` is how much the world knew about the player when this fired.
+    It sets how the encounter OPENS — see _DETECTION_BRIEF.
     """
     import engine
     st = {}
@@ -3064,8 +3283,10 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
             "a person is easier to photograph.\n\n"
             if rolled else ""
         )
+    seen_line = _DETECTION_BRIEF[_as_detection(detection)] + "\n\n"
     prompt = (
-        f"{instructions}\n\n{roll_line}{lore or ('WORLD (trim): ' + world)}\n\n"
+        f"{instructions}\n\n{roll_line}{seen_line}"
+        f"{lore or ('WORLD (trim): ' + world)}\n\n"
         f"SETTING: {setting or 'read it off the attached photograph'}\n"
         f"VISIBLE: {visible[:400] or 'the attached photograph — that place, nothing else'}\n"
         "The character and danger MUST fit THIS setting. "
@@ -3605,6 +3826,15 @@ def api_begin():
     if not ok:
         return jsonify({"error": reason, "fire": False}), 409
 
+    # How much the world already knew about the player at the moment this
+    # opened. Read ONCE and carried: it shapes the brief, it is pinned to the
+    # record so every round of the fight resolves against the same number, and
+    # at alerted or worse it decides that what arrives is the thing the frame
+    # last saw rather than a fresh draw.
+    detection = session_detection(session_id)
+    if not target:
+        target = onscreen_threat_target(session_id, detection)
+
     ref_path = engine._save_portrait_reference(reference_b64, session_id) if reference_b64 else None
     if not ref_path:
         # No frame posted (autoplay, a dropped capture, the first beat after a
@@ -3619,7 +3849,16 @@ def api_begin():
         place_hold=place.get("place_hold") or "",
         vision=place,
         target=target,
+        detection=detection,
     )
+    # Pinned so api_resolve rolls every round against the level the fight
+    # OPENED on. See the `opened_at` read there.
+    brief["detection"] = detection
+    if detection >= 3 and isinstance(brief.get("character"), dict):
+        # Something that tracked the player across a run is not here to
+        # bargain. The brief is told this too, but stance is a closed set the
+        # odds read directly, so it is not left to the model to remember.
+        brief["character"]["stance"] = "hostile"
     prompt = build_encounter_plate_prompt(
         brief, img2img=bool(ref_path),
         setting=place.get("setting") or "",
@@ -3989,10 +4228,19 @@ def api_resolve():
     if prev_enemy not in ENCOUNTER_ENEMY_STATES:
         prev_enemy = "ready"
     round_no = max(1, int(enc.get("round_no") or 1))
+    # The level the fight OPENED on, pinned at begin — not a fresh read. A
+    # multi-round exchange must not get easier because the dial happened to
+    # cool between rounds; you do not become un-followed halfway through
+    # being caught. None on a record written before this existed, which rolls
+    # the old odds rather than inventing a level for it.
+    opened_at = enc.get("detection")
+    if opened_at is not None:
+        opened_at = _as_detection(opened_at)
     rolled = roll_encounter_outcome(
         lane, stance=stance, kind=kind, condition=condition,
         fate=str(st.get("fate") or "NORMAL"),
         enemy_state=prev_enemy, round_no=round_no,
+        detection=opened_at,
     )
     record = {
         "outcome": rolled["outcome"],

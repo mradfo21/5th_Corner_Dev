@@ -1,20 +1,24 @@
-"""The INTERACT close-up has to be somewhere you can DO something.
+"""The INTERACT close-up is a TRANSITION, not a destination.
 
-The dive used to be a photograph of the thing you poked with a single X on it,
-which is a loading screen with production values. This pins the three answers
-it now offers, and the two rules that make them honest:
+It went through both mistakes. First it was a photograph of the thing you
+poked with a single X on it — a loading screen with production values. Then it
+was a place to stand: SPEAK / ATTACK / LEAVE, two of them locked until the turn
+behind it finished, and a click required to get out.
 
-* SPEAK is live immediately — it is the thing worth doing while the INTERACT
-  turn draws — and nests the conversation on the close-up already on screen;
-* ATTACK and LEAVE both depend on the frame that turn is still making (one
-  walks out onto it, the other stages a fight in it), so they are on the slate
-  LOCKED until it lands rather than missing or lying;
-* an attacked object is the encounter, not a prompt for one: the roster draw is
-  skipped and the plate is told the thing is ALREADY in the photograph, so the
-  fight does not arrive as a stranger standing next to it.
+Timed against the live server, that second shape was the worse one. The
+close-up lands at ~6s and the turn's new scene at ~19s, so the dive was
+thirteen seconds of a finished picture with buttons that could not be pressed,
+and then a click to dismiss it. The turn was never the problem — a plain
+curated choice measures SLOWER (~26s to its scene) and reads fine, because the
+world is on screen answering while it happens. The dive was the only place in
+the game that turned the wait into a room.
 
-Plus the framing change both dives share: the pull-in toward a detection's box
-is half as hard, so a close-up still shares pixels with the frame it came from.
+So it now reaches out, shows the thing, says what it caused the moment the
+words exist (~3s, sixteen seconds before the picture), and hands the world back
+by itself the instant the scene has changed. This file pins that.
+
+Plus the framing rule both dives share: the pull-in toward a detection's box is
+half as hard, so a close-up still shares pixels with the frame it came from.
 
 Pure functions plus source assertions on the client. No network.
 
@@ -133,42 +137,100 @@ class TestTheCloseUpIsWiderThanTheBox(unittest.TestCase):
             self.assertGreaterEqual(w, box[2])
 
 
-class TestTheSlate(unittest.TestCase):
-    """Three answers, and only one of them available while the turn draws."""
+class TestTheDiveLeavesOnItsOwn(unittest.TestCase):
+    """No slate, no click. Reach out, look, get handed back."""
 
-    def test_all_three_verbs_are_offered(self):
+    def test_there_is_nothing_to_press(self):
+        """The slate is what made this feel slow: three rows the player had to
+        read, wait on, and then click through to leave."""
         src = _dive_source()
         for verb in ("SPEAK", "ATTACK", "LEAVE"):
-            self.assertIn(f'"{verb}"', src, f"{verb} is missing from the dive slate")
+            self.assertNotIn(f'"{verb}"', src, f"{verb} is still on the dive")
+        self.assertNotIn("setChoices", src, "the dive must not offer a slate")
 
-    def test_speak_is_never_locked(self):
-        # The dive exists so the ~30s turn is time spent doing something. If
-        # SPEAK waited for the frame too, the close-up would be a progress bar
-        # again for the whole of that wait.
+    def test_it_hands_back_on_the_frame_not_on_the_whole_turn(self):
+        """The new scene and the choice prompt are several seconds apart
+        (~19s vs ~22s+), and waiting for the second buys the player nothing:
+        they are being handed back to a PICTURE, and choices landing a beat
+        after it is what an ordinary turn looks like anyway."""
         src = _dive_source()
-        slate = src[src.index("function slate()"):src.index("function onTop()")]
-        speak_row = next(ln for ln in slate.splitlines() if '"SPEAK"' in ln)
-        self.assertNotIn("locked", speak_row)
-        self.assertEqual(slate.count("locked: locked"), 2)
+        ready = src[src.index("function readyToHandBack()"):
+                    src.index("// makeChoice refuses a turn outright")]
+        self.assertIn("return scenePainted || turnOver();", ready)
 
-    def test_the_two_exits_wait_for_the_frame(self):
+    def test_the_painted_frame_triggers_the_exit(self):
         src = _dive_source()
-        # Both exits check it before doing anything irreversible, not just the
-        # slate's disabled state — Esc reaches leave() without a click.
-        self.assertIn("if (done || exiting || !settled()) return;", src)   # attack
-        self.assertIn("if (settled()) { exitDive(); return; }", src)       # leave
+        self.assertIn("onNextScenePainted(() => { scenePainted = true; sync(); });", src)
+        sync = src[src.index("function sync()"):src.index("onNextScenePainted(")]
+        self.assertIn("if (!readyToHandBack()) return;", sync)
+        self.assertIn("exitDive();", sync)
 
-    def test_a_locked_row_cannot_be_clicked(self):
-        set_choices = MOMENTS_JS[MOMENTS_JS.index("function setChoices("):
-                                 MOMENTS_JS.index("let customState = null;")]
-        self.assertIn("moment-choice-locked", set_choices)
-        self.assertIn("btn.disabled = true;", set_choices)
-        # The early return is what keeps the click / hover listeners off it.
-        self.assertIn("box.appendChild(btn);\n        return;", set_choices)
+    def test_a_close_up_is_never_flashed(self):
+        """Only bites when the turn resolves unusually fast or was refused."""
+        src = _dive_source()
+        self.assertIn("MIN_ON_SCREEN_MS", src)
+        self.assertIn("Date.now() - shownAt < MIN_ON_SCREEN_MS", src)
 
-    def test_a_locked_row_is_still_readable(self):
-        self.assertIn(".moment-choice-locked", CSS)
-        self.assertIn("body.moment-interact .moment-choice-locked", CSS)
+    def test_escape_still_leaves_immediately(self):
+        """Auto-exit is the normal way out, but nobody should have to sit
+        through a render they have finished with."""
+        src = _dive_source()
+        leave = src[src.index("function leave()"):src.index("function status()")]
+        self.assertIn("exitDive();", leave)
+        self.assertNotIn("readyToHandBack", leave)
+        interact = CLIENT_JS[CLIENT_JS.index('window.Moments.register("interact"'):
+                             CLIENT_JS.index("function createInteractDive(")]
+        self.assertIn("dive.leave()", interact)
+
+
+class TestTheWaitSaysSomething(unittest.TestCase):
+    """The consequence prose lands ~3s in; the picture not until ~19s.
+
+    The sentence saying what the player just caused was being written to the
+    feed behind the letterbox, where the HUD is hidden — so the dive showed a
+    static close-up and nothing else for sixteen seconds."""
+
+    def test_the_dive_subscribes_to_the_consequence(self):
+        src = _dive_source()
+        self.assertIn("onNextConsequence((text) => {", src)
+        self.assertIn("consequence = clipToSentence(text, 120);", src)
+
+    def test_the_turn_publishes_it_exactly_where_the_ceremony_sees_it(self):
+        self.assertIn("function onNextConsequence(", CLIENT_JS)
+        self.assertIn("function flushConsequenceWaiters(", CLIENT_JS)
+        # Same branch the ceremony uses for "the consequence landed".
+        block = CLIENT_JS[CLIENT_JS.index('Ceremony.reach("consequence");'):]
+        self.assertIn("flushConsequenceWaiters(item.content", block[:400])
+
+    def test_it_reaches_the_nameplate(self):
+        src = _dive_source()
+        status = src[src.index("function status()"):src.index("// A Moment on top")]
+        self.assertIn("if (consequence) return consequence;", status)
+
+    def test_a_subscriber_fires_once_and_is_dropped(self):
+        """A dive that outlived its turn must not eat the next one's prose."""
+        flush = CLIENT_JS[CLIENT_JS.index("function flushConsequenceWaiters("):]
+        flush = flush[:flush.index("\n  }")]
+        self.assertIn("splice(0, consequenceWaiters.length)", flush)
+
+    def test_a_long_beat_is_cut_at_a_sentence(self):
+        """Restate clipToSentence: whole sentences only, because a hard cut
+        mid-clause reads as the text being broken rather than brief."""
+        def clip(text, cap=120):
+            import re as _re
+            t = _re.sub(r"\s+", " ", text or "").strip()
+            if not t:
+                return ""
+            m = _re.search(r"(?<!\.)[.!?](?!\.)", t)
+            first = t[:m.end()] if m else t
+            return first if len(first) <= cap else first[:cap - 1].rstrip() + "\u2026"
+
+        self.assertEqual(clip("The lid gives. Something shifts inside."),
+                         "The lid gives.")
+        self.assertEqual(clip("Nothing moves"), "Nothing moves")
+        self.assertEqual(clip(""), "")
+        self.assertTrue(clip("x" * 400).endswith("\u2026"))
+        self.assertLessEqual(len(clip("x" * 400)), 120)
 
 
 class TestTheDiveAlwaysLetsYouOut(unittest.TestCase):
@@ -184,14 +246,14 @@ class TestTheDiveAlwaysLetsYouOut(unittest.TestCase):
     def test_the_turn_ending_releases_the_dive_even_with_no_new_frame(self):
         src = _dive_source()
         self.assertIn("function turnOver()", src)
-        self.assertIn("return scenePainted ? !state.processing : turnOver();", src)
+        self.assertIn("return scenePainted || turnOver();", src)
 
     def test_turn_over_waits_out_the_guide_image(self):
         # Ceremony stays active while the still renders, AFTER the prose and
-        # choices have landed. Releasing on awaitingResolution alone would put
-        # LEAVE up seconds before the frame it promises.
+        # choices have landed. Without it, "the turn ended" would be true
+        # seconds before there was any new frame to hand the player back to.
         src = _dive_source()
-        over = src[src.index("function turnOver()"):src.index('// "There is something')]
+        over = src[src.index("function turnOver()"):src.index("// Time to give the world back")]
         self.assertIn("Ceremony.isActive", over)
         self.assertIn("!state.awaitingResolution", over)
         self.assertIn("!state.processing", over)
@@ -204,11 +266,15 @@ class TestTheDiveAlwaysLetsYouOut(unittest.TestCase):
         self.assertIn("Ceremony.reset();", client)
         self.assertIn("state.processing = false;", client)
 
-    def test_a_dive_with_no_turn_behind_it_is_not_locked(self):
+    def test_a_dive_with_no_turn_behind_it_shows_the_close_up_and_goes(self):
+        """makeChoice refuses outright in some states. With nothing coming,
+        the close-up IS the whole beat — held long enough to read as one
+        rather than flashed past."""
         src = _dive_source()
         self.assertIn("function armTurn(dispatched)", src)
         self.assertIn("if (!turnArmed) return false;", src)
-        self.assertIn("if (!turnExpected) return true;", src)
+        self.assertIn("if (!turnExpected) return Date.now() - armedAt >= NO_TURN_DWELL_MS;",
+                      src)
 
     def test_the_press_tells_the_dive_whether_a_turn_went_out(self):
         commit = CLIENT_JS[CLIENT_JS.index("function commitScanAction("):]
@@ -228,77 +294,45 @@ class TestTheDiveAlwaysLetsYouOut(unittest.TestCase):
 
     def test_a_refused_pop_does_not_strand_the_player(self):
         # Moments.pop drops the request while another Moment is mid-
-        # choreography. Retiring anyway would leave a close-up whose slate is
-        # wired to a dead dive.
+        # choreography. Retiring anyway would leave a close-up nothing is
+        # watching, and nothing left to take it down.
         src = _dive_source()
-        ex = src[src.index("async function exitDive()"):src.index("function leave()")]
+        ex = src[src.index("async function exitDive()"):src.index("// Esc. The auto-exit")]
         self.assertIn("if (onTop()) { apply(); return false; }", ex)
         self.assertLess(ex.index("if (onTop())"), ex.index("retire();"))
 
     def test_the_run_ending_clears_the_dive_out_of_the_way(self):
         # enterGameOver closes a conversation and aborts an encounter, but it
         # knows nothing about the Moment stack — so a dive would sit over the
-        # death overlay with a slate whose verbs all refuse.
+        # death overlay waiting for a turn that is never coming.
         src = _dive_source()
         self.assertIn("if (state.gameOver) { exitDive(); return; }", src)
-        speak = src[src.index("function speak()"):src.index("function slate()")]
-        self.assertIn("state.gameOver", speak)
+
+    def test_the_hold_out_is_the_backstop_under_the_turn_watchdog(self):
+        src = _dive_source()
+        self.assertIn("HOLD_MAX_MS", src)
+        self.assertIn("> HOLD_MAX_MS", src)
 
     def test_the_nameplate_does_not_claim_a_change_that_never_happened(self):
         src = _dive_source()
-        status = src[src.index("function status()"):src.index("function apply()")]
+        status = src[src.index("function status()"):src.index("// A Moment on top")]
         self.assertIn('scenePainted ? "the scene has changed"', status)
 
-
-class TestSpeakNestsOnTheCloseUp(unittest.TestCase):
-    def test_speaking_cancels_a_pending_leave(self):
-        # Esc while the frame is developing leaves a standing request to go.
-        # Without clearing it, picking SPEAK and then hanging up ejected the
-        # player out of the dive the instant the conversation closed.
-        src = _dive_source()
-        speak = src[src.index("function speak()"):src.index("function slate()")]
-        self.assertIn("wantsOut = false;", speak)
-        self.assertLess(speak.index("wantsOut = false;"), speak.index("Talk.start("))
-
-    def test_talk_is_handed_the_plate_already_on_screen(self):
-        src = _dive_source()
-        self.assertIn("Talk.start(", src)
-        self.assertIn("reference_image: dive.closeUpUrl || dive.referenceFrame", src)
-
-    def test_the_dive_redraws_itself_when_the_conversation_pops(self):
-        # Moments.pop clears the portrait and the choices on a nested pop, so
-        # without a resume hook hanging up lands on an empty letterbox.
-        interact = CLIENT_JS[CLIENT_JS.index('window.Moments.register("interact"'):
-                             CLIENT_JS.index("function createInteractDive(")]
-        self.assertIn("async resume(entry)", interact)
-        self.assertIn("dive.restore()", interact)
-        # And the portrait frame has to come back out of hiding with it.
-        set_portrait = MOMENTS_JS[MOMENTS_JS.index("function setPortrait("):
-                                  MOMENTS_JS.index("function clearPortrait(")]
-        self.assertIn('p.classList.remove("hidden")', set_portrait)
-
-    def test_the_dive_does_not_paint_over_an_open_conversation(self):
+    def test_the_dive_does_not_paint_over_a_moment_above_it(self):
         src = _dive_source()
         self.assertIn("function onTop()", src)
         self.assertIn("if (done || exiting || !onTop()) return;", src)
 
 
-class TestAttackHandsTheFightItsTarget(unittest.TestCase):
-    def test_the_client_names_the_subject(self):
-        src = _dive_source()
-        self.assertIn("Encounter.start({ subject: obj })", src)
-        self.assertIn("subject: forcedSubject || undefined", CLIENT_JS)
+class TestAnAimedEncounterStillWorks(unittest.TestCase):
+    """ATTACK went with the slate, so nothing aims an encounter today — but
+    the server half is the wiring any future "pick a fight with THAT" verb
+    comes back through, and it stays pinned rather than rotting."""
 
-    def test_the_dive_is_left_before_the_encounter_opens(self):
-        # Encounter.start refuses under an open Moment, and its plate is
-        # img2img off what is on screen — so the exit is load-bearing, not
-        # cosmetic, it has to be awaited, and a refused pop must abort the
-        # swing rather than fire a fight the player cannot see.
-        src = _dive_source()
-        attack = src[src.index("async function attack()"):src.index("// SPEAK nests")]
-        self.assertIn("if (!(await exitDive())) return;", attack)
-        self.assertLess(attack.index("await exitDive()"),
-                        attack.index("Encounter.start"))
+    def test_no_client_path_aims_one_any_more(self):
+        self.assertNotIn("Encounter.start({ subject: obj })", CLIENT_JS)
+        # The endpoint still carries a target when one is given.
+        self.assertIn("subject: forcedSubject || undefined", CLIENT_JS)
 
     def test_a_named_target_skips_the_roster_roll(self):
         with mock.patch.object(encounter, "roll_encounter_kind") as rolled, \
@@ -343,13 +377,18 @@ class TestTheEndpointCarriesTheTarget(unittest.TestCase):
 
         seen = {}
 
+        # `**_` on both: these spies exist to capture the target, and api_begin
+        # grows keyword arguments for reasons that have nothing to do with it
+        # (world_flavor, detection). Pinning the full signature here just turns
+        # every unrelated addition into three red tests in this file.
         def spy_brief(session_id="default", image_path=None, place_hold="",
-                      vision=None, target=None):
+                      vision=None, target=None, detection=0, **_):
             seen["brief"] = target
+            seen["detection"] = detection
             return {"character": {"label": "x", "kind": "person", "look": "y"},
                     "danger": "z"}
 
-        def spy_plate(brief, img2img=True, setting="", target=None):
+        def spy_plate(brief, img2img=True, setting="", target=None, **_):
             seen["plate"] = target
             raise self._Stop()
 
@@ -388,6 +427,12 @@ class TestTheEndpointCarriesTheTarget(unittest.TestCase):
         seen = self._begin({"frame": "data:image/jpeg;base64,AA",
                             "subject": {"label": "   "}})
         self.assertIsNone(seen["brief"])
+
+    def test_the_brief_is_told_how_much_the_world_already_knew(self):
+        """How the encounter OPENS hangs on this: hidden buys the beat before
+        being noticed, hunted means the thing followed you here."""
+        seen = self._begin({"frame": "data:image/jpeg;base64,AA"})
+        self.assertEqual(seen["detection"], 0)
 
 
 class TestThePlateKnowsTheThingIsAlreadyThere(unittest.TestCase):

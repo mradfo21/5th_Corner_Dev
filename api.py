@@ -407,7 +407,55 @@ def _warn_if_the_world_is_hollow():
         pass
 
 
+def _warn_if_the_story_clock_burns_out():
+    """Say so at boot when the run will be out of ladder by turn two or three.
+
+    `escalate_at` / `critical_at` are threat POINTS. A choice adds 1 and a
+    MOVE TO or INTERACT adds 1 + MAX_RISK_THREAT_BOOST = 2, and SCAN taps are
+    most turns in a real run — so a mark of 4 lands on turn 2, not turn 4. The
+    editor help read "a typical turn adds one" for a long time, and the obvious
+    reading of a field called "Critical at" is a turn number anyway.
+
+    Two saved Experiences on this machine held 2/4 and 2/5. Played, that is
+    "escalating" on turn 1 and "critical" on turn 2, and then nothing left:
+    past Critical every beat is written as a last stand, UNLUCKY fires on about
+    half of all turns, and the consequence model starts inventing injuries to
+    justify the register. A measured 9-turn run finished with 8 turns at
+    critical and a turn-2 line about a gunshot wound "where you were grazed
+    earlier" — for a graze that never happened.
+
+    It reads as the game being incoherent and it is two numbers in a field.
+    Same reason as the hollow-world warning above: nobody can be expected to
+    diagnose this by reading prose.
+    """
+    try:
+        import engine
+        esc, crit = engine._threat_marks()
+        per_scan_turn = 1 + engine.MAX_RISK_THREAT_BOOST
+        crit_turn = -(-crit // per_scan_turn)  # ceil
+        if crit_turn >= 4:
+            return
+        esc_turn = -(-esc // per_scan_turn)
+        ideal = -(-engine.STORY_CRITICAL_AT // per_scan_turn)
+        print("=" * 72, flush=True)
+        print(f"[PACING] STORY CLOCK BURNS OUT: escalate_at={esc}, "
+              f"critical_at={crit} are POINTS, not turns.", flush=True)
+        print(f"[PACING] A scanning run adds {per_scan_turn}/turn, so this hits "
+              f"'escalating' on turn {esc_turn} and 'critical' on turn "
+              f"{crit_turn} — and stays there for the rest of the run.",
+              flush=True)
+        print("[PACING] Past critical every beat is written as a last stand, so "
+              "the story has no arc left and reads as chaos.", flush=True)
+        print(f"[PACING] Fix: set 'Critical at' to about "
+              f"{engine.STORY_CRITICAL_AT} in the editor's Pacing sheet — that "
+              f"is turn {ideal} of a scanning run.", flush=True)
+        print("=" * 72, flush=True)
+    except Exception:
+        pass
+
+
 _warn_if_the_world_is_hollow()
+_warn_if_the_story_clock_burns_out()
 
 # Build the on-device detector now, on the main thread, before any request can
 # ask for it. Two reasons this is not left to the first /api/detect: it moves a
@@ -820,6 +868,23 @@ def _gated_danger():
 
 
 app.add_url_rule('/api/danger', 'standalone_api_danger', _gated_danger, methods=['POST'])
+
+
+# Dictation for the free-will box. The client records the player speaking and
+# posts the clip; the engine returns the words. This is the fallback path for
+# the browser's own SpeechRecognition, which is free and instant where it
+# works but fails hard with `network` on any Chromium build that shipped
+# without Google's speech key — and there is no way to tell in advance, since
+# the API is present either way. Stateless / read-only, like /api/danger.
+def _gated_transcribe():
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    return engine.api_transcribe()
+
+
+app.add_url_rule('/api/transcribe', 'standalone_api_transcribe',
+                 _gated_transcribe, methods=['POST'])
 # Opt-in experimental: same wire contract as /api/detect but the frame is
 # pushed into a persistent Gemini Live-API WebSocket session, and the endpoint
 # returns whatever detections that session has produced most recently. See
@@ -1574,6 +1639,12 @@ def api_status():
             "detection": engine.DETECT_NAMES[engine.get_detection(s)["level"]],
             "detection_heat": engine.get_detection(s)["heat"],
             "detection_max": engine.DETECT_HEAT_MAX,
+            # Which sensor last moved that dial: "frame" when the picture
+            # itself showed somebody who could see the player, "prose" when
+            # the narration said so, "" when nothing did. The HUD shows it
+            # because a number that answers the picture is believable and one
+            # that moves for invisible reasons is the thing this replaced.
+            "detection_source": engine.get_detection(s)["source"],
             "in_combat": s.get("in_combat", False),
             "time_of_day": s.get("time_of_day", ""),
             "inventory": inventory,

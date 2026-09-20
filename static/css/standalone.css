@@ -21,6 +21,23 @@
   --radius: 12px;
   --radius-sm: 8px;
   --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* ── The menu background field ──────────────────────────────────────────
+     Every full-screen menu (#start-menu, #watch-mode, .exit-veil) is lit by
+     the same three washes: one overhead, and one in each bottom corner.
+
+     The corner pair used to be sized as localized blobs — 50%/40% of the
+     viewport — which read as two smudges sitting in the corners of an
+     otherwise flat card, and made a transition between two menus look like a
+     cut between two different backgrounds rather than a move within one room.
+     At this scale each corner wash is larger than the screen, so what the
+     player sees is the middle of one enormous gradient: a continuous field
+     that holds still underneath the menus moving over it.
+
+     Tokens rather than nine hand-tuned numbers, because the point is that all
+     three screens agree. Change it here and every menu follows. */
+  --menu-wash-bl: 500% 400%;   /* bottom-left,  was 50% 40% */
+  --menu-wash-br: 450% 350%;   /* bottom-right, was 45% 35% */
 }
 
 /* Quiet ghost control — fill only, no mint box. */
@@ -2425,6 +2442,105 @@ body.moment-active #leave-camp-btn {
   color: #eafff2;
 }
 
+/* ---------- Dictation ----------------------------------------------------
+   Speaking an action instead of typing it. The button lives left of the input
+   and has exactly two states, because a recording control that is ambiguous
+   about whether it is recording is worse than none: idle is the same quiet
+   green as the rest of the prompt row, live is red, pulsing, and impossible
+   to mistake for anything else. `.hidden` until the browser proves it has
+   speech recognition. */
+#custom-mic {
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: rgba(142, 255, 193, 0.08);
+  border: 1px solid rgba(142, 255, 193, 0.22);
+  border-radius: 50%;
+  color: #cdf7df;
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s, transform 0.14s;
+}
+#custom-mic.hidden { display: none; }
+#custom-mic:hover { background: rgba(142, 255, 193, 0.18); color: #eafff2; }
+#custom-mic:active { transform: scale(0.94); }
+#custom-mic .mic-icon { width: 15px; height: 15px; }
+
+/* Live. The ring is a separate element so it can pulse without touching the
+   button's own hover/active transform. */
+#custom-mic.recording {
+  background: rgba(255, 92, 92, 0.16);
+  border-color: rgba(255, 120, 120, 0.85);
+  color: #ffd9d9;
+}
+#custom-mic.recording::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 110, 110, 0.75);
+  animation: mic-pulse 1.25s ease-out infinite;
+  pointer-events: none;
+}
+@keyframes mic-pulse {
+  0%   { transform: scale(0.82); opacity: 0.85; }
+  70%  { transform: scale(1.32); opacity: 0;    }
+  100% { transform: scale(1.32); opacity: 0;    }
+}
+
+/* THE INPUT LEVEL, 0..1, written by the dictation meter every 60ms.
+   The pulse above only ever proved the button was red. This proves the
+   microphone is HEARING you — which, before it existed, a player had no way
+   to find out except speaking into a dead input and being told "Didn't catch
+   that" by a game that could not tell the difference either. */
+#custom-mic .mic-level {
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 196, 140, 0.95);
+  box-shadow: 0 0 calc(var(--mic-level, 0) * 10px) rgba(255, 170, 110, 0.7);
+  opacity: calc(var(--mic-level, 0) * 0.95);
+  transform: scale(calc(1 + var(--mic-level, 0) * 0.3));
+  transition: opacity 0.08s linear, transform 0.08s linear;
+  pointer-events: none;
+}
+
+/* Waiting on the server to transcribe. Only the recorded fallback has this
+   gap — the native engine has already written the words by the time you stop
+   — and an unlabelled pause there reads as a dead button. */
+#custom-mic.transcribing {
+  background: rgba(255, 207, 148, 0.16);
+  border-color: rgba(255, 207, 148, 0.8);
+  color: #ffe6c7;
+  cursor: progress;
+}
+#custom-mic.transcribing .mic-icon { animation: mic-thinking 1s ease-in-out infinite; }
+@keyframes mic-thinking {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 1; }
+}
+#action-wheel.transcribing #custom-input::placeholder { color: #ffcf94; opacity: 0.9; }
+#action-wheel.transcribing .prompt-caret { color: #ffcf94; }
+
+/* The input says it too, so the state is legible even with eyes on the text
+   rather than the button. */
+#action-wheel.dictating #custom-input {
+  border-bottom-color: rgba(255, 120, 120, 0.75);
+  caret-color: #ff9d9d;
+}
+#action-wheel.dictating .prompt-caret { color: #ff9d9d; }
+/* Words that have not been finalised yet, shown live as you speak. Italic and
+   dimmed so you can see the difference between "heard" and "still guessing". */
+#custom-input.has-interim { color: #ffc9c9; font-style: italic; }
+
+@media (prefers-reduced-motion: reduce) {
+  #custom-mic.recording .mic-level { animation: none; opacity: 0.6; transform: scale(1.1); }
+  #custom-mic.transcribing .mic-icon { animation: none; opacity: 0.75; }
+}
+
 /* ============================================================
    Movement joystick — the centerpiece of realtime "explore" mode.
 
@@ -3628,6 +3744,40 @@ html.is-mobile .photo-target { transition: opacity 0.2s ease; }
 #scan-layer.hidden { display: none; }
 @keyframes scan-layer-in { from { opacity: 0; } to { opacity: 1; } }
 
+/* A single scanline travelling down the frame as the tags land. The read now
+   happens by itself when a scene arrives (see AutoScan), and without this the
+   labels simply blink into existence with nothing to explain them — the sweep
+   is what makes it read as the camera examining the shot. Decorative only:
+   the layer is pointer-events: none, and this is a pseudo-element on it. */
+#scan-layer::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 18vh;
+  opacity: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(140, 217, 255, 0) 0%,
+    rgba(140, 217, 255, 0.05) 45%,
+    rgba(180, 235, 255, 0.20) 78%,
+    rgba(210, 245, 255, 0.46) 96%,
+    rgba(140, 217, 255, 0) 100%
+  );
+  box-shadow: 0 0 26px rgba(140, 217, 255, 0.26);
+}
+#scan-layer.sweeping::after {
+  animation: scan-sweep 0.95s cubic-bezier(0.3, 0.6, 0.2, 1) both;
+}
+@keyframes scan-sweep {
+  0%   { opacity: 0;    transform: translateY(-20vh); }
+  12%  { opacity: 0.9;  }
+  85%  { opacity: 0.55; }
+  100% { opacity: 0;    transform: translateY(100vh); }
+}
+
 #scan-tags { position: absolute; inset: 0; pointer-events: none; }
 
 /* A starfield tag: a star point + label, twinkling in over its object. The
@@ -4013,6 +4163,7 @@ html.is-mobile .photo-target { transition: opacity 0.2s ease; }
 /* Reduced-motion: keep the tool legible but calm — no infinite animations. */
 @media (prefers-reduced-motion: reduce) {
   #scan-layer,
+#scan-layer::after,
 .scan-tag,
 .scan-star,
 .scan-tag::before,
@@ -4021,6 +4172,7 @@ html.is-mobile .photo-target { transition: opacity 0.2s ease; }
 .scan-action-talk {
     animation: none !important;
   }
+  #scan-layer::after { display: none; }
   .scan-tag.shown { opacity: 0.7; }
 }
 
@@ -5245,12 +5397,17 @@ body.moment-cutscene #moment-scene-img {
   object-position: center !important;
   background: #000;
 }
+/* The stale turn UI goes away under a Moment — its slate is the only offer.
+   The LOADING CIRCLE deliberately does not: it is the only thing on screen that
+   says the app is alive, and an encounter round is a full image generation, so
+   hiding it there meant ~30 seconds of a frozen-looking picture with no hint
+   that anything was happening. Reported as "having it gone makes me think the
+   app isn't responding". A cutscene still hides it — that one is a film, it is
+   playing, and the wait is the point. */
 body.moment-encounter #action-wheel,
 body.moment-encounter #verb-bar,
 body.moment-encounter #custom-form,
 body.moment-encounter #choices-container,
-body.moment-encounter #ceremony,
-body.moment-encounter #processing-veil,
 body.moment-cutscene #action-wheel,
 body.moment-cutscene #verb-bar,
 body.moment-cutscene #custom-form,
@@ -5260,7 +5417,6 @@ body.moment-cutscene #processing-veil {
   opacity: 0 !important;
   pointer-events: none !important;
 }
-
 /* Encounter hitch — stepped freezes over the live world before letterbox. */
 #encounter-hitch {
   position: fixed;
@@ -5550,14 +5706,33 @@ body.moment-encounter .moment-choice:hover .moment-choice-num,
 body.moment-encounter .moment-choice:focus .moment-choice-num {
   color: rgba(142, 255, 193, 0.75);
 }
-/* The slate shows the LANE, one word per row (see LANE_WORDS). Sentence
-   typography on a single word reads as a line that got truncated; label
-   typography reads as a decision. The custom row is excluded — it is still a
-   sentence, and a deliberately quieter one. */
+/* The slate shows the WRITTEN VERB now, with its lane as an eyebrow over it.
+   Label typography — uppercase at 0.26em tracking — was right for a one-word
+   row and is wrong for a sentence: "SMASH HIS CALCIFIED SKULL NOW" set that way
+   is a shout that wraps. Sentence setting, and the eyebrow carries the
+   label look instead. */
 body.moment-encounter .moment-choice:not(.moment-choice-custom) .moment-choice-text {
-  text-transform: uppercase;
+  text-transform: none;
+  letter-spacing: 0.01em;
+  font-size: clamp(14px, 1.6vw, 19px);
+  line-height: 1.25;
+  text-wrap: balance;
+}
+/* The lane, small and quiet above the verb: which of the three answers this is
+   — and therefore which odds are being accepted — without it competing with the
+   line the player is actually reading. */
+body.moment-encounter .moment-choice-text[data-lane]::before {
+  content: attr(data-lane);
+  display: block;
+  font-size: 10px;
   letter-spacing: 0.26em;
-  font-size: clamp(13px, 1.5vw, 17px);
+  text-transform: uppercase;
+  color: rgba(142, 255, 193, 0.42);
+  margin-bottom: 3px;
+}
+body.moment-encounter .moment-choice:hover .moment-choice-text[data-lane]::before,
+body.moment-encounter .moment-choice:focus .moment-choice-text[data-lane]::before {
+  color: rgba(142, 255, 193, 0.8);
 }
 /* Writing your own is offered as the last line of the slate, set apart by tone
    rather than by a fourth button: it is a different KIND of answer. */
@@ -6089,8 +6264,8 @@ body.menu-open #menu-toggle { z-index: 48; }
   color: var(--text);
   background:
     radial-gradient(ellipse 90% 55% at 50% -10%, rgba(142, 255, 193, 0.18) 0%, transparent 58%),
-    radial-gradient(ellipse 50% 40% at 12% 88%, rgba(20, 70, 48, 0.28) 0%, transparent 55%),
-    radial-gradient(ellipse 45% 35% at 92% 78%, rgba(8, 28, 20, 0.55) 0%, transparent 50%),
+    radial-gradient(ellipse var(--menu-wash-bl) at 12% 88%, rgba(20, 70, 48, 0.28) 0%, transparent 55%),
+    radial-gradient(ellipse var(--menu-wash-br) at 92% 78%, rgba(8, 28, 20, 0.55) 0%, transparent 50%),
     linear-gradient(180deg, #07140f 0%, #020504 48%, #010201 100%);
   opacity: 0;
   animation: exit-veil-in 0.45s ease-out forwards;
@@ -6319,6 +6494,41 @@ body.credit-meter-on #processing-veil {
 #processing-veil.hidden {
   opacity: 0;
   pointer-events: none;
+}
+
+/* ── WHAT COMES UP WITH A MOMENT ──────────────────────────────────────────
+   #moment-overlay is z-index 33, and everything the game paints OVER the
+   picture — the film grain, the scanlines, the VCR snow, the danger vignette
+   and its chromatic fringe, plus the turn loader — lives between 2 and 20.
+   So the instant a Moment opened, the entire look of the game went with it:
+   an encounter was the one place in the run with no grain and no post at all,
+   reported as "all the grain / post process effects disappear during
+   encounters". They were never turned off; they were painted underneath.
+
+   Relative order is preserved (chroma under snow under grain/vignette) and the
+   loader stays on top of all of it, the same stack as normal play. Everything
+   here is still below the encounter flare (50) and the capture cinema (70),
+   which are supposed to own the screen while they run.
+
+   None of this FORCES an effect on: every one of these layers is opacity 0
+   until its own system enables it (`.vhs-on`, the danger states), so a player
+   who has VHS off still has it off inside a fight.
+
+   Declared after the base blocks on purpose — these carry the same
+   `#selector {` tokens, and anything reading a base rule by splitting on that
+   string would otherwise find one of these overrides instead. */
+body.moment-active .danger-chroma {
+  z-index: 34;
+}
+body.moment-active #scene-glitch {
+  z-index: 35;
+}
+body.moment-active #vhs-overlay,
+body.moment-active .danger-vignette {
+  z-index: 36;
+}
+body.moment-active #processing-veil {
+  z-index: 37;
 }
 
 .veil-inner {
@@ -7824,8 +8034,8 @@ body.render-on #render-panel { display: flex; }
   overflow: clip;
   background:
     radial-gradient(ellipse 90% 55% at 50% -10%, rgba(142, 255, 193, 0.18) 0%, transparent 58%),
-    radial-gradient(ellipse 50% 40% at 12% 88%, rgba(20, 70, 48, 0.28) 0%, transparent 55%),
-    radial-gradient(ellipse 45% 35% at 92% 78%, rgba(8, 28, 20, 0.55) 0%, transparent 50%),
+    radial-gradient(ellipse var(--menu-wash-bl) at 12% 88%, rgba(20, 70, 48, 0.28) 0%, transparent 55%),
+    radial-gradient(ellipse var(--menu-wash-br) at 92% 78%, rgba(8, 28, 20, 0.55) 0%, transparent 50%),
     linear-gradient(180deg, #07140f 0%, #020504 48%, #010201 100%);
   font-family: var(--font-ui);
   color: var(--text);
@@ -8018,47 +8228,58 @@ body.buck-on .buck-wash {
   will-change: transform, opacity;
   filter: blur(2px);
 }
+/* The blooms are the same field as the menus behind them, not three lamps.
+   They were 54 / 62 / 46vmax and ANIMATED UP FROM 0.22-0.4 scale, so the
+   transition opened on three small circles drifting over a dark card — visible
+   as discrete blobs with their own edges, which is the "3 little gradients"
+   that survived enlarging the menu washes. Each one is larger than the screen
+   now, so what crosses the frame is the middle of a wash rather than a ball of
+   light with a rim. */
 .buck-bloom-a {
-  width: 54vmax;
-  height: 54vmax;
+  width: 150vmax;
+  height: 150vmax;
   left: 18%;
   top: 8%;
-  margin: -27vmax 0 0 -27vmax;
+  margin: -75vmax 0 0 -75vmax;
   background: radial-gradient(circle, rgba(142, 255, 193, 0.34) 0%, rgba(142, 255, 193, 0.08) 38%, transparent 68%);
 }
 .buck-bloom-b {
-  width: 62vmax;
-  height: 62vmax;
+  width: 170vmax;
+  height: 170vmax;
   left: 78%;
   top: 62%;
-  margin: -31vmax 0 0 -31vmax;
+  margin: -85vmax 0 0 -85vmax;
   background: radial-gradient(circle, rgba(90, 210, 160, 0.22) 0%, rgba(20, 70, 48, 0.18) 42%, transparent 70%);
 }
 .buck-bloom-c {
-  width: 46vmax;
-  height: 46vmax;
+  width: 130vmax;
+  height: 130vmax;
   left: 52%;
   top: 88%;
-  margin: -23vmax 0 0 -23vmax;
+  margin: -65vmax 0 0 -65vmax;
   background: radial-gradient(circle, rgba(216, 240, 228, 0.16) 0%, rgba(8, 28, 20, 0.35) 40%, transparent 68%);
 }
 body.buck-on .buck-bloom-a { animation: buck-bloom-a 1.34s cubic-bezier(0.16, 1, 0.3, 1) both; }
 body.buck-on .buck-bloom-b { animation: buck-bloom-b 1.34s cubic-bezier(0.22, 1, 0.36, 1) both; }
 body.buck-on .buck-bloom-c { animation: buck-bloom-c 1.34s ease-in-out both; }
+/* Still a bloom — it grows and drifts — but it STARTS bigger than the frame.
+   The old 0.22-0.4 opening scale was the whole problem: however large the
+   element, a transition that begins at a quarter size begins on a small
+   circle. The growth is a swell across an already-full frame now. */
 @keyframes buck-bloom-a {
-  0%   { transform: translate3d(-10%, 8%, 0) scale(0.28); opacity: 0; }
+  0%   { transform: translate3d(-10%, 8%, 0) scale(0.92); opacity: 0; }
   28%  { opacity: 1; }
-  100% { transform: translate3d(16%, -14%, 0) scale(2.15); opacity: 0.82; }
+  100% { transform: translate3d(16%, -14%, 0) scale(1.34); opacity: 0.82; }
 }
 @keyframes buck-bloom-b {
-  0%   { transform: translate3d(8%, 6%, 0) scale(0.22); opacity: 0; }
+  0%   { transform: translate3d(8%, 6%, 0) scale(0.88); opacity: 0; }
   32%  { opacity: 0.95; }
-  100% { transform: translate3d(-18%, -10%, 0) scale(2.35); opacity: 0.7; }
+  100% { transform: translate3d(-18%, -10%, 0) scale(1.42); opacity: 0.7; }
 }
 @keyframes buck-bloom-c {
-  0%   { transform: translate3d(0, 10%, 0) scale(0.4); opacity: 0; }
+  0%   { transform: translate3d(0, 10%, 0) scale(0.95); opacity: 0; }
   24%  { opacity: 0.85; }
-  100% { transform: translate3d(-8%, -22%, 0) scale(2.05); opacity: 0.55; }
+  100% { transform: translate3d(-8%, -22%, 0) scale(1.28); opacity: 0.55; }
 }
 @media (prefers-reduced-motion: reduce) {
   .buck-veil,
@@ -9149,7 +9370,9 @@ body.play-focus-editor .mouse-look-deadzone { opacity: 0; }
   flex-direction: column;
   background:
     radial-gradient(ellipse 80% 45% at 50% -8%, rgba(142, 255, 193, 0.14) 0%, transparent 55%),
-    radial-gradient(ellipse 40% 30% at 100% 80%, rgba(18, 48, 36, 0.35) 0%, transparent 50%),
+    /* Watch has only the one corner wash, and it is on the same field as the
+       other menus so it scales with them. */
+    radial-gradient(ellipse var(--menu-wash-br) at 100% 80%, rgba(18, 48, 36, 0.35) 0%, transparent 50%),
     linear-gradient(180deg, #06130e 0%, #020504 55%, #010201 100%);
   font-family: var(--font-ui);
   color: var(--text);

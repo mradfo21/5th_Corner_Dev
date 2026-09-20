@@ -138,6 +138,16 @@
         window.Renderer.resumeUnderlay();
       }
     } catch (_) {}
+    // The world is the player's again. Every Moment (conversation, interact,
+    // encounter, cutscene, camp) takes the screen by tearing the hotspot
+    // overlay down, and nothing used to put it back — so coming out of an
+    // interaction dropped you onto a picture you could no longer touch. This
+    // is the one chokepoint all of them leave through.
+    try {
+      if (window.__AutoScan && typeof window.__AutoScan.rearm === "function") {
+        window.__AutoScan.rearm();
+      }
+    } catch (_) {}
   }
 
   function showOverlayChrome(payload) {
@@ -399,6 +409,10 @@
   }
 
   function isActive() { return stack.length > 0; }
+  // How deep the stack is. A Moment that is not the only one on it was opened
+  // from inside another (SPEAK from an interact dive, from camp), and the
+  // Moment underneath — not this one — owns whatever turn is in flight.
+  function depth() { return stack.length; }
   function current() { return stack.length ? stack[stack.length - 1] : null; }
   function topType() { const c = current(); return c ? c.type : null; }
 
@@ -590,12 +604,24 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "moment-choice" + (locked ? " moment-choice-locked" : "");
+      // The kind of answer this row is, when the caller names one. A
+      // confrontation's rows read as the written verb now, and the lane is what
+      // the server actually rolls against — so it stays on screen as a quiet
+      // eyebrow rather than being inferred from the sentence.
+      const eyebrow = item && typeof item === "object"
+        ? String(item.laneWord || item.lane || "").trim() : "";
+      if (eyebrow) btn.dataset.lane = eyebrow;
       const num = document.createElement("span");
       num.className = "moment-choice-num";
       num.textContent = String(idx + 1);
       const body = document.createElement("span");
       body.className = "moment-choice-text";
       body.textContent = label;
+      // On the SPAN as well as the button: the eyebrow is drawn with
+      // `content: attr(data-lane)`, and attr() only reads the pseudo-element's
+      // own originating element. With it on the button alone the rule matched,
+      // computed at the right size and colour, and rendered an empty string.
+      if (eyebrow) body.dataset.lane = eyebrow;
       btn.appendChild(num);
       btn.appendChild(body);
       if (locked) {
@@ -743,6 +769,7 @@
     push,
     pop,
     isActive,
+    depth,
     current,
     topType,
     setNameplate,

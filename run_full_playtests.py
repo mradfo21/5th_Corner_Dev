@@ -104,13 +104,18 @@ def main() -> int:
         # The autoplay strategies above only ever press choice buttons, which
         # left SCAN — the detector, the hotspot tags, and the object turn —
         # untested by every automated run. These two play through SCAN instead,
-        # and record their frames + a GIF into this run folder. Both use MOVE TO:
-        # it is the only object verb the client still offers (INTERACT_ENABLED in
-        # standalone.js), so a plan mixing in scan_interact would spend half its
-        # turns on a path no player can reach.
+        # and record their frames + a GIF into this run folder.
+        #
+        # The mixed plan carries scan_interact now. It was excluded on the
+        # grounds that INTERACT was shelved and a plan using it "would spend
+        # half its turns on a path no player can reach" — true while the verb
+        # was switched off wholesale, and false since it shipped on stills as a
+        # Moment (interactEnabled / openInteractMoment in standalone.js). For
+        # as long as that comment stood, the game's second object verb was in
+        # no automated run at all.
         ("scan_playtest_mixed", [
             sys.executable, "playtest_interactive.py", "--url", BASE, "--turns", "9",
-            "--plan", "scan_move,choice",
+            "--plan", "scan_move,scan_interact,choice",
             "--session", f"scanmix{STAMP}", "--out", str(OUT / "scan_run_mixed"),
         ], 3000),
         ("scan_playtest_objects_only", [

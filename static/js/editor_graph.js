@@ -4244,11 +4244,16 @@
   function sheetPacing(n, body) {
     const t = pacingState();
     note(body, "The story clock rises each turn. At Escalate the choice slate hears the first beat. At Critical it hears the last stand. This is gameplay — it steers what you are offered, not the world's bible.");
+    note(body, "Set Critical too low and the run reaches it in a turn or two and stays there: every beat after that is written as a last stand, which reads as chaos rather than tension.");
 
     const clock = group(body, "Clock");
     numberRow(clock, "Escalate at", { min: 1, max: 40, step: 1 },
       t.escalate_at,
-      "Threat points. A typical turn adds one. SOMEWHERE tightens at 4.",
+      // These are POINTS, not turns, and saying "a typical turn adds one" was
+      // how both the shipped clock and its test ended up holding turn numbers:
+      // a MOVE TO or INTERACT adds two, and those are most turns in a real
+      // run, so every authored mark was landing on half the turn intended.
+      "Threat points, not turns \u2014 a choice adds 1, a MOVE TO or INTERACT adds 2. So 4 lands on turn 2 of a run that mostly scans. SOMEWHERE uses 4.",
       (v) => {
         savePacing({ escalate_at: Number(v) }, true).then(() => {
           if (sheetId === n.id) openSheet(n);
@@ -4256,7 +4261,7 @@
       });
     numberRow(clock, "Critical at", { min: 2, max: 60, step: 1 },
       t.critical_at,
-      "When the run is out of room. SOMEWHERE hits this at 9.",
+      "When the run is out of room \u2014 past here every turn is a last stand, so set it where you want the peak, not the start. SOMEWHERE uses 9, which is turn 5 of a scanning run.",
       (v) => {
         savePacing({ critical_at: Number(v) }, true).then(() => {
           if (sheetId === n.id) openSheet(n);

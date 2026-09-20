@@ -898,6 +898,52 @@ class GameIdentityTestCase(_IdentityFixture):
         )
 
 
+class TheCameraDoesNotUndoWhatThePlayerDid(unittest.TestCase):
+    """Reported as "custom action got the character into the truck, but then
+    the truck was not part of the choices... as if the game isn't taking the
+    response of the custom action and injecting it into the world simulator".
+
+    It was reaching the world. The prose had them flooring the accelerator and
+    `visual_scene` read "the pickup truck speeds across the desert" — and the
+    rendered frame was a man standing at a fence with a camera. The third-person
+    contract demands a body "fully visible - head to feet", showing "the walk",
+    at "a third to a half of the frame height". None of that is possible in a
+    cab, so the camera rules won and stood him back up. Choices are generated
+    from the picture, so the next slate offered sprinting and vaulting a fence
+    and the action was erased.
+    """
+
+    def _rules(self, mode="third_person"):
+        return " ".join(gi.PERSPECTIVE_MODES[mode]["image_rules"]).lower()
+
+    def test_being_carried_by_something_outranks_the_framing(self):
+        rules = self._rules()
+        self.assertIn("in or on something? that is the shot", rules)
+        for thing in ("vehicle", "machine", "water", "cover"):
+            with self.subTest(thing=thing):
+                self.assertIn(thing, rules)
+
+    def test_it_says_plainly_not_to_stand_them_back_up(self):
+        """The failure was not ambiguity, it was an unstated exception: every
+        rule described a person on foot and none said when they stop being
+        one."""
+        rules = self._rules()
+        self.assertIn("do not stand them back up in the open", rules)
+        self.assertIn("what the player did decides where they are", rules)
+
+    def test_the_full_body_band_knows_it_is_for_walking(self):
+        rules = self._rules()
+        self.assertIn("this band is for a character on foot", rules)
+
+    def test_the_default_framing_is_still_intact(self):
+        """The exception must not cost the ordinary shot: on foot, this is
+        still a follow cam with a legible full-body subject."""
+        rules = self._rules()
+        self.assertIn("fully visible", rules)
+        self.assertIn("third to a half of the frame height", rules)
+        self.assertIn("never turn them to face the lens", rules)
+
+
 class ReferenceImageTestCase(_IdentityFixture):
     """The character-sheet / level-plate store."""
 

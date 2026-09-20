@@ -20,6 +20,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("GEMINI_API_KEY", "")
 os.environ.setdefault("OPENAI_API_KEY", "")
@@ -137,6 +138,59 @@ class TestClockAdvances(unittest.TestCase):
         self.assertEqual(engine.advance_time_of_day(""), "")
 
 
+class TestTypedTravelActuallyMovesYou(unittest.TestCase):
+    """"Custom actions are the coolest part of the game" — and travel by
+    vehicle was the one kind that never registered as leaving.
+
+    No hard transition means the next frame continues img2img from the frame
+    just left, which puts the player back on the same dirt. Measured on a typed
+    playtest: "fly to antarctica" landed in the prose and the next slate offered
+    "Sprint to the pickup truck / Vault over the fence line".
+
+    `_TRAVEL_VERBS` excludes short-range approach verbs on purpose — crossing a
+    room to stand at an oil pump is a new vantage, not a new place, and cutting
+    for it is what made MOVE read as teleporting. Being CARRIED is a different
+    thing: nobody drives or flies somewhere and stays where they were.
+    """
+
+    GOES = [
+        "fly to antarctica",                 # a place name takes no article
+        "sail to Mexico",
+        "drive to the big building",
+        "ride the truck to the tower",
+        "get in the truck and drive to the mesa",
+        "climb up onto the roof",            # getting ON something
+        "swim across the river",             # the one that already worked
+    ]
+    # Over-triggering is the worse failure: a cut the player did not ask for
+    # reads as the world teleporting. These must all stay put.
+    STAYS = [
+        "smash the nearest window",
+        "walk over to the oil pump",         # short-range approach, deliberately
+        "drive the screwdriver into the panel",
+        "climb onto the crate to get a better look",   # observational tail
+        "search the ground for tracks",
+        "shout for whoever is out there",
+        "photograph the body",
+        "listen to the hum",
+        "turn to the left",
+        "take cover behind the truck",
+        "hide behind the pickup",
+    ]
+
+    def test_being_carried_somewhere_is_a_new_place(self):
+        for text in self.GOES:
+            with self.subTest(typed=text):
+                self.assertTrue(engine.is_hard_transition(text, ""),
+                                f"{text!r} did not register as leaving")
+
+    def test_nothing_else_starts_cutting(self):
+        for text in self.STAYS:
+            with self.subTest(typed=text):
+                self.assertFalse(engine.is_hard_transition(text, ""),
+                                 f"{text!r} now cuts and should not")
+
+
 class TestAWorldsProhibitionsAreReadAsProhibitions(unittest.TestCase):
     """A watch of SOMEWHERE came back with purple lightning in all eight frames,
     including two shot inside a concrete tunnel, under a world bible whose only
@@ -206,9 +260,27 @@ class TestAWorldsProhibitionsAreReadAsProhibitions(unittest.TestCase):
             "6:45pm | weather: overcast and still | mood: stormy dread", banned),
             ["stormy"])
 
-    def test_the_shipped_world_bans_the_storm_family(self):
-        # Not a fixture: the prompts the game actually resets on.
+    def test_the_shipped_world_no_longer_bans_the_weather(self):
+        """The shipped bible used to say "no storms or thunderclouds" and
+        "never mention storms or clouds". Both are gone on purpose — a hard
+        weather ban is a creative ceiling, and it contradicted the same bible's
+        own call for "dramatic weather events (dust storms, rare rain, sudden
+        wind)" two paragraphs later.
+
+        The READER is what this class exists to pin, and every test above still
+        proves it against `self.BAN`. This one only records that the shipped
+        world is no longer the thing being read — so a storm may now roll over
+        the mesa without anything treating it as a leak.
+        """
         banned = engine._forbidden_weather(engine._world_constraint_text())
+        for term in ("lightning", "storm", "thunder"):
+            with self.subTest(term=term):
+                self.assertNotIn(term, banned)
+
+    def test_the_reader_still_honours_a_ban_an_author_does_write(self):
+        """Removing it from OUR world must not remove the ability to have one:
+        somebody else's bible can still say no storms and be obeyed."""
+        banned = engine._forbidden_weather(self.BAN)
         self.assertIn("lightning", banned)
 
 
@@ -455,25 +527,39 @@ class TestMoveIsAlwaysAHardCut(unittest.TestCase):
     def test_is_move_branch_sets_hard_transition_unconditionally(self):
         self.assertIn("hard_transition = True", self._move_branch())
 
-    def test_is_move_branch_never_calls_the_text_classifier(self):
-        self.assertNotIn("is_hard_transition(", self._move_branch())
+    def test_is_move_branch_asks_nobody(self):
+        # MOVE has a real signal from the client, so it neither guesses from
+        # wording nor waits on the model's opinion.
+        move = self._move_branch()
+        self.assertNotIn("is_hard_transition(", move)
+        self.assertNotIn("resolve_hard_transition(", move)
 
-    def test_interact_and_typed_still_infer_from_text_but_are_not_throttled(self):
+    def test_interact_and_typed_resolve_a_relocation_but_are_not_throttled(self):
         # INTERACT and typed free-will still have no dedicated "new beat"
-        # verb, so the wording classifier is the only relocation signal —
-        # but nothing downstream may cap or refuse what it decided.
+        # verb, so the relocation has to be worked out — now by asking the
+        # consequence model first and falling back to the wording classifier
+        # (see resolve_hard_transition). Nothing downstream may cap or refuse
+        # what it decided.
         infer = self._infer_branch()
-        self.assertIn("is_hard_transition(", infer)
+        self.assertIn("resolve_hard_transition(choice, dispatch, relocated)", infer)
         self.assertNotIn("throttle_hard_transition(", infer)
 
     def test_a_curated_choice_pill_cuts_only_on_a_real_relocation(self):
         # Forcing every pill to a hard cut threw away the Reactor capture
-        # the player was looking at. Refine from that frame unless the
-        # wording is a portal / egress.
+        # the player was looking at. Refine from that frame unless the beat
+        # actually relocated them.
         choice = self._choice_branch()
-        self.assertIn("is_hard_transition(", choice)
-        self.assertIn("is_egress_choice(", choice)
+        self.assertIn("resolve_hard_transition(choice, dispatch, relocated)", choice)
         self.assertNotIn("throttle_hard_transition(", choice)
+
+    def test_the_resolver_still_honours_egress_and_the_word_lists(self):
+        # Those two used to be spelled out in both branches. Collapsing them
+        # into one resolver must not have dropped either.
+        src = (ROOT / "engine.py").read_text(encoding="utf-8", errors="replace")
+        start = src.index("def resolve_hard_transition(")
+        body = src[start:src.index("\ndef ", start + 10)]
+        self.assertIn("is_egress_choice(choice)", body)
+        self.assertIn("is_hard_transition(choice, dispatch)", body)
 
 
 class TestChoicePickDoesNotImg2imgTheCurrentFrame(unittest.TestCase):
@@ -723,6 +809,71 @@ class TestTheGradeOfALeaving(unittest.TestCase):
                        "Navigate deeper into the crawlspace."):
             self.assertEqual(bool(engine.transition_kind(phrase)),
                              engine.is_hard_transition(phrase, ""), phrase)
+
+
+class TestThePictureFollowsTheProse(unittest.TestCase):
+    """Reported from a live run: "I used a custom action, it played the
+    animation of moving forward, but then it popped back to the previous
+    frame."
+
+    The player typed "explore deeper into this space". is_hard_transition said
+    no, so the turn rendered as an img2img refine of the room they were trying
+    to leave — the new still came back as the same room with one prop changed,
+    and a step forward animated and landed where it started. Three ways to
+    miss in one phrase: `deeper` suppresses the detector outright, `explore`
+    is not in its verb list, and `space` is not in its noun list.
+
+    Word lists cannot be finished. The consequence model has just written the
+    beat and already knows whether it moved anyone, so it is asked — same
+    call, one more field — and the renderer follows that instead of guessing.
+    """
+
+    BUGGED = "explore deeper into this space"
+
+    def test_the_phrase_that_broke_it_still_fools_the_word_lists(self):
+        """Kept as the reason the model is asked at all. If someone ever
+        teaches the classifier this sentence, the fix is still the one that
+        generalises."""
+        self.assertFalse(engine.is_hard_transition(self.BUGGED, ""))
+
+    def test_the_model_decides_when_it_has_an_answer(self):
+        self.assertTrue(engine.resolve_hard_transition(self.BUGGED, "", True))
+        self.assertFalse(engine.resolve_hard_transition(self.BUGGED, "", False))
+
+    def test_it_can_also_say_they_stayed_put(self):
+        """Both directions, or the picture still contradicts the prose — just
+        in the other direction. A beat that keeps them in the room must not be
+        rendered as a new location."""
+        self.assertTrue(engine.is_hard_transition("Enter the dark door", ""))
+        self.assertFalse(
+            engine.resolve_hard_transition("Enter the dark door", "", False))
+
+    def test_no_answer_falls_back_to_the_old_guess(self):
+        """None is "the model did not say" — an older save, a failed parse, a
+        degraded turn — and is not the same as False."""
+        for phrase in ("Enter the dark door", self.BUGGED):
+            self.assertEqual(
+                engine.resolve_hard_transition(phrase, "", None),
+                engine.is_hard_transition(phrase, ""), phrase)
+
+    def test_running_for_the_exit_cuts_whatever_the_prose_said(self):
+        self.assertTrue(engine.resolve_hard_transition(
+            "Bolt for the nearest way out", "", False))
+
+    def test_the_turn_loop_actually_asks_and_actually_reads(self):
+        """A field nobody requests is always None, and a field nobody reads
+        changes nothing. Both ends, or this is decoration."""
+        src = (ROOT / "engine.py").read_text(encoding="utf-8", errors="replace")
+        self.assertIn('"relocated": {"type": "BOOLEAN"}', src)   # asked for
+        self.assertIn("relocated — true if the beat you just wrote", src)  # explained
+        self.assertIn('isinstance(data.get("relocated"), bool)', src)      # parsed
+        self.assertIn("resolve_hard_transition(choice, dispatch, relocated)", src)
+
+    def test_a_failed_consequence_call_has_no_opinion(self):
+        """Its fallback must return None, not False — a call that never
+        happened cannot claim the player stayed still."""
+        src = (ROOT / "engine.py").read_text(encoding="utf-8", errors="replace")
+        self.assertIn('"The desert stretches ahead.", True, [], None)', src)
 
 
 class TestASoftenedMoveStillMoves(unittest.TestCase):
@@ -1095,27 +1246,53 @@ class TestMoveAsksForTravel(unittest.TestCase):
             self.assertIn("visual_scene", d)
 
 
-class TestInteractIsShelved(unittest.TestCase):
-    """INTERACT pokes the live world model, which reacts too weakly today for
-    the poke to show at all. While that is true it must not sit on the tag next
-    to MOVE TO splitting players onto the dead path."""
+class TestInteractIsShelvedOnlyWhereItWasBroken(unittest.TestCase):
+    """INTERACT was switched off wholesale because it poked the LIVE world
+    model, which reacts too weakly for the poke to show at all — so the verb
+    sat next to MOVE TO splitting players onto a dead path.
+
+    That reasoning only ever applied to the live renderer. The game runs on
+    stills, where INTERACT is a Moment with a generated close-up and a real
+    turn underneath it (docs/plans/INTERACT_MOMENT_PLAN.md), so it shipped —
+    and this class went on asserting `const INTERACT_ENABLED = false;`, a
+    constant that no longer exists. Two red tests demanding a shipped feature
+    be turned back off is worse than no tests: it is a suite that has to be
+    explained away, which is how the other three failures in this file stayed
+    red long enough to stop being read.
+
+    The shelving that survives is conditional, so that is what gets pinned.
+    """
 
     @classmethod
     def setUpClass(cls):
         cls.client_src = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
 
-    def test_the_button_is_switched_off(self):
-        self.assertIn("const INTERACT_ENABLED = false;", self.client_src)
+    def _gate(self):
+        start = self.client_src.index("function interactEnabled()")
+        return self.client_src[start:self.client_src.index("const SCAN_ACTIONS")]
 
-    def test_the_action_bar_honours_the_switch(self):
+    def test_the_verb_is_live_on_stills(self):
+        self.assertNotIn("const INTERACT_ENABLED = false;", self.client_src)
+        self.assertIn("return true;", self._gate())
+
+    def test_and_still_shelved_under_the_live_renderer(self):
+        """Where the original reasoning does hold, it still holds."""
+        self.assertIn("scanInRealtime()", self._gate())
+        self.assertIn("return false;", self._gate())
+
+    def test_the_action_bar_honours_the_gate(self):
         # SCAN_ACTIONS is filtered by each action's `when` predicate, so the
         # gate has to hang off INTERACT's entry or the button renders anyway.
-        self.assertIn("when: () => INTERACT_ENABLED,", self.client_src)
+        self.assertIn("when: () => interactEnabled(),", self.client_src)
         self.assertIn("SCAN_ACTIONS.filter((a) => !a.when || a.when(obj))",
                       self.client_src)
 
-    def test_the_definition_survives_for_when_it_comes_back(self):
+    def test_the_definition_is_there(self):
         self.assertIn('id: "interact", label: "INTERACT"', self.client_src)
+
+    def test_the_tap_opens_the_dive(self):
+        """The verb is only worth having if it does the thing it shipped for."""
+        self.assertIn("openInteractMoment(obj)", self.client_src)
 
 
 class TestEnvironmentStagnation(unittest.TestCase):
@@ -1407,18 +1584,50 @@ class TestStoryDynamicsDriveTheState(unittest.TestCase):
         state.update({"threat_level": 0, "current_phase": "normal",
                       "chaos_level": 0, "time_of_day": EVENING})
         engine._save_state(state, self.SID)
+        # Every test in this class is about the ENGINE's dials, so none of them
+        # may depend on which Experience happens to be selected. `_threat_marks`
+        # reads the active Experience's authored curve, and two tests in here
+        # flipped red for opposite reasons in one afternoon because of it: one
+        # when live data was saved at a fast 2/4, the other when the unittest
+        # sandbox resolved a different Experience again and handed back the slow
+        # harness curve 8/20. Pin the product clock and test the mechanism.
+        marks = mock.patch.object(
+            engine, "_threat_marks",
+            return_value=(engine.STORY_ESCALATE_AT, engine.STORY_CRITICAL_AT))
+        marks.start()
+        self.addCleanup(marks.stop)
 
     def test_a_scan_interaction_pushes_threat_harder_than_a_button(self):
         dyn = engine.advance_story_dynamics(session_id=self.SID, risk_boost=2)
         self.assertEqual(dyn["threat_level"], 1 + engine.MAX_RISK_THREAT_BOOST)
         self.assertGreater(dyn["threat_level"], 1)
 
+    def test_the_risk_boost_is_capped_however_much_is_asked_for(self):
+        """The invariant, stated without reference to any authored curve.
+
+        This is what MAX_RISK_THREAT_BOOST is: a caller can ask for any boost
+        it likes and a turn still advances the clock by at most one more than a
+        button press would.
+        """
+        before = engine._load_state(self.SID).get("threat_level", 0)
+        dyn = engine.advance_story_dynamics(session_id=self.SID, risk_boost=99)
+        self.assertEqual(dyn["threat_level"] - before,
+                         1 + engine.MAX_RISK_THREAT_BOOST)
+
     def test_meddling_cannot_burn_through_the_whole_ladder(self):
         """At the original uncapped boost, a SCAN run that moved every turn hit
-        'critical' on turn 3 and spent its last 27 turns with nowhere to go."""
+        'critical' on turn 3 and spent its last 27 turns with nowhere to go.
+
+        Against the product clock the cap holds: three boosted turns is threat
+        6, which is escalating with room left. Live data saved at 2/4 reached
+        critical on turn 2 and stayed there — that is a property of that file,
+        not of the cap this test guards, which is why the marks are pinned in
+        setUp.
+        """
         for _ in range(3):
             dyn = engine.advance_story_dynamics(session_id=self.SID, risk_boost=2)
         self.assertNotEqual(dyn["phase"], "critical")
+        self.assertEqual(dyn["phase"], "escalating")
 
     def test_crossing_into_a_new_phase_does_not_relight_the_evening(self):
         """Phase is the tension dial. Stepping the lighting string on an act
@@ -1439,6 +1648,131 @@ class TestStoryDynamicsDriveTheState(unittest.TestCase):
         second = engine.advance_story_dynamics(session_id=self.SID)
         self.assertEqual(first["phase"], "normal")
         self.assertEqual(first["time_of_day"], second["time_of_day"])
+
+
+class TestABurntClockSaysSoAtBoot(unittest.TestCase):
+    """The marks are POINTS and the field is called "Critical at", so authors
+    enter turn numbers. Two saved Experiences on one machine held 2/4 and 2/5.
+
+    Played, that is critical by turn 2 or 3 and then nothing left — every beat
+    after it written as a last stand, UNLUCKY on about half of all turns, and
+    the consequence model inventing injuries to justify the register. It reads
+    as the game being incoherent, and it is two numbers in a field.
+
+    Nobody can diagnose that from prose, which is the same argument the
+    hollow-world warning already won (api._warn_if_the_world_is_hollow). So
+    this is its sibling: print it at boot, do not touch the author's data.
+    """
+
+    def _boot(self, marks):
+        import io as _io
+        import contextlib
+        import api
+        buf = _io.StringIO()
+        with mock.patch.object(engine, "_threat_marks", return_value=marks), \
+                contextlib.redirect_stdout(buf):
+            api._warn_if_the_story_clock_burns_out()
+        return buf.getvalue()
+
+    def test_a_clock_that_peaks_on_turn_two_is_reported(self):
+        out = self._boot((2, 4))
+        self.assertIn("STORY CLOCK BURNS OUT", out)
+        self.assertIn("critical_at=4", out)
+
+    def test_it_names_the_turn_the_mark_lands_on(self):
+        """The whole confusion is points versus turns, so the warning has to
+        do the conversion rather than restate the number."""
+        out = self._boot((2, 5))
+        self.assertIn("'critical' on turn 3", out)
+        self.assertIn("POINTS, not turns", out)
+
+    def test_it_says_what_to_set_instead(self):
+        out = self._boot((2, 5))
+        self.assertIn(str(engine.STORY_CRITICAL_AT), out)
+        self.assertIn("Pacing sheet", out)
+
+    def test_the_product_clock_is_silent(self):
+        """A warning that fires on the shipped configuration is noise."""
+        self.assertEqual(
+            self._boot((engine.STORY_ESCALATE_AT, engine.STORY_CRITICAL_AT)), "")
+
+    def test_a_slower_authored_clock_is_silent_too(self):
+        self.assertEqual(self._boot((8, 20)), "")
+
+    def test_it_never_raises(self):
+        """Boot-time diagnostics must not be able to stop the server."""
+        import io as _io
+        import contextlib
+        import api
+        buf = _io.StringIO()
+        with mock.patch.object(engine, "_threat_marks",
+                               side_effect=RuntimeError("no experience")), \
+                contextlib.redirect_stdout(buf):
+            api._warn_if_the_story_clock_burns_out()
+        self.assertEqual(buf.getvalue(), "")
+
+
+class TestTheRunOpensInTheLightTheLevelAuthored(unittest.TestCase):
+    """`time_of_day` is rolled once at reset and then injected into EVERY render
+    of the session as "Lighting:". The level plate in that same prompt carries
+    its own "PALETTE & LIGHT:" line, so if the roll disagrees, every frame is
+    drawn by whichever of the two the model happens to believe.
+
+    It disagreed. Against a plate reading "golden hour, rust, red dust,
+    chain-link steel", two consecutive live runs opened on "thick crimson fog
+    backlit by flickering floodlights" and "thick rolling coastal fog" — the
+    second one after the prompt had been told the palette in as many words, and
+    coastal fog in the Four Corners desert at that. Floodlights are worse than
+    wrong: they are a light SOURCE that is not in the place, and img2img carries
+    an invented source forward for the rest of the run.
+
+    So the authored look is not the roll's to choose. Time and mood are what the
+    roll is for, and they still vary.
+    """
+
+    PALETTE = "golden hour, rust, red dust, chain-link steel"
+
+    def test_a_contradicting_roll_is_reseated_on_the_authored_light(self):
+        got = engine._reseat_palette(
+            "7:42pm | weather: thick rolling coastal fog | mood: suffocating dread",
+            self.PALETTE)
+        self.assertEqual(
+            got, f"7:42pm | weather: {self.PALETTE} | mood: suffocating dread")
+
+    def test_the_rolled_time_and_mood_survive(self):
+        """Reseating must not flatten the run to one opening."""
+        a = engine._reseat_palette("6:12pm | weather: x | mood: quiet menace", self.PALETTE)
+        b = engine._reseat_palette("7:55pm | weather: y | mood: open dread", self.PALETTE)
+        self.assertIn("6:12pm", a)
+        self.assertIn("quiet menace", a)
+        self.assertIn("7:55pm", b)
+        self.assertIn("open dread", b)
+        self.assertNotEqual(a, b)
+
+    def test_an_agreeing_roll_is_left_alone(self):
+        line = f"6:30pm | weather: {self.PALETTE} | mood: tense anticipation"
+        self.assertEqual(engine._reseat_palette(line, self.PALETTE), line)
+
+    def test_an_unparseable_roll_is_left_alone(self):
+        """A mangled lighting string is worse than a contradictory one."""
+        for junk in ("", "no pipes here", "6:45pm | weather: clear | ",
+                     "6:45pm | mood: dread"):
+            with self.subTest(junk=junk):
+                self.assertEqual(engine._reseat_palette(junk, self.PALETTE), junk)
+
+    def test_a_level_with_no_authored_light_still_rolls_freely(self):
+        """The roll is only overruled where there is something to overrule."""
+        src = (ROOT / "engine.py").read_text(encoding="utf-8")
+        fn = src.split("def _generate_random_starting_time(", 1)[1] \
+                .split("\ndef ", 1)[0]
+        self.assertIn("if palette:", fn)
+        self.assertIn("_reseat_palette(result, palette)", fn)
+
+    def test_the_seed_line_agrees_with_itself(self):
+        """The fallback is what ships when the roll fails, so it has to be the
+        opening the world document describes."""
+        self.assertIn("6:30pm", engine.INITIAL_TIME_OF_DAY)
+        self.assertIn("golden hour", engine.INITIAL_TIME_OF_DAY)
 
 
 class TestVisualToneStaysFixed(unittest.TestCase):

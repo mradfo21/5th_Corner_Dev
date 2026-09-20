@@ -7,11 +7,19 @@ went untested by every automated run. This driver plays the game the way a
 person does: it grabs the current frame, runs it through /api/detect, picks one
 of the returned objects, and commits MOVE TO on it.
 
-MOVE TO is the default and the only object verb the client currently offers.
-INTERACT is shelved (INTERACT_ENABLED in standalone.js) because it pokes the
-live world model, which today reacts too weakly to read as anything happening;
-`--plan scan_interact` still drives that server path for coverage, but a run
-built on it is testing a turn no player can currently produce.
+MOVE TO is the default. INTERACT ships too now — on stills it is a Moment that
+dives to a generated close-up of the object while a same-place turn runs
+underneath (see interactEnabled / openInteractMoment in standalone.js), and it
+is shelved only under the live renderer, where poking the world model reacts
+too weakly to read. So `--plan scan_interact` is worth running: it drives a
+turn players do produce.
+
+What it cannot reach from here is the close-up handoff. The dive is client
+chrome, so nothing in this harness generates a plate, and the server only holds
+the scene render for one when the client says a dive opened (`awaiting_closeup`
+— see _arm_interact_plate). That is deliberate: a harness INTERACT must not
+wait thirty-five seconds for a picture nobody is drawing. Exercising the handoff
+needs a browser.
 
 Every turn produces exactly three frames, in the order a reviewer needs to
 judge whether the next generation makes sense:
@@ -311,10 +319,9 @@ def labels_present(labels: list, text: str) -> list:
 # ──────────────────────────────────────────────────────────────────────
 
 def interact_phrase(label: str) -> str:
-    # Retired from the client for now (INTERACT_ENABLED in standalone.js): it
-    # pokes the live world model, which is not yet good enough for the poke to
-    # show. Kept here so the server path stays covered and the harness can drive
-    # it again the moment the button comes back.
+    # Mirrors the client's own INTERACT phrase (SCAN_ACTIONS in standalone.js).
+    # The verb is live on stills, so this drives a turn players really produce —
+    # minus the close-up dive, which is chrome this harness has no browser for.
     return f"Interact with the {label}."
 
 
@@ -959,6 +966,19 @@ def play(args) -> dict:
             run["fallback_frame"] = str(fb)
 
     reset_items, reset_elapsed = client.post("/api/reset", {})
+    # An authored opening (or the level's approach montage) parks the choice
+    # slate and sets `experience_cutscene_id`, and /api/choose answers 409
+    # `cutscene_playing` while it is set. The browser plays the shots and then
+    # POSTs /api/cutscene/complete; no headless driver in this repo did, so a
+    # run against an Experience that starts on a Cutscene opened with no slate
+    # at all and degraded straight to a typed action on turn one.
+    if any((i or {}).get("type") == "cutscene" for i in (reset_items or [])):
+        print("  opening cutscene — completing it as the client would")
+        try:
+            client.post("/api/cutscene/complete", {})
+        except Exception as exc:
+            print(f"  cutscene complete failed: {exc}")
+        reset_items = client.get("/api/feed?since_id=0")
     if images_on:
         reset_items = wait_for_scene_image(client, 0, reset_items, args.image_grace)
     prompt = latest_prompt(reset_items)
@@ -1509,10 +1529,9 @@ def parse_args(argv=None):
                         "scan_move = SCAN then MOVE TO on a detected object every turn")
     p.add_argument("--plan", default="scan_move",
                    help="comma-separated rotation of actions per turn (ignored when "
-                        "--mode is set). `scan_interact` still works, but the client "
-                        "no longer offers INTERACT (see INTERACT_ENABLED in "
-                        "standalone.js), so a plan using it tests a turn no player "
-                        "can currently produce.")
+                        "--mode is set). `scan_interact` drives a real player turn "
+                        "now that INTERACT ships on stills, minus the close-up dive "
+                        "(browser chrome).")
     p.add_argument("--turn-timeout", type=int, default=180)
     p.add_argument("--detect-timeout", type=int, default=60)
     p.add_argument("--image-grace", type=float, default=25.0)

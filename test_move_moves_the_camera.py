@@ -300,5 +300,114 @@ class TheFirstTurnHasNothingToCrossFrom(unittest.TestCase):
         self.assertNotIn("Still inside:", prompt)
 
 
+class TheSceneHasToReachTheRenderer(unittest.TestCase):
+    """The scene the story wrote is the only thing that says where the player
+    ended up. It has to arrive.
+
+    `build_image_prompt` decides whether to send `visual_scene` at all by
+    comparing it against the narrative: `has_visual_scene` is
+    `narrative != caption`. The turn loop passed the caption into BOTH slots,
+    so that test was False on every turn of the live path and the "render
+    exactly this scene" branch was unreachable. What shipped instead was the
+    scaffold — a paraphrase of the PREVIOUS frame plus "render the result of
+    that action" — with the scene generated, logged, and dropped.
+
+    MOVE TO is where a silent prompt does the most damage, because the
+    destination is named nowhere else: a click on the mesa came back as a
+    corrugated shed door.
+    """
+
+    SCENE = ("He stands at the foot of the red mesa, the fence now far behind "
+             "him across open dirt.")
+    PROSE = "You cross the open ground, grit working into your boots."
+
+    def _prompt(self, narrative):
+        return engine.build_image_prompt(
+            player_choice="Move to the mesa.",
+            dispatch=self.SCENE,
+            narrative_dispatch=narrative,
+            hard_transition=True,
+            **REFERENCE,
+        )
+
+    def test_the_scene_is_in_the_prompt(self):
+        self.assertIn(self.SCENE, self._prompt(self.PROSE))
+
+    def test_a_caption_echoed_into_the_narrative_slot_drops_the_scene(self):
+        """The failure this guards, stated as the mechanism that caused it."""
+        self.assertNotIn(self.SCENE, self._prompt(self.SCENE))
+
+    def test_the_turn_loop_sends_the_prose_not_the_caption(self):
+        """…which is why the call site itself is pinned.
+
+        The two channels were split apart in the engine long after this call
+        site was written, and back then `dispatch` WAS `visual_scene`, so
+        passing it twice was a harmless no-op. Nothing fails loudly when it
+        stops being one.
+        """
+        src = (ROOT / "engine.py").read_text(encoding="utf-8")
+        loop = src.split("scene = _generate_and_append_scene_image(", 1)[1] \
+                  .split(")", 1)[0]
+        self.assertIn("dispatch=dispatch_text,", loop)
+        self.assertNotIn("dispatch=vision_dispatch_text or dispatch_text,", loop)
+
+    def test_a_travelling_hard_cut_says_where_the_camera_went(self):
+        """`is_move` forces `hard_transition`, so the FRESH branch is the only
+        one MOVE TO can reach — and "a different space" is not a destination."""
+        prompt = self._prompt(self.PROSE)
+        self.assertIn(FRESH, prompt)
+        self.assertIn("the DESTINATION", prompt)
+
+    def test_standing_still_is_not_told_it_arrived(self):
+        prompt = engine.build_image_prompt(
+            player_choice="Examine the rusted padlock",
+            dispatch=self.SCENE, narrative_dispatch=self.PROSE,
+            hard_transition=False, **REFERENCE,
+        )
+        self.assertNotIn("the DESTINATION", prompt)
+
+
+class ADestinationIsNotAlwaysARoom(unittest.TestCase):
+    """SCAN detects landforms, vehicles and open ground, not just doors.
+
+    The MOVE half of the permanence requirement used to place the tapped object
+    "in the room the player just crossed into ... on its wall, floor, or
+    surface". True of a steel door, nonsense about a mesa — and the model
+    resolved the nonsense the only way the sentence allows, by inventing an
+    enclosure to put the player inside and demoting the mesa to a backdrop
+    behind it.
+    """
+
+    OUTDOOR = ["mesa", "pickup truck", "rusted tank", "chain link fence",
+               "radio mast", "catch pond"]
+
+    def test_the_move_requirement_never_assumes_an_interior(self):
+        for subj in self.OUTDOOR:
+            with self.subTest(subj=subj):
+                d = engine._permanence_directive(subj, is_move=True)
+                self.assertIn(subj, d)
+                self.assertNotIn("the room the player just crossed into", d)
+                self.assertNotIn("on its wall, floor, or surface", d)
+
+    def test_it_still_forbids_the_product_photo_it_was_written_for(self):
+        d = engine._permanence_directive("mesa", is_move=True)
+        self.assertIn("product photo", d)
+        self.assertIn("ARRIVED AT", d)
+
+    def test_interact_is_untouched(self):
+        d = engine._permanence_directive("steel door", is_move=False)
+        self.assertIn("CHANGED BY the action", d)
+        self.assertNotIn("ARRIVED AT", d)
+
+    def test_traversal_only_crosses_through_actual_openings(self):
+        d = engine._action_directive(is_interaction=True, is_move=True,
+                                     subject="mesa")
+        self.assertIn("When the destination is ITSELF an opening", d)
+        self.assertIn("they arrive AT it and stop there", d)
+        # The unconditional version of this sentence is what sent a MOVE TO on
+        # a monolith through a door that was never there.
+        self.assertNotIn("Arriving means they crossed through. When", d)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

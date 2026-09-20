@@ -93,6 +93,7 @@ test_*.py
 !test_encounter.py
 !test_bug_report.py
 !test_interact_dive_options.py
+!test_interact_plate_handoff.py
 !test_replay_cache.py
 # Sixteen curated suites were never added to this allowlist, so the `test_*.py`
 # rule above was silently ignoring them: test_cutscene.py alone is 50 tests

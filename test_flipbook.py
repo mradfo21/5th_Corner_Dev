@@ -14,12 +14,13 @@ is lossless PNG.
 """
 
 import json
+import shutil
 import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import flipbook
 
@@ -151,6 +152,93 @@ class TestSplitting(unittest.TestCase):
         tiny = self.tmp / "tiny.png"
         _grid(width=8, height=8, path=tiny)
         self.assertEqual(flipbook.split_grid(tiny, 16, out_dir=self.tmp / "t"), [])
+
+
+class TestTheGridIsCutAlongTheLinesTheModelDrew(unittest.TestCase):
+    """The count in the prompt is a request, not a guarantee.
+
+    Asked for a 2x2, the model came back with a 3x3 of nine panels, and the
+    splitter divided it into quarters — so every "frame" was a collage of two
+    and a quarter panels with the dividers still running through it. Nothing
+    could see it: the turn resolved, four frames existed, they differed from
+    one another, and playback reported four of four painted. It was found by
+    looking at a screenshot of a fight, which is the worst place for it — that
+    image IS the encounter.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _grid(self, rows, cols, size=(480, 270), seam=True):
+        """A grid whose panels differ and whose dividers are drawn."""
+        img = Image.new("RGB", size, (20, 20, 20))
+        draw = ImageDraw.Draw(img)
+        cw, ch = size[0] // cols, size[1] // rows
+        for r in range(rows):
+            for c in range(cols):
+                # Every panel a different mid tone, so the profiles are not
+                # flat for reasons that have nothing to do with dividers.
+                v = 90 + ((r * cols + c) * 17) % 60
+                draw.rectangle([c * cw + 3, r * ch + 3,
+                                (c + 1) * cw - 4, (r + 1) * ch - 4],
+                               fill=(v, v, v))
+        if seam:
+            for c in range(1, cols):
+                draw.line([(c * cw, 0), (c * cw, size[1])], fill=(250, 250, 250), width=2)
+            for r in range(1, rows):
+                draw.line([(0, r * ch), (size[0], r * ch)], fill=(250, 250, 250), width=2)
+        path = self.tmp / f"grid_{rows}x{cols}{'_seamless' if not seam else ''}.png"
+        img.save(path)
+        return path
+
+    def test_it_reads_the_shape_that_is_actually_there(self):
+        for rows, cols in ((2, 2), (3, 3), (1, 2), (2, 4)):
+            with self.subTest(shape=f"{rows}x{cols}"):
+                self.assertEqual(
+                    flipbook.detect_grid_shape(self._grid(rows, cols)),
+                    (rows, cols))
+
+    def test_a_photograph_is_not_a_grid(self):
+        """The answer for an image with no dividers is None, not a guess —
+        every ordinary still goes through this."""
+        img = Image.new("RGB", (480, 270))
+        px = img.load()
+        for y in range(270):
+            for x in range(480):
+                px[x, y] = (40 + (x * 97 + y * 31) % 160,) * 3
+        path = self.tmp / "photo.png"
+        img.save(path)
+        self.assertIsNone(flipbook.detect_grid_shape(path))
+
+    def test_the_split_follows_the_drawing_not_the_request(self):
+        paths = flipbook.split_grid(self._grid(3, 3), 4,
+                                    out_dir=self.tmp / "out")
+        self.assertEqual(len(paths), 9)
+
+    def test_a_seam_it_cannot_see_does_not_cost_the_player_panels(self):
+        """Override UPWARD only.
+
+        Two near-identical panels of the same sky share an edge with no
+        contrast across it: a real 2x2 opening read as 2x1. Splitting that as
+        drawn would put two frames in every panel, which is the fault this is
+        here to prevent, pointing the other way.
+        """
+        seamless = self._grid(2, 2, seam=False)
+        paths = flipbook.split_grid(seamless, 4, out_dir=self.tmp / "out2")
+        self.assertEqual(len(paths), 4)
+
+    def test_lines_inside_the_photograph_cannot_restructure_a_turn(self):
+        """A fence, a louvre or a row of windows is not a layout.
+
+        The detector alone cannot always tell — a picket fence IS a set of
+        evenly spaced vertical lines. The protection that actually holds is
+        the upward-only rule in split_grid: such a reading is not larger than
+        the requested shape on BOTH axes, so it is never acted on.
+        """
+        fence = self._grid(1, 5)   # vertical lines, one row: not a 2x2
+        self.assertEqual(
+            len(flipbook.split_grid(fence, 4, out_dir=self.tmp / "fence")), 4)
 
 
 class TestTheSequenceDescriptor(unittest.TestCase):
@@ -300,6 +388,21 @@ class TestThePromptFollowsTheShape(unittest.TestCase):
         self.assertIn("no captions", text.lower())
 
 
+def _flipbook_prompts(doc, path=""):
+    """Every (json-path, text) under a flipbook prompt key. A World keeps its
+    copy under "prompts"; the prompt file keeps it at the top level."""
+    out = []
+    if isinstance(doc, dict):
+        for k, v in doc.items():
+            if "flipbook" in k.lower() and isinstance(v, str) and len(v) > 200:
+                out.append((f"{path}/{k}", v))
+            out.extend(_flipbook_prompts(v, f"{path}/{k}"))
+    elif isinstance(doc, list):
+        for i, v in enumerate(doc):
+            out.extend(_flipbook_prompts(v, f"{path}[{i}]"))
+    return out
+
+
 class TestStalePromptsAreNotArguedWith(unittest.TestCase):
     """Worlds carry their own copy of the flipbook prompt, and every copy written
     before the count was a setting says "THE RENDER MUST BE A 4×4 GRID" and walks
@@ -332,6 +435,37 @@ class TestStalePromptsAreNotArguedWith(unittest.TestCase):
     def test_panel_1_is_not_read_as_a_frame_count(self):
         # "Panel 1 is the earliest moment" is true at every shape.
         self.assertFalse(flipbook.prefix_is_stale("Panel 1 is the earliest moment.", 8))
+
+    def test_no_shipped_world_carries_a_prompt_that_gets_dropped(self):
+        """Falling back is the safety net, not the plan.
+
+        `prefix_is_stale` keeps a contradictory prompt out of the request, so a
+        stale copy breaks nothing and says nothing — which is how twelve of them
+        survived. A flipbook playtest logged "authored prefix describes another
+        grid" on every single turn: the world's own art direction was reaching
+        the model on none of them. Retired with
+        tools/retire_stale_flipbook_prompts.py; this is what stops the next
+        world from being authored against 4x4 again.
+        """
+        root = Path(__file__).parent
+        files = [root / "prompts" / "simulation_prompts.json",
+                 root / "prompts" / "simulation_prompts.defaults.json"]
+        files += sorted((root / "worlds").glob("*.json"))
+        checked = 0
+        for path in files:
+            if not path.exists():
+                continue
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            for where, text in _flipbook_prompts(doc):
+                checked += 1
+                stale = [n for n in flipbook.FRAME_COUNTS
+                         if flipbook.prefix_is_stale(text, n)]
+                self.assertFalse(
+                    stale,
+                    f"{path.name}{where} hard-codes a grid: dropped at "
+                    f"{stale} frames. Run "
+                    f"tools/retire_stale_flipbook_prompts.py --apply")
+        self.assertTrue(checked, "no flipbook prompts were found to check")
 
 
 class TestTheEngineDecidesPerSession(unittest.TestCase):
@@ -742,6 +876,27 @@ class TestThePlaybackPolicies(unittest.TestCase):
     def test_scan_captures_the_frame_the_turn_ended_on(self):
         play = self.js.split("function playSceneSequence", 1)[1].split("\n  }", 1)[0]
         self.assertIn("state.currentStillUrl = stillUrl", play)
+
+    def test_a_turn_that_resolved_behind_the_camera_still_shows_its_motion(self):
+        """CAMERA owns the plate, so applyScene returns early while the
+        viewfinder is up. It kept the turn's still and dropped its FRAMES — the
+        world moved and the only record of it the player ever saw was the
+        picture they landed back on. Measured on a playtest as "4 frames sent,
+        1 painted" on the photo turn.
+        """
+        cam = self.js.split("if (isCameraMode()) {", 1)[1].split("return;", 1)[0]
+        self.assertIn("state.gameplaySequence = sequence", cam)
+        # ...and it plays when the camera comes down, onto the restored still.
+        away = self.js.split("const putAway = () => {", 1)[1].split("\n    };", 1)[0]
+        self.assertIn("playSceneSequence(missed, restore)", away)
+        self.assertIn("state.gameplaySequence = null", away)
+
+    def test_raising_the_camera_does_not_carry_old_motion_in(self):
+        """Only a turn that resolves DURING the camera session is owed. A
+        leftover would replay the previous turn under the wrong still."""
+        snap = self.js.split("function snapshotPlayWorld() {", 1)[1] \
+                      .split("\n  }", 1)[0]
+        self.assertIn("state.gameplaySequence = null", snap)
 
     def test_nothing_in_the_playback_path_builds_a_gif(self):
         self.assertNotIn("create_flipbook_gif", self.engine_src)

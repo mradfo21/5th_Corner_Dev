@@ -125,20 +125,57 @@ class TestStandaloneE2E(unittest.TestCase):
         # The control menu starts collapsed; reset via its keyboard shortcut (R),
         # which works regardless of menu state, instead of the now-hidden button.
         self.page.keyboard.press("r")
+        self._skip_opening_cutscene()
         # The generated choices are intentionally NOT shown (the player advances
         # via the forward hub or ACT); they're kept in the DOM so `moveForward`
         # can pick one. So wait for them to be ATTACHED, not visible.
         self.page.wait_for_selector(".choice-btn", state="attached", timeout=15000)
 
-    def _advance_via_forward(self):
-        """Advance the story the way the UI does: the forward (play) hub commits
-        one of the hidden generated choices at random. Returns the prose-entry
-        count seen just before advancing."""
+    def _skip_opening_cutscene(self, timeout_s: float = 45.0):
+        """Get past the opening the way a player does, or the chrome is covered.
+
+        An authored opening — or the level's approach montage — plays as a
+        Moment over the whole viewport, so #forward-btn and #menu-toggle are in
+        the DOM and not clickable. Playwright reports that as "element is not
+        visible" on a button that is plainly there, which reads as a broken UI
+        and is a cutscene nobody dismissed. Three tests in this file failed that
+        way, and the same thing accounts for most of test_realtime_e2e.
+
+        Escape is the player's skip: Cutscene.onEsc calls finish(), which POSTs
+        /api/cutscene/complete, pops the Moment and releases the parked slate.
+        """
+        deadline = time.time() + timeout_s
+        active_probe = ("() => !!(window.Cutscene && window.Cutscene.isActive "
+                        "&& window.Cutscene.isActive())")
+        while time.time() < deadline:
+            try:
+                if not self.page.evaluate(active_probe):
+                    return
+            except Exception:
+                return
+            self.page.keyboard.press("Escape")
+            self.page.wait_for_timeout(400)
+
+    def _advance_the_turn(self):
+        """Advance the story the way the UI does: click a choice.
+
+        This used to click #forward-btn, and the hub it belonged to is gone —
+        `standalone.css` ends with a "Hub reduction" block that sets
+        #forward-btn, #free-will-btn, #scan-btn and #camp-btn to
+        `display: none !important`, because the choice stack IS the turn
+        interface now. So three tests in this file failed with Playwright's
+        "element is not visible" on buttons that were deliberately retired,
+        which reads as a broken UI rather than as a stale test.
+
+        Returns the prose-entry count seen just before advancing.
+        """
         before = len(self.page.query_selector_all(".prose-entry"))
-        self.page.click("#forward-btn")
+        # Not the 4th row: that one is Custom, and it opens the typed-action
+        # field instead of committing a turn.
+        self.page.click(".choice-btn:not(.choice-btn-custom)")
         self.page.wait_for_function(
             f"document.querySelectorAll('.prose-entry').length > {before}",
-            timeout=10000,
+            timeout=30000,
         )
         return before
 
@@ -178,13 +215,24 @@ class TestStandaloneE2E(unittest.TestCase):
         backend_text = self.page.inner_text("#backend-name")
         self.assertEqual(backend_text.strip().lower(), "mock")
 
-    def test_forward_hub_advances_the_turn(self):
-        # The forward (play) hub commits one of the generated choices at random.
-        self._advance_via_forward()
+    def test_the_choice_stack_advances_the_turn(self):
+        # The choice stack is the turn interface (see the Hub reduction block
+        # at the end of standalone.css). Clicking a row commits that action.
+        self._advance_the_turn()
         # Then the turn resolves and a fresh choice set eventually appears.
         self.page.wait_for_selector(".choice-btn", state="attached", timeout=20000)
         choices_after = self.page.query_selector_all(".choice-btn")
         self.assertGreaterEqual(len(choices_after), 1)
+
+    def test_the_retired_hubs_are_really_gone(self):
+        """The reduction is deliberate, so pin it — otherwise the next person to
+        see these ids in the DOM will "fix" the CSS and put the hub back."""
+        for hub in ("#forward-btn", "#free-will-btn", "#scan-btn", "#camp-btn"):
+            with self.subTest(hub=hub):
+                self.assertIsNotNone(self.page.query_selector(hub),
+                                     f"{hub} left the DOM — update these tests")
+                self.assertFalse(self.page.is_visible(hub),
+                                 f"{hub} is visible again")
 
     def test_keyboard_shortcut_1_picks_first_choice(self):
         prose_count_before = len(self.page.query_selector_all(".prose-entry"))
@@ -196,14 +244,15 @@ class TestStandaloneE2E(unittest.TestCase):
 
     def test_free_text_custom_action_submits(self):
         prose_count_before = len(self.page.query_selector_all(".prose-entry"))
-        # The custom-action field is gated behind the ACT (free-will) hub — it's
-        # hidden until you open it, so open the gate before typing.
-        self.page.click("#free-will-btn")
+        # ACT is the 4th row of the choice stack now, not a hub button — the
+        # Hub reduction retired #free-will-btn. The row opens the same typed
+        # field it always gated.
+        self.page.click(".choice-btn-custom")
         self.page.fill("#custom-input", "Search the wreckage for supplies")
         self.page.click("#custom-submit")
         self.page.wait_for_function(
             f"document.querySelectorAll('.prose-entry').length > {prose_count_before}",
-            timeout=10000,
+            timeout=30000,
         )
         # Input should clear after submission.
         self.assertEqual(self.page.input_value("#custom-input"), "")
@@ -236,7 +285,7 @@ class TestStandaloneE2E(unittest.TestCase):
             "_statusTurn().then(t => t === 0)",
             timeout=10000,
         )
-        self._advance_via_forward()
+        self._advance_the_turn()
         self.page.wait_for_selector(".choice-btn", state="attached", timeout=20000)
         self.page.wait_for_function(
             "_statusTurn().then(t => t >= 1)",

@@ -226,9 +226,30 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
             "environment opening up beyond them so the place stays legible.",
             "Never turn them to face the lens. No walking-toward-camera arrival, no front-facing portrait, "
             "no face-on reverse. A sliver of cheek or profile is the most face the shot may show.",
+            # The rules above describe a person ON FOOT, and they were being
+            # obeyed over the scene. A player who typed "drive truck" got prose
+            # about flooring the accelerator, a visual_scene reading "the pickup
+            # truck speeds across the desert", and a rendered frame of a man
+            # standing at a fence with a camera — because "fully visible head to
+            # feet", "the walk" and "a third to a half of the frame height" are
+            # impossible inside a cab, and the camera contract is the more
+            # emphatic instruction. The choices are generated from the picture,
+            # so the next turn offered sprinting and vaulting a fence, and the
+            # action was erased from the world. Reported as "the game isn't
+            # taking the response of the custom action and injecting it into the
+            # world simulator".
+            "IN OR ON SOMETHING? THAT IS THE SHOT. If the scene puts the character in a vehicle, "
+            "a machine, water, a crawlspace, a doorway or behind cover, frame THAT with them in it — "
+            "the truck travelling away into the space ahead, the cab from behind the driver, the "
+            "shape hunched in the gap. Every framing rule above bends to this one: they may be a "
+            "head and shoulders behind glass, a silhouette in a cab, a body half out of frame. Do "
+            "NOT stand them back up in the open to satisfy 'full body'. What the player DID decides "
+            "where they are; the camera only decides where it stands.",
             "Continuity across cuts: stay in a medium-wide / full-body band at chest height, "
             "preserve screen direction (do not flip left/right travel), give lead room ahead "
-            "of their motion, and never spin to a face-on reverse or an empty first-person plate.",
+            "of their motion, and never spin to a face-on reverse or an empty first-person plate. "
+            "This band is for a character on foot — once they are carried by something, the "
+            "vehicle keeps the frame and they keep their place inside it.",
         ],
         "hands_rule": "",
         "no_hands_rule": "",
@@ -1752,9 +1773,22 @@ def narrative_directive(spec: Optional[Dict[str, Any]] = None) -> str:
         if char.get("signature_gear"):
             lines.append(f"THEY CARRY: {char['signature_gear']} — usable in the fiction.")
         if cfg["shows_body"]:
+            # The permission and the address had to be said in one breath.
+            # This sentence used to end "...you may describe their body, stance,
+            # and visible injuries as the player sees them" — a licence to
+            # describe a body, sitting two lines under "write to the player as
+            # 'you'" and immediately after a proper noun. A concrete name beats
+            # an abstract rule, and the model reconciled the two the obvious
+            # way: by narrating in the third person. Measured across 32 live
+            # turns, 6% of the prose came back as "Isaac surges from the
+            # darkness, his electrified baton humming" — and once it slipped it
+            # stayed slipped into the following turn. The body is describable;
+            # the name is not a word the player ever reads.
             lines.append(
                 f"Because the camera watches {who} from outside, you may describe their body, "
-                "stance, and visible injuries as the player sees them."
+                "stance, and visible injuries — but always as \"you\" and \"your\". "
+                f"Never write \"{who}\" in the prose and never switch to he/she/they. "
+                "The name is how you know who to draw, not a word the player reads."
             )
 
     if setting_authored(spec):
@@ -2470,11 +2504,20 @@ def draft_level_goal(lore: str = "", world_prompt: str = "",
         [{"role": "user", "content": (
             "You are writing one line of a game level's design sheet.\n\n"
             f"{known}\n\n"
-            "Write WHAT THE PLAYER CAME HERE TO REACH: one concrete place or "
-            "object inside this level, the thing the level is about getting "
-            "to. It has to be VISIBLE FROM A DISTANCE, because the level's "
-            "opening shots put it on the horizon before the player has "
-            "reached it. Name it and say in the same breath why it matters.\n\n"
+            "Write WHAT THE PLAYER CAME HERE TO REACH: the one thing this "
+            "level is about getting to.\n\n"
+            "IT MUST BE BIG AND IT MUST BE FAR AWAY. A tower, a rig, a dam, a "
+            "dish, a stack, a hull, a wall, a wound in the ground — a single "
+            "massive structure or landmark that can be SEEN FROM MILES OFF and "
+            "that dominates the horizon when it is in frame. The opening shots "
+            "put it in the distance, and every later frame can put it there "
+            "again, so it has to be the thing the eye goes to across open "
+            "ground.\n\n"
+            "Not a door, a room, a vehicle, a body, a crate, a sign or a piece "
+            "of equipment — those are too small to see from far away and the "
+            "player would be standing at them already. Not a person and not an "
+            "event. One object, on the skyline.\n\n"
+            "Name it and say in the same breath why it matters.\n\n"
             "One sentence, under 25 words. No second person, no verbs of "
             "instruction ('go to', 'find'), no markdown, no quotes. Reply "
             "with the sentence and nothing else."
