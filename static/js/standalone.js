@@ -17855,10 +17855,15 @@
 
     // kind → sort weight (lower = higher in the list) + tag label.
     const KIND_META = {
-      primary: { order: 0, tag: "PRIMARY" },
-      lead:    { order: 1, tag: "LEAD" },
-      field:   { order: 2, tag: "FIELD" },
-      bonus:   { order: 3, tag: "BONUS" },
+      primary:     { order: 0, tag: "PRIMARY" },
+      // The run's destination — what the opening title card promised. It
+      // sits under the case and above the LEAD, and it is the one objective
+      // the SERVER owns: the level goal the run was staged with, completed
+      // the turn the consequence model says the player reached it.
+      destination: { order: 0.5, tag: "GOAL" },
+      lead:        { order: 1, tag: "LEAD" },
+      field:       { order: 2, tag: "FIELD" },
+      bonus:       { order: 3, tag: "BONUS" },
     };
 
     let items = [];                  // active + recently-completed objectives
@@ -18097,7 +18102,8 @@
         try { Sound.newSubject(); } catch (_) {}
         try { Haptics.select(); } catch (_) {}
         const cls = o.kind === "bonus" ? "bonus" : "complete";
-        const KICKER = { field: "Photographed", bonus: "Done", lead: "Lead closed", primary: "Case closed" };
+        const KICKER = { field: "Photographed", bonus: "Done", lead: "Lead closed", primary: "Case closed",
+                         destination: "Reached" };
         banner(KICKER[o.kind] || "Objective Complete", o.title, cls);
         logBeat("objective_done", "\u2713", o.title);
       }
@@ -18162,6 +18168,30 @@
       } else {
         add({ id: LEAD_ID, kind: "lead", title, detail: detail || "", quiet: true });
       }
+    }
+
+    // ---- The run's DESTINATION (server-owned) ----
+    // /api/objectives carries the level goal this run was staged with and
+    // whether the world has recorded the player reaching it. The title card
+    // used to be the only place the goal ever appeared; from turn one on the
+    // player had no way to be reminded what they came here for, and nothing
+    // ever told them when they got there.
+    const DEST_ID = "destination";
+    function setDestination(goal, reached) {
+      goal = (goal || "").trim();
+      if (!goal) return;
+      if (!has(DEST_ID)) {
+        add({ id: DEST_ID, kind: "destination", title: goal,
+              detail: "What you came here for", quiet: true });
+      } else if (norm(get(DEST_ID).title) !== norm(goal)) {
+        update(DEST_ID, { title: goal });
+      }
+      const o = get(DEST_ID);
+      // The server's verdict lands as a real completion — banner, chime, the
+      // tracker check — the same beat the case-file objectives get. It stays
+      // on the board afterwards: reaching the goal is the run's shape, not a
+      // side bounty to file away.
+      if (reached && o && o.status === "active") complete(DEST_ID, { archive: false });
     }
 
     // ---- Case primary — mirror the dossier census ----
@@ -18331,7 +18361,7 @@
     return {
       reveal, reset, render,
       add, update, remove, complete, fail, setProgress,
-      setLead, syncCase, onDetect, onSubjectDocumented, onFocusGrade,
+      setLead, setDestination, syncCase, onDetect, onSubjectDocumented, onFocusGrade,
       toggle: toggleCollapsed,
       open: () => setOpen(true),
       close: () => setOpen(false),
@@ -18391,6 +18421,11 @@
       const res = await getJSON("/api/objectives");
       if (res && res.lead && String(res.lead).trim()) {
         Objectives.setLead(String(res.lead), res.detail ? String(res.detail) : "");
+      }
+      // The run's goal rides on the same call, with the server's word on
+      // whether it has been reached (engine.run_goal / goal_reached_turn).
+      if (res && res.goal && String(res.goal).trim()) {
+        Objectives.setDestination(String(res.goal), !!res.goal_reached);
       }
     } catch (_) {
       /* keep the fallback — the tracker never depends on the server */

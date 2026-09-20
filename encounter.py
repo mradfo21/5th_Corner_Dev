@@ -1218,6 +1218,14 @@ def normalize_encounter_brief(raw: Any, place_hold: str = "") -> dict:
     last = _clip(data.get("last_dispatch") or "", "", 280)
     if last:
         out["last_dispatch"] = last
+    # The place the fight is happening in, as api_begin read it off the frame.
+    # It was stamped at begin and fell through this rebuild on the first
+    # resolve, so round two's resolve prompt went back to the generic
+    # `place_hold` — the same trap `_sequence` and `detection` were rescued
+    # from, one field later.
+    setting = _clip(data.get("setting") or "", "", 400)
+    if setting:
+        out["setting"] = setting
     return out
 
 
@@ -1761,6 +1769,19 @@ def encounter_lore_context(session_id: str, cap: int = 1500) -> str:
     world = str(st.get("world_prompt") or "").strip()
     if world:
         bits.append("WHERE THE STORY HAS GOT TO:\n" + world[:900])
+
+    # What the player is trying to reach. A confrontation that knows the
+    # destination can stand in its way, guard it, or be the price of it —
+    # one that does not is a stranger with no reason to be here, which is
+    # the "random guy" this whole context block exists to prevent.
+    try:
+        goal = str(engine.run_goal(st) or "").strip()
+    except Exception:
+        goal = ""
+    if goal:
+        bits.append("WHAT THE PLAYER IS TRYING TO REACH: " + goal
+                    + "\nThe stakes of this encounter should touch that "
+                      "— stand between them and it, or be the cost of getting there.")
 
     # The last few beats, so a new arrival can be a consequence of something
     # the player did rather than a stranger who wandered in.

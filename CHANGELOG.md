@@ -1,5 +1,385 @@
 # 🔧 CHANGELOG - September 20, 2026
 
+## 🧪 The loop, traced: does the opening flow into the narrator, the encounters, the goal and the end?
+
+Asked: *"make sure all our systems — opening cutscene, narrator, encounters,
+interaction, move tos — are communicating and functioning as intended, working
+together to complete a real game loop... probe the way the game starts,
+evolves, procedurally generates encounters, goals, and progress, and prove that
+everything flows into everything else."*
+
+Two passes. First every handoff was traced in the source — reset → montage →
+first playable frame; choice → consequence → image → detection/threat → slate;
+the travel clock → encounter begin/rounds/resolve → back into the turn; goal →
+objectives → narrator; pacing → ending — with the state key each system writes
+and the function that reads it. Then the real app was played twelve turns with
+the harness recording, per turn, what every system knew (`PT_TRACE=1`, new —
+see below): the goal the run was staged with, the HUD lead, phase/threat,
+detection and which sensor moved it, the encounter record, the narrator's last
+lines, what the consequence model wrote, what the frame became. Three more
+traced runs verified the fixes.
+
+**What flows.** Reset binds the World, stages the montage and parks the opening
+slate; the montage's last panel is turn 1's continuity frame; every turn's
+dispatch, camera line and vision read land in `history.json` and feed the next
+turn's prompt; SCAN's objects reach the consequence prompt the same turn;
+detection moves off the frame witness and the prose and reaches the HUD, the
+fate roll, the egress backstop and the encounter brief; threat climbs, phase
+tips, the escalation sting fires, the slate's beat copy follows the phase; an
+encounter reads the place off the last frame, invents its stranger from the
+World's own roster, and its aftermath is a hard-cut turn in the ordinary
+pipeline with the body where it fell. Twelve turns, every one committed and
+resolved, 10/10 flipbook sequences painted, no console errors, wounds carried
+from turn 3 to turn 13 in the prose.
+
+**What did not — and is fixed below.** The run's goal reached the title card
+and nothing else. Every fight rolled with `fate=NORMAL` because `state["fate"]`
+was never written. The consequence contract contradicted itself about
+`relocated`. The prose was licensed to darken the sky on a phase tip while the
+engine never moves the clock. A fight forgot where it was after round one. The
+active Experience's story clock hit CRITICAL on turn 4 and stayed there. The
+first run of a newly picked World rolled its lighting against the previous
+World's palette. And the e2e suite was rebinding the live prompt file on this
+machine every time it ran.
+
+**What did not, and is NOT fixed** — design questions, listed at the end.
+
+## ✅ FIXED: the flipbook never said what panel 1 was, so the grid began wherever the model liked
+
+Reported from watching the runs: *"the flipbook's interpolation between the
+previous frame and the view we end up with jumps around and doesn't transition
+us from the start to end in a temporally pleasing way with consistently framed
+posing (like the view, 3p for example) and key poses."*
+
+Read against the replay cache (`.cache/replay/img2img/*/meta.json` keeps every
+grid request whole), run 9's six action grids were four unrelated story beats
+each: panel 1 face-on to the lens, the camera swinging round behind the
+character over the next three, the setting redrawn under him. Three things
+were doing it, and the 3P follow cam lost all three.
+
+**The start pose was captioned away.** The image layer captions every non-plate
+attachment *"PREVIOUS FRAME — place, light, and materials only. If a CHARACTER
+SHEET is also attached, do NOT copy the person in this frame."* Right for a
+still (it stops a recast redrawing the leftover guy); on a grid it deletes the
+one reference that shows where the character stands and how. The blank layout
+guide got the same caption. Meanwhile the character sheet — a face-on portrait
+— sat in reference slot 1, which is the slot the model copies the person from.
+
+**Most turns were hard cuts, and a cut was composed from nothing.** MOVE TO,
+"further down the corridor", every relocating verb — four of run 9's six turns.
+A cut turn arrived at the image layer with `identity_seed=True` (the still
+path's rule), which selects the text-to-image template — *"FIRST FRAME –
+NOTHING TO CONTINUE FROM: there is no reference image"* — under five attached
+references, and "compose a NEW opening shot" in place of the continuity block.
+This morning's cut rule then put the whole grid inside the destination. A jump
+cut, by construction, on most turns of a run.
+
+**The grid rules described the motion and never the keyframes.** "ANIMATE
+THIS: <250 characters of consequence prose>" — several beats long, so it was
+storyboarded one beat per panel; "the camera does not move … same lens from
+the same spot" — a tripod, stated beside a follow-cam rig; and "render exactly
+this scene: <the end state>" for all four panels. Nowhere: *panel 1 is the
+previous panel, continued.*
+
+Now a **keyframe contract**, stated where each piece lives:
+
+- `flipbook.grid_prompt`: PANEL 1 = the START KEYFRAME (camera, spot, and the
+  subject's pose), PANEL N = the END KEYFRAME (the render instruction's scene,
+  reached), BETWEEN = in-betweens of one motion; the camera holds its RIG —
+  side, height, distance — and travels with the subject. A cut turn keeps the
+  start keyframe and moves the relocation demand to the last panel: *"a panel
+  N that still shows the place panel 1 shows is a FAILED panel."*
+  `keyframe_subject=False` for the establishing beat, whose reference is
+  unpeopled.
+- `engine._flipbook_action_block` animates the CHOICE from START to END
+  (`_flipbook_keyframes`), with the prose as context; the END is shot from the
+  same side as panel 1; nothing steps back toward the start pose; and rule 6
+  says START/END/seconds are direction, not type (one roll in six drew
+  "T=0s … T=1.7s" into the corners from them).
+- `engine._flipbook_generate` names its references (`reference_labels`, new on
+  `generate_gemini_img2img`): START KEYFRAME, WIDER VIEW, LAYOUT TEMPLATE, and
+  the sheet is told whose pose it is not. A continuing turn is never seeded as
+  "nothing to continue from" (`identity_seed` is dropped when there is a start
+  keyframe; the establishing beat keeps it), and the start keyframe takes
+  reference slot 1 (`lead_reference`, new) — see below for why that one line
+  mattered more than the rest.
+- `gemini_image_utils`: the flipbook continuity block no longer restates an
+  older copy of the contract ("the FIRST reference image is the FINAL PANEL"
+  — false once plates are attached; "Mesas, buildings, fences"; "continuation,
+  NOT teleportation", which fought a travelling turn). It names the START
+  KEYFRAME, says what a sheet, a plate and a template are, and pins the two
+  lines of the authored img2img template that read wrong on a grid: *"the
+  attached image is the PREVIOUS moment"* is the keyframe and only the
+  keyframe; *"not a composition to reproduce"* is about the last panel.
+
+**The A/B that found the slot.** Three run-9 turns replayed through
+`_flipbook_generate` with their exact references (`_claude_ab_flipbook.py`,
+gitignored). Round 1 — everything above except the slot — made panel 1 *worse*:
+the location plate's four armed figures in one grid, the character sheet's
+red close-up in another. The img2img template opens *"The attached image is
+the PREVIOUS moment"*, singular, and the model reads that against slot 1 —
+which was the plate. Turning the seed grammar off had told the model the plate
+was a moment. Round 2, previous panel in slot 1: panel 1 continued it in 6 of
+6. Round 3, the END rig and no-text lines added: 6/6 continuous, 0/6
+timecodes, one front-ish mid panel, one reversal, one empty last panel in
+twelve. `flipbook_ab_round2.jpg` / `flipbook_ab_round3.jpg` are the sheets.
+
+Tests: `TestTheGridIsAKeyframeContract`, `TestACutTurnTravelsToTheDestination`
+(replaces `TestACutTurnBeginsInsideTheDestination` — the design changed, not
+the assertion strength), `TestTheWireRequestForAFlipbookTurn` (what is
+actually sent: slot order, captions, the continuity block), plus the action
+block and generate-call cases in `test_flipbook.py`.
+
+Two things seen on the way, not fixed: `generate_gemini_img2img` accepts
+`strength=0.3` and never reads it — there is no init image in this pipeline,
+every reference is a picture beside a prompt, so continuity is persuasion, not
+mechanics (a composited "panel 1 is already drawn, extend it" request is the
+mechanical version, untested); and `[GEMINI INIT]` prints the head and tail of
+the API key to the log.
+
+## ✅ FIXED: the run's goal reached the title card and nothing else
+
+`_goal_for_this_run` staged a goal at every reset ("The reinforced blast door
+at the end of the hall, marked by a faint, glowing green sigil"), wrote it to
+`state["level_goal"]`, and nothing read it: grep found the key at its two write
+sites and its own cache check. It reached the montage's title card and, one
+narration in six, the narrator's GOAL beat — never the consequence model, the
+choice slate, the objectives HUD or an encounter brief. `generate_directive`
+(the HUD's LEAD) read world prose and phase only, and `_narrator_goal` read the
+level sheet rather than the run, so a level with no authored goal got a drafted
+one on the card and an empty one in the narrator's mouth.
+
+The traced run showed what that feels like. The door turned up in the prose as
+recurring scenery — the level's LANDMARKS line, not a destination — and the
+player opened it on turn 1, went through it on turn 12, and was offered *"Kick
+the blast door open"* on turn 13. The run had no record of what it was walking
+toward and no record of arriving.
+
+Now one reader, `run_goal(state)`, and one line, `goal_directive(state)` —
+*"WHAT THE PLAYER CAME HERE FOR: … the beat may bring it closer, block it, or
+make it cost something, but it must not forget it exists, and must not hand it
+over for free"* — on every surface: the consequence grounding block, the slate
+(`beat_nudge_text`, the one line all eight slate generators read: *one option
+should move toward it, or reveal something about it — not all three*), the
+objectives director, the narrator (`_narrator_goal(st)`, run first), and the
+encounter brief (*"stand between them and it, or be the cost of getting
+there"*). The cached-frame reset path stages a goal too, so a run that opens
+without a montage is not goalless. And the consequence contract has a fifth
+field, `goal_reached`, answered the way `player_alive` is: the model just wrote
+the beat, so it knows. The engine records the first `true` as
+`goal_reached_turn`, files an `objective_done` beat (*"What you came here for:
+…"* — the client already styles that type as COMPLETE), and every surface
+changes register: *REACHED on turn N — the run is now about what it cost and
+the way out. Do not offer the goal again as if it were still ahead.*
+
+The tracker shows it. `/api/objectives` now carries `goal` and `goal_reached`
+alongside the lead, and the CASE sheet has a **GOAL** row under PRIMARY —
+completed with the same banner and chime as the case-file objectives the turn
+the world says the player is there. The LEAD stays what it was designed to be,
+a durable category; the goal is a unique thing, which is why it could never
+have been the lead.
+
+Verified on the next traced run: *"Ahead, the shadows deepen, pulsing with the
+faint, rhythmic glow of the distant green sigil you seek"* (turn 3), *"your
+mission target closer than ever"* (turn 6), *"the blast door finally in
+sight"* (turn 8) — then the world made it cost: *"a hidden pressure plate
+snaps beneath your weight, and the rusted blast door slams shut in your face…
+sirens begin to wail"* (turn 9), a drone sweep (turn 10), and *"the blast door
+with the green sigil is now directly within your reach"* (turn 11). Goal words
+in 8 of 10 dispatches against 6 of 11 before, the slate offering the door on
+5 of 6 turns, the GOAL row on the sheet from turn 1, and `goal_reached` staying
+false through a run that never actually got through — which is the point.
+`test_run_goal` pins the wiring surface by surface.
+
+## ✅ FIXED: every encounter ever played rolled NORMAL
+
+`encounter.api_resolve` rolls each exchange with `fate=str(st.get("fate") or
+"NORMAL")`, and nothing anywhere wrote `state["fate"]`. `advance_story_dynamics`
+computed the turn's fate and only returned it; the LUCKY/UNLUCKY columns of
+`encounter_outcome_weights` were dead weight, and the detection-bias and
+phase-bias the fate roll exists to carry never reached a fight. The trace
+recorded `fate_in_state=None` beside a resolved encounter. It is persisted
+under the lock now, next to `threat_level`; the next traced fight rolled
+`LUCKY` and escaped.
+
+## ✅ FIXED: `relocated` could go missing, and the sky could change on a phase tip
+
+Two contradictions inside `action_consequence_instructions`, both of the
+"nearer, more concrete instruction wins" kind:
+
+- The OUTPUT CONTRACT at the top demanded four fields; the OUTPUT FORMAT
+  example further down showed three, without `relocated`, and the response
+  schema did not require it. A model following the nearer example handed back
+  `None` and the renderer fell back to the wording classifier the field exists
+  to replace. The example lists every field now (five, with `goal_reached`),
+  the schema requires `relocated`, and the contract line adds *"it must agree
+  with `visual_scene`: if the camera view you wrote shows somewhere the previous
+  frame could not see, `relocated` is true — do not write a move and answer
+  false."*
+- TIME-OF-DAY PROGRESSION (PHASE-LINKED) told the writer the world *"may darken
+  one tier"* when the phase escalates. The engine never moves the clock
+  (`advance_story_dynamics` refuses to; `advance_time_of_day` has no caller),
+  so this licensed the prose to invent a new sky that the image model rendered
+  against the reset-time lighting lock — the writer dial
+  `test_time_of_day_is_not_a_writer_dial` was red about. Replaced with the
+  drift prompt's own rule: *"Do not change the time of day or the lighting. The
+  evening of this run is already set."* And the FORMAT bullet *"FINAL sentence =
+  tension escalation cue"* — which quietly mandated the crescendo the TENSION
+  RHYTHM block above it says to skip on ~30% of turns — now says so.
+
+Applied to the live file, the factory defaults and every World snapshot that
+carries the block (12 files; `_claude_fix_prompts2.py` pattern, exact match,
+no tidy pass), so a bind cannot put it back.
+
+## ✅ FIXED: the other three red fairness tests were written for a trim that never shipped
+
+`test_death_fairness_doctrine_present`, `test_tension_rhythm_allows_stillness_beats`
+and `test_damage_turns_are_governed_by_the_fairness_doctrine` asserted phrases
+from `docs/plans/PROMPT_TRIM_PROPOSAL.md` ("INJURY IS THE DEFAULT, NOT DEATH",
+"would call it cheap"), whose first line says nothing in it was applied. The
+doctrine is in the live prompt in full — "INJURY IS THE DEFAULT CONSEQUENCE,
+NOT DEATH", the four-question FAIRNESS CHECKLIST, the ≈30% STILLNESS BEAT
+rule. The tests assert the shipped wording. `TestPacingFairnessHardening` is
+green for the first time since `262876d`.
+
+## ✅ FIXED: a fight forgot where it was after round one
+
+`api_begin` stamped `encounter["setting"]` (the place as read off the frame),
+and `normalize_encounter_brief` — which every resolve runs before writing the
+brief back — rebuilt the brief from a fixed field list that did not include
+it. Round two's resolve prompt fell back to the generic `place_hold`. Same trap
+`_sequence` and `detection` were rescued from; `setting` is carried now.
+
+## ✅ FIXED: the first run of a newly picked World rolled its lighting against the previous World's palette
+
+`_perform_game_reset` rolled the session's time/weather/mood line BEFORE
+`apply_experience_start` bound the World, and the roll reads the level's
+palette off the live prompt file — which, before the bind, still held whichever
+World was played last. Seen directly: a traced run of the cyberpunk sub-level
+opened with `weather: golden hour, rust, red dust, chain-link steel`, the
+Horizon desert's line, and that string went into every render of the session
+as "Lighting:". Rolled after the bind now; the next run opened on `7:14pm |
+weather: Deep shadow, toxic neon green, harsh crimson accent lights`.
+
+## ✅ FIXED: the standalone e2e suite was rebinding the live prompt file on this machine
+
+`test_standalone_e2e` boots `run_local.py --mock` as a subprocess. The
+authoring sandbox engages on a store import inside the *test* process, and
+this module imports no store — so the mock server read and wrote the real
+`prompts/`, `worlds/`, `experiences/` and `tunables.json`, and every New Game
+it played rebound the live prompt file to the World it played. Invisible while
+that was the active World; the moment it played a different one, the next real
+run inherited it (the lighting bug above was found this way). The suite now
+engages the sandbox explicitly and hands the `SOMEWHERE_*` redirects to the
+server's environment; the live file's SHA-256 is the same before and after a
+run. It also plays the shipped Experience regardless of `.active`, because in
+mock mode a run can only open on a World's cached first frame, and a machine
+whose active World's plate is stale (any prompt edit stamps it stale, and mock
+mode cannot redraw it) opened on nothing — the client held its opening blackout
+for 40s and every click timed out at 30. That was a fact about the developer's
+selection, not the build.
+
+## ✅ FIXED: five pacing tests were red in every combined run, for weeks
+
+`test_simulation_pacing.TestChoicePickDoesNotImg2imgTheCurrentFrame` passed
+alone and failed with `[] is not true` in any run that included
+`test_experience_mode`. Two tests there set `engine.IMAGE_ENABLED = False`
+*before* entering `_EngineGlobalSaver`, so the saver recorded False and put
+False back — and `_gen_image_impl` returns before it draws when images are off.
+Flipped inside the saver. 1,588 tests in one process, green.
+
+## ⚙️ Pacing on the active Experience: 2/5 → 4/9
+
+`untitled-experience-3` shipped `escalate_at=2, critical_at=5`. The boot warned
+about it every start (`[PACING] STORY CLOCK BURNS OUT … are POINTS, not
+turns`) and the trace showed why: escalating on turn 2, CRITICAL on turn 4,
+and CRITICAL forever — `threat_level` only climbs, and past critical every beat
+is written as a last stand. Set to the engine's own recommendation (4/9): the
+verification run tipped on turns 3 and 7. **This is authoring data, not in
+git** — Matt, it is your number to keep or change back in the Pacing sheet.
+
+## 🧪 Harness: `PT_TRACE=1` and `PT_PLAN`
+
+`playtest_app.py` grew a `LoopTrace`: after every turn it reads the session's
+`state.json` and `history.json`, `/api/status`, `/api/objectives`, the feed
+since the last turn and the client's objectives/evidence store, and writes one
+row per turn to `_playthrough/loop_trace.json`. The summary prints the LOOP
+FLOW: turns to escalating/critical, whether and when the goal was reached, how
+often the goal's words reached the prose, the slate and the tracker, detection
+by turn with its sensor, the HUD leads in order, the first encounter's outcome
+and the fate it rolled with. The findings are the handoffs that did NOT happen
+(`state["fate"]` never written; no GOAL row; CRITICAL by turn ≤5). `PT_PLAN`
+plays a specific verb order — a loop trace wants the encounter late as well as
+early. At the end it opens the objectives sheet and captures it, so what the
+tracker HOLDS and what it SHOWS are both on disk.
+
+Also: `worlds_store.DOCTRINE_KEYS` covers `image_camera_rules` (the fixture's
+copy is the factory's minus *"A real camera carried by a real person"*, the one
+line that tells the image model the camera has a body — and it was the only
+remaining key where the fixture and the factory differ); `truncate_choice`
+will not end a command on *against / beneath / between / beside* or a
+determiner (a traced slate carried *"Smash the electrified baton against"*);
+`test_scene_objects` counts the third `turn_count` bump the multi-round fights
+added on 09-18 and no longer assumes the level has no blast door.
+
+## 🔍 Found and NOT fixed — the design questions the trace leaves on the table
+
+- **Encounters are a walk timer, not the story.** `encounter_can_roll` gates on
+  "already open" and "alive" only; the trigger is the client's travel clock
+  (12–22s of walking the first time, 20–40s after). Detection, phase and threat
+  change the *odds* and the *framing* of a fight, never whether one happens,
+  and the on-screen witness becomes the antagonist only if SCAN ran on the same
+  turn the clock expired. Whether "critical + hunted" should be able to force
+  one is a design call.
+- **Nothing ends a run but death.** `critical` is a register, not a terminal
+  state; both shipped Experiences have `transitions: []`; the case-file win is
+  client-only. `goal_reached` is now a fact the run knows — a `goal_reached`
+  transition type in the Experience graph (*"On reaching the goal → next
+  World / cutscene"*) is the obvious next step, and it needs both editors.
+- **A fight leaves the player more hunted than it found them.** Each encounter
+  round runs `apply_detection(interaction=True)` (+1 heat) and `threat +2`,
+  while the odds are pinned to the level the fight opened on and nothing resets
+  detection on a win. `player_state.condition == "wounded"` reaches nothing but
+  the next fight's odds.
+- **MOVE TO is scored as meddling** (`scan_move` is in `is_interaction`, so
+  walking toward a thing adds the +1 heat bonus), and a tag labelled *exit* or
+  *open ground* sets `fleeing` and *cools* heat instead.
+- **SCAN goes dark when hunted.** The anti-loop gate returns no tags at
+  `DETECT_HUNTED` unless one is an egress — by design, but the player is not
+  told why the picture stopped answering; the harness could not commit an
+  INTERACT at turn 4 of run 7 for exactly this reason.
+- **The level's art direction still says 1993.** `image_art_direction` /
+  `image_negative_prompt` on the active World are the factory copies ("period
+  technology only… NEVER: neon, glowing screens, sci-fi") on a level whose
+  palette is "toxic neon green, cyberpunk". The plate wins, but the image model
+  reconciles the two every frame. Author them in the World.
+- **A first encounter whose plate render fails** (a Gemini SSL error on run 7)
+  holds a black "developing" frame through two retries and a still — ~60s.
+- **Smaller:** `also_relocating` is decided from the wording while the cut is
+  decided by the model, so a typed relocation the model confirms gets no
+  TRAVERSAL directive; `generate_and_apply_choice` and `_record_companion` do
+  read-modify-writes of the state file outside `WORLD_STATE_LOCK`; the
+  `world_tick_micro_change_instructions` key the drift prompt asks for does not
+  exist (drift is off by default); the level plate on this machine still has
+  four armed figures in it and a run-8 aftermath frame drew a silhouette in the
+  doorway that nobody wrote.
+- **A unit-test run resets the live session.** `python -m unittest` of the
+  flipbook and render suites posts `/api/reset` against the real
+  `sessions/default` — history, state and every frame of run 9 went with it
+  mid-investigation (the A/B above had to re-split its references out of the
+  replay cache). The authoring sandbox leaves sessions alone by design
+  (`authoring_sandbox.py`: "engine resolves them from its own ROOT"); a test
+  that resets a session should reset a sandboxed one.
+- **`test_exit_button` is red on this machine either way** — two errors with
+  the game window up and two with it closed, both `#btn-exit` never visible in
+  ten seconds. It boots `play.py --mock` unsandboxed against the machine's
+  active World, whose frame stamp is stale (`world_frames.record` drawn
+  `ddf0a7…` vs live `037498…`, `drawn_from_live` False — the
+  `image_camera_rules` doctrine guard changed the live fingerprint), so mock
+  mode opens on a plate that is still being redrawn. Same fix as the e2e
+  suite: engage the sandbox in `setUpClass` and hand its paths to the
+  subprocess.
+
 ## 🧪 A QA loop across the systems: play it, pull the metadata, match it to the frame
 
 Asked for: *"use the app, use our harness if you need, play the game, watch what
@@ -13,6 +393,12 @@ the frames. What follows is what that found, in the order it was found.
 Everything fixed here was re-played afterwards on the live app.
 
 ## ✅ FIXED: a hard cut kept the player in the room, because the flipbook was told it was one unbroken take
+
+*Superseded the same afternoon.* The "panel 1 begins inside the destination"
+rule below did relocate — as a jump cut on most turns of a run. The cut
+contract now keeps the start keyframe and demands arrival by the LAST panel;
+see "the flipbook never said what panel 1 was" above. The diagnosis here (the
+nearer, more concrete rule wins) still stands.
 
 *"Sprint toward the dark threshold"* (relocated, hard cut) rendered the same
 corridor with the door still ahead. *"Move to the doorway"* rendered the same

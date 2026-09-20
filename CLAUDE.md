@@ -75,10 +75,12 @@ Remote is `github.com/mradfo21/5th_Corner_Dev`.
 The tree is committed. The September 18 day and the September 20 morning went
 in as three commits on 2026-09-20 (`6206295` the docs and dead-code cleanup,
 `9dd4a7d` the feature day, `1118d5f` run isolation / region change / the
-doctrine guard), and the QA loop that afternoon added two more — see the top
-of `CHANGELOG.md`. Start with `git status` and `git log --oneline -6` anyway;
-`prompts/simulation_prompts.json` will usually show as modified, because
-binding a World rewrites it (see section 8), and that diff is not work.
+doctrine guard), the QA loop that afternoon added two more, and the loop trace
+that evening (the goal wired through every system, `goal_reached`, the fate
+that fights roll with) one more — see the top of `CHANGELOG.md`. Start with
+`git status` and `git log --oneline -8` anyway; `prompts/simulation_prompts.json`
+will usually show as modified, because binding a World rewrites it (see
+section 8), and that diff is not work.
 
 Untracked and safe to ignore or sweep: `_menushots_before/`,
 `_menushots_after/`, `_playthrough/`, loose `_*.png` probe images at the root,
@@ -108,7 +110,7 @@ anywhere. Grep `add_url_rule` in `api.py` for the gameplay routes and
 | `game_identity.py` | ~3k | The cast sheet — who you play as, the level, the camera |
 | `cutscene.py` | ~1.1k | The 4-shot montage |
 | `choices.py` | ~940 | Choice generation, grounded in the current frame |
-| `flipbook.py` | | Grid-of-panels image turns, split back into frames |
+| `flipbook.py` | | Grid-of-panels image turns, split back into frames; `grid_prompt` is the keyframe contract |
 | `local_vision.py` | | On-device MediaPipe detector for SCAN (falls back to Gemini) |
 | `ai_provider_manager.py` | | Text/vision/image routing across providers |
 | `prompts_store.py` / `worlds_store.py` / `experience_store.py` | | The authoring stores |
@@ -137,9 +139,16 @@ picture, **not a list of text buttons**:
 - **CAMP** — hard-cut into a playable campsite level with your companions round
   the fire. Not a Moment; the full HUD stays live.
 
-**Dials.** `threat` climbs monotonically as the story escalates. `chaos` spikes
-and decays. A clock advances with the phase. Injuries persist as condition
-flags, not HP (`DAMAGE_SYSTEM_ENABLED` is off).
+**Dials.** `threat` climbs monotonically as the story escalates and derives
+the phase. `chaos` spikes and decays. `detection` (hidden → suspicious →
+alerted → hunted) moves off the frame witness and the prose. The clock — time
+of day and the lighting line — is rolled once at reset, after the World bind,
+and never moves: the light is the run's identity, not a tension dial. The run
+also knows its goal (`level_goal`) and whether it has been reached
+(`goal_reached_turn`, the consequence model's verdict). Injuries persist in
+the prose (the previous beat is always in the prompt), not as HP
+(`DAMAGE_SYSTEM_ENABLED` is off); the one mechanical flag,
+`player_state.condition`, is read only by the next fight's odds.
 
 **Moments** (`docs/MOMENTS.md` — read it before touching any of them) are
 full-screen cinematics layered over a *paused, not destroyed* world.
@@ -364,67 +373,107 @@ it. Keep that; it is the reason the codebase is navigable at this size.
 
 ## 8. Open threads
 
-- **The QA loop, and what it left open.** On 2026-09-20 the app was played
-  through the harness four times (8 turns each) with every frame read against
-  its `history.json` entry, the server log and the generated panels; the fixes
-  and the evidence are the top section of `CHANGELOG.md`. Read that before
-  chasing any of the below. Still open from it, in the order they matter:
-  - **`relocated` is 1-for-2 on its own test sentence.** "explore deeper into
-    this space": once the model wrote *"you push past the perimeter and move
-    deeper"* and answered `relocated=False`; once `True`. `resolve_hard_transition`
-    trusts the flag absolutely. Worth letting the prose or the movement
-    classifier veto a `False` when both say "moved".
-  - **The prose sensor can jump hidden→alerted in one clause** (`heat 0->4
-    [prose]` on *"the facility's defenses begin to scan the hall"*) while the
-    frame witness reads `signal 0`. Prose deliberately escapes the frame
-    ceiling; +4 from invented flavour is the narrator's word choice deciding
-    the dial again.
-  - **The level plate is reference slot 1 on every frame**, and three files
-    state three intents about that slot (`game_identity`: setting leads;
-    `gemini_image_utils`: the player's sheet keeps slot 1; `engine`: plates
-    ride behind the previous frame). The hard-cut A/B did not implicate it on
-    its own, but settle the intent in one place. And the plate on this
-    machine's active level has four armed figures in it — a plate is WHERE,
-    and one with people in it casts them.
-  - **The active experience (`untitled-experience-3`) has the 266-char harness
-    placeholder for a world bible** (`world_initial_state`). That one is the
-    World's to author; the Level sheet carries the place, but the narrator and
-    the encounter roster work from a blank bible. Its pacing is also
-    misconfigured — the engine warns `escalate_at=2, critical_at=5 are POINTS,
-    not turns` at boot. Consider whether `somewhere` should be active;
-    `tools/demo_check.py` exists to settle exactly this.
-  - One Gemini image call took **81s** against a 135s timeout (every other
-    turn 8–13s); a retry at ~40s would usually beat the tail.
-    `state.json.tmp → state.json` hits `WinError 5` on most turns and retries
-    fine. `test_world_authoring` (6) and `test_somewhere_snapshot` (1) are red
-    on this machine for environmental reasons (they read the live cast sheet /
-    assert `somewhere` is active).
+- **The flipbook is a keyframe contract, and reference slot 1 is the start
+  keyframe.** Read `flipbook.grid_prompt`'s docstring and the CHANGELOG entry
+  ("the flipbook never said what panel 1 was") before touching any flipbook
+  prompt text. The shape: panel 1 = the previous sequence's last panel
+  (camera, spot AND pose), the last panel = the turn's `visual_scene`, the
+  rest = in-betweens of the CHOICE, the rig held and travelling; a cut turn
+  keeps the start keyframe and demands arrival by the LAST panel. Three
+  things are load-bearing and easy to undo by accident: (1) the previous
+  panel goes in reference slot 1 (`lead_reference`) — the img2img template
+  says "the attached image is the PREVIOUS moment", singular, and the model
+  reads that against slot 1, so with the plates first the *plate* was the
+  previous moment (four armed figures in panel 1); (2) `identity_seed` is
+  dropped on a continuing turn, cut or not — seeded, the grid was told
+  "there is no reference image" under five attachments; (3) the references
+  carry their own captions (`reference_labels`) because the image layer's
+  generic one says "do NOT copy the person in this frame". There is no init
+  image anywhere in this pipeline (`strength` is accepted and never read), so
+  continuity is persuasion; the mechanical version — composite the previous
+  panel into cell 1 of the grid reference and ask for an extension — is the
+  untested next step if persuasion is not enough. The A/B harness for this is
+  `_claude_ab_flipbook.py` (gitignored): three real turns replayed through
+  `_flipbook_generate` with their recorded references, grids to
+  `_claude_pull/ab_flipbook/`.
+  Also from that session: a `python -m unittest` run of the flipbook/render
+  suites posts `/api/reset` against the REAL `sessions/default` (the sandbox
+  leaves sessions alone by design) — it wiped run 9 mid-investigation. Don't
+  run the suites with a run you care about on screen.
+
+- **The loop trace, and what it left open.** On 2026-09-20 every handoff in
+  the loop was traced in the source and then in four traced runs of the real
+  app (`PT_TRACE=1` in `playtest_app.py` records, per turn, what each system
+  knew; `_playthrough/loop_trace.json`). The fixes and the evidence are the
+  top section of `CHANGELOG.md`; the run's goal now reaches the consequence
+  prompt, the slate, the objectives sheet (a GOAL row), the narrator and the
+  encounter brief, and the consequence model answers `goal_reached`. Read
+  that section before chasing anything below. Still open, in the order they
+  matter:
+  - **Nothing ends a run but death.** `goal_reached_turn` is a fact the run
+    knows now; the Experience graph has no transition type that reads it
+    (`condition_met` knows `turn_count`, `game_over`, `immediate`), and both
+    shipped Experiences have `transitions: []`. A `goal_reached` edge ("on
+    reaching the goal → next World / cutscene") is the obvious next step and
+    needs both editors.
+  - **Encounters are a walk timer.** `encounter_can_roll` gates on "already
+    open" and "alive"; the client's travel clock decides when. Detection,
+    phase and threat change a fight's odds and framing, never whether it
+    happens; the on-screen witness is the antagonist only if SCAN ran on the
+    turn the clock expired. Whether "critical + hunted" should force one is a
+    design call, not a bug.
+  - **A fight leaves the player more hunted than it found them**: each round
+    is `apply_detection(interaction=True)` (+1 heat) and threat +2, the odds
+    stay pinned to the opening level, nothing resets on a win, and
+    `player_state.condition == "wounded"` reaches nothing but the next
+    fight's odds. MOVE TO takes the same +1 "meddling" bonus (`scan_move` is
+    in `is_interaction`), and a tag labelled *exit* / *open ground* sets
+    `fleeing` and cools heat instead.
+  - **SCAN goes dark when hunted** (the anti-loop gate returns no tags at
+    `DETECT_HUNTED` unless one is an egress) and the player is not told why
+    the picture stopped answering.
+  - The active World's `image_art_direction` / `image_negative_prompt` are
+    the factory copies ("1993… NEVER: neon, sci-fi") on a cyberpunk neon
+    level; the plate wins, but the image model reconciles them every frame.
+    And that plate still has four armed figures in it — a run-8 aftermath
+    drew a silhouette in a doorway nobody wrote. Both are authoring.
+  - `also_relocating` (the TRAVERSAL directive) is decided from the wording
+    while the cut is decided by the model's `relocated`; a typed relocation
+    the model confirms gets no traversal guidance. `generate_and_apply_choice`
+    and `_record_companion` read-modify-write the state file outside
+    `WORLD_STATE_LOCK`. The drift prompt asks for a
+    `world_tick_micro_change_instructions` key that does not exist (drift is
+    off by default). A first encounter whose plate render fails holds a black
+    "developing" frame for ~60s of retries.
+  - `test_world_authoring` (6), `test_somewhere_snapshot` (1) and
+    `test_exit_button`'s two browser tests are red on this machine for
+    environmental reasons (they read the live cast sheet / assert `somewhere`
+    is active / boot the launcher in mock mode against this machine's active
+    World). `test_standalone_e2e` used to be in that list and is not any more
+    — it engages the authoring sandbox and plays the shipped Experience; the
+    same treatment would fix `test_exit_button`.
 
 - **The live prompt file is a union of game doctrine and World authoring, and
   a World bind rewrites it.** Understand this before editing it: whatever you
   put in `prompts/simulation_prompts.json` lasts until the next New Game binds
-  the active World's copy over it. The guard in `worlds_store` (`DOCTRINE_KEYS`)
-  now substitutes the factory copy for a stored value that is the harness
-  fixture, byte-for-byte OR the fixture plus lines the factory itself carries
-  (a World on this machine had the fixture with the ALREADY DONE paragraph
-  spliced in, which exact match called "authored"). Worth checking whether
-  `DOCTRINE_KEYS` should also cover `image_camera_rules` — polluted once, not
-  in the tuple — and whether `world_initial_state` being the fixture should
-  at least be said out loud at boot.
+  the active World's copy over it. Edit a prompt with
+  `tools/edit_prompt_everywhere.py` (live + factory + every World) or the
+  `_claude_fix_prompts2.py` pattern (same reach, exact match, no tidy pass).
+  The guard in `worlds_store` (`DOCTRINE_KEYS`, now four keys including
+  `image_camera_rules`) substitutes the factory copy for a stored value that is
+  the harness fixture, byte-for-byte OR the fixture plus lines the factory
+  itself carries. `world_initial_state` on the active World is still the
+  266-char harness placeholder — that one is the World's to author.
 
-- **The four red tests in `test_experience_mode.TestPacingFairnessHardening`
-  are a test written for a trim that was never applied — not dropped doctrine.**
-  Three of the four assert phrases verbatim from
-  `docs/plans/PROMPT_TRIM_PROPOSAL.md`, whose first line is "NOT LIVE. Nothing
-  in this file has been applied"; the doctrine they are looking for is present
-  in the live file in its long form ("INJURY IS THE DEFAULT CONSEQUENCE, NOT
-  DEATH", the ≈30% stillness-beat block). `git log -S` shows those phrases
-  were only ever added, to the test, in `262876d`. Fix three assertions to the
-  shipped wording. The fourth (`test_time_of_day_is_not_a_writer_dial`) is the
-  real one: the live consequence prompt still carries the phase-linked
-  darkening ("when the phase escalates, the world may darken one tier"), which
-  is the writer dial that invented a new sky in `visual_scene` on top of the
-  engine rewriting `time_of_day`.
+- **Anything that boots the server in a subprocess must carry the sandbox's
+  environment.** `authoring_sandbox.engage()` only redirects the paths of the
+  process that called it; `test_standalone_e2e` shows the pattern (engage,
+  copy the `SOMEWHERE_*` vars into the child's env, drop `.active`). A
+  subprocess without it plays on — and rebinds — the real live prompt file.
+
+- **`_generate_random_starting_time` must run after the World bind** (it
+  does now). The lighting line it rolls goes into every render of the session
+  as "Lighting:", and it reads the level's palette off the live prompt file.
 
 - `docs/plans/` is mostly **shipped work**, kept as design records. Every file
   opens with a **Status** line; trust it over the body, and never implement a

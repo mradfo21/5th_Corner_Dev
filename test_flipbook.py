@@ -315,27 +315,93 @@ class TestGuideImages(unittest.TestCase):
                          blank.stat().st_size)
 
 
-class TestACutTurnBeginsInsideTheDestination(unittest.TestCase):
-    """The grid rules are written for one unbroken take, and on a turn the
-    engine had already decided was a hard cut they won: "Move to the doorway"
-    rendered the same hatch at 0.97 continuity, "Sprint toward the dark
-    threshold" the same corridor with the door still ahead. The still path,
-    given the identical prompt and references, relocated four times out of
-    four. The only difference was "PANEL 1: the very next instant after the
-    reference image — same landmarks."""
+class TestTheGridIsAKeyframeContract(unittest.TestCase):
+    """Panel 1 is the START KEYFRAME continued — camera AND pose — the last
+    panel is the END, and the rest are in-betweens of one motion.
+
+    Every earlier draft described the motion without saying what the first
+    pose was, so the model chose one; with a face-on character sheet in
+    reference slot 1 it chose that, and the grid spent its remaining panels
+    swinging the camera round behind the character. Played back: a camera
+    that jumps sides every 400ms. "The interpolation jumps around and doesn't
+    transition us from the start to the end with consistently framed posing."
+    """
+
+    def test_panel_one_inherits_the_start_keyframes_camera_and_pose(self):
+        text = flipbook.grid_prompt(4, seconds=1.7)
+        self.assertIn("very next instant after the START KEYFRAME", text)
+        self.assertIn("SAME SPOT and the SAME POSE", text)
+        self.assertNotIn("THIS TURN IS A CUT", text)
+        self.assertNotIn("THIS TURN TRAVELS", text)
+
+    def test_the_last_panel_is_the_end_keyframe_and_the_rest_are_in_betweens(self):
+        text = flipbook.grid_prompt(4, seconds=1.7)
+        self.assertIn("PANEL 4: the END KEYFRAME", text)
+        self.assertIn("BETWEEN (panels 2 and 3)", text)
+        self.assertIn("never storyboard a different beat", text)
+
+    def test_the_camera_rig_travels_it_is_not_a_tripod(self):
+        """"Does not move … same lens from the same spot" is a locked-off
+        tripod, stated beside a follow-cam rig that trails the character. The
+        rig holds — side, height, distance — and goes with them."""
+        text = flipbook.grid_prompt(4)
+        self.assertNotIn("same lens from the same spot", text)
+        self.assertIn("the same side of the subject and the same distance", text)
+        self.assertIn("never swings round to the other side of them", text)
+        self.assertIn("the camera does not cut", text)
+
+    def test_the_establishing_beat_inherits_the_camera_but_not_a_pose(self):
+        # Its reference is the montage's unpeopled plate; there is nobody in
+        # it whose pose panel 1 could continue.
+        text = flipbook.grid_prompt(4, keyframe_subject=False)
+        self.assertIn("very next instant after the START KEYFRAME", text)
+        self.assertNotIn("SAME POSE", text)
+
+    def test_two_panels_are_both_keyframes(self):
+        text = flipbook.grid_prompt(2)
+        self.assertIn("PANEL 1:", text)
+        self.assertIn("PANEL 2: the END KEYFRAME", text)
+        self.assertNotIn("BETWEEN (", text)
+
+
+class TestACutTurnTravelsToTheDestination(unittest.TestCase):
+    """A hard cut keeps the START keyframe and moves the relocation demand to
+    the last panel.
+
+    The first cut rule put the whole grid inside the destination ("panel 1 is
+    the first frame inside the DESTINATION … a panel that still shows the
+    place they left is a FAILED panel"), because handed the continuous-shot
+    rules the grid never relocated at all — "Move to the doorway" rendered
+    the same hatch at 0.97 continuity while the still path relocated four
+    times out of four. It did relocate, as a jump cut: panel 1 became a fresh
+    composition of a character already somewhere else, and since MOVE TO and
+    every relocating verb are cuts, that was most turns of a run. The take
+    now travels: panel 1 continues the reference, the last panel has arrived
+    and is the one that fails if it still shows where panel 1 was."""
 
     def test_an_ordinary_turn_is_still_one_unbroken_take(self):
         text = flipbook.grid_prompt(4, seconds=1.7)
-        self.assertIn("very next instant after the reference", text)
-        self.assertNotIn("THIS TURN IS A CUT", text)
+        self.assertIn("very next instant after the START KEYFRAME", text)
+        self.assertNotIn("THIS TURN TRAVELS", text)
 
-    def test_a_cut_turn_arrives_before_panel_one(self):
+    def test_a_cut_turn_starts_from_the_keyframe_and_arrives_by_the_last_panel(self):
         text = flipbook.grid_prompt(4, seconds=1.7, cut=True)
-        self.assertIn("THIS TURN IS A CUT", text)
-        self.assertNotIn("very next instant after the reference", text)
-        self.assertIn("place they left is a FAILED panel", text)
-        # Still one shot once it is there: the camera does not cut BETWEEN panels.
+        self.assertIn("THIS TURN TRAVELS", text)
+        self.assertIn("PANEL 1: the START KEYFRAME's camera, spot and pose", text)
+        self.assertIn("PANEL 4: ARRIVED", text)
+        self.assertIn("A panel 4 that still shows the place panel 1 shows", text)
+        self.assertIn("is a FAILED panel", text)
+        # The old rule — arrive before panel 1 — is gone, not softened.
+        self.assertNotIn("first frame inside the DESTINATION", text)
+        self.assertNotIn("Do not keep its walls", text)
+        # Still one shot: the camera does not cut BETWEEN panels, it travels.
         self.assertIn("the camera does not cut", text)
+        self.assertIn("travelled THROUGH", text)
+
+    def test_a_travelling_two_panel_grid_has_no_middle(self):
+        text = flipbook.grid_prompt(2, cut=True)
+        self.assertIn("PANEL 2: ARRIVED", text)
+        self.assertNotIn("BETWEEN (", text)
 
     def test_the_engine_stands_the_authored_prefix_down_on_a_cut(self):
         """The authored prefix says "HELD CONSTANT IN EVERY PANEL: … location";
@@ -545,6 +611,52 @@ class TestTheEngineDecidesPerSession(unittest.TestCase):
         for n in flipbook.FRAME_COUNTS:
             block = self.engine._flipbook_action_block("Run", "You run.", False, n)
             self.assertIn(str(n), block, n)
+
+    def test_the_action_block_animates_the_choice_between_two_keyframes(self):
+        """The prose is several beats long — "you sprint… you reach the door…
+        you slam into it" — and handed to ANIMATE THIS it was storyboarded,
+        one beat per panel. The grid animates the CHOICE from the start
+        keyframe to the turn's visual scene; the prose stays as context."""
+        import game_identity
+        prose = ("You sprint through the fog, your boots slapping the grating. "
+                 "You reach the rusted blast door and slam into it.")
+        scene = "Isaac stands pressed against the rusted blast door."
+        with unittest.mock.patch.object(game_identity, "shows_character",
+                                        return_value=True), \
+             unittest.mock.patch.object(game_identity, "display_name",
+                                        return_value="Isaac"):
+            block = self.engine._flipbook_action_block(
+                "Sprint into the fog", prose, False, 4, end_state=scene)
+        self.assertIn(">>> Sprint into the fog <<<", block)
+        self.assertNotIn(f">>> {prose}", block)
+        self.assertIn("START (panel 1) — Isaac exactly as the START KEYFRAME", block)
+        self.assertIn(f"END (panel 4) — {scene}", block)
+        self.assertIn("BETWEEN (panels 2 to 3) — 2 evenly spaced in-betweens", block)
+        self.assertIn("Context, not extra beats to draw", block)
+        self.assertIn(prose, block)
+
+    def test_a_travelling_turn_keeps_the_camera_behind_them(self):
+        import game_identity
+        with unittest.mock.patch.object(game_identity, "shows_character",
+                                        return_value=True), \
+             unittest.mock.patch.object(game_identity, "display_name",
+                                        return_value="Isaac"):
+            block = self.engine._flipbook_action_block(
+                "Move to the door", "You walk.", False, 4,
+                end_state="Isaac at the door.", travels=True)
+        self.assertIn("the camera travelling behind them the whole way", block)
+        self.assertIn("never swings round to face them", block)
+
+    def test_the_body_cam_gets_the_same_contract_as_a_view(self):
+        import game_identity
+        with unittest.mock.patch.object(game_identity, "shows_character",
+                                        return_value=False):
+            block = self.engine._flipbook_action_block(
+                "Climb the fence", "You climb.", False, 4,
+                end_state="The far side of the fence, ground close.")
+        self.assertIn("START (panel 1): the exact view in the START KEYFRAME", block)
+        self.assertIn("END (panel 4): The far side of the fence", block)
+        self.assertIn(">>> Climb the fence <<<", block)
 
     def test_playback_length_is_the_count_times_the_hold(self):
         # The prompt asks for an action that fits the time it will be on screen,
@@ -788,6 +900,76 @@ class TestGeneratingAFlipbookTurn(unittest.TestCase):
         self._model_returns_a_grid(ok=False)
         self.assertIsNone(self._generate())
 
+    def test_the_references_are_labelled_by_role(self):
+        """The image layer's generic caption for a non-plate attachment is
+        "PREVIOUS FRAME — place, light, and materials only … do NOT copy the
+        person in this frame" — right for a still, and on a flipbook turn the
+        sentence that threw the start pose away. The blank layout guide got
+        the same caption."""
+        anchor = self.tmp / "anchor.png"
+        wider = self.tmp / "wider_f01.png"
+        for p in (anchor, wider):
+            _grid(width=32, height=32, path=p)
+        self._model_returns_a_grid()
+        self._generate(st={"flipbook_last_frame": str(anchor),
+                           "flipbook_first_frame": str(wider)})
+        labels = self.calls[-1]["reference_labels"]
+        refs = self.calls[-1]["reference_image_path"]
+        self.assertTrue(labels[str(anchor)].startswith("START KEYFRAME"))
+        self.assertIn("same pose", labels[str(anchor)])
+        self.assertTrue(labels[str(wider)].startswith("WIDER VIEW"))
+        self.assertTrue(labels[refs[-1]].startswith("LAYOUT TEMPLATE"))
+        self.assertIn("2x2", labels[refs[-1]])
+
+    def test_a_continuing_turn_is_not_seeded_as_nothing_to_continue_from(self):
+        """`identity_seed` arrives True on every hard transition — the still
+        path's rule. For the grid it selected the text-to-image template
+        ("FIRST FRAME - NOTHING TO CONTINUE FROM: there is no reference
+        image") under five attached references, and "compose a NEW opening
+        shot" in place of the continuity block. With MOVE TO and every
+        relocating verb counted as cuts, that was most turns of a run."""
+        anchor = self.tmp / "anchor.png"
+        sheet = self.tmp / "sheet.png"
+        for p in (anchor, sheet):
+            _grid(width=32, height=32, path=p)
+        self._model_returns_a_grid()
+        self.engine._flipbook_generate(
+            prompt_str="A ridge at dusk.", caption="ridge", choice="Move to the ridge",
+            dispatch="You cross to the ridge.", world_prompt="", time_of_day="dusk",
+            img_dir=self.tmp, session_id=self.SESSION,
+            st={"flipbook_mode": True, "flipbook_frames": 4,
+                "flipbook_last_frame": str(anchor)},
+            refs=[], identity_paths=[str(sheet)], identity_seed=True,
+            hard_cut=True)
+        call = self.calls[-1]
+        self.assertFalse(call["identity_seed"])
+        self.assertEqual(call["identity_paths"], [str(sheet)])
+        self.assertIn("THIS TURN TRAVELS", call["prompt"])
+        self.assertIn("START (panel 1)", call["prompt"])
+        # ...and the start keyframe takes slot 1, ahead of the sheet.
+        self.assertEqual(call["lead_reference"], str(anchor))
+
+    def test_the_establishing_beat_keeps_its_seed(self):
+        # Its reference is the montage's unpeopled plate; the character has to
+        # be composed INTO it, which is what the seed grammar is for.
+        plate = self.tmp / "montage_wide.png"
+        sheet = self.tmp / "sheet.png"
+        for p in (plate, sheet):
+            _grid(width=32, height=32, path=p)
+        self._model_returns_a_grid()
+        self.engine._flipbook_generate(
+            prompt_str="A ridge at dusk.", caption="ridge", choice="",
+            dispatch="", world_prompt="", time_of_day="dusk",
+            img_dir=self.tmp, session_id=self.SESSION,
+            st={"flipbook_mode": True, "flipbook_frames": 4},
+            refs=[str(plate)], ref_is_anchor=True,
+            identity_paths=[str(sheet)], identity_seed=True, establishing=True)
+        call = self.calls[-1]
+        self.assertTrue(call["identity_seed"])
+        self.assertNotIn("SAME POSE", call["prompt"])
+        self.assertIn("ESTABLISHING SHOT", call["prompt"])
+        self.assertIsNone(call["lead_reference"])
+
     def test_a_stale_authored_prompt_is_dropped_rather_than_contradicted(self):
         self._model_returns_a_grid()
         with unittest.mock.patch.dict(
@@ -796,6 +978,89 @@ class TestGeneratingAFlipbookTurn(unittest.TestCase):
                 clear=False):
             self._generate(frames=4)
         self.assertNotIn("16 frames", self.calls[-1]["prompt"])
+
+
+class TestTheWireRequestForAFlipbookTurn(unittest.TestCase):
+    """What the image layer actually sends for a continuing grid: the start
+    keyframe in slot 1 with its own caption, the sheet behind it, the guide
+    last, and the continuity block naming the keyframe rather than "the
+    FIRST reference image" (which, with plates attached, was the sheet)."""
+
+    def setUp(self):
+        import gemini_image_utils
+        self.giu = gemini_image_utils
+        self.tmp = Path(tempfile.mkdtemp())
+        self.start = self.tmp / "prev_f04.png"
+        self.wider = self.tmp / "prev_f01.png"
+        self.sheet = self.tmp / "character_sheet.png"
+        self.guide = self.tmp / "flipbook_guide_2x2.png"
+        for p in (self.start, self.wider, self.sheet, self.guide):
+            Image.new("RGB", (8, 8)).save(p)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _payload(self, **kw):
+        seen = {}
+
+        def fake_post(url, headers=None, json=None, timeout=None, **_):
+            seen["payload"] = json
+            raise RuntimeError("stop here — the payload is what we came for")
+
+        with unittest.mock.patch.object(self.giu, "GEMINI_API_KEY", "test-key"), \
+             unittest.mock.patch.object(self.giu.requests, "post", fake_post):
+            self.giu.generate_gemini_img2img(
+                prompt="THE KEYFRAMES — panel 1 and panel 4 are given.",
+                caption="grid", output_dir=self.tmp, is_flipbook=True,
+                flipbook_grid=(2, 2), **kw)
+        parts = seen["payload"]["contents"][0]["parts"]
+        labels = [parts[i - 1].get("text", "") for i, p in enumerate(parts)
+                  if "inlineData" in p]
+        texts = [p["text"] for p in parts if "text" in p]
+        return labels, texts[-1]
+
+    def _labels(self):
+        # What engine._flipbook_generate supplies; the sheet's label is the
+        # generic one plus the flipbook's sentence about whose pose it is not.
+        return {
+            str(self.start): "START KEYFRAME — where the camera stands.",
+            str(self.wider): "WIDER VIEW — context.",
+            str(self.guide): "LAYOUT TEMPLATE — a blank 2x2 grid.",
+            str(self.sheet): "CHARACTER SHEET for Isaac — copy this face. "
+                             "Isaac's pose comes from the START KEYFRAME.",
+        }
+
+    def test_the_start_keyframe_leads_and_keeps_its_own_caption(self):
+        labels, _ = self._payload(
+            reference_image_path=[str(self.start), str(self.wider), str(self.guide)],
+            identity_paths=[str(self.sheet)], reference_labels=self._labels(),
+            lead_reference=str(self.start))
+        self.assertTrue(labels[0].startswith("START KEYFRAME"), labels)
+        self.assertTrue(labels[1].startswith("CHARACTER SHEET"), labels)
+        self.assertTrue(labels[-1].startswith("LAYOUT TEMPLATE"), labels)
+        self.assertFalse(any("PREVIOUS FRAME" in l for l in labels), labels)
+        self.assertFalse(any("do NOT copy the person" in l for l in labels), labels)
+
+    def test_without_a_lead_the_plates_still_go_first(self):
+        # The still path's rule is untouched: nothing asked for a lead.
+        labels, _ = self._payload(
+            reference_image_path=[str(self.start)],
+            identity_paths=[str(self.sheet)])
+        self.assertIn("CHARACTER SHEET", labels[0])
+        self.assertIn("PREVIOUS FRAME", labels[1])
+
+    def test_the_continuity_block_names_the_keyframe_not_the_first_attachment(self):
+        _, prompt = self._payload(
+            reference_image_path=[str(self.start), str(self.guide)],
+            identity_paths=[str(self.sheet)], reference_labels=self._labels(),
+            lead_reference=str(self.start))
+        self.assertIn("The reference labelled START KEYFRAME is the final panel", prompt)
+        self.assertNotIn("The FIRST reference image is the FINAL PANEL", prompt)
+        self.assertIn("The KEYFRAMES section above", prompt)
+        # The old first-person desert specifics are gone with it.
+        self.assertNotIn("Mesas, buildings, fences", prompt)
+        self.assertNotIn("continuation, NOT teleportation", prompt)
+
 
 
 class TestTheApiTogglesOneSession(unittest.TestCase):

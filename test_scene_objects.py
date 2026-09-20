@@ -132,7 +132,10 @@ class TestScanAndItsTurnShareAStamp(unittest.TestCase):
     def test_turn_count_increments_only_after_choices_are_appended(self):
         src = (ROOT / "engine.py").read_text(encoding="utf-8", errors="replace")
         bumps = src.count('st["turn_count"] = int(st.get("turn_count", 0)) + 1')
-        self.assertEqual(bumps, 2, "turn_count bump sites moved; re-check the "
+        # Three sites: the death turn, the held encounter round (added with
+        # the multi-round fights on 09-18 — a round that keeps the fight open
+        # is still a turn), and the ordinary turn. All in the turn loop.
+        self.assertEqual(bumps, 3, "turn_count bump sites moved; re-check the "
                                    "scene-object cache staleness guard")
         # Both bumps live in _process_turn_background, after the phase that
         # generated the consequence — never inside advance_turn_image_fast.
@@ -256,7 +259,10 @@ class TestDirectiveReachesTheModel(unittest.TestCase):
             "scene_objects_turn": 3,
         })
         self.assertNotIn("ON SCREEN RIGHT NOW", prompt)
-        self.assertNotIn("blast door", prompt)
+        # The stale pair, not the bare noun: the director's sheet names the
+        # live level's landmarks, and on a machine whose level has a blast
+        # door among them the bare word is in every prompt.
+        self.assertNotIn("blast door, mercenary", prompt)
 
     def test_the_existing_grounding_contract_still_ships(self):
         # The new block is additive: the fairness/phase rules the death doctrine

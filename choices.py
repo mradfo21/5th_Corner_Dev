@@ -41,6 +41,13 @@ CHOICE_MAX_CHARS = 40
 _CHOICE_TAIL_STOP = frozenset({
     "the", "a", "an", "to", "from", "of", "into", "onto", "toward", "towards",
     "at", "for", "with", "and", "or", "your", "my",
+    # Words that cannot end a command. A traced run put "Smash the
+    # electrified baton against" on a button: six words, under the cap, and
+    # the seventh was the thing being smashed. Only prepositions that never
+    # stand alone as a particle, plus determiners: "Shoulder the oil barrel
+    # over", "Push through", "Look around" are whole commands and stay.
+    "against", "beneath", "between", "beside", "its", "his", "her",
+    "their", "our", "this", "that",
 })
 _CHOICE_HEDGE_PREFIX = ("attempt to ", "try to ", "try and ")
 

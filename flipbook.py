@@ -388,24 +388,47 @@ def prefix_is_stale(text: str, frames) -> bool:
     return bool(counts) and frames not in counts
 
 
-def grid_prompt(frames, seconds: float = 2.0, cut: bool = False) -> str:
+def grid_prompt(frames, seconds: float = 2.0, cut: bool = False,
+                keyframe_subject: bool = True) -> str:
     """The shape-specific half of the flipbook instruction.
 
-    ``cut`` — this turn is a HARD TRANSITION: the engine has already decided the
-    character left the place the reference shows (MOVE TO, a relocating typed
-    action, a door). Every other line of this prompt is written for one
-    unbroken take, and it said so in the strongest terms it had: "PANEL 1: the
-    very next instant after the reference image — same camera height, same
-    direction, same landmarks. A viewer … must not see a cut." Handed that on
-    a cut turn, with the previous panel as the first reference and the render
-    prompt's "The camera is in a NEW PLACE" four thousand characters further
-    down, the model did what the nearer, more concrete rule said: "Sprint
-    toward the dark threshold" rendered the same corridor with the door still
-    ahead, and "Move to the doorway" rendered the same hatch at 0.97
-    continuity. The still path, given the identical prompt and references,
-    relocated four times out of four — the grid rules were the only
-    difference. With ``cut`` the panels are still one take, but the take
-    begins INSIDE the destination.
+    The grid is a KEYFRAME CONTRACT. Panel 1 is the START KEYFRAME — the
+    reference labelled that way, the previous sequence's last panel: same
+    camera, same spot, the subject in the same pose, just beginning to move.
+    The last panel is the END KEYFRAME — the scene the render instruction
+    describes, reached and settled. The panels between are in-betweens of ONE
+    motion from the first pose to the last. Every earlier draft of this text
+    described the motion ("time advances", "the action has visibly happened")
+    without ever saying what the first pose WAS, so the model chose one — and
+    with a face-on character sheet sitting in reference slot 1 it chose that:
+    panel 1 came back as a portrait walking toward the lens, and the grid spent
+    its remaining panels swinging round behind the character to satisfy the
+    follow-cam rules. Played back, that is a camera that jumps to a new side of
+    the subject every 400ms. Reported as "the interpolation jumps around and
+    doesn't transition us from the start to the end".
+
+    ``cut`` — this turn TRAVELS: the engine has already decided the character
+    leaves the place the reference shows (MOVE TO, a relocating typed action,
+    a door). The first version of the cut rule put the whole grid inside the
+    destination ("panel 1 is the first frame inside the DESTINATION … a panel
+    that still shows the place they left is a FAILED panel"), because handed
+    the continuous-shot rules the grid never relocated at all ("Move to the
+    doorway" rendered the same hatch at 0.97 continuity while the still path
+    relocated four times out of four). It did relocate — as a jump cut, which
+    on a 3P follow cam is the start keyframe thrown away: panel 1 became a
+    fresh composition of a character already standing somewhere else. And
+    because MOVE TO, "further down the corridor" and every relocating verb
+    are cuts, that was most turns of a run. The contract now keeps the START
+    keyframe on a cut too and moves the relocation demand to where it
+    belongs: the LAST panel has arrived, and it is the last panel that fails
+    if it still shows the place panel 1 shows. The take travels; the camera
+    goes with it.
+
+    The camera line used to read "does not move … same lens from the same
+    spot", which is a locked-off tripod. The follow cam and the body cam both
+    travel with the subject, and a tripod rule beside a follow-cam rig is a
+    contradiction the model resolves however it likes. It now holds the RIG
+    constant — height, side, distance, lens — and lets it travel.
 
     This is generated rather than authored because it is the one part of the
     flipbook prompt that is a function of the grid: the old prompt was prose
@@ -421,6 +444,11 @@ def grid_prompt(frames, seconds: float = 2.0, cut: bool = False) -> str:
     while the choices offered to fight a man with bolt cutters who was never
     drawn. A rule meant to keep a shot physically coherent had quietly become a
     rule against events.
+
+    ``keyframe_subject`` — panel 1 also inherits the SUBJECT's spot and pose
+    from the start keyframe. Off for the establishing beat, whose reference is
+    the montage's deliberately unpeopled plate: there is nobody in it to
+    inherit a pose from, and the establishing block places the character.
     """
     frames = normalize_frames(frames)
     rows, cols = shape_for(frames)
@@ -435,6 +463,74 @@ def grid_prompt(frames, seconds: float = 2.0, cut: bool = False) -> str:
 
     order = ("Time runs LEFT to RIGHT along the row.") if rows == 1 else (
         "Time runs LEFT to RIGHT along a row, then DOWN to the row below.")
+
+    if frames == 2:
+        between = ""
+    elif frames == 4:
+        between = "panels 2 and 3"
+    else:
+        between = f"panels 2 to {frames - 1}"
+
+    if cut:
+        keyframes = (
+            f"THIS TURN TRAVELS. By panel {frames} the character has LEFT the "
+            f"place the START KEYFRAME shows and ARRIVED at the DESTINATION the "
+            f"scene names. It is still ONE unbroken take: the camera goes WITH "
+            f"them the whole way. It does not cut.\n"
+            f"PANEL 1: the START KEYFRAME's camera, spot and pose — the very "
+            f"next instant after that reference, the character launching into "
+            f"the move with the destination readable in the depth ahead of "
+            f"them. A viewer watching the reference and then panel 1 must not "
+            f"see a cut. This is the ONLY panel that may still be dominated by "
+            f"the surroundings in that reference.\n"
+            + (f"BETWEEN ({between}): the distance being crossed — each panel "
+               f"a further stride along the way, the destination growing in "
+               f"the depth ahead, what surrounded them in panel 1 sliding out "
+               f"behind the camera. Even steps of the same motion, each panel "
+               f"strictly later than the one before it.\n" if between else "")
+            + f"PANEL {frames}: ARRIVED. The destination fills the depth in "
+            f"front of them — they are at it or inside it — and this is the "
+            f"frame the shot HOLDS on, so it is a clean, settled composition, "
+            f"not a mid-blur. From the START KEYFRAME this panel keeps ONLY the "
+            f"film stock, the light and palette (unless the scene says the "
+            f"light changed), the camera rig, and the person. A panel "
+            f"{frames} that still shows the place panel 1 shows — the same "
+            f"walls, the same floor, the same landmarks at the same distance — "
+            f"is a FAILED panel.\n"
+        )
+        setting_rule = (
+            f"- The SETTING is one continuous place travelled THROUGH, not "
+            f"rebuilt: what falls behind the camera stays behind it, what is "
+            f"ahead grows as it is approached, nothing rearranges itself "
+            f"between panels.\n"
+        )
+    else:
+        keyframes = (
+            f"PANEL 1: the very next instant after the START KEYFRAME (the "
+            f"reference labelled as such — the previous sequence's last panel): "
+            f"same camera height, same direction, same distance, same "
+            f"landmarks"
+            + (", and the subject in the SAME SPOT and the SAME POSE as that "
+               "reference, just beginning to move" if keyframe_subject else "")
+            + f". A viewer watching the reference and then panel 1 must not "
+            f"see a cut.\n"
+            + (f"BETWEEN ({between}): even in-betweens of ONE motion from panel "
+               f"1's pose to panel {frames}'s — each panel strictly later than "
+               f"the one before it, the body a further step along the same "
+               f"path. Never go backwards in time, never repeat a pose, never "
+               f"re-order the beats, never storyboard a different beat.\n"
+               if between else "")
+            + f"PANEL {frames}: the END KEYFRAME — the scene the render "
+            f"instruction describes, reached: the action has visibly happened, "
+            f"whatever was being approached has been reached, whatever was "
+            f"being opened is open. This is the frame the shot HOLDS on, so it "
+            f"must be a clean, settled composition, not a mid-blur.\n"
+        )
+        setting_rule = (
+            f"- The SETTING holds still: walls, doors, vehicles, machinery and "
+            f"the horizon stay the same size in the same place. The place does "
+            f"not rebuild itself between panels.\n"
+        )
 
     return (
         f"OUTPUT FORMAT: a single image containing a {rows}x{cols} grid of "
@@ -455,9 +551,7 @@ def grid_prompt(frames, seconds: float = 2.0, cut: bool = False) -> str:
         f"draw them, or anything like them, anywhere in the render.\n\n"
         f"{order} Panel 1 is the earliest moment, panel {frames} is the "
         f"latest. TIME ADVANCES across the panels: they carry the action from "
-        + ("the moment of arrival in the NEW place" if cut else
-           "where the reference image left off")
-        + f" through to its completion, and by "
+        f"where the START KEYFRAME left off through to its completion, and by "
         f"panel {frames} the world has moved on. Each step forward should be "
         f"big enough to see — a viewer must never wonder whether two panels are "
         f"the same moment. It is still ONE unbroken shot: time moves, the "
@@ -467,38 +561,19 @@ def grid_prompt(frames, seconds: float = 2.0, cut: bool = False) -> str:
         f"one motion, not as {frames} separate pictures of the same subject. If "
         f"the panels were shuffled the animation would be wrong, so where a "
         f"panel sits in the grid is where it sits in time.\n\n"
-        + (
-            f"THIS TURN IS A CUT. The reference image is the place the character "
-            f"has just LEFT — it is not where panel 1 happens. Panel 1 is the "
-            f"first frame inside the DESTINATION the scene names: they have "
-            f"already arrived, it fills the depth in front of them, and what "
-            f"surrounded them a moment ago is behind them or gone. From the "
-            f"reference keep ONLY the film stock, the light and palette (unless "
-            f"the scene says the light changed), and the person. Do not keep its "
-            f"walls, its floor, its landmarks or its camera position. A panel "
-            f"that still shows the place they left is a FAILED panel.\n"
-            if cut else
-            f"PANEL 1: the very next instant after the reference image — same "
-            f"camera height, same direction, same landmarks. A viewer watching the "
-            f"reference and then panel 1 must not see a cut.\n"
-        )
-        + 
-        f"PANEL {frames}: the action has visibly happened. Whatever was being "
-        f"approached has been reached, whatever was being opened is open. This "
-        f"is the frame the shot HOLDS on, so it must be a clean, settled "
-        f"composition, not a mid-blur.\n"
-        f"BETWEEN: even steps of the same motion, each panel strictly later "
-        f"than the one before it. Never go backwards in time, never repeat a "
-        f"pose, never re-order the beats.\n\n"
-        f"LOCKED BETWEEN PANELS (this is what makes it read as one shot):\n"
-        f"- The camera does not move, cut, pan, zoom or change height. Every "
-        f"panel is the same lens from the same spot.\n"
-        f"- The SETTING holds still"
-        + (" once panel 1 has established the new place" if cut else "")
-        + f": walls, doors, vehicles, machinery and the "
-        f"horizon stay the same size in the same place. The place does not "
-        f"rebuild itself between panels.\n"
-        f"- Things that MOVE are free to. Whatever the scene calls for can enter "
+        + (f"THE KEYFRAMES — panel 1 and panel {frames} are given, the rest "
+           f"are in-betweens:\n" if between else
+           f"THE KEYFRAMES — both panels are given:\n")
+        + keyframes
+        + f"\nLOCKED BETWEEN PANELS (this is what makes it read as one shot):\n"
+        f"- The camera does not CUT and does not change its rig: the same lens, "
+        f"the same height, the same side of the subject and the same distance "
+        f"from them in every panel. When the subject moves, the camera moves "
+        f"WITH them exactly as it has been — it never jumps to a new angle, "
+        f"never swings round to the other side of them, never turns to face "
+        f"them, never becomes a different shot.\n"
+        + setting_rule
+        + f"- Things that MOVE are free to. Whatever the scene calls for can enter "
         f"the frame, cross it, leave it, be revealed, catch fire or fall over — "
         f"this is a moving shot and something is supposed to happen in it. What "
         f"is forbidden is teleporting: no jumping between panels, no blinking in "

@@ -910,6 +910,269 @@ def panel_motion(origin, urls, cache):
     return scores, 0
 
 
+# PT_TRACE=1 records what every system in the loop knew at each turn, so the
+# handoffs can be read across a run rather than inferred from one frame: the
+# goal the run was staged with, the LEAD the HUD shows, the pacing dials, the
+# detection dial and which sensor moved it, the encounter record, what the
+# narrator said, what the consequence model wrote and what the frame became.
+# It exists because "every turn committed and resolved" says nothing about
+# whether the opening, the narrator, the encounters and the objectives are
+# talking to each other — and reading the state file by hand after a run is
+# how that question kept going unanswered.
+TRACE_ON = os.environ.get("PT_TRACE") == "1"
+
+
+def _clip(s, n):
+    return a(str(s or ""))[:n]
+
+
+def _label(o):
+    """A detection can be stored as a dict or as its bare label; read either."""
+    if isinstance(o, dict):
+        return o.get("label") or o.get("text") or ""
+    return str(o or "")
+
+
+class LoopTrace:
+    """One row per turn of what each system saw. Written to
+    _playthrough/loop_trace.json and summarised at the end of the run."""
+
+    def __init__(self, origin, session_id="default"):
+        self.origin = origin
+        self.sid = session_id
+        self.rows = []
+        self.last_feed_id = 0
+        self.goal = ""
+        self.last_slate = []
+
+    def _get(self, url):
+        raw = frame_bytes(self.origin, url)
+        try:
+            return json.loads(raw or b"{}")
+        except Exception:
+            return {}
+
+    def _disk(self, name):
+        # The server renames state.json.tmp over state.json between turns and
+        # Windows refuses the read for a beat while it does; retry, don't file.
+        path = os.path.join("sessions", self.sid, name)
+        for _ in range(6):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                time.sleep(0.3)
+        return {} if name.endswith("state.json") else []
+
+    def _client(self, page):
+        try:
+            return page.evaluate(r"""() => {
+              const get = (k) => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
+              const ev = get('evidence_v1') || {};
+              const ob = get('objectives_v1') || {};
+              const items = Array.isArray(ob.items) ? ob.items : (ob.items ? Object.values(ob.items) : []);
+              return {
+                evidence_unique: Array.isArray(ev.seen) ? ev.seen.length : null,
+                film: ev.film,
+                objectives: items.map((o) => ({id: o.id, kind: o.kind, status: o.status,
+                  title: String(o.title || '').slice(0, 80), count: o.count, goal: o.goal})),
+                lead_text: (document.querySelector('#objectives-panel, #objectives, .objectives') || {}).innerText
+                  ? (document.querySelector('#objectives-panel, #objectives, .objectives').innerText || '').replace(/\s+/g, ' ').slice(0, 200) : '',
+              };
+            }""")
+        except Exception:
+            return {}
+
+    def snapshot(self, page, label, log=None):
+        # The trace must never end the run it is watching: a shape it did not
+        # expect is a note in the log, not a traceback over the playtest.
+        try:
+            return self._snapshot(page, label, log)
+        except Exception as exc:
+            if log:
+                log(f"  [trace] could not snapshot {label}: {a(str(exc))[:120]}")
+            return None
+
+    def _snapshot(self, page, label, log=None):
+        st = self._disk("state.json") or {}
+        hist = self._disk("history.json") or []
+        last = hist[-1] if hist else {}
+        status = self._get("/api/status") or {}
+        status = status.get("data") or status
+        lead = self._get("/api/objectives") or {}
+        feed = self._get(f"/api/feed?since_id={self.last_feed_id}") or {}
+        items = feed.get("items") if isinstance(feed, dict) else feed
+        items = items if isinstance(items, list) else []
+        if items:
+            try:
+                self.last_feed_id = max(int(i.get("id") or 0) for i in items)
+            except Exception:
+                pass
+            # The slate the player was shown. `state["choices"]` is only
+            # written by the observe reground, so it still held the OPENING
+            # slate nine turns in; the feed item is what the client rendered.
+            for i in items:
+                if i.get("type") in ("player_choice_prompt", "choices_revised") and i.get("choices"):
+                    self.last_slate = [_clip(_label(c), 80) for c in i["choices"]]
+        enc = st.get("encounter") or {}
+        enc_out = st.get("encounter_outcome") or {}
+        if not self.goal:
+            self.goal = str(st.get("level_goal") or "")
+        row = {
+            "label": label,
+            "turn": st.get("turn_count"),
+            "phase": st.get("current_phase"),
+            "threat": st.get("threat_level"),
+            "chaos": st.get("chaos_level"),
+            "time_of_day": st.get("time_of_day"),
+            "detection": status.get("detection"),
+            "detection_heat": status.get("detection_heat"),
+            "detection_source": status.get("detection_source"),
+            "alive": (st.get("player_state") or {}).get("alive"),
+            "condition": (st.get("player_state") or {}).get("condition"),
+            "fate_in_state": st.get("fate"),
+            "level_goal": st.get("level_goal"),
+            "goal_reached_turn": st.get("goal_reached_turn"),
+            "pending_cutscene": bool(st.get("pending_cutscene")),
+            "lead": {"lead": lead.get("lead"), "detail": _clip(lead.get("detail"), 160),
+                     "generated": lead.get("generated")},
+            "environment_streak": st.get("environment_streak"),
+            "seen_elements": len(st.get("seen_elements") or []),
+            "seen_tail": [_clip(x, 40) for x in (st.get("seen_elements") or [])[-4:]],
+            "scene_objects": [_clip(_label(o), 30) for o in (st.get("scene_objects") or [])],
+            "scene_objects_turn": st.get("scene_objects_turn"),
+            "recent_events_tail": [_clip(x, 120) for x in (st.get("recent_events") or [])[-1:]],
+            "narrator_recent": [_clip(x, 140) for x in (st.get("narrator_recent") or [])[-2:]],
+            "narrator_beat": st.get("narrator_beat"),
+            "inventory": st.get("inventory"),
+            "companions": list((st.get("companions") or {}).keys())[:6],
+            "encounter": {
+                "open": bool(enc),
+                "label": _clip(((enc.get("character") or {}).get("label")), 40),
+                "kind": (enc.get("character") or {}).get("kind"),
+                "stance": (enc.get("character") or {}).get("stance"),
+                "round_no": enc.get("round_no"),
+                "opened_at_detection": enc.get("detection"),
+                "enemy_state": enc.get("enemy_state"),
+                "setting_kept": bool(enc.get("setting")),
+                "travel_remain": st.get("encounter_travel_remain"),
+                "last_turn": st.get("encounter_last_turn"),
+                "outcome": {k: enc_out.get(k) for k in ("outcome", "lane", "alive", "condition", "enemy_state", "round_no", "fate") if k in enc_out},
+            },
+            "last": {
+                "choice": _clip(last.get("choice"), 120),
+                "source_flags": {k: last.get(k) for k in ("is_custom_action", "hard_transition", "encounter", "cached_opening", "live_capture") if k in last},
+                "dispatch": _clip(last.get("dispatch"), 360),
+                "vision_dispatch": _clip(last.get("vision_dispatch"), 240),
+                "vision_analysis": _clip(last.get("vision_analysis"), 240),
+                "setting_type": last.get("setting_type"),
+                "spatial": _clip(last.get("spatial_compass"), 80),
+                "image": os.path.basename(str(last.get("image") or "")),
+            },
+            "feed_since_last": [{"id": i.get("id"), "type": i.get("type"),
+                                 "hard": ((i.get("metadata") or {}).get("hard_transition")),
+                                 "text": _clip(i.get("content"), 80)} for i in items][-12:],
+            "choices": list(self.last_slate),
+            "client": self._client(page),
+            "world": {"id": st.get("experience_world_id"), "turns": st.get("world_turn_count"),
+                      "pending_transition": st.get("pending_world_transition")},
+        }
+        self.rows.append(row)
+        if log:
+            log(f"  [trace] t={row['turn']} {row['phase']}/threat={row['threat']} "
+                f"det={row['detection']}({row['detection_heat']},{row['detection_source'] or '-'}) "
+                f"tod={row['time_of_day']} lead={_clip(row['lead']['lead'], 60)!r} "
+                f"enc={'OPEN ' + str(row['encounter']['label']) if row['encounter']['open'] else 'closed'} "
+                f"hard={row['last']['source_flags'].get('hard_transition')} img={row['last']['image']}")
+        self.save()
+        return row
+
+    def save(self):
+        try:
+            with open(os.path.join(SHOTS, "loop_trace.json"), "w", encoding="utf-8") as f:
+                json.dump({"goal": self.goal, "rows": self.rows}, f, indent=1)
+        except Exception:
+            pass
+
+    def report(self, log, findings):
+        """What the run says about the systems talking to each other."""
+        if not self.rows:
+            return
+        log("\n=========== LOOP FLOW ============")
+        log(f"  run goal (state.level_goal): {_clip(self.goal, 120)!r}")
+        goal_words = [w for w in re.findall(r"[a-z]+", (self.goal or "").lower())
+                      if len(w) > 3 and w not in CHOICE_STOP and w not in
+                      ("marked", "faint", "glowing", "reinforced", "end", "hall", "with", "that", "which")]
+        goal_hits_prose, goal_hits_choice, goal_hits_lead, goal_hits_narr = 0, 0, 0, 0
+        turns = 0
+        first_esc, first_crit = None, None
+        det_track = []
+        for r in self.rows:
+            if r["label"] == "start":
+                continue
+            turns += 1
+            low = (r["last"]["dispatch"] + " " + r["last"]["vision_dispatch"]).lower()
+            if any(w in low for w in goal_words):
+                goal_hits_prose += 1
+            if any(w in " ".join(r["choices"]).lower() for w in goal_words):
+                goal_hits_choice += 1
+            if any(w in ((r["lead"]["lead"] or "") + " " + (r["lead"]["detail"] or "")).lower() for w in goal_words):
+                goal_hits_lead += 1
+            if any(w in " ".join(r["narrator_recent"]).lower() for w in goal_words):
+                goal_hits_narr += 1
+            if r["phase"] == "escalating" and first_esc is None:
+                first_esc = r["turn"]
+            if r["phase"] == "critical" and first_crit is None:
+                first_crit = r["turn"]
+            det_track.append((r["turn"], r["detection"], r["detection_heat"], r["detection_source"]))
+        log(f"  turns traced: {turns}   escalating at turn {first_esc}   critical at turn {first_crit}")
+        reached = next((r["goal_reached_turn"] for r in self.rows if r.get("goal_reached_turn")), None)
+        log(f"  goal reached: {'turn ' + str(reached) if reached else 'never (no goal_reached_turn on the run)'}")
+        log(f"  goal words {goal_words} appeared in: prose {goal_hits_prose}/{turns} turns, "
+            f"choices {goal_hits_choice}/{turns}, HUD lead {goal_hits_lead}/{turns}, narrator {goal_hits_narr}/{turns}")
+        log("  detection by turn: " + ", ".join(f"t{t}:{d}({h},{s or '-'})" for t, d, h, s in det_track))
+        leads = []
+        for r in self.rows:
+            l = r["lead"]["lead"]
+            if l and (not leads or leads[-1] != l):
+                leads.append(l)
+        log("  HUD leads in order: " + " -> ".join(_clip(l, 50) for l in leads))
+        for r in self.rows:
+            if r["encounter"]["outcome"]:
+                o = r["encounter"]["outcome"]
+                log(f"  encounter at turn {r['turn']}: {r['encounter']['label']!r} outcome={o.get('outcome')} "
+                    f"lane={o.get('lane')} fate_in_state={r['fate_in_state']!r} "
+                    f"opened_at_detection={r['encounter']['opened_at_detection']} now={r['detection']}({r['detection_heat']})")
+                break
+        tods = [r["time_of_day"] for r in self.rows]
+        log(f"  time_of_day across the run: {sorted(set(str(t) for t in tods))}")
+        # The findings are the handoffs that did NOT happen.
+        if self.goal and turns >= 4 and goal_hits_prose == 0 and goal_hits_choice == 0:
+            findings.append(
+                f"the run's goal ({_clip(self.goal, 60)!r}) never appeared in any "
+                f"dispatch or choice across {turns} turns - the goal is not reaching the simulation")
+        # The LEAD is a durable category by design ("Document A Specimen"),
+        # so the goal is not expected there — it has its own GOAL row, fed by
+        # /api/objectives. Its absence is the two systems not talking.
+        shown = [o for r in self.rows for o in ((r.get("client") or {}).get("objectives") or [])
+                 if (o or {}).get("kind") == "destination"]
+        if self.goal and turns >= 2 and not shown:
+            findings.append(
+                "the objectives tracker never showed the run's goal (no GOAL row) - "
+                "the objectives HUD and the level goal are two unrelated systems")
+        elif shown:
+            last = shown[-1]
+            log(f"  GOAL row on the tracker: {_clip(last.get('title'), 70)!r} status={last.get('status')}")
+        if any(r["encounter"]["outcome"] for r in self.rows) and all(r["fate_in_state"] is None for r in self.rows):
+            findings.append(
+                "an encounter resolved but state['fate'] was never written - every fight rolls NORMAL "
+                "regardless of the turn's luck")
+        if first_crit is not None and first_crit <= 5:
+            findings.append(
+                f"the story reached CRITICAL on turn {first_crit} and can never leave it - "
+                f"the experience's threat marks burn the arc out in a handful of turns")
+
+
 class FlipbookWatch:
     """Did this turn actually draw, deliver and PLAY a flipbook?
 
@@ -1225,10 +1488,16 @@ def main():
         log(f">>> flipbook is {'ON' if fb_on else 'OFF'} on the server")
         flip = FlipbookWatch(origin, fb_on)
         flip.install(page, log)
+        trace = LoopTrace(origin) if TRACE_ON else None
+        if trace:
+            log(">>> LOOP TRACE on: every turn's state, lead, dials and encounter go to "
+                f"{SHOTS}/loop_trace.json")
 
         if not start_run(page, log):
             log("!! could not start a run")
             return
+        if trace:
+            trace.snapshot(page, "start", log)
 
         # Rotate the verbs a player would actually use.
         #
@@ -1248,6 +1517,18 @@ def main():
         if os.environ.get("PT_CUSTOM") == "1":
             plan = ["custom"] * len(CUSTOM_BATTERY)
             log(f">>> TYPED-ACTION RUN: {len(CUSTOM_BATTERY)} actions")
+        # PT_PLAN=choice,scan_move,encounter,... plays a specific verb order.
+        # A loop trace wants the encounter late (once detection has moved) as
+        # well as early, which the fixed rotation never does.
+        if os.environ.get("PT_PLAN"):
+            wanted = [v.strip() for v in os.environ["PT_PLAN"].split(",") if v.strip()]
+            known = {"choice", "scan_move", "scan_interact", "photo", "encounter", "act", "custom"}
+            bad = [v for v in wanted if v not in known]
+            if bad:
+                log(f"!! PT_PLAN has unknown verbs {bad}; using the rotation")
+            elif wanted:
+                plan = wanted
+                log(f">>> PT_PLAN: {plan}")
 
         for turn in range(1, TURNS + 1):
             s = page.evaluate(STATE)
@@ -1319,6 +1600,8 @@ def main():
             if action in READ_ONLY_ACTIONS:
                 log("  read-only verb — the world does not advance on this one")
                 flip.turn(page, log, findings, turn, action)
+                if trace:
+                    trace.snapshot(page, f"turn{turn}:{action}", log)
                 continue
 
             # The INTERACT dive only exists during the turn, so watch it there.
@@ -1337,9 +1620,13 @@ def main():
                 break
             if result == "gameover":
                 log(f"  GAME OVER after {el:.1f}s")
+                if trace:
+                    trace.snapshot(page, f"turn{turn}:{action}:gameover", log)
                 break
             log(f"  resolved in {el:.1f}s{f' ({black} black samples)' if black else ''}")
             flip.turn(page, log, findings, turn, action)
+            if trace:
+                trace.snapshot(page, f"turn{turn}:{action}", log)
 
             # A hesitation on a turn that then resolved is a FALSE ALARM, not a
             # stall — the recovery UI was dumped over a turn that was still on
@@ -1443,6 +1730,18 @@ def main():
             pass
 
         flip.report(log, findings)
+        if trace:
+            trace.report(log, findings)
+            # One frame of the objectives sheet as the player sees it — the
+            # trace records what the tracker HOLDS; this is what it SHOWS.
+            try:
+                page.evaluate("() => { window.Objectives && Objectives.open(); }")
+                time.sleep(0.8)
+                snap(page, "objectives_open.png")
+                page.evaluate("() => { window.Objectives && Objectives.close(); }")
+                log(f"  objectives sheet captured: {SHOTS}/objectives_open.png")
+            except Exception as exc:
+                log(f"  could not capture the objectives sheet: {a(str(exc))[:80]}")
 
         log("\n================ SUMMARY ================")
         if findings:

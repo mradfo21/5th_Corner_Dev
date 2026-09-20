@@ -1540,7 +1540,11 @@ def api_objectives():
         # world meaningfully changes — the phase escalates or a NEW element is
         # discovered — so a lead persists across turns until it's plausibly
         # resolved or the situation shifts.
-        key = (session_id, s.get("current_phase", "normal"), len(s.get("seen_elements") or []))
+        # ...and when the run's goal is reached, which is the one change that
+        # has to rewrite the lead immediately (see engine.run_goal).
+        key = (session_id, s.get("current_phase", "normal"),
+               len(s.get("seen_elements") or []),
+               s.get("level_goal") or "", int(s.get("goal_reached_turn") or 0))
         if _OBJECTIVES_CACHE.get("key") == key and _OBJECTIVES_CACHE.get("value"):
             return jsonify(_OBJECTIVES_CACHE["value"])
         directive = engine.generate_directive(session_id)
@@ -1548,6 +1552,14 @@ def api_objectives():
             directive = {"lead": "Survey the area",
                          "detail": "Read the scene and document your first real subject.",
                          "generated": False}
+        # The run's destination rides along, with the server's word on whether
+        # it has been reached. The LEAD is deliberately a durable CATEGORY
+        # ("Document A Specimen") and never a unique object, so the goal — a
+        # door, a tower, a person — could not be the lead; it gets its own
+        # row in the tracker (Objectives.setDestination).
+        directive = dict(directive)
+        directive["goal"] = engine.run_goal(s)
+        directive["goal_reached"] = bool(s.get("goal_reached_turn"))
         _OBJECTIVES_CACHE["key"] = key
         _OBJECTIVES_CACHE["value"] = directive
         return jsonify(directive)

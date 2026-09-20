@@ -212,6 +212,13 @@ DOCTRINE_KEYS = (
     "action_consequence_instructions",
     "player_choice_generation_instructions",
     "narrator_direction",
+    # The fixture's camera rulebook is the factory's minus its first sentence
+    # ("A real camera carried by a real person.") — the one line that tells
+    # the image model the camera has a body. Every World on this machine that
+    # was born from the harness carries that trimmed copy, and it is the only
+    # remaining key where the fixture and the factory differ at all; the other
+    # nine keys the harness ships are byte-identical to the factory.
+    "image_camera_rules",
 )
 
 

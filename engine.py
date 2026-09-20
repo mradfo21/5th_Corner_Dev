@@ -3835,8 +3835,19 @@ _CONSEQUENCE_RESPONSE_SCHEMA = {
         # here costs nothing — same call, one more field — and it makes the
         # picture follow the prose instead of second-guessing it.
         "relocated": {"type": "BOOLEAN"},
+        # Did this beat reach WHAT THE PLAYER CAME HERE FOR? Same argument as
+        # `relocated`: the model has just written the beat, so it knows. Not
+        # required — a World snapshot carrying an older prompt copy never
+        # mentions it, and a missing answer reads as "not this turn".
+        "goal_reached": {"type": "BOOLEAN"},
     },
-    "required": ["dispatch", "visual_scene", "player_alive"],
+    # `relocated` is required too. It was declared but optional, and the
+    # prompt's own OUTPUT FORMAT block (further down than the contract, so
+    # read later) showed a three-field example — so a model that followed the
+    # nearer example left it out, `relocated` parsed as None, and the renderer
+    # fell back to the wording classifier this field exists to replace. The
+    # example now lists all four, and the schema no longer lets one go missing.
+    "required": ["dispatch", "visual_scene", "player_alive", "relocated"],
 }
 
 
@@ -4864,6 +4875,20 @@ def generate_directive(session_id: str = "default") -> dict:
         phase = str((st or {}).get("current_phase", "normal") or "normal")
         threat = (st or {}).get("threat_level", 0)
         tod = str((st or {}).get("time_of_day", "") or "")[:80]
+        # The run's destination. The lead used to be composed from the world
+        # prose and the phase alone, so the HUD could tell the player to
+        # photograph a specimen while the title card had just told them the
+        # run was about a door at the end of the hall — two goal systems that
+        # had never met.
+        goal = run_goal(st)
+        if goal and (st or {}).get("goal_reached_turn"):
+            goal_line = (f"THE RUN'S DESTINATION: {goal} — REACHED. The lead is "
+                         f"now what to document there, or on the way out.\n")
+        elif goal:
+            goal_line = (f"THE RUN'S DESTINATION: {goal} — the lead should read as "
+                         f"a step toward it, or what is worth documenting on the way.\n")
+        else:
+            goal_line = ""
 
         prompt = game_identity.apply(
             "You are the objective director for an investigative "
@@ -4882,6 +4907,7 @@ def generate_directive(session_id: str = "default") -> dict:
             "Choose the category that best fits the CURRENT world + phase and "
             "reads as the most compelling next thing to hunt for and shoot.\n\n"
             f"PREMISE / WORLD: {world_prompt}\n"
+            f"{goal_line}"
             f"RECENT BEATS: {recent_txt}\n"
             f"KNOWN ELEMENTS: {seen_txt}\n"
             f"PHASE: {phase} (threat {threat}); TIME: {tod}\n\n"
@@ -7081,19 +7107,114 @@ def _flipbook_camera_block(also_visible: str = "") -> str:
             f"❌ Any panel where {who} is not visible\n"
             f"❌ Cutting to what {who} sees instead of showing {who}\n"
             f"❌ {who} changing face, build, hair, or outfit between panels\n"
+            # The rig used to be stated once and then contradicted by the grid
+            # rules' tripod line; a 2x2 came back with panel 1 face-on and the
+            # camera swinging round behind the character over the next three.
+            f"❌ The camera changing sides, height or distance between panels, "
+            f"or swinging round to face {who} — it is behind them in panel 1 "
+            f"and behind them at the same distance in every panel after\n"
         )
     if also_visible:
         body += f"❌ Any panel where {also_visible} is not visible\n"
     return head + body + f"\n{rule}\n\n"
 
 
+def _flipbook_fps_keyframes(end_state: str, frames: int) -> str:
+    """The body-cam version of the START / END contract: the view, not a body."""
+    frames = flipbook.normalize_frames(frames)
+    end_state = (end_state or "").strip()
+    text = (
+        "START (panel 1): the exact view in the START KEYFRAME reference, the "
+        "instant after it — same heading, same height, same place.\n"
+    )
+    text += (f"END (panel {frames}): {end_state}\n" if end_state else
+             f"END (panel {frames}): the action completed, the view settled.\n")
+    if frames > 2:
+        text += (f"BETWEEN: {frames - 2} evenly spaced in-betweens of that one "
+                 "move — not a storyboard of the story.\n")
+    return text + "\n"
+
+
+def _flipbook_keyframes(who: str, end_state: str, frames: int,
+                        travels: bool = False) -> str:
+    """START / END / BETWEEN — the one thing the flipbook prompt never said.
+
+    Every line of the flipbook prompt described the motion (time advances,
+    the action has visibly happened, even steps) and none of it said what the
+    FIRST pose was. The model had to pick one, and with a face-on character
+    sheet in reference slot 1 it picked that: panel 1 came back as a portrait
+    walking toward the lens, and the next three panels swung the camera round
+    behind the character to satisfy the follow-cam rules. Played at 400ms a
+    panel that is a camera that jumps sides every frame. The start pose IS
+    known — it is the previous sequence's last panel, attached and now
+    labelled START KEYFRAME — and the end pose is the scene the turn already
+    wrote. Say both, and the in-betweens have something to be between.
+
+    ``end_state`` is the turn's `visual_scene` (the caption), not the
+    consequence prose: the prose is several beats long ("you sprint… you reach
+    the door… you slam into it") and handed to "ANIMATE THIS" it was
+    storyboarded, one beat per panel. It stays in the prompt as context.
+    """
+    frames = flipbook.normalize_frames(frames)
+    who = who or "the player"
+    end_state = (end_state or "").strip()
+    start = (
+        f"START (panel 1) — {who} exactly as the START KEYFRAME reference shows "
+        f"them: the same spot, the same stance, the camera in the same place "
+        f"behind them, the instant they begin this action.\n"
+    )
+    if end_state:
+        end = f"END (panel {frames}) — {end_state}\n"
+    else:
+        end = (
+            f"END (panel {frames}) — the action completed, {who} settled in the "
+            f"scene the render instruction describes.\n"
+        )
+    # The rig is stated once for panel 1 and the grid drifted to a face-on
+    # by panel 4 (the character sheet, a portrait, is still attached). Say it
+    # about the END too: the camera never crossed to their front.
+    end += (
+        f"Panel {frames} is shot from the SAME side as panel 1 — the camera "
+        f"is still behind {who}, at the same height; it never crossed to "
+        f"their front on the way.\n"
+    )
+    # The render instruction at the foot of the prompt is the still path's,
+    # and on a move it says "the camera has travelled … do not reproduce the
+    # reference framing". True of the END panel; read against panel 1 it is
+    # the opposite of the contract above.
+    end += (
+        f"(The render instruction at the end of this prompt describes panel "
+        f"{frames}. Where it says the camera has moved, or not to reproduce "
+        f"the reference framing, it means panel {frames} — panel 1 still "
+        f"continues the START KEYFRAME.)\n"
+    )
+    if frames > 2:
+        between = (
+            f"BETWEEN (panels 2 to {frames - 1}) — {frames - 2} evenly spaced "
+            f"in-betweens of that ONE motion, from the start pose to the end "
+            f"pose"
+            + (", the camera travelling behind them the whole way" if travels
+               else "")
+            + ". Not a storyboard of the story: one move, sampled — and "
+            f"never a step back toward the START pose once it has been left.\n"
+        )
+    else:
+        between = ""
+    return start + end + between
+
+
 def _flipbook_action_block(choice: str, dispatch_preview: str, is_free_will: bool,
-                           frames: int = None) -> str:
+                           frames: int = None, *, end_state: str = "",
+                           travels: bool = False) -> str:
     """The 'animate exactly this action' header, in the active perspective.
 
     `frames` is the active grid's panel count. It used to be the literal 16 in
     three sentences here, which quietly contradicted the grid the rest of the
     prompt asked for the moment the count became a setting.
+
+    `end_state` is the turn's visual_scene — the END keyframe. `travels` is a
+    relocating turn: the same contract, with the camera going with them. See
+    _flipbook_keyframes for why the contract exists.
     """
     frames = flipbook.normalize_frames(frames if frames is not None else FLIPBOOK_FRAMES)
     seconds = _flipbook_seconds(frames)
@@ -7106,30 +7227,44 @@ def _flipbook_action_block(choice: str, dispatch_preview: str, is_free_will: boo
             f"{who} is visible in EVERY panel, performing the action with their whole body.\n"
             f"Do NOT cut to what {who} sees — show {who} doing it.\n\n"
         )
+        keyframes = _flipbook_keyframes(who, end_state, frames, travels=travels)
         if is_free_will:
             command = (
                 "ABSOLUTE COMMAND - FREE WILL ACTION\n\n"
                 "The player used FREE WILL to command this EXACT action:\n"
                 f">>> \"{choice}\" <<<\n\n"
                 "YOU MUST OBEY THIS COMMAND AT ALL COSTS.\n\n"
+                + keyframes + "\n"
             )
             tail = f"Context (what happens as result): {dispatch_preview}\n\n"
         else:
             command = (
                 "CRITICAL INSTRUCTION - READ THIS FIRST\n\n"
-                "YOU MUST ANIMATE THIS SPECIFIC ACTION:\n"
-                f">>> {dispatch_preview} <<<\n\n"
-                f"Player's choice was: \"{choice}\"\n\n"
+                f"THE ACTION THESE {frames} PANELS ANIMATE, START TO END:\n"
+                f">>> {choice} <<<\n\n"
+                + keyframes + "\n"
             )
-            tail = ""
+            tail = (
+                "What happens during it — why the END looks the way it does. "
+                "Context, not extra beats to draw: "
+                f"{dispatch_preview}\n\n"
+            )
         rules = (
             "ABSOLUTE RULES:\n"
             f"1. {who} is the subject of every panel — never an empty environment shot\n"
-            f"2. The camera trails {who}; it never becomes their eyes\n"
+            f"2. The camera trails {who} at the same height, on the same side and "
+            f"at the same distance in every panel; it never becomes their eyes "
+            f"and never swings round to face them\n"
             f"3. Face, build, hair, and outfit are identical across all {frames} panels\n"
             "4. Show stance, reach, weight, and momentum — the body doing the work\n"
             f"5. The {frames} panels are {seconds:g} seconds of {who} performing "
-            f"this one action\n\n"
+            f"this one action, from the START pose to the END pose\n"
+            # START / END / seconds are direction, and one roll in six drew
+            # "T=0s … T=1.7s" into the corners from them. The grid rules ban
+            # text further down; say it here, next to the words that cause it.
+            f"6. None of these words are drawn. No \"START\", no \"END\", no "
+            f"\"T=0s\", no timecode, no panel number, no caption anywhere in "
+            f"the picture\n\n"
         )
         return header + command + rules + tail + "=" * 70 + "\n\n"
 
@@ -7143,6 +7278,7 @@ def _flipbook_action_block(choice: str, dispatch_preview: str, is_free_will: boo
             "The player used FREE WILL to command this EXACT action:\n"
             f">>> \"{choice}\" <<<\n\n"
             "YOU MUST OBEY THIS COMMAND AT ALL COSTS.\n\n"
+            + _flipbook_fps_keyframes(end_state, frames) +
             "ABSOLUTE RULES:\n"
             "1. Show FIRST-PERSON perspective - you ARE the player, camera = your eyes\n"
             "2. DO NOT show 'a man' or 'a person' - that's 3rd person (FORBIDDEN)\n"
@@ -7162,8 +7298,10 @@ def _flipbook_action_block(choice: str, dispatch_preview: str, is_free_will: boo
         "Show ONLY what the player's eyes see while performing the action.\n\n"
         "CRITICAL INSTRUCTION - READ THIS FIRST\n\n"
         "YOU MUST ANIMATE THIS SPECIFIC ACTION:\n"
-        f">>> {dispatch_preview} <<<\n\n"
-        f"Player's choice was: \"{choice}\"\n\n"
+        f">>> {choice} <<<\n\n"
+        + _flipbook_fps_keyframes(end_state, frames) +
+        f"What happens during it (context, not extra beats to draw): "
+        f"{dispatch_preview}\n\n"
         "RULES:\n"
         "1. FIRST-PERSON PERSPECTIVE - Show what YOUR eyes see (NOT a person from outside)\n"
         "2. Show EXACTLY what the text describes from first-person POV\n"
@@ -7586,10 +7724,78 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
         print(f"[FLIPBOOK] no layout guide for {label} — run "
               f"tools/build_flipbook_guides.py", flush=True)
 
+    # ── what each reference IS, next to it in the request ───────────────────
+    # The image layer labels attachments so a character sheet is not read as
+    # "the previous frame". Its label for everything that is NOT a plate is
+    # "PREVIOUS FRAME — place, light, and materials only. If a CHARACTER SHEET
+    # is also attached, do NOT copy the person in this frame." Written for the
+    # still path, where it stops a recast from redrawing the leftover guy —
+    # and on a flipbook turn it is the sentence that threw the start pose
+    # away: the one reference that shows where the character is standing and
+    # how, was captioned "do not copy the person". The blank layout guide got
+    # the same caption. So the flipbook names its own references: the frame
+    # the grid continues from is the START KEYFRAME (pose and camera
+    # included), the wider opening frame is context, the guide is a layout,
+    # and the character sheet is told whose pose it is NOT.
+    start_ref = flipbook_refs[0] if (flipbook_refs and flipbook_refs[0] != str(guide or "")) else ""
+    reference_labels: Dict[str, str] = {}
+    if start_ref:
+        reference_labels[start_ref] = (
+            "START KEYFRAME — the previous sequence's last panel: where the "
+            "camera stands RIGHT NOW and how the subject is standing in it. "
+            "Panel 1 is the very next instant after this: same camera, same "
+            "place, same pose, beginning to move. Copy the POSE and POSITION "
+            "from here; copy face and outfit from the CHARACTER SHEET if one "
+            "is attached."
+        )
+    for extra in flipbook_refs[1:]:
+        if extra == str(guide or ""):
+            reference_labels[extra] = (
+                f"LAYOUT TEMPLATE — a blank {label} grid. Copy ONLY its panel "
+                "layout and proportions. Nothing in it is the scene, the "
+                "light or the place."
+            )
+        elif extra == prev_grid:
+            reference_labels[extra] = (
+                "PREVIOUS GRID — film stock and quality only. Not a keyframe."
+            )
+        else:
+            reference_labels[extra] = (
+                "WIDER VIEW — the same place as the START KEYFRAME opened, one "
+                "move ago: context for what surrounds the subject. Not a "
+                "keyframe; do not return to this framing."
+            )
+    if start_ref and game_identity.shows_character():
+        who = game_identity.display_name()
+        for plate in (identity_paths or []):
+            if plate and str(plate) in set(game_identity.character_reference_paths(spec)):
+                reference_labels[str(plate)] = (
+                    game_identity.reference_part_label(str(plate), spec)
+                    + f" {who}'s pose, facing and position in panel 1 come "
+                    f"from the START KEYFRAME, not from this sheet — do not "
+                    f"turn them toward the lens to match it."
+                )
+
     # ── prompt ──────────────────────────────────────────────────────────────
     is_free_will = bool(st.get('_turn_is_custom_action'))
     dispatch_preview = (dispatch or caption or "")[:250]
     authored = PROMPTS.get("gemini_flipbook_4panel_prefix", "") or ""
+
+    # A turn that has a start keyframe CONTINUES, cut or not. `identity_seed`
+    # arrives True on every hard transition (the still path's rule: a
+    # relocating frame is composed fresh from the plates), and for the grid it
+    # meant the text-to-image template — "FIRST FRAME - NOTHING TO CONTINUE
+    # FROM: there is no reference image" — under five attached references,
+    # plus "compose a NEW opening shot" in place of the continuity block.
+    # With MOVE TO, "further down the corridor" and every relocating verb
+    # counted as cuts, that was most turns of a run, each one a fresh
+    # composition that began wherever the model liked (face-on, from the
+    # character sheet in slot 1). The establishing beat keeps the seed: its
+    # reference is the montage's unpeopled plate and the character has to be
+    # composed into it.
+    continues = bool(start_ref) and not establishing
+    if identity_seed and continues:
+        identity_seed = False
     if flipbook.prefix_is_stale(authored, frames):
         # A world authored when the grid was always 4x4 carries "THE RENDER MUST
         # BE A 4×4 GRID" in its own prompt set. Handed that alongside a 2x2
@@ -7602,10 +7808,13 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
         # An establishing beat HOLDS the composition. The action block, the
         # movement camera block and any authored per-turn action prefix all push
         # the character to walk/perform across the panels — the opposite of what
-        # an opening needs — so none of them run here.
+        # an opening needs — so none of them run here. Its reference is the
+        # montage's unpeopled plate, so panel 1 inherits its camera and place
+        # but not a pose: the establishing block places the character.
         flipbook_prompt = game_identity.apply(
             _flipbook_establishing_block(frames)
-            + flipbook.grid_prompt(frames, seconds=_flipbook_seconds(frames, frame_ms))
+            + flipbook.grid_prompt(frames, seconds=_flipbook_seconds(frames, frame_ms),
+                                   keyframe_subject=False)
             + "\n" + prompt_str,
             "raw",
         )
@@ -7630,12 +7839,15 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
             # same landmarks, same horizon", "HELD CONSTANT IN EVERY PANEL:
             # location"). Correct for every ordinary turn; on a cut it is the
             # instruction that kept the player in the room. The generated grid
-            # rules carry the cut version of the same contract.
-            print("[FLIPBOOK] hard cut — the grid begins inside the destination; "
-                  "the continuous-shot prefix is stood down for this turn", flush=True)
+            # rules carry the travelling version of the same contract: the
+            # start keyframe still leads, and the LAST panel has arrived.
+            print("[FLIPBOOK] hard cut — the grid travels from the start keyframe "
+                  "to the destination; the continuous-shot prefix is stood down "
+                  "for this turn", flush=True)
             authored = ""
         flipbook_prompt = game_identity.apply(
-            _flipbook_action_block(choice, dispatch_preview, is_free_will, frames)
+            _flipbook_action_block(choice, dispatch_preview, is_free_will, frames,
+                                   end_state=caption, travels=hard_cut)
             + flipbook.grid_prompt(frames, seconds=_flipbook_seconds(frames, frame_ms),
                                    cut=hard_cut)
             + "\n" + _flipbook_camera_block()
@@ -7680,6 +7892,16 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
                 # The close-up the player just came out of, so the panels animate
                 # the same face they were looking at rather than a new one.
                 cast_plates=cast_plates,
+                # Which attachment is the start keyframe, which is context,
+                # which is the blank layout — see the block that builds it.
+                reference_labels=reference_labels,
+                # ...and the start keyframe takes slot 1 on a continuing turn.
+                # The image layer puts the plates first so the person is
+                # copied from the sheet; on a grid that continues a previous
+                # panel the person is ALREADY in that panel, from the side and
+                # in the pose panel 1 has to continue, and the sheet in slot 1
+                # (a face-on portrait) is what kept opening the grid face-on.
+                lead_reference=(start_ref if continues else None),
             )
         else:
             # Nothing to continue from and no guide built: a plain grid request.
@@ -9633,6 +9855,20 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                         metadata={"phase": dyn.get("phase"), "threat_level": dyn.get("threat_level")},
                     ))
 
+            # The run's goal, reached. `objective_done` is the type the client
+            # already styles as COMPLETE for its own case-file beats, so the
+            # moment the world says "you are there" reads like the rest of the
+            # objectives without a client change.
+            if player_alive and p1.get("goal_reached"):
+                goal_text = run_goal(turn_state)
+                if goal_text:
+                    turn_items.append(create_feed_item(
+                        type="objective_done",
+                        content=f"What you came here for: {goal_text}",
+                        metadata={"goal": goal_text,
+                                  "turn": turn_state.get("goal_reached_turn")},
+                    ))
+
             # Item pickup detection (feed notification; inventory itself is in state).
             _inventory_update = None
             try:
@@ -10729,6 +10965,61 @@ def _goal_for_this_run(new_state: dict, authored: str = "") -> str:
     return drafted
 
 
+def run_goal(state: Optional[dict] = None) -> str:
+    """The goal THIS run is walking toward, as the rest of the loop should read it.
+
+    `_goal_for_this_run` above wrote `state["level_goal"]` at every reset and
+    then nothing read it: the goal reached the montage's title card and,
+    one narration in six, the narrator — and never the consequence model, the
+    choice slate, the objectives HUD or an encounter. A run had a destination
+    for exactly as long as the opening cinematic was on screen. Matt's report
+    was "the goal system is completely non functional", and a traced
+    twelve-turn run bore it out: the door the montage was staged toward
+    turned up in the prose only as recurring scenery (the level's LANDMARKS
+    line), the HUD lead never named it in eleven turns, and the player dove
+    through it on turn 12 without the run noticing — the next slate still
+    offered "Kick the blast door open".
+
+    Read off the RUN only. Both reset paths write `level_goal` now (the
+    montage path always did; the cached-frame path calls `_goal_for_this_run`
+    too), so this never has to go back to the level sheet — and a state that
+    carries no goal gets no goal line, which keeps every prompt surface
+    deterministic for a test that builds a bare state.
+    """
+    st = state if isinstance(state, dict) else {}
+    return str(st.get("level_goal") or "").strip()[:220]
+
+
+def goal_directive(state: Optional[dict] = None) -> str:
+    """The one line every prompt surface gets about where the run is going.
+
+    Deliberately NOT "make the player reach it": a goal that the world hands
+    over on request is a title card, not a destination. The beat may put it
+    closer, put something in the way, or make it cost — it may not forget it,
+    and it may not quietly resolve it. Ends with a newline so it drops into
+    the grounding block like the other directives.
+    """
+    goal = run_goal(state)
+    if not goal:
+        return ""
+    st = state if isinstance(state, dict) else {}
+    reached = int(st.get("goal_reached_turn") or 0)
+    if reached:
+        return (
+            f"WHAT THE PLAYER CAME HERE FOR: {goal} — REACHED on turn {reached}.\n"
+            "The run is now about what it cost and what comes after: what they "
+            "found there, and the way out with it. Do not offer the goal again "
+            "as if it were still ahead of them.\n"
+        )
+    return (
+        f"WHAT THE PLAYER CAME HERE FOR: {goal}\n"
+        "This is the run's destination. It stays true until an action plainly "
+        "reaches it: the beat may bring it closer, block it, or make it cost "
+        "something, but it must not forget it exists, and must not hand it over "
+        "for free.\n"
+    )
+
+
 def _ensure_level_sheet_is_filled() -> bool:
     """Draft every EMPTY identity-sheet field from the world bible. EXPLICIT ONLY.
 
@@ -11772,13 +12063,21 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
         current_state_at_reset_start = _load_state(SID) 
         logging.info(f"_perform_game_reset: After _load_state. Loaded state id: {id(current_state_at_reset_start)}. Its feed_log (len {len(current_state_at_reset_start.get('feed_log',[]))}) id: {id(current_state_at_reset_start.get('feed_log')) if current_state_at_reset_start.get('feed_log') is not None else 'None'}")
     
-        # Generate random starting time/weather/mood for this session
-        starting_time = _generate_random_starting_time()
-
         # Bind the Experience graph first so a stitched start World is live
         # before world_brief() reads the prompt file.
         import experience_store
         _experience_seed = apply_experience_start({}, SID)
+
+        # Generate random starting time/weather/mood for this session — AFTER
+        # the bind, because the roll reads the level's palette off the live
+        # prompt file, and before the bind that file still holds whichever
+        # World was played last. The first run of a newly picked World rolled
+        # its lighting against the previous World's palette: a traced run of
+        # the cyberpunk sub-level opened with "weather: golden hour, rust, red
+        # dust, chain-link steel", the Horizon desert's line, and that string
+        # went into every render of the session as "Lighting:". It is the
+        # "first run inherits the previous run" class of bug, one bind early.
+        starting_time = _generate_random_starting_time()
 
         # Deliberately NOT drafting the identity sheets here. See
         # _ensure_level_sheet_is_filled: it used to run on this line, and an LLM
@@ -11883,6 +12182,14 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
                 SID, new_state, spawn_image=False)
             initial_items = _stage_opening_montage(SID, new_state, initial_items)
         else:
+            # No montage to stage the goal through, but the run still needs
+            # one: the consequence, slate, lead and encounter prompts all
+            # read `level_goal` off the run now (see run_goal), and a run
+            # that opened without a cinematic used to have none at all.
+            try:
+                _goal_for_this_run(new_state, "")
+            except Exception as _goal_err:
+                log_error(f"[GOAL] no goal for this run: {_goal_err}")
             opening_slug, opening_rec = _cached_opening_frame(new_state)
             initial_items, intro_image_kwargs = generate_intro_turn_feed_items(
                 SID, new_state, spawn_image=False,
@@ -16701,12 +17008,23 @@ def _beat_directive(spoken: list, goal: str = "", spoken_count: int = -1) -> str
     return "\n".join(out) + "\n"
 
 
-def _narrator_goal() -> str:
-    """What the player came here to reach, if the level names it.
+def _narrator_goal(state: Optional[dict] = None) -> str:
+    """What the player came here to reach — the RUN's goal first.
 
     `place_summary()` deliberately leaves this out, so the one voice that could
     use it — the one speaking the player's own thoughts — never saw it.
+
+    Reads the run before the sheet. A run whose level sheet had no goal still
+    gets one drafted at reset (`_goal_for_this_run`), and this used to look
+    only at the sheet — so on exactly those runs the narrator's GOAL beat was
+    swapped out for READ/TALLY while the title card had just named a
+    destination. Two answers to "what did I come here for", one of them empty.
     """
+    goal = run_goal(state)
+    if goal:
+        if (state or {}).get("goal_reached_turn"):
+            return f"{goal} — and you are there now"
+        return goal
     try:
         if game_identity.setting_authored():
             return str((game_identity.authored_setting() or {}).get("goal") or "").strip()
@@ -16833,7 +17151,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "",
     # end with "ONE LINE OF HISTORY", which is emphatic and, being last, wins.
     # Putting the beat shapes there produced three facts in a row; they have to
     # be the final instruction in the prompt, so they go on as a tail below.
-    alternation = _beat_directive(spoken, _narrator_goal(),
+    alternation = _beat_directive(spoken, _narrator_goal(st),
                                   spoken_count=int(st.get("narrator_beat") or 0))
 
     fallback = [{"character": "narrator",
@@ -18004,12 +18322,16 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         # the world-evolution rewrite, which runs async and therefore lags a turn.
         onscreen = scene_objects_for_turn(state)
 
+        # goal_directive: where the run is going. The montage promised the
+        # player a destination; without it the consequence model never heard
+        # of one and wrote every beat as a place, not a direction.
         grounding_block = (
             f"\n\nDISCOVERED ENTITIES (these are the only things on the board — "
             f"any LETHAL threat must come from here or the current scene): "
             f"{seen_str or 'none yet'}\n"
             f"{condition_directive(state)}"
             f"STORY PHASE: {phase_str} — {phase_directive}\n"
+            f"{goal_directive(state)}"
             f"{onscreen_directive(onscreen)}"
             f"{interaction_directive}"
             f"{_conversation_directive(state)}"
@@ -18057,7 +18379,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             f"{grounding_block}"
             f"{fate_modifier}"
             f"{spatial_context}\n\n"
-            "Return JSON with all four fields from the OUTPUT CONTRACT:\n"
+            "Return JSON with all five fields from the OUTPUT CONTRACT:\n"
             "  dispatch — the prose the player reads. 2-3 sentences. What the "
             "action cost, what it changed, what the place does back. Write the "
             "beat, not the camera position: never open with the protagonist's "
@@ -18072,6 +18394,10 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             "False if they are still standing in the same place, however much "
             "changed around them. Answer for the beat you wrote, not for what "
             "the action asked for.\n"
+            "  goal_reached — true ONLY if this beat plainly reaches WHAT THE "
+            "PLAYER CAME HERE FOR. Seeing it, or opening a way toward it, is "
+            "not reaching it; standing at it, through it, or holding it, is. "
+            "False on every other turn.\n"
             "dispatch and visual_scene must not be the same sentence. "
             "No next_choices."
         )
@@ -18146,6 +18472,12 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             player_alive = data.get("player_alive", True)
             if isinstance(data.get("relocated"), bool):
                 relocated = data["relocated"]
+            # Did this beat reach the run's goal? Left on the caller's state
+            # object rather than widening the return tuple, which three tests
+            # unpack by position. advance_turn_image_fast reads it back right
+            # after it records `player_alive`, and only ever counts it once.
+            if isinstance(state, dict):
+                state["_turn_goal_reached"] = data.get("goal_reached") is True
             # The feed reads `dispatch`; the image model reads `visual_scene`.
             # Only fall back to the caption when the model actually withheld
             # the prose — assigning one to the other unconditionally is what
@@ -19043,12 +19375,26 @@ def beat_nudge_text(state: Optional[dict] = None) -> str:
     raw = _threat_block()
     if phase == "critical":
         text = str(raw.get("beat_critical") or "").strip()
-        return text or _DEFAULT_BEAT_CRITICAL
-    if phase == "escalating":
+        beat = text or _DEFAULT_BEAT_CRITICAL
+    elif phase == "escalating":
         text = str(raw.get("beat_escalating") or "").strip()
-        return text or _DEFAULT_BEAT_ESCALATING
-    text = str(raw.get("beat_normal") or "").strip()
-    return text or _DEFAULT_BEAT_NORMAL
+        beat = text or _DEFAULT_BEAT_ESCALATING
+    else:
+        text = str(raw.get("beat_normal") or "").strip()
+        beat = text or _DEFAULT_BEAT_NORMAL
+    # The run's destination rides on the same slot, because this is the one
+    # line every slate generator already reads (eight call sites, one
+    # template placeholder). A slate that never offers a step toward the
+    # goal is how a run with a destination still felt like wandering.
+    goal = run_goal(st)
+    if goal and st.get("goal_reached_turn"):
+        beat += (f"\nGOAL REACHED: the player came here for {goal} and is there. "
+                 f"Options are about what comes after — what they found, the "
+                 f"way out — never about reaching it again.")
+    elif goal:
+        beat += (f"\nGOAL: the player came here for {goal} — one option should "
+                 f"move toward it, or reveal something about it. Not all three.")
+    return beat
 
 # How much a single deliberate act of meddling can add to the story clock on top
 # of the turn's own +1. Measured, not guessed: at the original +2, a SCAN-driven
@@ -19345,18 +19691,25 @@ def advance_story_dynamics(session_id: str = 'default', risk_boost: int = 0) -> 
         # the whole movie instead of holding the light the first frame set.
         # Phase still climbs; the sky does not.
         time_of_day = st.get("time_of_day", "") or ""
+        phase_bias = {"normal": 0.0, "escalating": 0.12, "critical": 0.22}.get(phase, 0.0)
+        # A risk_boost (SCAN interaction / entering the unknown) both accelerated
+        # the phase above and tilts THIS turn's luck toward complication.
+        #
+        # Being known about is its own risk, and separate from how far the story
+        # has got: hiding successfully should make a turn safer, and being hunted
+        # should make it meaner, or detection is a readout rather than a stake.
+        detect_bias = (0.0, 0.05, 0.14, 0.24)[max(0, min(3, detect_level))]
+        risk_bias = phase_bias + detect_bias + (0.15 if risk_boost else 0.0)
+        fate = compute_fate(risk_bias)
+        # Persisted, not just returned. The encounter resolver rolls every
+        # exchange against `state["fate"]` (encounter.api_resolve) — and nothing
+        # ever wrote that key, so every fight ever played was rolled NORMAL
+        # whatever the turn's luck was, and the LUCKY/UNLUCKY columns of
+        # encounter_outcome_weights were dead weight. The fate of the turn a
+        # fight lands in is the fate it fights under.
+        st["fate"] = fate
         _save_state(st, session_id)
         _sync_ambient_state(st, session_id)
-    phase_bias = {"normal": 0.0, "escalating": 0.12, "critical": 0.22}.get(phase, 0.0)
-    # A risk_boost (SCAN interaction / entering the unknown) both accelerated the
-    # phase above and tilts THIS turn's luck toward complication.
-    #
-    # Being known about is its own risk, and separate from how far the story has
-    # got: hiding successfully should make a turn safer, and being hunted should
-    # make it meaner, or detection is a readout rather than a stake.
-    detect_bias = (0.0, 0.05, 0.14, 0.24)[max(0, min(3, detect_level))]
-    risk_bias = phase_bias + detect_bias + (0.15 if risk_boost else 0.0)
-    fate = compute_fate(risk_bias)
     return {"fate": fate, "phase": phase, "prev_phase": prev_phase,
             "threat_level": threat, "escalated": escalated,
             "detection": detect_level, "time_of_day": time_of_day}
@@ -19496,10 +19849,23 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         
         # SIMPLE DEATH SYSTEM: Just trust the LLM
         state['player_state']['alive'] = player_alive
-        
+
         if not player_alive:
             print(f"[DEATH] Player killed by: {dispatch[:100]}...")
-        
+
+        # The goal, same verdict system as death: the model's word, counted
+        # once. A run used to have no record of reaching what it came for — a
+        # traced run dove through the blast door it was staged toward and was
+        # still being offered "Kick the blast door open" two turns later.
+        goal_reached = bool(state.pop("_turn_goal_reached", False))
+        if goal_reached and player_alive and run_goal(state) \
+                and not state.get("goal_reached_turn"):
+            state["goal_reached_turn"] = int(state.get("turn_count") or 0) + 1
+            print(f"[GOAL] reached on turn {state['goal_reached_turn']}: "
+                  f"{run_goal(state)[:80]}", flush=True)
+        else:
+            goal_reached = False
+
         # Save state immediately after death detection
         _save_state(state, session_id)
         print(f"[STATE] Saved - alive={player_alive}")
@@ -19745,6 +20111,9 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             # the in-world glitch line, but autoplay and QA need to know this
             # beat carried no real story so they don't treat it as progress.
             "degraded": degraded,
+            # This beat reached the run's goal (first time only). The turn
+            # loop turns it into an `objective_done` feed beat.
+            "goal_reached": goal_reached,
             "frame_idx": frame_idx,  # for async image generation on the feed path
             "provisional_choices": provisional_choices,  # next-action options from the same LLM call (may be empty)
             # Handle to the deferred world-evolution thread (defer_evolve=True),

@@ -210,10 +210,16 @@ class TestApplyExperienceMode(unittest.TestCase):
     # --- flipbook ------------------------------------------------------------
 
     def test_flipbook_sets_globals_true(self):
-        # Start from a no-images state to verify we actually change things
-        self.eng.IMAGE_ENABLED = False
-        self.eng.WORLD_IMAGE_ENABLED = False
+        # Start from a no-images state to verify we actually change things.
+        # INSIDE the saver: flipped before it, the saver recorded False and
+        # put False back, and every suite that ran after this one in the same
+        # process rendered with IMAGE_ENABLED off — five
+        # test_simulation_pacing tests that pass alone were red in any
+        # combined run for weeks, "AssertionError: [] is not true", because
+        # _gen_image_impl returns before it draws when images are disabled.
         with _EngineGlobalSaver(self.eng):
+            self.eng.IMAGE_ENABLED = False
+            self.eng.WORLD_IMAGE_ENABLED = False
             result = self.eng.apply_experience_mode(
                 self.eng.EXPERIENCE_MODE_FLIPBOOK, "test_session_fb"
             )
@@ -240,9 +246,10 @@ class TestApplyExperienceMode(unittest.TestCase):
     # --- full_frame ----------------------------------------------------------
 
     def test_full_frame_sets_globals_true(self):
-        self.eng.IMAGE_ENABLED = False
-        self.eng.WORLD_IMAGE_ENABLED = False
+        # Same as above: flip inside the saver, or the flip is what gets kept.
         with _EngineGlobalSaver(self.eng):
+            self.eng.IMAGE_ENABLED = False
+            self.eng.WORLD_IMAGE_ENABLED = False
             result = self.eng.apply_experience_mode(
                 self.eng.EXPERIENCE_MODE_FULL_FRAME, "test_session_ff"
             )
@@ -498,13 +505,16 @@ class TestPacingFairnessHardening(unittest.TestCase):
     def test_death_fairness_doctrine_present(self):
         """Prompt must encode 'characters/events kill, environment only injures'.
 
-        The doctrine survived the prompt trim; its ~450-word presentation (a
-        boxed heading, three bulleted cause lists, and a four-question
-        checklist) did not. What is asserted here is the rule, not the layout.
+        Asserted in the wording that SHIPS. This used to look for the phrases
+        from docs/plans/PROMPT_TRIM_PROPOSAL.md ("INJURY IS THE DEFAULT, NOT
+        DEATH", "wounds badly and never kills"), a trim whose first line says
+        it was never applied — so the test was red against a prompt that
+        carried the doctrine in full, and read as dropped doctrine for weeks.
+        The rule is what matters, not the layout; the rule is here.
         """
-        self.assertIn("INJURY IS THE DEFAULT, NOT DEATH", self.prompts_src)
-        self.assertIn("Only characters and dramatic events kill", self.prompts_src)
-        self.assertIn("wounds badly and never kills", self.prompts_src)
+        self.assertIn("INJURY IS THE DEFAULT CONSEQUENCE, NOT DEATH", self.prompts_src)
+        self.assertIn("ONLY CHARACTERS AND DRAMATIC EVENTS KILL THE PLAYER", self.prompts_src)
+        self.assertIn("ENVIRONMENT ONLY WOUNDS", self.prompts_src)
 
     def test_unlucky_fate_modifier_forbids_cheap_deaths(self):
         """The UNLUCKY fate path must not re-introduce random impalement deaths.
@@ -568,9 +578,18 @@ class TestPacingFairnessHardening(unittest.TestCase):
 
     # -- Tension rhythm --
     def test_tension_rhythm_allows_stillness_beats(self):
-        """The action_consequence_instructions must allow ~30% stillness beats."""
-        self.assertIn("The rest end on stillness", self.prompts_src)
-        self.assertIn("Constant crescendo goes numb", self.prompts_src)
+        """The action_consequence_instructions must allow ~30% stillness beats.
+
+        Shipped wording, not the trim proposal's (see
+        test_death_fairness_doctrine_present). And the rule has to be the
+        only rule: the FORMAT bullets further down the same prompt used to end
+        on "FINAL sentence = tension escalation cue", a later and more
+        concrete instruction that quietly mandated the crescendo the rhythm
+        block says to skip — the exact override pattern CLAUDE.md warns about.
+        """
+        self.assertIn("end on a STILLNESS BEAT", self.prompts_src)
+        self.assertIn("nervous system goes numb", self.prompts_src)
+        self.assertNotIn("FINAL sentence = tension escalation cue", self.prompts_src)
         # The old "MANDATORY FINAL SENTENCE" rule must be gone.
         self.assertNotIn(
             "TENSION ESCALATION (MANDATORY FINAL SENTENCE)",
@@ -588,9 +607,13 @@ class TestPacingFairnessHardening(unittest.TestCase):
         computed or passed a tier — so the test passed while the tiered penalty
         it described had never shipped, which is worse than no test at all. The
         key is gone; the doctrine that actually runs lives in the consequence
-        prompt, which is what this checks.
+        prompt, which is what this checks — in its shipped form, the
+        four-question FAIRNESS CHECKLIST the model runs before it may set
+        player_alive false ("would call it cheap" was the trim proposal's
+        one-line rewrite of it, never applied).
         """
-        self.assertIn("would call it cheap", self.prompts_src)
+        self.assertIn("FAIRNESS CHECKLIST", self.prompts_src)
+        self.assertIn("Could a film audience yell", self.prompts_src)
         self.assertIn("action_consequence_instructions", self.prompts_src)
 
     # -- Injury state threading --

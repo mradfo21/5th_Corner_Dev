@@ -76,6 +76,33 @@ class TestStandaloneE2E(unittest.TestCase):
         env["ANTHROPIC_API_KEY"] = ""
         env["ELEVENLABS_API_KEY"] = ""
 
+        # The server is a SUBPROCESS, and the authoring sandbox only engages
+        # on a store import inside the test process — this module imports no
+        # store, so the mock server read and WROTE the real prompts/, worlds/,
+        # experiences/ and tunables.json. Every New Game it ran rebound the
+        # live prompt file on the developer's machine to whichever World it
+        # played; with the active World it was invisible, and the moment the
+        # suite played a different one the next real run rolled its lighting
+        # against the wrong level's palette. Engage the sandbox explicitly:
+        # it exports the SOMEWHERE_* redirects into os.environ, which is the
+        # env the server inherits below, so it plays on copies.
+        import authoring_sandbox
+        sandbox_experiences = Path(authoring_sandbox.engage("standalone e2e")
+                                   / "experience_store" / "experiences_dir")
+        for var in ("SOMEWHERE_PROMPTS_PATH", "SOMEWHERE_PROMPTS_DEFAULTS_PATH",
+                    "SOMEWHERE_WORLDS_DIR", "SOMEWHERE_EXPERIENCES_DIR",
+                    "SOMEWHERE_TUNABLES_PATH"):
+            env[var] = os.environ[var]
+        # And play the SHIPPED experience, whatever this machine has selected.
+        # In mock mode the run can only open on a World's cached first frame —
+        # a machine whose active World has a stale or missing plate (any
+        # prompt edit stamps it stale, and mock mode cannot redraw it) opens
+        # on nothing, the client holds its opening blackout for 40s, and every
+        # click here times out at 30. That is a fact about the developer's
+        # selection, not about the build. Without `.active` the store resolves
+        # the factory slug, whose plate ships in the tree.
+        (sandbox_experiences / ".active").unlink(missing_ok=True)
+
         # Discard the server's stdout/stderr rather than piping it: the mock
         # server logs verbosely per request, and an unread PIPE fills its OS
         # buffer and deadlocks the server (page loads then hang). Nothing here

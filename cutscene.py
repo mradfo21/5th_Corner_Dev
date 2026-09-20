@@ -1060,12 +1060,19 @@ def play_for_session(
     if plate is None and not opening:
         return {"ok": False, "error": "no_plate", "shots": []}
 
-    goal = ""
-    try:
-        import game_identity
-        goal = game_identity.level_goal()
-    except Exception:
-        logging.exception("[CUTSCENE] level goal lookup failed")
+    # The goal the run was STAGED with wins. _stage_opening_montage already
+    # resolved it (authored, else drafted for this run) and put it on the
+    # title card; re-deriving it from the sheet here meant that on a level
+    # with no authored goal the card named the drafted landmark while the
+    # four photographs were composed toward `level_goal()`'s fallback — the
+    # first landmark in the list, i.e. the fence the player was standing at.
+    goal = str(staged.get("goal") or "").strip()
+    if not goal:
+        try:
+            import game_identity
+            goal = game_identity.level_goal()
+        except Exception:
+            logging.exception("[CUTSCENE] level goal lookup failed")
 
     try:
         generated = generate_shots(

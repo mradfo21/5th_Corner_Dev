@@ -994,10 +994,28 @@ def generate_gemini_img2img(
     cast_plates: list[str] | None = None,
     image_size: str | None = None,
     model: str | None = None,
+    reference_labels: dict | None = None,
+    lead_reference: str | None = None,
 ) -> str:
     """
     Edit an image using Google Gemini (image-to-image).
     Supports up to 6 reference images for better continuity.
+
+    ``reference_labels`` maps a reference path to the caption that sits next to
+    it in the request, overriding the generic one. The generic caption for a
+    non-plate attachment is "PREVIOUS FRAME — place, light, and materials only
+    … do NOT copy the person in this frame", which is right for a still (it
+    stops a recast redrawing the leftover guy) and wrong for a flipbook, whose
+    first reference is the start keyframe the grid must continue — pose
+    included — and whose last is a blank layout guide that is not a frame at
+    all. The flipbook names its own; see engine._flipbook_generate.
+
+    ``lead_reference`` is a path that takes slot 1 whatever else is attached.
+    Slot 1 is the attachment the model copies the person from, which is why
+    the plates go first for a still. A flipbook turn that continues from a
+    previous panel wants that panel there: it already shows the character, in
+    the pose and from the side panel 1 must continue, whereas the character
+    sheet in slot 1 is a face-on portrait and panel 1 kept coming back face-on.
 
     ``image_size`` ("1K" / "2K" / "4K") and ``model`` override the configured play
     settings for this one call. Grid renders need both: the panels are slices of a
@@ -1084,6 +1102,8 @@ def generate_gemini_img2img(
             + cast_plates
             + [p for p in image_paths if p not in identity_set and p not in cast_set]
         )
+    if lead_reference and lead_reference in image_paths:
+        image_paths = [lead_reference] + [p for p in image_paths if p != lead_reference]
     image_paths = image_paths[:6]
     
     print(f"[GOOGLE GEMINI] Image editing mode with {len(image_paths)} reference image(s)", flush=True)
@@ -1132,7 +1152,11 @@ def generate_gemini_img2img(
             }
         }
         image_parts.append(encoded)
-        if identity_seed or identity_paths or cast_plates or game_identity.is_viewfinder_spec(spec):
+        if reference_labels and img_path in reference_labels:
+            # The caller has said what this attachment is; that beats every
+            # generic caption below.
+            labeled_parts.append({"text": str(reference_labels[img_path])})
+        elif identity_seed or identity_paths or cast_plates or game_identity.is_viewfinder_spec(spec):
             if img_path in cast_set:
                 # Unlabeled, a close-up is just "the previous frame" — and the
                 # model obliges by continuing its framing, which turns the
@@ -1322,54 +1346,48 @@ def generate_gemini_img2img(
             "they're talking to — same room, one shot later."
         )
     elif is_flipbook:
-        # FLIPBOOK MODE: The FIRST reference image (the previous sequence's LAST
-        # panel) is the SPATIAL GROUND TRUTH — Frame 1 of the new grid must
-        # continue from that exact position. Panel numbers here follow the
-        # caller's grid: they were written as a literal 16 when 4x4 was the only
-        # shape, which told a 2x2 request to evolve across sixteen frames.
-        _fb_rows, _fb_cols = flipbook_grid or (4, 4)
-        _fb_last = _fb_rows * _fb_cols
-        _fb_mid = max(2, _fb_last // 2)
+        # FLIPBOOK MODE. The grid rules the caller composed (flipbook.grid_prompt
+        # and engine's action block) are the keyframe contract: panel 1 is the
+        # START KEYFRAME continued, the last panel is the END, the rest are
+        # in-betweens. This block used to be an older copy of the same
+        # contract, written for a first-person desert run — "The FIRST
+        # reference image is the FINAL PANEL of the previous sequence" (the
+        # first attachment is the character sheet once plates are attached),
+        # "VISIBLE LANDMARKS: Mesas, buildings, fences", "GROUND TYPE: desert,
+        # concrete, rubble", "Jumping to a new location — continuation, NOT
+        # teleportation" (which fights a travelling turn's last panel). Two
+        # statements of one contract drift; this one now defers to the other.
         continuity_instruction = (
-            "\n\n⚡ CRITICAL — TEMPORAL CONTINUITY: YOUR CAMERA POSITION RIGHT NOW\n"
+            "\n\n⚡ CRITICAL — TEMPORAL CONTINUITY: WHERE THE CAMERA IS RIGHT NOW\n"
             "═══════════════════════════════════════════════════════════════════\n"
             "\n"
-            "The FIRST reference image is the FINAL PANEL of the previous sequence.\n"
-            "That image shows EXACTLY WHERE YOUR CAMERA IS POINTING RIGHT NOW.\n"
-            "It is the LAST THING YOU SAW before this new sequence begins.\n"
+            "The reference labelled START KEYFRAME is the final panel of the "
+            "previous sequence: where the camera stands RIGHT NOW, and how the "
+            "subject stands in it. It is the last thing the viewer saw.\n"
             "\n"
-            "🎯 FRAME 1 OF YOUR NEW GRID = THE VERY NEXT MOMENT AFTER IT:\n"
-            "• Frame 1's camera position flows DIRECTLY from the first reference image\n"
-            "• Same camera height (how high off the ground)\n"
-            "• Same camera orientation (what direction you're facing)\n"
-            "• Same visible landmarks, structures, ground texture\n"
-            "• Frame 1 is the instant AFTER that reference — NOT a new scene\n"
+            "🎯 PANEL 1 OF YOUR NEW GRID = THE VERY NEXT MOMENT AFTER IT:\n"
+            "• Same camera height, same direction, same distance from the subject\n"
+            "• Same place, same light, same film grain and palette\n"
+            "• The subject in the same spot and the same pose, beginning to move\n"
+            "• A viewer watching the START KEYFRAME and then panel 1 sees "
+            "uncut footage — not a new scene, not a new angle\n"
             "\n"
-            "COPY from the first reference image (SPATIAL GROUND TRUTH — non-negotiable):\n"
-            "✅ CAMERA HEIGHT: Eye-level position identical to reference\n"
-            "✅ FACING DIRECTION: Same forward vector as reference\n"
-            "✅ VISIBLE LANDMARKS: Mesas, buildings, fences, terrain seen in reference\n"
-            "✅ GROUND TYPE: Same terrain texture (desert, concrete, rubble, etc.)\n"
-            "✅ HORIZON LINE: Same height in frame relative to sky/ground split\n"
-            "✅ LIGHTING: Same time of day, shadow direction, atmospheric haze\n"
-            "✅ FILM QUALITY: Same grain and color palette\n"
+            "The KEYFRAMES section above says where the grid goes from there and "
+            "how far by the last panel; it governs.\n"
             "\n"
-            f"EVOLVE ACROSS FRAMES 1 → {_fb_last} (show the action from THIS EXACT POSITION):\n"
-            "🎬 Frame 1 = immediately after the reference — one step forward\n"
-            f"🎬 Frames 2-{_fb_mid} = action building, natural body movement and camera bob\n"
-            f"🎬 Frame {_fb_last} = meaningful advancement — you have MOVED through the scene\n"
-            "\n"
-            "⚠️ WHAT KILLS CONTINUITY (DO NOT DO THIS):\n"
-            "❌ Showing a completely different environment in Frame 1 vs the reference\n"
-            "❌ Camera suddenly at a different height or angle than the reference\n"
-            "❌ Landmarks that were visible in the reference disappearing entirely in Frame 1\n"
-            "❌ Sky/ground ratio shifting dramatically from reference to Frame 1\n"
-            "❌ Jumping to a new location — continuation, NOT teleportation\n"
-            "\n"
-            "THINK OF IT THIS WAY:\n"
-            "The reference is the LAST FRAME of a video recording.\n"
-            "Your Frame 1 is the NEXT FRAME of that same continuous recording.\n"
-            "A viewer watching both in sequence should see seamless, uncut footage.\n"
+            "WHAT THE OTHER ATTACHMENTS ARE — none of them is a moment:\n"
+            "• A CHARACTER SHEET is the face, build and outfit — not the pose "
+            "and not the framing. The pose and the side they are seen from "
+            "come from the START KEYFRAME.\n"
+            "• A LOCATION PLATE is the architecture, materials and palette of "
+            "the place — not a composition to reproduce, and nobody standing "
+            "in it is in this scene.\n"
+            "• A LAYOUT TEMPLATE is the panel layout and nothing else.\n"
+            "Where the instruction above says \"the attached image is the "
+            "PREVIOUS moment\", that is the START KEYFRAME and only the START "
+            "KEYFRAME. Where it says the reference is not a composition to "
+            "reproduce, that is about the LAST panel: panel 1 reproduces the "
+            "START KEYFRAME's framing and pose.\n"
         )
     elif hold_cast:
         # Encounter resolve: do NOT "keep similar framing" — that freezes the
