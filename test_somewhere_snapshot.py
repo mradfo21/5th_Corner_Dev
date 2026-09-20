@@ -76,15 +76,17 @@ class TestSomewhereSnapshotOnDisk(unittest.TestCase):
 
     def test_experience_keeps_the_somewhere_clock(self):
         """SOMEWHERE wants a brisk arc: escalate around turn 2, peak around
-        turn 5, so a short run still gets a shape instead of sitting at
-        "normal" the whole way.
+        turn 3 for a player who scans (turn 6 for one who only clicks), so a
+        short run still gets a shape instead of sitting at "normal" the whole
+        way.
 
         That is the intent, and the marks are NOT those turn numbers. They are
         threat POINTS, and a turn adds one — except a SCAN tap (MOVE TO /
         INTERACT), which adds 1 + MAX_RISK_THREAT_BOOST = 2, and SCAN taps are
-        how the game is mostly played. So the arc above is delivered by 4 / 9,
-        which is exactly what experience_store.PRODUCT_* and the editor's own
-        help text say SOMEWHERE uses.
+        how the game is mostly played. So the arc above is delivered by 3 / 6
+        (was 4 / 9 — "escalate turn 2, peak turn 5"; the game is at its best
+        with the pressure on), which is exactly what experience_store.PRODUCT_*
+        and the editor's own help text say SOMEWHERE uses.
 
         This test used to assert 2 / 5 — the turn numbers, entered into a
         points field. Live data had drifted further still, to 2 / 4. Played,
@@ -114,7 +116,7 @@ class TestSomewhereSnapshotOnDisk(unittest.TestCase):
             return -(-mark // per_scan_turn)  # ceil
 
         self.assertEqual(arrives(xs.PRODUCT_ESCALATE_AT), 2)
-        self.assertEqual(arrives(xs.PRODUCT_CRITICAL_AT), 5)
+        self.assertEqual(arrives(xs.PRODUCT_CRITICAL_AT), 3)
 
 
 class TestPlayBindsSomewhere(unittest.TestCase):

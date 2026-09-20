@@ -310,8 +310,12 @@ class TestDetectCacheIsScanGated(unittest.TestCase):
     def test_a_cache_failure_cannot_break_the_scan(self):
         block = self._cache_block()
         self.assertIn("except Exception", block)
-        # The response still goes out after the cache attempt.
-        self.assertIn('return jsonify({"objects": objects or [], "anti_loop_suppressed": suppressed})', block)
+        # The response still goes out after the cache attempt — and the
+        # sighting that rides on the same pass is its own try/except too.
+        self.assertIn('out = {"objects": objects or [], "anti_loop_suppressed": suppressed}', block)
+        self.assertIn("return jsonify(out)", block)
+        self.assertIn("_stage_encounter_sighting(", block)
+        self.assertIn("except Exception as e_sight:", block)
 
 
 if __name__ == "__main__":

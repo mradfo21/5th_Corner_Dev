@@ -1616,18 +1616,28 @@ class TestStoryDynamicsDriveTheState(unittest.TestCase):
 
     def test_meddling_cannot_burn_through_the_whole_ladder(self):
         """At the original uncapped boost, a SCAN run that moved every turn hit
-        'critical' on turn 3 and spent its last 27 turns with nowhere to go.
+        'critical' on turn 3 with threat in the twenties and spent its last 27
+        turns with nowhere to go.
 
-        Against the product clock the cap holds: three boosted turns is threat
-        6, which is escalating with room left. Live data saved at 2/4 reached
-        critical on turn 2 and stayed there — that is a property of that file,
-        not of the cap this test guards, which is why the marks are pinned in
-        setUp.
+        The cap holds: a boosted turn adds 1 + MAX_RISK_THREAT_BOOST and no
+        more, so two of them are threat 4 — escalating on the 3 / 6 product
+        clock, with the middle act still to come — and three are exactly
+        threat 6, which is where that clock puts 'critical' for a player who
+        scans every turn (by design: "3 turns critical", 2026-09-20). Live
+        data saved at 2/4 reached critical on turn 2 — a property of that
+        file, not of the cap this test guards, which is why the marks are
+        pinned in setUp.
         """
-        for _ in range(3):
+        per_turn = 1 + engine.MAX_RISK_THREAT_BOOST
+        dyn = None
+        for _ in range(2):
             dyn = engine.advance_story_dynamics(session_id=self.SID, risk_boost=2)
-        self.assertNotEqual(dyn["phase"], "critical")
+        self.assertEqual(dyn["threat_level"], 2 * per_turn)
         self.assertEqual(dyn["phase"], "escalating")
+        dyn = engine.advance_story_dynamics(session_id=self.SID, risk_boost=99)
+        self.assertEqual(dyn["threat_level"], 3 * per_turn,
+                         "a boost of 99 still adds only the cap")
+        self.assertEqual(dyn["phase"], engine._phase_for_threat(3 * per_turn))
 
     def test_crossing_into_a_new_phase_does_not_relight_the_evening(self):
         """Phase is the tension dial. Stepping the lighting string on an act
@@ -1682,14 +1692,18 @@ class TestABurntClockSaysSoAtBoot(unittest.TestCase):
     def test_it_names_the_turn_the_mark_lands_on(self):
         """The whole confusion is points versus turns, so the warning has to
         do the conversion rather than restate the number."""
-        out = self._boot((2, 5))
-        self.assertIn("'critical' on turn 3", out)
+        out = self._boot((2, 4))
+        self.assertIn("'critical' on turn 2", out)
         self.assertIn("POINTS, not turns", out)
 
     def test_it_says_what_to_set_instead(self):
-        out = self._boot((2, 5))
+        out = self._boot((2, 4))
         self.assertIn(str(engine.STORY_CRITICAL_AT), out)
         self.assertIn("Pacing sheet", out)
+
+    def test_a_clock_that_peaks_on_turn_three_is_the_product_now(self):
+        """3 / 6 with a scanning player is 'critical' on turn 3 — by design."""
+        self.assertEqual(self._boot((2, 5)), "")
 
     def test_the_product_clock_is_silent(self):
         """A warning that fires on the shipped configuration is noise."""

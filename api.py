@@ -433,7 +433,9 @@ def _warn_if_the_story_clock_burns_out():
         esc, crit = engine._threat_marks()
         per_scan_turn = 1 + engine.MAX_RISK_THREAT_BOOST
         crit_turn = -(-crit // per_scan_turn)  # ceil
-        if crit_turn >= 4:
+        # The product clock is 3 / 6 now: a scanning run peaks on turn 3 by
+        # design. What burns out is a clock that is over by turn two.
+        if crit_turn >= 3:
             return
         esc_turn = -(-esc // per_scan_turn)
         ideal = -(-engine.STORY_CRITICAL_AT // per_scan_turn)

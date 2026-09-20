@@ -7,8 +7,8 @@
       "id": "w-somewhere",
       "name": "SOMEWHERE",
       "slug": "somewhere",
-      "x": 0,
-      "y": 0
+      "x": 0.0,
+      "y": 0.0
     }
   ],
   "cutscenes": [],
@@ -26,8 +26,8 @@
     "y": -111.71999999999994
   },
   "threat": {
-    "escalate_at": 4,
-    "critical_at": 9,
+    "escalate_at": 3,
+    "critical_at": 6,
     "beat_normal": "BEAT: put a character or a direct threat in view early — a patrol, a figure, a voice — don't let the opening stay empty.",
     "beat_escalating": "BEAT: pressure is rising. Push the situation forward.",
     "beat_critical": "BEAT: the situation is critical. Offer a way through or a last stand."

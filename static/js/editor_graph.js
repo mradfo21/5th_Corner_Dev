@@ -407,8 +407,8 @@
     const exp = (B && B.experience && B.experience()) || {};
     const t = exp.threat || {};
     return {
-      escalate_at: t.escalate_at == null ? 4 : Number(t.escalate_at),
-      critical_at: t.critical_at == null ? 9 : Number(t.critical_at),
+      escalate_at: t.escalate_at == null ? 3 : Number(t.escalate_at),
+      critical_at: t.critical_at == null ? 6 : Number(t.critical_at),
       beat_normal: String(t.beat_normal || DEFAULT_BEAT_NORMAL),
       beat_escalating: String(t.beat_escalating || DEFAULT_BEAT_ESCALATING),
       beat_critical: String(t.beat_critical || DEFAULT_BEAT_CRITICAL),
@@ -417,8 +417,8 @@
 
   function pacingIsChanged() {
     const t = pacingState();
-    return Number(t.escalate_at) !== 4
-      || Number(t.critical_at) !== 9
+    return Number(t.escalate_at) !== 3
+      || Number(t.critical_at) !== 6
       || String(t.beat_normal || "").trim() !== DEFAULT_BEAT_NORMAL
       || String(t.beat_escalating || "").trim() !== DEFAULT_BEAT_ESCALATING
       || String(t.beat_critical || "").trim() !== DEFAULT_BEAT_CRITICAL;
@@ -4253,7 +4253,7 @@
       // how both the shipped clock and its test ended up holding turn numbers:
       // a MOVE TO or INTERACT adds two, and those are most turns in a real
       // run, so every authored mark was landing on half the turn intended.
-      "Threat points, not turns \u2014 a choice adds 1, a MOVE TO or INTERACT adds 2. So 4 lands on turn 2 of a run that mostly scans. SOMEWHERE uses 4.",
+      "Threat points, not turns \u2014 a choice adds 1, a MOVE TO or INTERACT adds 2. So 3 lands on turn 2 of a run that mostly scans. SOMEWHERE uses 3.",
       (v) => {
         savePacing({ escalate_at: Number(v) }, true).then(() => {
           if (sheetId === n.id) openSheet(n);
@@ -4261,7 +4261,7 @@
       });
     numberRow(clock, "Critical at", { min: 2, max: 60, step: 1 },
       t.critical_at,
-      "When the run is out of room \u2014 past here every turn is a last stand, so set it where you want the peak, not the start. SOMEWHERE uses 9, which is turn 5 of a scanning run.",
+      "When the run is out of room \u2014 past here every turn is a last stand, so set it where you want the peak, not the start. SOMEWHERE uses 6, which is turn 3 of a scanning run (turn 6 of one that only clicks).",
       (v) => {
         savePacing({ critical_at: Number(v) }, true).then(() => {
           if (sheetId === n.id) openSheet(n);

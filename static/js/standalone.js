@@ -554,6 +554,7 @@
     scanFadeTimer: null,        // TTL timer: only armed when __SCAN_TTL_MS__ opts back into the old timed fade
     scanFadeOutTimer: null,     // the fade animation -> teardown timer (after tags start leaving)
     autoScanDone: false,        // this scene has already spent its one automatic detection pass (see AutoScan)
+    sightingTimer: null,        // the beat between the tags landing and a sighting's encounter
     scanSweepTimer: null,       // clears the one-shot scanline class after it runs
     scanHintTimer: null,        // takes the scan hint down; it is a message, not an affordance
     moving: false,              // camera is TRANSLATING (WASD / strafe) — OCR hotspots hide; look-only must not tear them down
@@ -20376,6 +20377,11 @@
   // a turn that never settles must not leave a timer running for the session.
   const AUTO_SCAN_POLL_MS = 350;
   const AUTO_SCAN_GIVE_UP_MS = 12000;
+  // A person in the picture IS the encounter (see engine.api_detect's
+  // sighting). The tags land first — the player sees who it is — and then
+  // the confrontation takes the screen. Long enough to read a label, short
+  // enough that it reads as "they saw each other", not as a menu.
+  const SIGHTING_BEAT_MS = 900;
 
   const AutoScan = (function () {
     let timer = null;
@@ -20573,6 +20579,11 @@
           playScanSweep();
         }
         scheduleScanFade();
+        // The server rolled a figure out of this frame: THAT is the
+        // encounter, with their own close-up as the plate's cast reference.
+        if (res && res.encounter_with && res.encounter_with.label) {
+          openSightingEncounter(res.encounter_with);
+        }
       })
       .catch((err) => { console.warn("[standalone] scan detect failed:", err); })
       .finally(() => {
@@ -20581,6 +20592,42 @@
         if (el.scanBtn) el.scanBtn.classList.remove("scanning");
       });
     return true;
+  }
+
+  // A SIGHTING opened the confrontation: the frame had a person in it, the
+  // server rolled which one and staged their close-up, and this hands the
+  // screen to the Encounter Moment with that figure as its subject. One beat
+  // after the tags land, so the player sees who before the ceremony starts.
+  // Encounter.start() has its own gates (a Moment already up, TALK open, a
+  // turn in flight, camp) and simply declines; the staged sighting expires
+  // with the turn, so a declined one is not a fight owed later.
+  function openSightingEncounter(subject) {
+    clearTimeout(state.sightingTimer);
+    state.sightingTimer = setTimeout(async () => {
+      state.sightingTimer = null;
+      if (!ambientContextAllowed() || state.processing || state.gameOver) return;
+      if (typeof Encounter === "undefined" || !Encounter || typeof Encounter.start !== "function") return;
+      let pending = null;
+      try {
+        pending = Encounter.start({ subject: subject, sighting: true });
+      } catch (err) {
+        console.warn("[standalone] sighting encounter failed to start:", err);
+        return;
+      }
+      // start() passes its gates synchronously (active goes true before its
+      // first await), so this is known now — not after the plate generates.
+      let accepted = false;
+      try { accepted = !!(Encounter.isActive && Encounter.isActive()); } catch (_) {}
+      if (accepted) {
+        // The tags described a picture the confrontation has now taken over.
+        try { closeScan(); } catch (_) {}
+      } else {
+        console.info("[standalone] sighting declined by Encounter.start:", subject.label);
+      }
+      if (pending && typeof pending.catch === "function") {
+        pending.catch((err) => console.warn("[standalone] sighting encounter failed:", err));
+      }
+    }, SIGHTING_BEAT_MS);
   }
 
   // Run the scanline down the frame as the tags arrive. Restarted rather than
@@ -20840,8 +20887,10 @@
   // (camera/tape/free-will/conversation) or a scene change takes over.
   function closeScan() {
     // Whatever is taking the view (a scene change, travel, an instrument) has
-    // invalidated the frame a pending auto-scan was waiting to read.
+    // invalidated the frame a pending auto-scan was waiting to read — and the
+    // figure a pending sighting was about to open on.
     try { AutoScan.cancel(); } catch (_) {}
+    clearTimeout(state.sightingTimer); state.sightingTimer = null;
     clearTimeout(state.scanFadeTimer); state.scanFadeTimer = null;
     clearTimeout(state.scanFadeOutTimer); state.scanFadeOutTimer = null;
     if (!state.scanOn && (!el.scanLayer || el.scanLayer.classList.contains("hidden"))) {
@@ -24163,6 +24212,19 @@
         label: String(opts.subject.label),
         kind: String(opts.subject.kind || ""),
       } : null;
+      // A SIGHTING carries the figure's box and says so: the server matches
+      // it to the close-up it staged from the detect frame, or cuts a fresh
+      // one from the frame posted below. See engine.api_detect / api_begin.
+      if (forcedSubject && (opts.sighting || opts.subject.source === "sighting")) {
+        forcedSubject.source = "sighting";
+        for (const k of ["cx", "cy", "w", "h"]) {
+          const v = Number(opts.subject[k]);
+          if (Number.isFinite(v)) forcedSubject[k] = v;
+        }
+        if (typeof opts.subject.speaks === "boolean") forcedSubject.speaks = opts.subject.speaks;
+        if (opts.subject.distance) forcedSubject.distance = String(opts.subject.distance);
+        if (Number.isFinite(Number(opts.subject.figures))) forcedSubject.figures = Number(opts.subject.figures);
+      }
       resolving = false;
       finishing = false;
       brief = null;
@@ -24206,7 +24268,10 @@
           window.Moments.holdBlack();
         }
       } catch (_) {}
-      try { window.Moments.setNameplate("…", "something is here"); } catch (_) {}
+      try {
+        window.Moments.setNameplate("…",
+          (forcedSubject && forcedSubject.source === "sighting") ? "someone is here" : "something is here");
+      } catch (_) {}
 
       // The LONGEST dead wait in the whole game: the standoff plate is a full
       // generation and the screen is deliberately holding black for it. Report

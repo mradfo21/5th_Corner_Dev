@@ -1638,8 +1638,15 @@ def generate_gemini_img2img(
             "not a portrait, not a frame filled by the subject alone."
         )
     else:
+        # Written to keep the player's own body out of a body-cam frame, and
+        # read by the model as "draw nobody": a first-person run never had a
+        # figure in it to meet. The ban is on the PLAYER's body; people the
+        # scene describes are drawn.
         negative_emphasis = (
-            "\n\nNo person in frame: no head, shoulders, back, hands, or silhouette."
+            "\n\nNo sign of the PLAYER'S own body in frame: not their head, "
+            "shoulders, back or silhouette (hands only when the action "
+            "reaches). Other people the scene describes ARE in the picture, "
+            "as described."
         )
     if cast_plates and "close-up" not in negative_emphasis:
         negative_emphasis += " Not a different subject than the close-up."

@@ -44,6 +44,144 @@ machine every time it ran.
 
 **What did not, and is NOT fixed** — design questions, listed at the end.
 
+## ✅ FIXED: nothing rational triggered an encounter — now a person in the picture IS one
+
+Asked: *"We have an awesome encounter system but nothing rational triggers
+it. Sometimes as we play 'characters' appear, and often come with a 'speak'
+action. Whatever heuristic is deciding this, if found, should trigger an
+encounter with THAT character, using the bbox zoom-in picture as an img2img
+to generate the encounter, along with the plate, the prompt and our character
+reference… if a person appears on screen it triggers an encounter with that
+person. If there are multiple people, a random number rolls which one."*
+
+The heuristic is the SCAN detector: `_classify_speaker` (engine) tags every
+figure `person` / `character` / `creature` and sets `speaks`, which is what
+puts the TALK button on the hotspot, and the auto-scan runs that detector on
+every painted picture. The confrontation system never heard from it: the only
+trigger was the client's walk clock (12–22 s, then 20–40 s of translation),
+the antagonist was a roster draw, and the frame got a say only at ALERTED or
+worse (`onscreen_threat_target`, a label with no box). So the game drew a
+scavenger over a body, offered TALK, and then rolled a fight with a stranger
+from a list half a minute of walking later.
+
+**A sighting.** `api_detect` (`purpose: "scan"` — the auto-scan and the SCAN
+button, never the viewfinder poll) hands its animate figures to
+`encounter.sighting_candidates`: person / character / creature kinds, never
+an animal or a radio (those are a TALK), never a corpse, statue, poster,
+reflection or the player's own body (`_SIGHT_EXCLUDE_RE`, the follow-cam
+strip, `_is_player_self_label`). If there is one and `sighting_can_fire`
+says so — nothing open, alive, `ENCOUNTER_SIGHT_COOLDOWN_TURNS` (3) since
+the last one closed, and not the figure the last one was with
+(`encounter_last_label`, new) — ONE is rolled (`roll_sighting`,
+`random.choice`), their close-up is cut from the frame the detector read
+(`_sighting_box`: the SCAN box padded and pulled up for the head, ≥48 px or
+it is not attached; `sighting_<label>_<ms>.png` in the session's images),
+and `stage_sighting` writes it to `state["encounter_sighting"]` for this
+turn. The response carries `encounter_with` — label, kind, box, distance
+(the witness buckets: near / mid / far), how many figures were in frame.
+
+**The client opens on it.** `openSightingEncounter` waits one beat
+(`SIGHTING_BEAT_MS`, 900 ms — the tags land, the player sees who) and calls
+`Encounter.start({subject, sighting: true})`; `start()` carries the box and
+`source: "sighting"` through the `forcedSubject` it already had (dead code
+until now — no caller passed a subject), tears the scan overlay down the
+moment the Moment accepts, and the nameplate reads "someone is here".
+`start()`'s own gates (a Moment up, TALK open, a turn in flight, camp)
+simply decline; the staged sighting expires with the turn.
+
+**`api_begin` builds the encounter out of it.** The request's `subject`
+(source `sighting`) is matched to the staged record and takes its
+`crop_path`; with no subject but a fresh sighting the sighting is the
+encounter anyway; with no staged crop it cuts one from the frame the client
+posted (`_crop_sighting_from_path`). The crop is the picture the brief is
+asked to describe (`build_encounter_brief(image_path=crop)` — the look is
+that figure's own pixels), and `sighting_brief_line` replaces the "THE
+PLAYER HAS JUST ATTACKED" header: *the player has just SEEN this figure,
+this far away, N others in frame, it can speak; the motive is why THIS
+figure is in THIS place at THIS moment of the run — read the world, what
+just happened and what the player is trying to reach.* The plate prompt's
+place lock says the figure is already in the photograph with their close-up
+attached, and — third person — *"the other person is ALREADY there; add
+NOBODY"* in place of "add EXACTLY ONE new person". Both plate paths carry
+the crop: `_plate_sequence(cast_plates=)` into `_flipbook_generate`, and
+the still's `generate_gemini_img2img(cast_plates=)` — the same labelled
+"CLOSE-UP OF A SUBJECT ALREADY IN THIS SCENE — copy this exact face"
+reference the INTERACT dive and the TALK portrait already ride on, aimed at
+a standoff. The frame stays the anchor; the character sheet keeps the
+player. `_pin_encounter_plate` spends the sighting and records
+`encounter_last_label`; the begin response's `encounter.source` says
+`sighting` / `witness` / `aimed` / `roll`.
+
+**Seen live (run 11, the shipped Horizon level).** Turn 1's frame had a
+soldier standing at the fence: `[ENCOUNTER] sighting: 1 figure(s) in frame —
+rolled 'soldier' (person, far) — close-up sighting_soldier_….png`; the client
+opened on him; the plate grid's panel 1 is the frame and by panel 4 he has
+crossed from the fence to the player; "Smash his visor with camera" put him
+down; the aftermath frame has him crumpled beside the truck and the run
+carried on (`run11_sighting_sheet.jpg`). Two things it also showed. The
+52×127-pixel close-up of a *far* figure lost to the brief's text: the plate
+dressed him in the roster's mustard hazard suit by panel 3, and
+`align_brief_to_plate` then renamed him to match — small crops are now
+upscaled to 256 px on the short side before they are attached
+(`_SIGHTING_CROP_LEGIBLE_PX`; it adds no information, it makes the
+attachment read as a figure rather than a smudge). And a second sighting
+(turn 5, "distant figure", 34 px wide, no close-up) was staged and never
+opened, because the harness committed the next turn 1.5 s after the frame
+painted — faster than the auto-scan settle + the sighting beat — and
+`Encounter.start()` declined on `processing`. That is the harness being
+inhuman, not the trigger: it now gives each painted frame the three seconds
+a person takes to look at it before acting.
+
+Run 12, on the cyberpunk level with the fixes: turn 7's frame had a mutated
+figure across the corridor from the player; `rolled 'creature' (creature,
+near)`, close-up 256×566; the brief made it a "System Purge Enforcer"; the
+plate grid holds the SAME creature (panel 1 is the frame, both bodies kept)
+and closes the distance; "Shatter the creature's visor" → survived → the
+aftermath frame has it dead on the grating with the player standing over
+it (`run12_sighting_sheet.jpg`). Eight of eight turns committed, no black
+frames, escalating on turn 2 and critical on turn 5 under 3 / 6.
+
+The walk clock and the roster draw are untouched underneath (a rolled
+encounter still fires on distance when nobody is in frame); the harness
+plays out a sighting that opens between turns (`playtest_app.py`, before
+the planned verb, `SIGHTINGS:` in the summary) and the loop trace records
+`encounter.sighting` per turn. `test_encounter_sighting.py` (38): who
+counts, the roll, the gates, staging and freshness, the brief and plate
+wording, the crop geometry and size floor, `_stage_encounter_sighting`, one
+real `/api/detect` request against a scratch session, `api_begin` with a
+staged sighting / with no subject / with a stale one, and the client
+wiring by source.
+
+## ⚙️ Pacing: the product clock is 3 / 6, and the walk clock is half what it was
+
+Asked: *"default all the default turn pacing etc, increasing the likelihood
+of characters and interesting events happening… it should be like 3 turns
+critical, 6 turns peak."* The marks are threat POINTS (a choice adds 1, a
+MOVE TO / INTERACT / TALK adds 2), so 3 / 6 is *escalating* by turn 2–3 and
+*critical* by turn 3–6 depending on how much the player scans. Was 4 / 9,
+with a new Experience starting at 8 / 20 — "slower than SOMEWHERE", which
+played as a run that did not tip until turn ten and did not peak before
+twenty. Changed in every place the number lives: `engine.STORY_*` and
+`_HARNESS_*`, `experience_store.PRODUCT_*` and `HARNESS_*` (a new
+Experience now starts on the same sprint), `tunables.py` defaults, the
+editor's Pacing sheet defaults and help copy (`editor_graph.js`), the
+shipped `experiences/somewhere.json`, and the active Experience on this
+machine (`set_pacing`). `api._warn_if_the_story_clock_burns_out` now warns
+below turn 3, not below turn 4 — a scanning run peaking on turn 3 is the
+design. Tests pinned to 4 / 9 and 8 / 20 follow (`test_experience_graph`,
+`test_simulation_pacing`, `test_somewhere_snapshot`); the meddling-cap test
+asserts the cap (two boosted turns = 4 = escalating, three = 6) rather than
+the old clock's room.
+
+Two more knobs in the same direction: the encounter walk clock
+(`ENCOUNTER_TRAVEL_*`) is 8–15 s for the first budget and 14–26 s after
+(was 12–22 / 20–40); and the body-cam image rule that read *"No person in
+frame: no head, shoulders, back, hands, or silhouette"* — written to keep
+the PLAYER's body out of a first-person frame and read by the model as
+"draw nobody" — now bans only the player's own body and says people the
+scene describes are drawn. In third person nothing was keeping figures out
+of the frame; the level plate on this machine puts four in.
+
 ## ✅ FIXED: the flipbook never said what panel 1 was, so the grid began wherever the model liked
 
 Reported from watching the runs: *"the flipbook's interpolation between the
@@ -324,13 +462,13 @@ added on 09-18 and no longer assumes the level has no blast door.
 
 ## 🔍 Found and NOT fixed — the design questions the trace leaves on the table
 
-- **Encounters are a walk timer, not the story.** `encounter_can_roll` gates on
-  "already open" and "alive" only; the trigger is the client's travel clock
-  (12–22s of walking the first time, 20–40s after). Detection, phase and threat
-  change the *odds* and the *framing* of a fight, never whether one happens,
-  and the on-screen witness becomes the antagonist only if SCAN ran on the same
-  turn the clock expired. Whether "critical + hunted" should be able to force
-  one is a design call.
+- **Encounters are a walk timer, not the story.** *Closed the same evening
+  by the sighting above: a person in the frame opens one.* What remains
+  from this: `encounter_can_roll` gates on "already open" and "alive" only;
+  the walk clock (now 8–15 s / 14–26 s) is the floor under the sighting;
+  detection, phase and threat change the *odds* and the *framing* of a
+  fight, not whether one happens. Whether "critical + hunted" should be
+  able to force one with nobody in frame is still a design call.
 - **Nothing ends a run but death.** `critical` is a register, not a terminal
   state; both shipped Experiences have `transitions: []`; the case-file win is
   client-only. `goal_reached` is now a fact the run knows — a `goal_reached`

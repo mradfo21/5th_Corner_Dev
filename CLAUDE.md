@@ -140,7 +140,10 @@ picture, **not a list of text buttons**:
   the fire. Not a Moment; the full HUD stays live.
 
 **Dials.** `threat` climbs monotonically as the story escalates and derives
-the phase. `chaos` spikes and decays. `detection` (hidden → suspicious →
+the phase — in POINTS (a choice adds 1, a MOVE TO / INTERACT / TALK adds 2)
+against the marks `escalate_at` / `critical_at`, which are 3 / 6 everywhere
+by default since 2026-09-20 (escalating by turn 2–3, critical by turn 3–6;
+authored per Experience in the Pacing sheet). `chaos` spikes and decays. `detection` (hidden → suspicious →
 alerted → hunted) moves off the frame witness and the prose. The clock — time
 of day and the lighting line — is rolled once at reset, after the World bind,
 and never moves: the light is the run's identity, not a tension dial. The run
@@ -416,12 +419,15 @@ it. Keep that; it is the reason the codebase is navigable at this size.
     shipped Experiences have `transitions: []`. A `goal_reached` edge ("on
     reaching the goal → next World / cutscene") is the obvious next step and
     needs both editors.
-  - **Encounters are a walk timer.** `encounter_can_roll` gates on "already
-    open" and "alive"; the client's travel clock decides when. Detection,
-    phase and threat change a fight's odds and framing, never whether it
-    happens; the on-screen witness is the antagonist only if SCAN ran on the
-    turn the clock expired. Whether "critical + hunted" should force one is a
-    design call, not a bug.
+  - **Encounters: a person in the frame IS one now** (`encounter.sighting_*`,
+    `engine._stage_encounter_sighting`, `api_detect` → `encounter_with` →
+    client `openSightingEncounter` → `Encounter.start({subject, sighting})`
+    → `api_begin` with the figure's close-up as a cast plate). The walk clock
+    (`ENCOUNTER_TRAVEL_*`, 8–15 s / 14–26 s) is the floor under it and still
+    draws from the roster when nobody is in frame. `ENCOUNTER_SIGHT_COOLDOWN_TURNS`
+    (3) and `encounter_last_label` stop an escape's frame re-opening the same
+    fight. Whether "critical + hunted" should force one with nobody in frame
+    is still a design call.
   - **A fight leaves the player more hunted than it found them**: each round
     is `apply_detection(interaction=True)` (+1 heat) and threat +2, the odds
     stay pinned to the opening level, nothing resets on a win, and

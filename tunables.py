@@ -83,7 +83,7 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
         "min": 2,
         "max": 40,
         "step": 1,
-        "default": 4,
+        "default": 3,
         "help": "Accumulated threat before the story tips into escalating. "
                 "Raise it for a slower burn.",
     },
@@ -93,7 +93,7 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
         "min": 3,
         "max": 80,
         "step": 1,
-        "default": 9,
+        "default": 6,
         "help": "Accumulated threat before the story tips into critical. "
                 "Keep it above act two or the middle act never happens.",
     },

@@ -13043,8 +13043,14 @@ def api_detect():
     let the player poke any of them.
 
     Request JSON:  {"frame": "data:image/jpeg;base64,...", "purpose": "scan"?}
-    Response JSON: {"objects": [{"label", "cx", "cy", "w", "h"}, ...]}
+    Response JSON: {"objects": [{"label", "cx", "cy", "w", "h", "kind", "speaks"}, ...],
+                    "anti_loop_suppressed": bool,
+                    "encounter_with"?: {"label", "kind", "cx", "cy", "w", "h",
+                                        "distance", "figures", "source": "sighting"}}
     Coordinates are normalized 0..1 (cx/cy = box center, w/h = box size).
+    `encounter_with` is present when a `purpose: "scan"` pass found a person
+    (or creature) and nothing stopped a sighting from opening on them — see
+    _stage_encounter_sighting; the client hands it to Encounter.start().
 
     Read-only w.r.t. history and choices: unlike /api/observe this never touches
     the turn record. The ONE thing it writes is `purpose: "scan"`-gated — the
@@ -13113,6 +13119,14 @@ def api_detect():
         # recording a clean witness from a suppressed list would tell the
         # engine nobody is there at the exact moment a run is being hunted.
         witness = witness_from_detections(objects)
+        # The figures that could be an encounter, read off the same
+        # pre-gate list for the same reason: the gate withholds tags from the
+        # player, it does not empty the room.
+        try:
+            import encounter as _enc_mod
+            sight_candidates = _enc_mod.sighting_candidates(objects)
+        except Exception:
+            sight_candidates = []
 
         # SCAN used to be a second front door into the world with no relation
         # to the anti-loop gate `enforce_egress_option` already enforces on the
@@ -13146,12 +13160,25 @@ def api_detect():
         # it is one deliberate tap rather than the ~2.5 s viewfinder poll, and
         # it reuses this block's existing lock + save, so the frame reading
         # costs no extra API call, no extra round trip and no extra contention.
+        # ...and, on the same pass, whether a person in the picture opens an
+        # encounter. A sighting is the one rational trigger the confrontation
+        # system has: the figure the frame shows, rolled if there are several,
+        # with their close-up cut from this very frame. Same gate, same lock,
+        # same save — the auto-scan runs one of these on every painted
+        # picture, so this is "if a person appears on screen".
+        sighting = None
         if str(data.get('purpose') or "").strip().lower() == "scan":
             try:
                 with WORLD_STATE_LOCK:
                     st = _load_state(session_id)
                     labels = record_scene_objects(st, objects or [])
                     record_witness(st, witness)
+                    try:
+                        sighting = _stage_encounter_sighting(
+                            st, session_id, sight_candidates, img_bytes)
+                    except Exception as e_sight:
+                        log_error(f"[ENCOUNTER] sighting failed (non-fatal): {e_sight}")
+                        sighting = None
                     _save_state(st, session_id)
                 if labels:
                     print(f"[SCENE OBJECTS] turn {st.get('turn_count', 0)} on screen: "
@@ -13166,7 +13193,12 @@ def api_detect():
         # identical on the wire otherwise, and a harness that can't tell
         # those apart flags this gate's own correct behavior as a detector
         # regression every time a run gets hunted long enough to trip it.
-        return jsonify({"objects": objects or [], "anti_loop_suppressed": suppressed})
+        out = {"objects": objects or [], "anti_loop_suppressed": suppressed}
+        if sighting:
+            # The figure the client opens the confrontation with — label,
+            # kind, box, distance. Absent when nothing fired.
+            out["encounter_with"] = sighting
+        return jsonify(out)
     except Exception as e:
         import traceback as _tb
         log_error(f"[DETECT] failed: {e}")
@@ -14560,6 +14592,136 @@ def _crop_image_to_norm_box(path: str, box: Dict[str, float]) -> Optional[str]:
     except Exception as e:
         log_error(f"[TALK PORTRAIT] bbox crop failed: {e}")
         return path
+
+
+def _sighting_box(subject: Any) -> Optional[Dict[str, float]]:
+    """The crop for an encounter's close-up of a sighted figure.
+
+    The portrait crop (`_norm_box_from_subject`) pads a SCAN box a little;
+    this one pads more and pulls the top up, the way the client's TALK crop
+    does — detection boxes sit on the torso, and a standoff plate needs the
+    face, the build and whatever they are holding.
+    """
+    box = _norm_box_from_subject(subject, pad=0.18)
+    if not box:
+        return None
+    lift = min(box["y"], box["h"] * 0.35)
+    box = dict(box)
+    box["y"] = round(box["y"] - lift, 5)
+    box["h"] = round(min(1.0 - box["y"], box["h"] + lift), 5)
+    return box
+
+
+# Below this the crop is a smear, and a smear captioned "copy this exact face"
+# is worse than no close-up at all.
+_SIGHTING_CROP_MIN_PX = 48
+# ...and below this it is upscaled before it is attached (see _write_sighting_crop).
+_SIGHTING_CROP_LEGIBLE_PX = 256
+
+
+def _write_sighting_crop(im, box: Dict[str, float], label: str,
+                         session_id: str = "default") -> Optional[str]:
+    """Crop a PIL image to ``box`` and save it as this sighting's close-up."""
+    try:
+        from PIL import Image
+        W, H = im.size
+        left = max(0.0, min(float(W - 1), box["x"] * W))
+        top = max(0.0, min(float(H - 1), box["y"] * H))
+        right = max(left + 1.0, min(float(W), left + box["w"] * W))
+        bottom = max(top + 1.0, min(float(H), top + box["h"] * H))
+        if (right - left) < _SIGHTING_CROP_MIN_PX or (bottom - top) < _SIGHTING_CROP_MIN_PX:
+            print(f"[ENCOUNTER] sighting close-up of {label!r} would be "
+                  f"{int(right - left)}x{int(bottom - top)}px — too small, skipped",
+                  flush=True)
+            return None
+        crop = im.convert("RGB").crop((left, top, right, bottom))
+        # A far figure is a 50-pixel sliver, and the model attends to a
+        # sliver about as well as a person would: the first live sighting
+        # (52x127) came back dressed from the world's roster instead of from
+        # its own pixels. Upscaling adds no information, but it makes the
+        # attachment legible as a figure rather than a smudge.
+        short = min(crop.size)
+        if short < _SIGHTING_CROP_LEGIBLE_PX:
+            scale = _SIGHTING_CROP_LEGIBLE_PX / float(short)
+            crop = crop.resize((max(1, round(crop.size[0] * scale)),
+                                max(1, round(crop.size[1] * scale))),
+                               Image.LANCZOS)
+        img_dir = Path(_get_image_dir(session_id))
+        img_dir.mkdir(parents=True, exist_ok=True)
+        path = img_dir / f"sighting_{_companion_slug(label)}_{int(time.time() * 1000)}.png"
+        crop.save(path, "PNG", optimize=False)
+        return str(path)
+    except Exception as e:
+        log_error(f"[ENCOUNTER] sighting crop failed: {e}")
+        return None
+
+
+def _crop_sighting_from_bytes(img_bytes: bytes, subject: dict,
+                              session_id: str = "default") -> Optional[str]:
+    """The sighted figure's close-up, cut from the frame the detector read."""
+    box = _sighting_box(subject)
+    if not box or not img_bytes:
+        return None
+    try:
+        from PIL import Image
+        import io as _io
+        with Image.open(_io.BytesIO(img_bytes)) as im:
+            return _write_sighting_crop(im, box, str(subject.get("label") or ""), session_id)
+    except Exception as e:
+        log_error(f"[ENCOUNTER] sighting crop (bytes) failed: {e}")
+        return None
+
+
+def _crop_sighting_from_path(frame_path: str, subject: dict,
+                             session_id: str = "default") -> Optional[str]:
+    """Same, from a frame on disk (the one the client posted to begin)."""
+    box = _sighting_box(subject)
+    if not box or not frame_path or not os.path.exists(str(frame_path)):
+        return None
+    try:
+        from PIL import Image
+        with Image.open(str(frame_path)) as im:
+            return _write_sighting_crop(im, box, str(subject.get("label") or ""), session_id)
+    except Exception as e:
+        log_error(f"[ENCOUNTER] sighting crop (path) failed: {e}")
+        return None
+
+
+def _stage_encounter_sighting(st: dict, session_id: str, candidates: list,
+                              img_bytes: Optional[bytes]) -> Optional[dict]:
+    """A person in the picture IS the encounter. Called from api_detect,
+    under the state lock, with the figures the detector found.
+
+    Rolls ONE of them, cuts their close-up from the frame, and stages the
+    sighting on state for this turn; returns what the client is told (or
+    None when nothing fired — no figure, a fight already open, the cooldown
+    after the last one, or the figure who just backed off still standing
+    there). See encounter.sighting_can_fire.
+    """
+    import encounter as _encounter
+    pool = list(candidates or [])
+    if not pool:
+        return None
+    ok, why = _encounter.sighting_can_fire(st)
+    if not ok:
+        print(f"[ENCOUNTER] sighting: {len(pool)} figure(s) in frame, not firing ({why})",
+              flush=True)
+        return None
+    pool = [c for c in pool if not _encounter.sighting_is_recent_antagonist(st, c.get("label"))]
+    if not pool:
+        print("[ENCOUNTER] sighting: only the figure the last encounter was with — "
+              "not firing", flush=True)
+        return None
+    pick = _encounter.roll_sighting(pool)
+    if not pick:
+        return None
+    crop = _crop_sighting_from_bytes(img_bytes, pick, session_id) if img_bytes else None
+    public = _encounter.stage_sighting(st, pick, crop_path=crop or "", figures=len(pool))
+    print(f"[ENCOUNTER] sighting: {len(pool)} figure(s) in frame — rolled "
+          f"{pick.get('label')!r} ({public.get('kind')}, {public.get('distance')})"
+          f"{' — close-up ' + os.path.basename(crop) if crop else ' — no close-up'}",
+          flush=True)
+    return public
 
 
 def _current_frame_path(session_id: str = "default") -> Optional[str]:
@@ -19318,11 +19480,14 @@ def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
 # were all already built — they were simply never driven on the web path. These
 # helpers wake that machinery up so every action moves the story forward and
 # ratchets risk, and so interacting with a scanned object pushes hardest.
-STORY_ESCALATE_AT = 4   # threat pressure at which the story tips into "escalating"
-STORY_CRITICAL_AT = 9   # ... and into "critical"
-# Platform default when an Experience does not name its own curve.
-_HARNESS_ESCALATE_AT = 8
-_HARNESS_CRITICAL_AT = 20
+# Threat POINTS (a choice is 1, a MOVE TO / INTERACT / TALK is 2), so 3 / 6
+# tips into "escalating" by turn 2-3 and "critical" by turn 3-6. Was 4 / 9.
+STORY_ESCALATE_AT = 3   # threat pressure at which the story tips into "escalating"
+STORY_CRITICAL_AT = 6   # ... and into "critical"
+# Platform default when an Experience does not name its own curve — the
+# same sprint (was 8 / 20, which did not peak before turn ten).
+_HARNESS_ESCALATE_AT = 3
+_HARNESS_CRITICAL_AT = 6
 _DEFAULT_BEAT_NORMAL = ("BEAT: put a character or a direct threat in view early — "
                         "a patrol, a figure, a voice — don't let the opening stay empty.")
 _DEFAULT_BEAT_ESCALATING = "BEAT: pressure is rising. Push the situation forward."
@@ -19340,7 +19505,7 @@ def _threat_block() -> dict:
 
 
 def _threat_marks() -> tuple[int, int]:
-    """SOMEWHERE keeps 4/9. A blank Experience may set a slower curve."""
+    """SOMEWHERE keeps 3/6. An Experience may author a slower curve."""
     esc, crit = STORY_ESCALATE_AT, STORY_CRITICAL_AT
     raw = _threat_block()
     if raw.get("escalate_at") is not None:

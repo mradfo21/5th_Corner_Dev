@@ -1057,6 +1057,14 @@ class LoopTrace:
                 "setting_kept": bool(enc.get("setting")),
                 "travel_remain": st.get("encounter_travel_remain"),
                 "last_turn": st.get("encounter_last_turn"),
+                "last_label": _clip(st.get("encounter_last_label"), 40),
+                # The figure the frame rolled this turn (engine.api_detect's
+                # sighting), if any — the trigger the encounter now has.
+                "sighting": ({
+                    "label": _clip(sight.get("label"), 40), "kind": sight.get("kind"),
+                    "distance": sight.get("distance"), "figures": sight.get("figures"),
+                    "turn": sight.get("turn"), "crop": bool(sight.get("crop_path")),
+                } if isinstance((sight := (st.get("encounter_sighting") or {})), dict) and sight else None),
                 "outcome": {k: enc_out.get(k) for k in ("outcome", "lane", "alive", "condition", "enemy_state", "round_no", "fate") if k in enc_out},
             },
             "last": {
@@ -1167,10 +1175,12 @@ class LoopTrace:
             findings.append(
                 "an encounter resolved but state['fate'] was never written - every fight rolls NORMAL "
                 "regardless of the turn's luck")
-        if first_crit is not None and first_crit <= 5:
+        # The product clock is 3 / 6 (critical by turn 3-6 by design); what
+        # burns out is a clock that is over before the story starts.
+        if first_crit is not None and first_crit <= 2:
             findings.append(
                 f"the story reached CRITICAL on turn {first_crit} and can never leave it - "
-                f"the experience's threat marks burn the arc out in a handful of turns")
+                f"the experience's threat marks burn the arc out before the story starts")
 
 
 class FlipbookWatch:
@@ -1530,11 +1540,44 @@ def main():
                 plan = wanted
                 log(f">>> PT_PLAN: {plan}")
 
+        sightings_played = 0
         for turn in range(1, TURNS + 1):
             s = page.evaluate(STATE)
             if s["gameOver"]:
                 log(f"\n--- turn {turn}: GAME OVER — stopping")
                 break
+
+            # A SIGHTING opens a confrontation BETWEEN turns: the auto-scan on
+            # the painted frame found a person and the client handed the
+            # screen to the Encounter Moment (engine.api_detect →
+            # encounter_with). Play it out before the planned verb, or the
+            # click lands on a Moment and the turn is filed as "no action".
+            # The sighting arrives ~1.6 s after the frame paints (the
+            # auto-scan settles 0.7 s, detects, then waits one beat), and a
+            # harness that acts the instant the prose lands is faster than
+            # any player — Encounter.start() then declines on `processing`
+            # and the turn is filed as "no action". Give the frame the time a
+            # person would take to look at it.
+            sighted = False
+            for _ in range(6):
+                time.sleep(0.5)
+                try:
+                    if page.evaluate(ENCOUNTER_STATE)["inEncounter"]:
+                        sighted = True
+                        break
+                except Exception:
+                    pass
+            if sighted:
+                log(f"\n--- before turn {turn}: a sighting opened an encounter — playing it out")
+                played = play_out_encounter(page, log, findings)
+                log(f"    sighting encounter: {played or 'never resolved'}")
+                sightings_played += 1
+                if trace:
+                    trace.snapshot(page, f"turn{turn}:sighting", log)
+                s = page.evaluate(STATE)
+                if s["gameOver"]:
+                    log(f"\n--- turn {turn}: GAME OVER in the sighting — stopping")
+                    break
 
             mean, dark = snap(page, f"turn_{turn:02d}_view.png")
             log(f"\n--- turn {turn} ({plan[(turn - 1) % len(plan)]}) ---")
@@ -1730,6 +1773,8 @@ def main():
             pass
 
         flip.report(log, findings)
+        log(f"\nSIGHTINGS: {sightings_played} encounter(s) opened by a person in "
+            f"frame and played out between turns")
         if trace:
             trace.report(log, findings)
             # One frame of the objectives sheet as the player sees it — the

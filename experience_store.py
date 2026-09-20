@@ -98,10 +98,16 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _LORE_TEXT_EXTS = {".md", ".txt"}
 
 # Product (SOMEWHERE) clock. A new untitled Experience starts slower.
-PRODUCT_ESCALATE_AT = 4
-PRODUCT_CRITICAL_AT = 9
-HARNESS_ESCALATE_AT = 8
-HARNESS_CRITICAL_AT = 20
+# Threat POINTS, not turns: a choice adds 1, a MOVE TO / INTERACT / TALK
+# adds 2, so 3 / 6 is "escalating by turn 2-3, critical by turn 3-6"
+# depending on how much the player scans. Was 4 / 9 with a new Experience
+# starting at 8 / 20 — which played as a run that did not tip until turn
+# ten and did not peak before twenty. The game is at its best with the
+# pressure on; a slower burn is one field in the Pacing sheet.
+PRODUCT_ESCALATE_AT = 3
+PRODUCT_CRITICAL_AT = 6
+HARNESS_ESCALATE_AT = 3
+HARNESS_CRITICAL_AT = 6
 DEFAULT_BEAT_ESCALATING = (
     "BEAT: pressure is rising. Push the situation forward."
 )
@@ -438,8 +444,8 @@ def _clip_beat(raw: Any, fallback: str) -> str:
 def _normalize_threat(raw: Any, fallback: Any = None) -> Dict[str, Any]:
     """Story clock + the two beat lines the choice slate hears.
 
-    Missing marks use the product curve (4 / 9). New Experiences pass an
-    explicit slower fallback so Create does not inherit SOMEWHERE's sprint.
+    Missing marks use the product curve (3 / 6). A new Experience starts on
+    the same curve — the sprint IS the product; a slower burn is authored.
     """
     src = raw if isinstance(raw, dict) else {}
     fb = fallback if isinstance(fallback, dict) else {}

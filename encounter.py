@@ -80,10 +80,13 @@ ENCOUNTER_SHOT_LADDER = (
 # encounter is due. Looking around does not count — only distance travelled.
 # The first budget of a run is shorter so the system introduces itself;
 # later budgets stretch so encounters stay unpredictable, not metronomic.
-ENCOUNTER_TRAVEL_FIRST_MIN = float(os.getenv("ENCOUNTER_TRAVEL_FIRST_MIN", "12"))
-ENCOUNTER_TRAVEL_FIRST_MAX = float(os.getenv("ENCOUNTER_TRAVEL_FIRST_MAX", "22"))
-ENCOUNTER_TRAVEL_MIN = float(os.getenv("ENCOUNTER_TRAVEL_MIN", "20"))
-ENCOUNTER_TRAVEL_MAX = float(os.getenv("ENCOUNTER_TRAVEL_MAX", "40"))
+# Was 12-22 / 20-40. The sighting (a person in frame IS the encounter, see
+# sighting_candidates) now carries most of the load; the walk clock is the
+# floor under it, and a floor of half a minute between events was too quiet.
+ENCOUNTER_TRAVEL_FIRST_MIN = float(os.getenv("ENCOUNTER_TRAVEL_FIRST_MIN", "8"))
+ENCOUNTER_TRAVEL_FIRST_MAX = float(os.getenv("ENCOUNTER_TRAVEL_FIRST_MAX", "15"))
+ENCOUNTER_TRAVEL_MIN = float(os.getenv("ENCOUNTER_TRAVEL_MIN", "14"))
+ENCOUNTER_TRAVEL_MAX = float(os.getenv("ENCOUNTER_TRAVEL_MAX", "26"))
 ENCOUNTER_TRAVEL_DT_MAX = float(os.getenv("ENCOUNTER_TRAVEL_DT_MAX", "2.5"))
 # How hard img2img may restage the live frame. High values invent a new room
 # (outdoor walk → indoor garage). Keep this a nudge, not a rewrite.
@@ -494,6 +497,184 @@ def onscreen_threat_target(session_id: str = "default",
         return {"label": label, "source": "witness"}
     except Exception:
         return None
+
+
+# ───────── a sighting: the person on screen IS the encounter ────────────────
+# The travel clock decides WHEN an encounter happens and the roster decides
+# WHAT; the frame only got a say at ALERTED or worse (onscreen_threat_target).
+# So the game kept drawing people into the picture — a figure at the end of
+# the corridor, a scavenger over a body, a TALK button on each — and then
+# rolling a fight with a stranger from a list twenty seconds of walking later.
+# "We have an awesome encounter system but nothing rational triggers it."
+#
+# A sighting is the rational trigger: every SCAN pass (the auto-scan runs one
+# on every painted picture) hands its animate figures here; if there is one
+# and nothing is already open, ONE of them is rolled and staged with the
+# close-up cut from their own bounding box, and the client opens the
+# confrontation with that figure — the crop rides into the plate as a cast
+# plate, the frame is the anchor, the character sheet keeps the player.
+
+ENCOUNTER_SIGHT_KINDS = frozenset({"person", "character", "creature"})
+
+# Turns after an encounter closes before the frame may open another. Without
+# it an escape's fresh frame, still showing the figure, re-fired on the very
+# next scan.
+ENCOUNTER_SIGHT_COOLDOWN_TURNS = int(os.getenv("ENCOUNTER_SIGHT_COOLDOWN_TURNS", "3") or 3)
+
+# Things the detector calls a person that cannot walk over: the body a fight
+# left where it fell, a statue, a poster, a reflection. "corpse" and "body"
+# are in the detector's own speaker list (a TALK with a corpse is a story
+# beat); an encounter with one is not.
+_SIGHT_EXCLUDE_RE = re.compile(
+    r"\b(corpse|corpses|body|bodies|dead|remains|skeleton|skull|bones|"
+    r"statue|mannequin|doll|puppet|effigy|dummy|hologram|portrait|photo|"
+    r"photograph|poster|painting|mural|graffiti|reflection|shadow|drawing|"
+    r"sculpture|bust|carving|scarecrow)\b",
+    re.IGNORECASE,
+)
+
+
+def sighting_candidates(objects: Any) -> list:
+    """The figures in a detect pass that could be an encounter.
+
+    Person / character / creature kinds only (an animal or a radio is a TALK,
+    not a standoff), never a depiction or a corpse, never the player's own
+    body — the follow-cam strip upstream drops that, and the self-label check
+    here is the belt to its braces. Order is preserved so a seeded roll is
+    reproducible.
+    """
+    out = []
+    for o in (objects or []):
+        if not isinstance(o, dict):
+            continue
+        label = str(o.get("label") or "").strip()
+        kind = str(o.get("kind") or "").strip().lower()
+        if not label or kind not in ENCOUNTER_SIGHT_KINDS:
+            continue
+        if _SIGHT_EXCLUDE_RE.search(label):
+            continue
+        try:
+            import engine
+            if engine._is_player_self_label(label):
+                continue
+        except Exception:
+            pass
+        out.append(o)
+    return out
+
+
+def sighting_can_fire(state: Optional[dict]) -> tuple[bool, str]:
+    """The hard gates plus the one soft one a sighting needs.
+
+    ``encounter_can_roll`` (open / dead) and then a short cooldown after the
+    last encounter closed, and a longer one against the SAME label — the
+    figure who just backed off with their hands up is still in the frame.
+    """
+    st = state if isinstance(state, dict) else {}
+    ok, reason = encounter_can_roll(st)
+    if not ok:
+        return False, reason
+    turn = int(st.get("turn_count") or 0)
+    last = st.get("encounter_last_turn")
+    if last is not None:
+        try:
+            if turn - int(last) < ENCOUNTER_SIGHT_COOLDOWN_TURNS:
+                return False, "cooldown"
+        except (TypeError, ValueError):
+            pass
+    return True, "ok"
+
+
+def sighting_is_recent_antagonist(state: Optional[dict], label: str) -> bool:
+    """True when ``label`` is who the last encounter was with, and that was
+    recent enough that they are plausibly the same figure still on screen."""
+    st = state if isinstance(state, dict) else {}
+    last_label = str(st.get("encounter_last_label") or "").strip().lower()
+    if not last_label:
+        return False
+    turn = int(st.get("turn_count") or 0)
+    try:
+        last_turn = int(st.get("encounter_last_turn") or 0)
+    except (TypeError, ValueError):
+        last_turn = 0
+    if turn - last_turn >= ENCOUNTER_SIGHT_COOLDOWN_TURNS * 2:
+        return False
+    a = str(label or "").strip().lower()
+    return bool(a) and (a == last_label or a in last_label or last_label in a)
+
+
+def roll_sighting(candidates: list, rng: Any = None) -> Optional[dict]:
+    """ONE of the figures in frame. Several people means a random one of
+    them is the encounter — the others are still there, in the photograph."""
+    pool = [c for c in (candidates or []) if isinstance(c, dict)]
+    if not pool:
+        return None
+    pick = rng.choice if rng is not None else random.choice
+    return dict(pick(pool))
+
+
+def sighting_distance(subject: Optional[dict]) -> str:
+    """near / mid / far off the box height, the witness pipeline's buckets."""
+    try:
+        import engine
+        h = float((subject or {}).get("h") or 0)
+        if h >= engine.WITNESS_NEAR_H:
+            return "near"
+        if h >= engine.WITNESS_MID_H:
+            return "mid"
+    except Exception:
+        pass
+    return "far"
+
+
+def stage_sighting(state: dict, subject: dict, crop_path: str = "",
+                   figures: int = 1) -> dict:
+    """Write the rolled figure onto state for THIS turn and return what the
+    client is told. The crop is the figure's own pixels, cut from the frame
+    the detector read; api_begin picks it up when the client opens the
+    confrontation, or crops again from the frame the client posts."""
+    st = state if isinstance(state, dict) else {}
+    sight = {
+        "label": _clip(subject.get("label"), "", 60),
+        "kind": str(subject.get("kind") or "person"),
+        "speaks": bool(subject.get("speaks", True)),
+        "cx": subject.get("cx"), "cy": subject.get("cy"),
+        "w": subject.get("w"), "h": subject.get("h"),
+        "distance": sighting_distance(subject),
+        "figures": int(figures or 1),
+        "crop_path": str(crop_path or ""),
+        "turn": int(st.get("turn_count") or 0),
+        "source": "sighting",
+        "at": time.time(),
+    }
+    st["encounter_sighting"] = sight
+    public = {k: v for k, v in sight.items() if k not in ("crop_path", "at")}
+    return public
+
+
+def _sighting_labels_match(a: Any, b: Any) -> bool:
+    """The client echoes the label it was given; be lenient about case,
+    articles and whitespace, strict about it being the same noun."""
+    def norm(x: Any) -> str:
+        t = re.sub(r"[^a-z0-9 ]+", " ", str(x or "").lower())
+        t = re.sub(r"\b(a|an|the)\b", " ", t)
+        return " ".join(t.split())
+    na, nb = norm(a), norm(b)
+    return bool(na) and bool(nb) and (na == nb or na in nb or nb in na)
+
+
+def fresh_sighting(state: Optional[dict]) -> Optional[dict]:
+    """The staged sighting, if it belongs to the current turn."""
+    st = state if isinstance(state, dict) else {}
+    sight = st.get("encounter_sighting")
+    if not isinstance(sight, dict) or not sight.get("label"):
+        return None
+    try:
+        if int(sight.get("turn", -1)) != int(st.get("turn_count") or 0):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return dict(sight)
 
 
 def _is_clothing_clause_label(text: str) -> bool:
@@ -2977,7 +3158,20 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
             "ground, sky, and light — and the same camera: same height, "
             "same angle, same distance, same focal length. "
         )
-        if aimed:
+        sighted = bool(isinstance(target, dict) and target.get("source") == "sighting")
+        if aimed and sighted:
+            place_lock += (
+                f"The {aimed} is ALREADY in this photograph — the detector "
+                f"boxed them there, and a CLOSE-UP of them is attached: copy "
+                f"that face, build and clothing exactly. Do not add a second "
+                f"one, do not put a stranger next to them, do not replace them "
+                f"with someone easier to draw. This is the exposure where the "
+                f"two of them register each other: the same {aimed}, in the "
+                f"same spot, now aware of the player — turned, weight shifted, "
+                f"whatever they carry in play. Do not restage the place, do "
+                f"not teleport."
+            )
+        elif aimed:
             place_lock += (
                 f"The {aimed} is ALREADY in this photograph — do not add a "
                 f"second one and do not put a stranger next to it. The player "
@@ -3019,7 +3213,10 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
                 "FRAME at similar size, turned to face the newcomer, body and "
                 "face readable. Do not delete them, do not swap them for the "
                 "newcomer, and do not give the frame to the newcomer alone. "
-                "Add EXACTLY ONE new person to the photograph."
+                + ("The other person is ALREADY in the photograph too — add "
+                   "NOBODY; the standoff is the two who are there."
+                   if (aimed and sighted) else
+                   "Add EXACTLY ONE new person to the photograph.")
             )
     look = distinct_enemy_look(
         char.get("locked_look") or char.get("look") or "",
@@ -3329,17 +3526,65 @@ _DETECTION_BRIEF = (
 )
 
 
+def sighting_brief_line(target: dict) -> str:
+    """The roll line for an encounter the FRAME opened.
+
+    Not an attack (nobody has swung) and not a roster draw (the figure is
+    already in the photograph): the label names the figure the detector
+    boxed, the look is that figure as the attached close-up shows them, and
+    the motive is why THIS figure is in THIS place at THIS moment of the run.
+    """
+    label = _clip(target.get("label"), "someone", 60)
+    kind = str(target.get("kind") or "person").lower()
+    figures = int(target.get("figures") or 1)
+    distance = str(target.get("distance") or sighting_distance(target))
+    where = {
+        "near": "within a few steps — close enough to touch, close enough to be touched",
+        "mid": "a few strides away, across the space between",
+        "far": "across the space, at the far end of what the frame can see",
+    }.get(distance, "somewhere in the frame")
+    others = (
+        f" {figures - 1} other figure(s) are in the picture too; they are "
+        f"there, but THIS one is the encounter."
+        if figures > 1 else ""
+    )
+    speaks = (
+        "It can speak, so talking is on the table — whether it wants to is "
+        "the motive's call."
+        if target.get("speaks", True) else
+        "It does not speak."
+    )
+    what = "a creature" if kind == "creature" else "a person"
+    return (
+        f"THE PLAYER HAS JUST SEEN: {label}\n"
+        f"The frame the player is looking at has {what} in it, {where}. The "
+        f"detector boxed it and its close-up is attached: THAT figure is the "
+        f"encounter. Do not roll up a stranger, do not move this to a "
+        f"different target, do not make it the player. The label names THIS "
+        f"figure; the look is the {label} exactly as the close-up shows them "
+        f"— face, build, clothing, what they carry; kind is {what.split()[-1]}."
+        f"{others}\n"
+        f"The motive is why THIS figure is in THIS place at THIS moment of "
+        f"the run — read the world, what just happened, and what the player "
+        f"is trying to reach, and give them a reason that touches it. The "
+        f"danger is what they do about the player, given how much this world "
+        f"already knows about them (next line). {speaks}\n\n"
+    )
+
+
 def build_encounter_brief(session_id: str = "default", image_path: Optional[str] = None,
                           place_hold: str = "", vision: Optional[dict] = None,
                           target: Optional[dict] = None,
                           detection: int = 0) -> dict:
     """Ask the model for a character + danger grounded on the current frame.
 
-    ``target`` is the one case where the encounter is not a roll: the player
-    walked up to something they could already see and swung at it. What
-    arrives is then not a question — it is that thing, already in the
-    photograph — so the roster draw is skipped and the brief's only job is to
-    say who this thing turns out to be once it fights back.
+    ``target`` is the case where the encounter is not a roll: the player
+    walked up to something they could already see and swung at it (an aimed
+    target), or the frame had a person in it and the detector rolled them
+    (``source: "sighting"``, see sighting_brief_line). What arrives is then
+    not a question — it is that thing, already in the photograph — so the
+    roster draw is skipped and the brief's job is to say who this figure is,
+    why they are here, and what they do about the player.
 
     ``detection`` is how much the world knew about the player when this fired.
     It sets how the encounter OPENS — see _DETECTION_BRIEF.
@@ -3368,7 +3613,11 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
     # be here — not to choose the thing, because asked to choose it always chose
     # the same thing.
     aimed = _clip((target or {}).get("label") if isinstance(target, dict) else target, "", 60)
-    if aimed:
+    sighted = bool(isinstance(target, dict) and target.get("source") == "sighting")
+    if aimed and sighted:
+        rolled = aimed
+        roll_line = sighting_brief_line(target)
+    elif aimed:
         rolled = aimed
         roll_line = (
             f"THE PLAYER HAS JUST ATTACKED: {aimed}\n"
@@ -3587,6 +3836,11 @@ def _pin_encounter_plate(session_id: str, image_path: Optional[str], web_url: Op
         st["encounter"] = brief
         st["encounter_last_turn"] = int(st.get("turn_count") or 0)
         st["encounter_last_at"] = time.time()
+        # Who this was with, so a sighting on the aftermath frame does not
+        # re-open a fight with the figure who just backed off.
+        st["encounter_last_label"] = _clip(
+            (brief.get("character") or {}).get("label"), "", 60)
+        st["encounter_sighting"] = None
         reset_travel_clock(st)
         engine._save_state(st, session_id)
         engine._sync_ambient_state(st, session_id)
@@ -3769,7 +4023,8 @@ def _plate_stranger_billing(brief: Optional[dict]) -> tuple[str, str]:
 
 def _plate_sequence(session_id: str, prompt: str, ref_path: Optional[str],
                     caption: str = "", two_shot: str = "", two_shot_look: str = "",
-                    beat: str = "", hold_cast: bool = False) -> Optional[dict]:
+                    beat: str = "", hold_cast: bool = False,
+                    cast_plates: Optional[list] = None) -> Optional[dict]:
     """This plate as flipbook frames, or None to stay a still.
 
     Every stage of a confrontation should move the way the ordinary view does —
@@ -3835,6 +4090,9 @@ def _plate_sequence(session_id: str, prompt: str, ref_path: Optional[str],
                 two_shot=two_shot,
                 two_shot_look=two_shot_look,
                 hold_cast=hold_cast,
+                # A sighting's close-up: the stranger's own pixels, labelled
+                # as WHO is there so the grid draws that face, not a new one.
+                cast_plates=[p for p in (cast_plates or []) if p and os.path.exists(str(p))] or None,
             )
 
         seq = _grid([use_ref] if use_ref else None)
@@ -3918,6 +4176,19 @@ def api_begin():
         target = None
 
     st = engine._load_state(session_id) or {}
+    # A SIGHTING: the frame had a person in it and api_detect rolled which one
+    # (see stage_sighting). The client sends that figure back as `subject`
+    # with source "sighting"; if it sent nothing and the staged sighting is
+    # this turn's, it is the encounter anyway — the frame decided, not the
+    # travel clock. Either way the staged record is where the close-up lives.
+    sighting = fresh_sighting(st)
+    if target and str(target.get("source") or "") == "sighting":
+        if sighting and _sighting_labels_match(target.get("label"), sighting.get("label")):
+            target = {**sighting, **{k: v for k, v in target.items() if v is not None}}
+            target["crop_path"] = sighting.get("crop_path") or ""
+        target["source"] = "sighting"
+    elif not target and sighting:
+        target = dict(sighting)
     ok, reason = encounter_can_roll(st, force=force)
     if not ok and reason == "already_open":
         existing = st.get("encounter") if isinstance(st.get("encounter"), dict) else None
@@ -3952,9 +4223,26 @@ def api_begin():
         # with no antagonist in it — the "camera angle that doesn't show the
         # fight". The last rendered frame is the place; restage that instead.
         ref_path = _confrontation_plate_path(session_id)
+    # The sighted figure's own pixels. Staged by api_detect from the frame
+    # the detector read; failing that, cut here from the frame the client
+    # posted, with the box the client carried. It rides into the plate as a
+    # cast plate ("copy this exact face … this is WHO is there") and into the
+    # brief as the picture of who to describe — the same continuity the
+    # INTERACT dive and TALK portrait already get, aimed at a standoff.
+    cast_plates: list = []
+    if isinstance(target, dict) and target.get("source") == "sighting":
+        crop = str(target.get("crop_path") or "")
+        if not (crop and os.path.exists(crop)) and ref_path:
+            crop = engine._crop_sighting_from_path(ref_path, target, session_id) or ""
+        if crop and os.path.exists(crop):
+            cast_plates = [crop]
+            target["crop_path"] = crop
+        print(f"[ENCOUNTER] sighting: the encounter is {target.get('label')!r} "
+              f"({target.get('kind')}, {target.get('distance') or sighting_distance(target)}"
+              f"{', close-up attached' if cast_plates else ', no close-up'})", flush=True)
     place = read_place_lock(session_id, ref_path)
     brief = build_encounter_brief(
-        session_id, image_path=ref_path,
+        session_id, image_path=(cast_plates[0] if cast_plates else ref_path),
         place_hold=place.get("place_hold") or "",
         vision=place,
         target=target,
@@ -3997,6 +4285,7 @@ def api_begin():
         caption=f"encounter_{brief['character']['label']}",
         two_shot=_billed, two_shot_look=_billed_look,
         beat=_clip(brief.get("danger") or brief.get("stakes") or "", "", 200),
+        cast_plates=cast_plates or None,
     )
     if _fb and _fb.get("still"):
         image_path = _fb["still"]
@@ -4026,6 +4315,9 @@ def api_begin():
                     output_dir=Path(img_dir),
                     include_people=True,
                     identity_paths=identity or None,
+                    # The sighted figure's close-up (see above) — the still
+                    # path's version of the same cast plate.
+                    cast_plates=cast_plates or None,
                 )
                 gen_mode = "img2img"
                 _ground_brief_on_plate(brief, image_path)
@@ -4127,6 +4419,12 @@ def api_begin():
             "danger": brief["danger"],
             "stakes": brief["stakes"],
             "place_hold": hold,
+            # "sighting" when the frame opened this (the figure on screen),
+            # "witness" when heat did, "aimed" for a struck object, else "roll".
+            "source": (
+                str(target.get("source") or "aimed")
+                if isinstance(target, dict) else "roll"
+            ),
         },
         "plate_url": web,
         # The standoff breathes instead of freezing, and holds on its last frame

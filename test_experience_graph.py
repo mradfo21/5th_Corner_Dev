@@ -147,19 +147,22 @@ class TestSoundSchema(_IsolatedGraph):
 class TestPacingSchema(_IsolatedGraph):
     def test_missing_threat_uses_the_product_clock(self):
         threat = xs._normalize_threat(None)
-        self.assertEqual(threat["escalate_at"], 4)
-        self.assertEqual(threat["critical_at"], 9)
+        self.assertEqual(threat["escalate_at"], 3)
+        self.assertEqual(threat["critical_at"], 6)
         self.assertTrue(threat["beat_normal"].startswith("BEAT:"))
         self.assertTrue(threat["beat_escalating"].startswith("BEAT:"))
         self.assertTrue(threat["beat_critical"].startswith("BEAT:"))
 
-    def test_new_experience_starts_slower_than_somewhere(self):
+    def test_new_experience_starts_on_the_product_sprint(self):
+        """Used to start at 8 / 20 — "slower than SOMEWHERE" — which played
+        as a run that did not tip until turn ten. The sprint is the product;
+        a slower burn is one field in the Pacing sheet."""
         exp = xs.default_experience()
-        self.assertEqual(exp["threat"]["escalate_at"], 8)
-        self.assertEqual(exp["threat"]["critical_at"], 20)
-        saved = xs.create_experience("Slow Run")
-        self.assertEqual(saved["threat"]["escalate_at"], 8)
-        self.assertEqual(saved["threat"]["critical_at"], 20)
+        self.assertEqual(exp["threat"]["escalate_at"], 3)
+        self.assertEqual(exp["threat"]["critical_at"], 6)
+        saved = xs.create_experience("Fresh Run")
+        self.assertEqual(saved["threat"]["escalate_at"], 3)
+        self.assertEqual(saved["threat"]["critical_at"], 6)
 
     def test_set_pacing_writes_beats_and_marks(self):
         exp = xs.set_pacing({
