@@ -226,19 +226,66 @@ def _harness_prompts() -> Dict[str, Any]:
         return {}
 
 
-def harness_doctrine_in(prompts: Dict[str, Any]) -> List[str]:
-    """Which rulebook blocks in `prompts` are the harness fixture verbatim.
+def _lines(text: str) -> List[str]:
+    return [l.strip() for l in str(text or "").splitlines() if l.strip()]
 
-    The whole detection is exact string equality against the shipped fixture, so
+
+def _is_fixture_plus_game_lines(stored: str, fixture: str, factory: str) -> bool:
+    """The fixture, plus only lines the factory copy of the same block carries.
+
+    Exact equality missed the second way a World ends up playing the fixture.
+    `untitled-experience` (the active one on the machine this was found on)
+    carried `player_choice_generation_instructions` at 754 chars: the 364-char
+    harness fixture with the ALREADY DONE repeat-suppression paragraph spliced
+    into it — the paragraph the game rolled out across every prompt copy on
+    09-18. Not authored, not the fixture byte-for-byte, and bound onto the live
+    file on every New Game, so the slate ran with no doctrine at all ("EVERY
+    CHOICE MUST ADVANCE THE ACTION", the randomized slot, the whole 4,500
+    chars) while `test_choice_slot_is_randomized` went red the moment the
+    game was played.
+
+    Still exact, line for line: every fixture line has to be present, and every
+    line that is NOT the fixture has to appear verbatim in the factory defaults
+    for that key — that is what "the game wrote it" looks like. A single line an
+    author typed ("Also: be kind.") is in neither and keeps the block authored.
+    """
+    s_lines = _lines(stored)
+    f_lines = _lines(fixture)
+    if not f_lines or not s_lines:
+        return False
+    fset = set(f_lines)
+    if not fset.issubset(set(s_lines)):
+        return False
+    factory_lines = set(_lines(factory))
+    extras = [l for l in s_lines if l not in fset]
+    return bool(extras) and all(l in factory_lines for l in extras)
+
+
+def harness_doctrine_in(prompts: Dict[str, Any]) -> List[str]:
+    """Which rulebook blocks in `prompts` are the harness fixture.
+
+    Exact string equality against the shipped fixture, plus the one decoration
+    the game itself applies to every copy (see _is_fixture_plus_game_lines), so
     it cannot misfire on authored prose however short somebody writes it.
     """
     harness = _harness_prompts()
+    try:
+        factory = prompts_store.load_defaults()
+    except Exception:
+        factory = {}
     out: List[str] = []
     for key in DOCTRINE_KEYS:
         fixture = harness.get(key)
         if not isinstance(fixture, str) or not fixture.strip():
             continue
-        if isinstance(prompts.get(key), str) and prompts[key].strip() == fixture.strip():
+        stored = prompts.get(key)
+        if not isinstance(stored, str):
+            continue
+        if stored.strip() == fixture.strip():
+            out.append(key)
+            continue
+        fac = factory.get(key) if isinstance(factory, dict) else None
+        if isinstance(fac, str) and _is_fixture_plus_game_lines(stored, fixture, fac):
             out.append(key)
     return out
 

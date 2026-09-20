@@ -16496,6 +16496,16 @@
       openFreeWill();
     });
     el.choices.appendChild(custom);
+    // The slate lands seconds after the frame and its hotspots, so a tag that
+    // was placed over empty floor is now under the first choice. Re-seat the
+    // tags against the stack that actually exists (see positionScanTag).
+    try {
+      if (el.scanTags) {
+        Array.from(el.scanTags.children).forEach((t) => {
+          if (t._obj) positionScanTag(t);
+        });
+      }
+    } catch (_) {}
   }
 
   function enterGameOver(message) {
@@ -19899,6 +19909,12 @@
 
   function closeTouch() {
     if (!isCameraMode() && !state.touchMode) return;
+    // Anything armed while the camera had the view was aimed at the camera's
+    // picture, not the player's. Drop it here; the restored still below arms
+    // the one pass it is owed when it paints (see putAway), so this cannot
+    // leave the player without hotspots — it only stops them being bought
+    // twice. See AutoScan.blocked for the measurement.
+    try { AutoScan.cancel(); } catch (_) {}
     const retargeted = !!state.viewfinderLive;
     const hadPlate = !!state.viewfinderUrl;
     const wasFaded = !!state.viewfinderFaded;
@@ -19950,8 +19966,17 @@
         || state.currentStillUrl
         || (Renderer.lastScene && Renderer.lastScene.imageUrl)
         || null;
-      if (restore) setScene(restore, { instant: true });
-      else console.warn("[standalone] camera put away with no still to restore");
+      if (restore) {
+        // Painting the restored still arms its detection pass (setScene ->
+        // markScenePainted -> AutoScan.arm). That is the ONE pass a
+        // photograph costs; do not rearm on top of it.
+        setScene(restore, { instant: true });
+      } else {
+        console.warn("[standalone] camera put away with no still to restore");
+        // Nothing painted, so nothing armed: give the hotspots back the way
+        // every other instrument does when it hands the world back.
+        try { AutoScan.rearm(); } catch (_) {}
+      }
       // A turn that resolved behind the viewfinder kept its frames (see
       // applyScene's camera branch). Play them now the 3P world is uncovered:
       // the sequence ends on `restore`, which is already painted, so this adds
@@ -20000,7 +20025,9 @@
     try { Sound.cameraOff(); } catch (_) {}
     try { Haptics.soft(); } catch (_) {}
     updateScanButton();
-    try { AutoScan.rearm(); } catch (_) {} // the camera had the view; give the hotspots back
+    // No rearm here. It used to fire before putAway had restored the still,
+    // so its pass and the restored still's own pass both went out — the
+    // second detect call per photograph. putAway owns the pass now.
   }
 
   // Turn a viewport position into a human region phrase (used to label evidence).
@@ -20354,6 +20381,17 @@
       if (state.scanBusy || state.moving) return true;
       if (!ambientContextAllowed()) return true;
       if (!scanAvailable()) return true;   // still hasn't decoded yet
+      // The camera's picture is not a play still. The viewfinder plate
+      // arrives through setScene like any other scene, which clears the
+      // spent flag and arms a pass — so the budget was being spent on the
+      // CAMERA view, and that pass landed after the camera came down, right
+      // on top of the one the restored still had just bought itself. Two
+      // detect calls per photograph, and the hotspots churned as the second
+      // reconciled the first. Measured on the live app: /api/detect twice,
+      // 1.2s apart, both from attempt(). Hold while the camera is up; the
+      // put-away cancels whatever was armed and the restored still arms its
+      // own single pass when it paints.
+      if (isCameraMode() || state.touchMode) return true;
       return false;
     }
 
@@ -21103,7 +21141,23 @@
     const wheelH = (el.actionWheel && el.actionWheel.offsetHeight) || 110;
     const bottomSafe = Math.max(150, wheelH + 56);
     const x = Math.min(Math.max(p.x, 62), window.innerWidth - 62);
-    const y = Math.min(Math.max(p.y, 48), Math.max(80, window.innerHeight - bottomSafe));
+    let y = Math.min(Math.max(p.y, 48), Math.max(80, window.innerHeight - bottomSafe));
+    // ...and out of the choice stack. The stack sits above the wheel in the
+    // lower middle, and a detection whose centre lands there (the floor,
+    // debris, a hazard at the player's feet) put its label straight across
+    // the first choice's text — seen on the live app with "hazard" printed
+    // over "Slam the blast door shut". A tag that would land inside the
+    // stack's box is lifted to sit just above it instead; the stack is what
+    // the player is reading, the tag can wait a few pixels higher.
+    try {
+      const stack = el.choices && el.choices.children.length
+        ? el.choices.getBoundingClientRect() : null;
+      if (stack && stack.height > 0
+          && x > stack.left - 40 && x < stack.right + 40
+          && y > stack.top - 22 && y < stack.bottom + 22) {
+        y = Math.max(48, stack.top - 26);
+      }
+    } catch (_) {}
     tag.style.left = x + "px";
     tag.style.top = y + "px";
     tag.dataset.sx = x;

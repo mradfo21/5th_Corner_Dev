@@ -1,5 +1,201 @@
 # 🔧 CHANGELOG - September 20, 2026
 
+## 🧪 A QA loop across the systems: play it, pull the metadata, match it to the frame
+
+Asked for: *"use the app, use our harness if you need, play the game, watch what
+it does, find why there are issues and inconsistencies by looking at the
+metadata for each frame against what's shown and displayed."* Three 8-turn
+harness runs against the real app on this machine, watched on the actual
+screen (the harness's CDP shots miss the video layer; a desktop capture does
+not), plus two typed turns by hand — with `history.json`, `state.json`, the
+server log and the generated panels pulled after every run and read against
+the frames. What follows is what that found, in the order it was found.
+Everything fixed here was re-played afterwards on the live app.
+
+## ✅ FIXED: every photograph bought two detection passes, and the hotspots churned
+
+Seen first as a harness crash at turn 5: it clicked the third hotspot and
+Playwright reported the tag was `class="scan-tag … leaving"` — mid-fade, being
+torn down — while on screen only "pipes" and "door" were showing. The server
+log had the receipt: after `POST /api/photo` at 12:02:47, `/api/detect` at
+12:02:50 **and again at 12:02:51**, on a picture that had not changed. The
+first pass found *door, pipes, steam*; the second found *door, pipes*; the
+reconcile retired "steam" under the cursor. Two Gemini vision calls per
+photograph, on the one budget the auto-scan exists to protect.
+
+Instrumented on the live app (wrapping `window.__AutoScan.arm/rearm/cancel`
+to record their callers), the sequence was:
+
+| +s | call | from |
+|---|---|---|
+| 4.26 | `cancel()` then `arm()` | `setScene` of the **viewfinder plate** → `markScenePainted` |
+| 11.71 | `rearm()` | `closeTouch`, before the still had been restored |
+| 12.55 | `cancel()` then `arm()` | `setScene` of the **restored still** → `markScenePainted`, with the previous pass already in flight |
+
+`setScene` is the one place that clears the spent flag, and the camera's own
+plate goes through it like any other picture — so the viewfinder armed a pass
+on the CAMERA view, `closeTouch` re-armed on top, and the restored still armed
+a third time. `AutoScan.blocked()` now holds while the camera is up (the
+camera's picture is not a play still), `closeTouch` cancels anything armed
+behind the viewfinder, and the restored still's own paint is the one pass a
+photograph costs; the trailing `rearm()` is gone. Measured after: **one**
+`/api/detect` per photo, and the tag set comes back identical — `['ceiling
+light', 'pipes', 'doorway', 'warning light', 'vent']` before and after.
+
+## ✅ FIXED: the beat the player read was thrown away after the frame landed
+
+`history.json` from a live run had `dispatch == vision_dispatch` on every
+curated-pill turn: *"Isaac Clarke stands in the center of the corridor, his
+armored suit showing a blackened scorch mark…"* filed as what the player READ.
+The player had read *"You drive your electrified baton into the rusted hinges
+with a violent crack…"* — the server log's `[IMG LOG] dispatch (narrative)`
+had it right. The phase-2 call in `_process_turn_background` passed
+`vision_dispatch_text` as **both** arguments:
+
+```
+advance_turn_choices_deferred(img_path, vision_dispatch_text, vision_dispatch_text, choice, …)
+```
+
+Same fault the 09-18 render call fixed ("passing the caption to BOTH made
+them equal"), one call site further down. Everything that reads a turn's
+dispatch afterwards — the history entry, the narrator's recent beats, the
+encounter brief's "read the recent beats", the choice generator's "what just
+happened" — was being handed the camera line. Now `dispatch_text`. Verified on
+the next run: `dispatch` *"You swing your electrified shock baton into the
+overhead ventilation pipes…"*, `vision_dispatch` *"Isaac Clarke stands in the
+center of the corridor, the overhead ventilation pipes now mangled…"* — two
+different sentences on every turn.
+
+## ✅ FIXED: a World could still bind the test fixture's choice-slate rulebook
+
+`test_choice_slot_is_randomized` went red the moment the game was played, and
+the live file said why: `player_choice_generation_instructions` was **754**
+chars after the bind — the 364-char harness fixture with the ALREADY DONE
+repeat-suppression paragraph spliced into it, the paragraph the game rolled
+out across every prompt copy on 09-18. Not byte-identical to the fixture, so
+the exact-match guard called it authored, and `untitled-experience` stamped it
+over the live file on every New Game. The slate played with none of its 4,500
+chars of doctrine — no "EVERY CHOICE MUST ADVANCE THE ACTION", no randomized
+slot — in the world that is active on this machine.
+
+`harness_doctrine_in` now also catches *the fixture plus lines the factory
+copy itself carries*: every fixture line present, and every extra line
+present verbatim in `simulation_prompts.defaults.json` for that key. Still
+exact, line for line; a line an author typed ("Also: be kind.") is in neither
+and keeps the block authored — that test still passes. After the next bind:
+`[WORLDS] 'untitled-experience' carries the generic harness copy of
+action_consequence_instructions, player_choice_generation_instructions —
+restored from the factory defaults`, and the live block is 4,528 chars.
+
+## ✅ FIXED: the stranger who walked into a cyberpunk sub-level was from the Horizon desert
+
+The roster for the run was the world's own — *"a rogue police officer looting
+industrial scrap for personal gain"* was rolled. The plate that arrived was
+**"A woman in bleached Horizon lab coat, both hands bandaged to the elbow"**,
+and the slate argued with itself: *Crush the drone with force / Sprinting past
+her into darkness*. The rolled look tripped the clone rule — the player in
+that world IS an armoured police officer, so any officer reads as their twin
+— and the fallback pool `DEFAULT_STRANGER_LOOKS` is written for the shipped
+desert: Horizon Industries, red dust, the mesa, mine cable, Blackwood.
+
+A fallback is allowed to be generic; it is not allowed to be somebody else's
+world. `NEUTRAL_STRANGER_LOOKS` is the same pool with the proper nouns taken
+out, and `default_stranger_look` draws from it whenever the Level sheet is a
+recast (`game_identity.is_shipped_setting()` is False). SOMEWHERE keeps its
+own strangers. Tested both ways.
+
+## 🧑 The cast lock now says what is in the player's hands
+
+The standoff plate drew Isaac with a **pistol**. The sheet says *electrified
+shock baton*, and "carrying electrified shock baton" was in the prompt — but a
+swat operative in a confrontation reads as armed to the model, and because the
+aftermath frame is img2img'd from that plate, the gun then walked out of the
+fight and into the explore frames after it (visible in the harness's turn 7
+and 8 views). `player_cast_lock` now adds the gear the way it already bans the
+outfit from everyone else: *"In Isaac Clarke's hands: electrified shock baton,
+and nothing else — no firearm, blade or tool the sheet does not name."*
+
+## 🧪 The harness stopped asserting a dive that no longer exists, and survives a tag leaving under it
+
+Two findings the harness filed against a working client:
+
+- **"the dive closed itself — the player never got to leave it."** The INTERACT
+  dive is a *transition* now and leaves on its own the moment the new frame
+  paints (`createInteractDive`: the SPEAK / ATTACK / LEAVE slate "was the
+  thing that made this feel slow"). `DiveWatch.leave` still asserted the old
+  contract and then hunted for a LEAVE button. It now accepts the hand-back
+  and files the real failure instead: a dive still up after the turn resolved.
+- **A tag can leave under the cursor** (see the double-scan entry above). The
+  click was unguarded and the exception ended a run at turn 5 with no SUMMARY.
+  `do_scan_action` aims only at tags that are staying, and re-reads the frame
+  if the one it wanted has gone.
+
+Third run after all of the above: *every turn committed and resolved; no black
+screens; no client console errors; 7 of 7 turns drew a sequence.*
+
+## 🎨 Hotspot labels stay out of the choice stack
+
+A detection whose centre lands in the lower middle (the floor, debris, a
+"hazard" at the player's feet) printed its label straight across the first
+choice — "hazard" over "Slam the blast door shut", in two of three runs. Tags
+were already kept out of the action wheel; they are now lifted clear of the
+choice stack's box too, and re-seated when the slate lands, since the slate
+arrives seconds after the frame and its tags.
+
+## 📋 Found and NOT fixed — the design questions, with the evidence
+
+- **A hard cut does not reliably leave the room.** *"Sprint toward the dark
+  threshold"* (relocated, hard cut, prose: *"hunched in the center of a
+  pitch-black chamber… the open blast door behind him"*) rendered the same
+  corridor with the door still AHEAD; *"Move to the doorway"* in run 3 rendered
+  the same hatch at 0.97 continuity. Two of about five hard cuts. The render
+  prompt for those turns carries, at once: `LANDMARKS THAT MUST RECUR: The
+  rusted blast door…` (the level sheet's landmarks, demanded in every frame),
+  the LOCATION PLATE as **reference slot 1** with "copy its architecture" (and
+  three files state three different intents about that slot: `game_identity`
+  says setting leads, `gemini_image_utils` says the player's sheet keeps slot
+  1, `engine` says plates ride behind the previous frame), "Maintain the same
+  lighting… New location", and the previous frame as an edit-mode base — all
+  against one sentence naming the new room. This is the Antarctica mechanism
+  one grade down, and the fix is the same shape: on a hard cut, "landmarks of
+  this level" should not mean "in this shot", and the plate should not lead.
+  Not changed here because the plate order is the defence against the shipped
+  desert reappearing in custom levels; it wants an A/B on hard cuts, not a
+  guess.
+- **`relocated` is 1-for-2 on its own test sentence.** "explore deeper into
+  this space", same four-field contract both times: once the model wrote *"you
+  push past the chain-link perimeter and move deeper"* and answered
+  `relocated=False` (frame did not move); once `relocated=True` (new corridor).
+  `resolve_hard_transition` trusts the flag absolutely; on the failed turn it
+  was the only signal saying "stayed" against a dispatch that said "moved" and
+  `[MOVEMENT DETECTION] -> FORWARD MOVEMENT`. Worth letting the prose or the
+  movement classifier veto a `False`.
+- **The prose sensor jumps hidden→alerted in one turn.** `[DETECT] hidden ->
+  alerted (heat 0->4) [prose]` on *"the facility's defenses begin to scan the
+  hall behind you"* — escalation flavour the writer invented — while the frame
+  witness read `1 away far -> signal 0`. Prose deliberately escapes the frame
+  ceiling (footsteps behind you), but +4 from one clause is the narrator's
+  word choice deciding the dial again.
+- **A duplicate protagonist.** After *"Yank the wheel to open"* the frame drew
+  a second armoured figure beside Isaac; the slate faithfully offered "Shove
+  the other figure forward". The picture invented a twin and every system
+  downstream believed it — which is the design working, on a bad frame.
+- **One Gemini image call took 81s** (`image_ms=81118` on a typed turn; every
+  other turn 8–13s). The turn resolved at 47s and the harness gave up on the
+  flipbook. The 135s timeout is the only guard; a retry at ~40s would usually
+  beat the tail.
+- **`state.json.tmp → state.json` rename hits `WinError 5` on most turns**
+  ("Attempt 1 … Access is denied"). It retries and succeeds; it is a Windows
+  file-lock race on the save path worth knowing about.
+- **The active experience's world bible is the 266-char harness placeholder**
+  (`world_initial_state`). That one is the World's to author — the Level sheet
+  carries the place — but the narrator and the encounter roster are working
+  from a blank bible on the experience that boots by default here.
+- `test_world_authoring` (6) and `test_somewhere_snapshot` (1) are red on this
+  machine independent of any of this: the plate-delivery tests read the live
+  cast sheet, and `test_this_machine_play_is_somewhere` asserts the active
+  experience is `somewhere` (it is `untitled-experience-3`).
+
 ## ✅ FIXED: a new run inherited the last one, and nothing was going to tell us
 
 Reported: *"when I run the game the current run is always polluted by previous

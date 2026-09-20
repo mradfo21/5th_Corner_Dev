@@ -993,6 +993,26 @@ def player_cast_lock(trust_reference: bool = False) -> str:
                 f" In the reference photograph {name} is wearing {seen}; "
                 f"that stays on {name} and goes on nobody else."
             )
+        # The hands are part of the cast too. "carrying electrified shock
+        # baton" was in the line above and the standoff plate still put a
+        # pistol in Isaac's fist — a swat operative in a confrontation reads
+        # as armed to the model — and because the aftermath frame is img2img'd
+        # from that plate, the gun then walked out of the fight and into the
+        # explore frames that followed. Say what is in their hands and that
+        # nothing else is, the same way the outfit is banned from everyone
+        # else: naming the real gear beats hoping the model infers it.
+        try:
+            gear = str(
+                (game_identity.authored_character() or {}).get("signature_gear") or ""
+            ).strip().rstrip(".")
+        except Exception:
+            gear = ""
+        if gear:
+            exclusive += (
+                f" In {name}'s hands: {gear}, and nothing else — no firearm, "
+                f"blade or tool the sheet does not name. A weapon they were "
+                f"never given is a recast."
+            )
         prior = (
             f" The person already in the reference photograph IS {name}: keep "
             "that face and that outfit."
@@ -1280,6 +1300,72 @@ DEFAULT_STRANGER_LOOKS: Dict[str, tuple] = {
 # A named character from this world is still a person as far as a look goes.
 DEFAULT_STRANGER_LOOKS["character"] = DEFAULT_STRANGER_LOOKS["person"]
 
+# The same fallbacks with the shipped world's proper nouns taken out. The pool
+# above is written for the Horizon desert — Horizon Industries, red dust, the
+# mesa, mine cable, Blackwood — and it was firing in a cyberpunk sub-level:
+# a live run rolled "a rogue police officer looting industrial scrap" off the
+# world's own roster, the look tripped the clone rule (the player IS a police
+# officer in armour there, so every officer reads as their twin), and what
+# walked into the fight was "a woman in a bleached Horizon lab coat, both hands
+# bandaged to the elbow". The slate then argued with itself — "Crush the
+# drone" / "Sprinting past her" — because the brief had a drone and the plate
+# had a lab technician from another game. A fallback is allowed to be generic;
+# it is not allowed to be somebody else's world.
+NEUTRAL_STRANGER_LOOKS: Dict[str, tuple] = {
+    "person": (
+        "a perimeter guard in a mustard hazard suit, face lost behind a fogged "
+        "gas mask",
+        "a labourer lacquered in grey dust, helmet lamp still burning, eyes "
+        "filmed over white",
+        "a sentry in unmarked fatigues, respirator strapped tight, no insignia "
+        "anywhere on them",
+        "a woman in a bleached lab coat, both hands bandaged to the elbow, the "
+        "sleeves stiff with something dried",
+        "a drifter wrapped in stitched tarpaulin and copper wire, mouth hidden "
+        "under a rag mask",
+    ),
+    "group": (
+        "three contractors in rusted riot gear, moving as one body, every visor "
+        "turned the same way",
+        "a work crew in matching yellow slickers, standing far closer together "
+        "than the space needs",
+        "a knot of masked scavengers strung together at the wrist by a length "
+        "of cable",
+    ),
+    "creature": (
+        "an amorphous wolf-shaped thing, fur slicked into wet spines, walking "
+        "on too many joints",
+        "a cryptid of fused flesh and cable, more shoulders than a body should "
+        "carry, no face to find on it",
+        "a pack animal skinned back to the muscle, breathing through slits "
+        "along its flank",
+        "something tall and pale that has grown into a tripod, limb and steel "
+        "no longer separable",
+    ),
+    "anomaly": (
+        "a shape of heat and dust that keeps almost resolving into a man and "
+        "then losing it",
+        "a hazard suit standing upright with nobody inside it, the visor full "
+        "of slow moving dark",
+        "a silhouette that copies your own posture a half-second late",
+        "a seam of air where the light bends wrong and the far wall repeats "
+        "itself",
+    ),
+}
+NEUTRAL_STRANGER_LOOKS["character"] = NEUTRAL_STRANGER_LOOKS["person"]
+
+
+def _stranger_pools() -> Dict[str, tuple]:
+    """The shipped desert's strangers for the shipped level; nobody's world
+    for anybody else's."""
+    try:
+        import game_identity
+        if game_identity.is_shipped_setting():
+            return DEFAULT_STRANGER_LOOKS
+    except Exception:
+        return DEFAULT_STRANGER_LOOKS
+    return NEUTRAL_STRANGER_LOOKS
+
 
 def default_stranger_look(seed: str = "", kind: str = "") -> str:
     """One of the fallback strangers, stable for a given seed.
@@ -1292,9 +1378,10 @@ def default_stranger_look(seed: str = "", kind: str = "") -> str:
     time, and `random.Random` takes a string seed deterministically across
     processes, so the look survives a restart mid-run.
     """
-    pool = DEFAULT_STRANGER_LOOKS.get(str(kind or "").strip().lower() or "person")
+    pools = _stranger_pools()
+    pool = pools.get(str(kind or "").strip().lower() or "person")
     if not pool:
-        pool = tuple(l for looks in DEFAULT_STRANGER_LOOKS.values() for l in looks)
+        pool = tuple(l for looks in pools.values() for l in looks)
     key = " ".join(str(seed or "").lower().split())
     if key:
         return random.Random(key).choice(pool)
@@ -1313,7 +1400,8 @@ def is_default_stranger_look(look: str) -> bool:
         return False
     return any(
         raw == " ".join(known.lower().split())
-        for looks in DEFAULT_STRANGER_LOOKS.values()
+        for pools in (DEFAULT_STRANGER_LOOKS, NEUTRAL_STRANGER_LOOKS)
+        for looks in pools.values()
         for known in looks
     )
 

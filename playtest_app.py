@@ -587,37 +587,35 @@ class DiveWatch:
                 f"{' (only the raw SCAN crop)' if self.crop else ' (empty developing shimmer)'}"
             )
     def leave(self, page, log, findings, turn):
-        """Walk back out of the dive the way a player does, and check where it
-        lands. The dive is deliberately not self-closing any more: exiting is
-        the player's call, and it must hand off to the REGENERATED scene."""
+        """Check how the dive hands the world back.
+
+        The dive is a TRANSITION and leaves on its own the moment the new
+        frame paints (see createInteractDive in standalone.js: the SPEAK /
+        ATTACK / LEAVE slate it used to carry "was the thing that made this
+        feel slow"). This used to assert the opposite — that the dive must
+        wait for the player to press LEAVE — and filed "the dive closed
+        itself" against every INTERACT turn of a client working as designed.
+        What is actually wrong is a dive that is STILL up once the turn is
+        over: that is the player stuck behind a close-up."""
         try:
             state = page.evaluate(DIVE_STATE)
         except Exception:
             return
         if not (state["inDive"] or state["top"] == "interact"):
-            findings.append(f"turn {turn}: the dive closed itself - the player "
-                            f"never got to leave it")
+            log("    dive: handed the world back on its own (by design)")
             return
-        # The dive's slate is SPEAK / ATTACK / LEAVE, and only LEAVE goes back
-        # to the scene. It is locked (disabled) until the INTERACT turn's frame
-        # has painted, which is exactly the wait this check is about — so poll
-        # for it to come live rather than clicking whatever is at the top.
-        leave = "#moment-choices .moment-choice:not(.moment-choice-locked):has-text('LEAVE')"
-        try:
-            page.click(leave, timeout=45000)
-        except Exception as exc:
-            findings.append(f"turn {turn}: no way out of the dive "
-                            f"({a(str(exc))[:60]})")
-            return
+        # Still up. Give it the paint-to-hand-back window, then it is stuck.
         for _ in range(20):
             time.sleep(0.75)
             try:
                 if not page.evaluate(DIVE_STATE)["inDive"]:
-                    log("    dive: left on the X, landed back in the scene")
+                    log("    dive: handed the world back after the frame painted")
                     return
             except Exception:
                 continue
-        findings.append(f"turn {turn}: pressing the X did not leave the dive")
+        findings.append(f"turn {turn}: the dive stayed up after the turn resolved "
+                        f"- the player is stuck behind the close-up")
+        return
 
 
 ENCOUNTER_STATE = r"""
@@ -1145,7 +1143,25 @@ def do_scan_action(page, log, prefer="move"):
     labels = [t["label"] for t in s["tags"]]
     log(f"    scanned: {[a(x) for x in labels]}")
     idx = int(os.environ.get("PT_TAG_INDEX", "0")) % len(s["tags"])
-    page.click(f".scan-tag >> nth={idx}", timeout=8000)
+    # A tag can leave under the cursor: when the scene re-reads itself the
+    # labels the new pass did not find are retired with a 420ms fade, and the
+    # STATE snapshot above still listed them. Clicking one raised straight
+    # out of main() and ended a run at turn 5 with no SUMMARY. Aim only at
+    # tags that are staying, and if the one we wanted has gone, re-read the
+    # frame and take whatever is actually on screen now.
+    try:
+        page.click(f".scan-tag:not(.leaving) >> nth={idx}", timeout=8000)
+    except Exception as exc:
+        log(f"    tag {idx} ({a(labels[idx])}) left before it could be clicked "
+            f"({a(str(exc))[:60]}); re-reading the frame")
+        time.sleep(1.5)
+        s = page.evaluate(STATE)
+        if not s["tags"]:
+            log("    no tags left to click")
+            return None
+        labels = [t["label"] for t in s["tags"]]
+        idx = idx % len(labels)
+        page.click(f".scan-tag:not(.leaving) >> nth={idx}", timeout=8000)
 
     # The tag has to actually open before its sub-actions can be committed.
     for _ in range(8):

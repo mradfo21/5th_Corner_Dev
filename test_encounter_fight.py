@@ -379,6 +379,28 @@ class TestAShotDescriptionIsNotAPerson(unittest.TestCase):
                 got = encounter.distinct_enemy_look(shot)
                 self.assertTrue(encounter.is_default_stranger_look(got), got)
 
+    def test_a_recast_level_never_meets_the_shipped_deserts_strangers(self):
+        """The fallback pool is written for the Horizon desert — Horizon
+        Industries, red dust, the mesa, mine cable — and it fired in a
+        cyberpunk sub-level: the roster's "rogue police officer" tripped the
+        clone rule (the player there IS an armoured officer) and what walked
+        into the fight was "a woman in a bleached Horizon lab coat". A fallback
+        may be generic; it may not be somebody else's world."""
+        import game_identity
+        from unittest import mock
+        banned = ("horizon", "mesa", "red dust", "mine cable", "blackwood")
+        with mock.patch.object(game_identity, "is_shipped_setting", return_value=False):
+            for kind in ("person", "group", "creature", "anomaly", "character"):
+                for seed in ("a", "b", "c", "d", "e", "f"):
+                    got = encounter.default_stranger_look(seed, kind).lower()
+                    for word in banned:
+                        self.assertNotIn(word, got, f"{kind}/{seed}: {got}")
+                    self.assertTrue(encounter.is_default_stranger_look(got), got)
+        with mock.patch.object(game_identity, "is_shipped_setting", return_value=True):
+            got = {encounter.default_stranger_look(str(i), "person") for i in range(40)}
+            self.assertTrue(any("horizon" in g.lower() for g in got),
+                            "the shipped level keeps its own strangers")
+
     def test_the_person_survives_when_the_framing_is_stripped_off(self):
         for narrated, person in (
             ("The image shows a man in a red jacket", "a man in a red jacket"),

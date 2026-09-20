@@ -603,6 +603,35 @@ class TestTheTestFixtureIsNeverTheRulebook(unittest.TestCase):
         self.assertEqual(
             self.ws.harness_doctrine_in({"action_consequence_instructions": ""}), [])
 
+    def test_the_fixture_wearing_the_games_own_paragraph_is_still_the_fixture(self):
+        """The second way a World plays the fixture, found on the active world
+        of the machine this was written on. `player_choice_generation_instructions`
+        was the 364-char harness block with the ALREADY DONE repeat-suppression
+        paragraph spliced in — the paragraph the game itself rolled out across
+        every prompt copy — and exact match called that "authored". Binding the
+        world then stamped it over the live file on every New Game, so the slate
+        played with none of its 4,500 chars of doctrine.
+
+        Lines the FACTORY copy carries are the game's; a line in neither is the
+        author's and keeps the block authored."""
+        import prompts_store
+        harness = self.ws._harness_prompts()
+        factory = prompts_store.load_defaults()
+        key = "player_choice_generation_instructions"
+        fixture = harness[key]
+        fac_lines = [l for l in factory[key].splitlines()
+                     if l.strip().startswith("ALREADY DONE")]
+        self.assertTrue(fac_lines, "the factory copy no longer carries ALREADY DONE")
+        spliced = fixture.replace(
+            "DISCOVERED ENTITIES: {seen_elements}",
+            "DISCOVERED ENTITIES: {seen_elements}\n" + fac_lines[0])
+        self.assertNotEqual(spliced.strip(), fixture.strip())
+        self.assertEqual(self.ws.harness_doctrine_in({key: spliced}), [key],
+                         "the fixture plus the game's own paragraph is the fixture")
+        self.assertEqual(
+            self.ws.harness_doctrine_in({key: spliced + "\nAlso: be kind."}), [],
+            "one authored line keeps the block authored")
+
     def test_the_authored_worlds_are_left_alone(self):
         """somewhere.json and world.json both author ~15,000 characters of
         consequence doctrine. The guard must not touch either."""

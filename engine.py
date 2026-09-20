@@ -9824,8 +9824,20 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             _turn_timings["evolve_join_ms"] = int((time.time() - _t_evolve) * 1000)
 
             _t_p2 = time.time()
+            # `dispatch` is the beat the player read; `vision_dispatch` is the
+            # camera line the renderer was given. This call passed the camera
+            # line as BOTH, so everything downstream that reads the turn's
+            # dispatch — the history entry, the narrator's "recent beats", the
+            # encounter brief, and the choice generator's "what just
+            # happened" — was handed "Isaac Clarke is hunched in the center
+            # of a pitch-black chamber" instead of "You lunge through the
+            # dark threshold, but your foot catches...". Same fault as the
+            # render call above (dispatch used to BE visual_scene, so passing
+            # it twice was a no-op until the two were split); this was the
+            # other call site the split never reached. Seen in a live run's
+            # history.json: dispatch == vision_dispatch on every pill turn.
             p2 = advance_turn_choices_deferred(
-                img_path, vision_dispatch_text, vision_dispatch_text, choice,
+                img_path, dispatch_text, vision_dispatch_text, choice,
                 img_prompt, p1.get("hard_transition", False), SID, local_only=True,
                 pregenerated_choices=[],
             )
