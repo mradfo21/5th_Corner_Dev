@@ -501,7 +501,9 @@ it. Keep that; it is the reason the codebase is navigable at this size.
 
 - `docs/plans/` is mostly **shipped work**, kept as design records. Every file
   opens with a **Status** line; trust it over the body, and never implement a
-  plan marked shipped. Genuinely open: `FATE_ROLL_VISUAL_PLAN.md`,
+  plan marked shipped. Genuinely open: `BILLING_LIVE_PLAN.md` (what
+  stands between the hosted wallet and real money — tracked in its §2 table),
+  `FATE_ROLL_VISUAL_PLAN.md`,
   `PROMPT_TRIM_PROPOSAL.md` (see above — the tests assumed it), and the "fully
   local models" arc at the end of `DESKTOP_APP_ROADMAP.md`.
   `GAME_DESIGN_LAYERS_PLAN.md` is worth reading as a cautionary tale.
