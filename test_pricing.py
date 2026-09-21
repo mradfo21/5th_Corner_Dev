@@ -25,8 +25,10 @@ class PricingTestCase(unittest.TestCase):
 
         pricing.save_pricing({
             "rates": {
-                "gemini:gemini-3.1-flash-lite": {"unit_type": "tokens", "input_per_1k": 0.0375, "output_per_1k": 0.15},
-                "gemini:default": {"unit_type": "tokens", "input_per_1k": 0.075, "output_per_1k": 0.3},
+                "gemini:gemini-3.1-flash-lite": {"unit_type": "tokens", "input_per_1m": 37.5, "output_per_1m": 150.0},
+                "gemini:default": {"unit_type": "tokens", "input_per_1m": 75.0, "output_per_1m": 300.0},
+                "gemini:gemini-3-pro-image": {"unit_type": "images", "per_unit": 0.134, "sizes": {"1K": 0.134, "4K": 0.24}},
+                "openai:old-style": {"unit_type": "tokens", "input_per_1k": 0.15, "output_per_1k": 0.6},
                 "krea:krea-2/medium": {"unit_type": "images", "per_unit": 0.02},
                 "elevenlabs:tts": {"unit_type": "characters", "per_1k": 0.18},
                 "reactor:default": {"unit_type": "seconds", "per_unit": None},
@@ -79,7 +81,39 @@ class PricingTestCase(unittest.TestCase):
 
     def test_get_rate_prefers_exact_model_over_default(self):
         rate = pricing.get_rate("gemini", "gemini-3.1-flash-lite")
-        self.assertEqual(rate["input_per_1k"], 0.0375)
+        self.assertEqual(rate["input_per_1m"], 37.5)
+
+    def test_per_1k_token_fields_are_refused(self):
+        # The unit mix-up that priced text ~150x high must not come back.
+        self.assertIsNone(pricing.estimate_cost("openai", "old-style", "tokens", input_units=1000, output_units=1000))
+
+    def test_no_fallback_across_unit_types(self):
+        # A picture logged under a purpose name must not be priced as a token.
+        self.assertIsNone(pricing.estimate_cost("gemini", "talk_portrait", "images", output_units=1))
+
+    def test_image_priced_at_its_size(self):
+        self.assertAlmostEqual(pricing.estimate_cost("gemini", "gemini-3-pro-image", "images", output_units=1, size="4K"), 0.24)
+        self.assertAlmostEqual(pricing.estimate_cost("gemini", "gemini-3-pro-image", "images", output_units=1, size="1k"), 0.134)
+        self.assertAlmostEqual(pricing.estimate_cost("gemini", "gemini-3-pro-image", "images", output_units=1), 0.134)
+
+    def test_shipped_table_is_sourced_and_per_million(self):
+        import json as _json
+        from pathlib import Path as _P
+        table = _json.loads((_P(__file__).parent / "pricing.json").read_text(encoding="utf-8"))["rates"]
+        for key, rate in table.items():
+            self.assertIn("source", rate, key)
+            self.assertIn("checked", rate, key)
+            self.assertNotIn("input_per_1k", rate, key)
+            self.assertNotIn("output_per_1k", rate, key)
+
+    def test_shipped_flash_lite_is_cheap(self):
+        # 10k tokens of story text costs well under a cent at the real rate.
+        import json as _json
+        from pathlib import Path as _P
+        table = _json.loads((_P(__file__).parent / "pricing.json").read_text(encoding="utf-8"))
+        pricing.save_pricing(table)
+        cost = pricing.estimate_cost("gemini", "gemini-3.1-flash-lite", "tokens", input_units=10_000, output_units=200)
+        self.assertLess(cost, 0.01)
 
 
 if __name__ == "__main__":

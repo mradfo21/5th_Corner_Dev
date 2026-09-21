@@ -79,6 +79,16 @@ PLAY_KEY_ENVS = ("GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 _ENV_BY_ID = {p["id"]: p["env"] for p in PROVIDERS}
 _KNOWN_ENV = {p["env"] for p in PROVIDERS}
 
+# A CUSTOM key: any service that speaks the OpenAI chat API (a local model
+# server, OpenRouter, a lab's own endpoint). It rides the OpenAI slot the
+# engine already has: OPENAI_BASE_URL moves the client, OPENAI_API_KEY signs
+# it, and the narrator is switched to that model. Removing it puts the
+# narrator back on Gemini.
+CUSTOM_ADDRESS_ENV = "OPENAI_BASE_URL"
+CUSTOM_MODEL_ENV = "CUSTOM_TEXT_MODEL"
+CUSTOM_NO_KEY = "no-key-needed"   # local servers take any key; the SDK wants one
+_KNOWN_ENV |= {CUSTOM_ADDRESS_ENV, CUSTOM_MODEL_ENV}
+
 # Module-level caches that were read once at import. After a live save we
 # write the same value here so Play/Watch do not need a process restart.
 _RUNTIME_ATTRS = (
@@ -192,8 +202,7 @@ def _atomic_write_env(path: Path, values: Dict[str, str]) -> None:
         "# SOMEWHERE local keys — written by the app. Do not commit.",
         "# This file stays on this machine. It is never sent to a hosted server.",
     ]
-    for provider in PROVIDERS:
-        env = provider["env"]
+    for env in [p["env"] for p in PROVIDERS] + [CUSTOM_ADDRESS_ENV, CUSTOM_MODEL_ENV]:
         val = (values.get(env) or "").strip()
         if val:
             lines.append(f"{env}={val}")
@@ -442,7 +451,108 @@ def public_status(*, editable: bool) -> Dict[str, Any]:
         ),
         "store": "local account file" if editable else "host",
         "providers": providers,
+        "custom": custom_status(editable=editable),
     }
+
+
+def custom_status(*, editable: bool) -> Dict[str, Any]:
+    """The custom key, without its secret."""
+    address = (os.environ.get(CUSTOM_ADDRESS_ENV) or "").strip()
+    model = (os.environ.get(CUSTOM_MODEL_ENV) or "").strip()
+    key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    on = bool(address and model and key)
+    return {
+        "set": on,
+        "address": address if on else "",
+        "model": model if on else "",
+        "hint": (mask_hint(key) if (on and editable and key != CUSTOM_NO_KEY) else ""),
+        "keyless": bool(on and key == CUSTOM_NO_KEY),
+    }
+
+
+def _validate_address(raw: Any) -> str:
+    value = str(raw or "").strip().rstrip("/")
+    if not (value.startswith("http://") or value.startswith("https://")):
+        raise ValueError("the address starts with http:// or https://")
+    if len(value) > 300 or any(c.isspace() for c in value):
+        raise ValueError("that address has spaces in it")
+    return value
+
+
+def _validate_model(raw: Any) -> str:
+    value = str(raw or "").strip()
+    if not value or len(value) > 160 or any(c.isspace() for c in value):
+        raise ValueError("name the model, e.g. llama3.1 or gpt-4o-mini")
+    return value
+
+
+def _rebind_openai_client() -> None:
+    """engine built its OpenAI client at import; point it at the new address."""
+    engine = sys.modules.get("engine")
+    if engine is None or not hasattr(engine, "_client"):
+        return
+    try:
+        base = (os.environ.get(CUSTOM_ADDRESS_ENV) or "").strip() or getattr(engine, "DEFAULT_BASE", "https://api.openai.com/v1")
+        key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+        engine.API_BASE = base
+        engine.OPENAI_API_KEY = key
+        engine.client = engine._client(key, base)
+    except Exception:
+        pass
+
+
+def _set_narrator(provider: str, model: str) -> None:
+    try:
+        import ai_provider_manager
+        ai_provider_manager.set_custom(text_provider=provider, text_model=model)
+    except Exception:
+        pass
+
+
+def set_custom(address: Any, model: Any, value: Any, path: Optional[Path] = None) -> Dict[str, Any]:
+    """Save the custom key and make it the narrator. A blank key is allowed
+    (a local server needs none)."""
+    address = _validate_address(address)
+    model = _validate_model(model)
+    key = _validate_value(value if isinstance(value, str) else "", "openai")
+    target = path or store_path()
+    with _LOCK:
+        current = _read_env_file(target)
+        if not key:
+            key = current.get("OPENAI_API_KEY") or CUSTOM_NO_KEY
+        values = {CUSTOM_ADDRESS_ENV: address, CUSTOM_MODEL_ENV: model, "OPENAI_API_KEY": key}
+        current.update(values)
+        for env, val in values.items():
+            os.environ[env] = val
+            _applied_from_store.add(env)
+        _atomic_write_env(target, current)
+    refresh_runtime_keys(only={"OPENAI_API_KEY"})
+    _rebind_openai_client()
+    _set_narrator("openai", model)
+    return public_status(editable=True)
+
+
+def clear_custom(path: Optional[Path] = None) -> Dict[str, Any]:
+    """Remove the custom key; the narrator goes back to Gemini."""
+    target = path or store_path()
+    model = (os.environ.get(CUSTOM_MODEL_ENV) or "").strip()
+    with _LOCK:
+        current = _read_env_file(target)
+        for env in (CUSTOM_ADDRESS_ENV, CUSTOM_MODEL_ENV, "OPENAI_API_KEY"):
+            current.pop(env, None)
+            os.environ.pop(env, None)
+            _applied_from_store.discard(env)
+        _atomic_write_env(target, current)
+    refresh_runtime_keys(blank={"OPENAI_API_KEY"})
+    _rebind_openai_client()
+    try:
+        import ai_provider_manager
+        if ai_provider_manager.get_text_provider() == "openai" and (
+                not model or ai_provider_manager.get_text_model() == model):
+            _set_narrator("gemini", "gemini-3.1-flash-lite")
+    except Exception:
+        pass
+    return public_status(editable=True)
 
 
 def iter_provider_ids() -> Iterable[str]:

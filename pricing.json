@@ -1,163 +1,279 @@
 {
-  "last_updated": "2026-07-21T18:15:00.000000+00:00",
-  "notes": "Rates are $ per unit as noted. Token rates are $ per 1,000 tokens. Editable live from the admin dashboard's Analytics > Pricing panel (no redeploy needed) via GET/PUT /api/admin/pricing. A null rate means 'unpriced' and shows as such in the dashboard instead of silently costing $0. Reactor per-second rates are converted from https://api.reactor.inc/pricing (public, no auth) at credits_per_dollar=10000 — re-check that endpoint if Reactor's pricing changes.",
+  "last_updated": "2026-09-21T18:30:00+00:00",
+  "notes": "Every rate is the provider's own list price, read on the date in `checked` from the page in `source`. Token rates are dollars per MILLION tokens (input_per_1m / output_per_1m) — per-thousand token fields are refused by pricing.py, because that is how text ended up priced ~150x too high. Image rates may carry `sizes` (1K/2K/4K); an event that logs its size is priced at that size. A null rate means unpriced: shown as such, never charged as $0 silently. An unknown model only falls back to a provider default of the SAME unit type. Editable from the admin dashboard's Analytics > Pricing panel.",
   "rates": {
     "gemini:gemini-3.1-flash-lite": {
       "unit_type": "tokens",
-      "input_per_1k": 0.0375,
-      "output_per_1k": 0.15
-    },
-    "gemini:gemini-2.0-flash": {
-      "unit_type": "tokens",
-      "input_per_1k": 0.075,
-      "output_per_1k": 0.3
-    },
-    "gemini:gemini-3.1-flash-image": {
-      "unit_type": "images",
-      "per_unit": 0.039
-    },
-    "gemini:gemini-3-pro-image": {
-      "unit_type": "images",
-      "per_unit": 0.24,
-      "note": "Estimate. Used for the opening cutscene grid only (one render per run, at 4K) - see cutscene.GRID_RENDER_MODEL. Priced high on purpose so the ledger over-reports rather than hiding it."
-    },
-    "gemini:gemini-3.1-flash-lite-image": {
-      "unit_type": "images",
-      "per_unit": 0.02
-    },
-    "gemini:models/lyria-realtime-exp": {
-      "unit_type": "seconds",
-      "per_unit": null
+      "input_per_1m": 0.25,
+      "output_per_1m": 1.5,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-09-21",
+      "note": "Standard paid tier, non-batch. Image/video input billed at the text input rate."
     },
     "gemini:default": {
       "unit_type": "tokens",
-      "input_per_1k": 0.075,
-      "output_per_1k": 0.3
+      "input_per_1m": 0.25,
+      "output_per_1m": 1.5,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-09-21",
+      "note": "Unknown Gemini TEXT model -> priced as Flash-Lite. Image events never fall back to this (unit types must match)."
     },
-    "openai:gpt-4o-mini": {
-      "unit_type": "tokens",
-      "input_per_1k": 0.15,
-      "output_per_1k": 0.6
-    },
-    "openai:gpt-image-1": {
+    "gemini:gemini-3.1-flash-lite-image": {
       "unit_type": "images",
-      "per_unit": 0.167
+      "per_unit": 0.0336,
+      "sizes": {
+        "1K": 0.0336,
+        "2K": 0.0504
+      },
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-09-21",
+      "note": "$30/1M output tokens; 1K = 1120 tokens = $0.0336. 2K is not listed on the page: derived at the Flash Image token count (1680) x $30/1M = $0.0504."
     },
-    "openai:default": {
-      "unit_type": "tokens",
-      "input_per_1k": 0.15,
-      "output_per_1k": 0.6
-    },
-    "anthropic:claude-sonnet-4-5": {
-      "unit_type": "tokens",
-      "input_per_1k": 3.0,
-      "output_per_1k": 15.0
-    },
-    "anthropic:claude-opus-4-5": {
-      "unit_type": "tokens",
-      "input_per_1k": 15.0,
-      "output_per_1k": 75.0
-    },
-    "anthropic:default": {
-      "unit_type": "tokens",
-      "input_per_1k": 15.0,
-      "output_per_1k": 75.0
-    },
-    "krea:krea-2/medium": {
+    "gemini:gemini-3.1-flash-image": {
       "unit_type": "images",
-      "per_unit": 0.02
+      "per_unit": 0.067,
+      "sizes": {
+        "0.5K": 0.045,
+        "1K": 0.067,
+        "2K": 0.101,
+        "4K": 0.151
+      },
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-09-21"
     },
-    "krea:krea-2/large": {
+    "gemini:gemini-3-pro-image": {
       "unit_type": "images",
-      "per_unit": 0.04
+      "per_unit": 0.134,
+      "sizes": {
+        "1K": 0.134,
+        "2K": 0.134,
+        "4K": 0.24
+      },
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-09-21",
+      "note": "Opening cutscene grid renders at 4K."
     },
-    "krea:default": {
+    "gemini:default:images": {
       "unit_type": "images",
-      "per_unit": 0.03
+      "per_unit": 0.067,
+      "sizes": {
+        "0.5K": 0.045,
+        "1K": 0.067,
+        "2K": 0.101,
+        "4K": 0.151
+      },
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-09-21",
+      "note": "Unknown Gemini IMAGE model -> priced as Flash Image at its size (the more expensive of the two fast models, so an unknown never undercharges)."
     },
-    "fal:fal-ai/fast-lightning-sdxl": {
-      "unit_type": "images",
-      "per_unit": 0.0035
-    },
-    "fal:default": {
-      "unit_type": "images",
-      "per_unit": 0.0035
-    },
-    "veo:veo-3.1-generate-preview": {
+    "gemini:models/lyria-realtime-exp": {
       "unit_type": "seconds",
-      "per_unit": 0.4
-    },
-    "veo:default": {
-      "unit_type": "seconds",
-      "per_unit": 0.4
-    },
-    "elevenlabs:tts": {
-      "unit_type": "characters",
-      "per_1k": 0.18
-    },
-    "elevenlabs:voice_design": {
-      "unit_type": "calls",
-      "per_unit": 0.05
-    },
-    "elevenlabs:talk_agent": {
-      "unit_type": "seconds",
-      "per_unit": 0.0016
-    },
-    "elevenlabs:music_v2": {
-      "unit_type": "seconds",
-      "per_unit": 0.0025
-    },
-    "elevenlabs:eleven_text_to_sound_v2": {
-      "unit_type": "seconds",
-      "per_unit": 0.002
-    },
-    "elevenlabs:default": {
-      "unit_type": "characters",
-      "per_1k": 0.18
-    },
-    "reactor:happy-oyster": {
-      "unit_type": "seconds",
-      "per_unit": 0.0139
-    },
-    "reactor:happy-oyster-adventure": {
-      "unit_type": "seconds",
-      "per_unit": 0.0139
-    },
-    "reactor:happy-oyster-director": {
-      "unit_type": "seconds",
-      "per_unit": 0.0139
-    },
-    "reactor:lingbot": {
-      "unit_type": "seconds",
-      "per_unit": 0.0033
-    },
-    "reactor:lingbot-world-2": {
-      "unit_type": "seconds",
-      "per_unit": 0.0033
-    },
-    "reactor:helios": {
-      "unit_type": "seconds",
-      "per_unit": 0.0017
-    },
-    "reactor:longlive-v2": {
-      "unit_type": "seconds",
-      "per_unit": 0.0017
-    },
-    "reactor:sana-streaming": {
-      "unit_type": "seconds",
-      "per_unit": 0.0017
-    },
-    "reactor:x2": {
-      "unit_type": "seconds",
-      "per_unit": 0.0017
-    },
-    "reactor:default": {
-      "unit_type": "seconds",
-      "per_unit": 0.0017
+      "per_unit": null,
+      "source": "https://ai.google.dev/gemini-api/docs/realtime-music-generation",
+      "checked": "2026-09-21",
+      "note": "Experimental; no published price."
     },
     "gemini_live:default": {
       "unit_type": "seconds",
-      "per_unit": null
+      "per_unit": null,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-09-21",
+      "note": "Live API prototype routes; not priced per second on the page (audio is per token / per minute). Routes are refused while the hosted wallet is on."
+    },
+    "veo:veo-3.1-generate-preview": {
+      "unit_type": "seconds",
+      "per_unit": 0.4,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-09-21",
+      "note": "Standard, 720p/1080p, with audio. 4K is $0.60/s."
+    },
+    "veo:default": {
+      "unit_type": "seconds",
+      "per_unit": 0.4,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-09-21"
+    },
+    "openai:gpt-4o-mini": {
+      "unit_type": "tokens",
+      "input_per_1m": 0.15,
+      "output_per_1m": 0.6,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-09-21"
+    },
+    "openai:default": {
+      "unit_type": "tokens",
+      "input_per_1m": 0.15,
+      "output_per_1m": 0.6,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-09-21",
+      "note": "Unknown OpenAI text model (including a CUSTOM key's model) -> priced as gpt-4o-mini; a custom key on the desktop app is billed to the player's own provider anyway."
+    },
+    "openai:gpt-image-1": {
+      "unit_type": "images",
+      "per_unit": 0.042,
+      "source": "https://developers.openai.com/api/docs/models/gpt-image-1",
+      "checked": "2026-09-21",
+      "note": "Medium quality 1024x1024. Model is marked Deprecated."
+    },
+    "anthropic:claude-sonnet-4-5": {
+      "unit_type": "tokens",
+      "input_per_1m": 3.0,
+      "output_per_1m": 15.0,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-09-21"
+    },
+    "anthropic:claude-opus-4-5": {
+      "unit_type": "tokens",
+      "input_per_1m": 5.0,
+      "output_per_1m": 25.0,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-09-21"
+    },
+    "anthropic:default": {
+      "unit_type": "tokens",
+      "input_per_1m": 3.0,
+      "output_per_1m": 15.0,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-09-21",
+      "note": "Unknown Claude model -> priced as Sonnet 4.5."
+    },
+    "krea:krea-2/medium": {
+      "unit_type": "images",
+      "per_unit": 0.035,
+      "source": "https://www.krea.ai/docs/developers/krea-2/overview.md",
+      "checked": "2026-09-21",
+      "note": "With style references (how the game calls it); plain text-to-image is $0.030."
+    },
+    "krea:krea-2/large": {
+      "unit_type": "images",
+      "per_unit": 0.065,
+      "source": "https://www.krea.ai/docs/developers/krea-2/overview.md",
+      "checked": "2026-09-21",
+      "note": "With style references; plain is $0.060."
+    },
+    "krea:default": {
+      "unit_type": "images",
+      "per_unit": 0.035,
+      "source": "https://www.krea.ai/docs/developers/krea-2/overview.md",
+      "checked": "2026-09-21"
+    },
+    "fal:default": {
+      "unit_type": "images",
+      "per_unit": null,
+      "source": "https://fal.ai/models/fal-ai/fast-lightning-sdxl",
+      "checked": "2026-09-21",
+      "note": "No usable public price (page shows $0 per compute second logged out). Unpriced until read from the fal account."
+    },
+    "elevenlabs:tts": {
+      "unit_type": "characters",
+      "per_1k": 0.1,
+      "source": "https://elevenlabs.io/pricing/api",
+      "checked": "2026-09-21",
+      "note": "eleven_multilingual_v2 (the game's default TTS model). Flash/Turbo are $0.05."
+    },
+    "elevenlabs:default": {
+      "unit_type": "characters",
+      "per_1k": 0.1,
+      "source": "https://elevenlabs.io/pricing/api",
+      "checked": "2026-09-21"
+    },
+    "elevenlabs:eleven_text_to_sound_v2": {
+      "unit_type": "seconds",
+      "per_unit": 0.002,
+      "source": "https://elevenlabs.io/pricing/api",
+      "checked": "2026-09-21",
+      "note": "$0.12 per minute of output."
+    },
+    "elevenlabs:music_v2": {
+      "unit_type": "seconds",
+      "per_unit": 0.0025,
+      "source": "https://elevenlabs.io/pricing/api",
+      "checked": "2026-09-21",
+      "note": "$0.15 per minute."
+    },
+    "elevenlabs:talk_agent": {
+      "unit_type": "seconds",
+      "per_unit": 0.001333,
+      "source": "https://elevenlabs.io/pricing/agents",
+      "checked": "2026-09-21",
+      "note": "$0.08 per call-minute (burst over concurrency $0.16). LLM billed separately."
+    },
+    "elevenlabs:voice_design": {
+      "unit_type": "calls",
+      "per_unit": 0.05,
+      "source": "https://elevenlabs.io/docs/help-center/product/voices/voice-design/how-much-does-voice-design-cost.md",
+      "checked": "2026-09-21",
+      "note": "ESTIMATE: billed per preview-text character at an unpublished rate; kept at the old $0.05 per call until checked against the ElevenLabs invoice."
+    },
+    "reactor:happy-oyster": {
+      "unit_type": "seconds",
+      "per_unit": 0.0139,
+      "source": "https://api.reactor.inc/pricing",
+      "checked": "2026-09-21",
+      "note": "139 credits/s."
+    },
+    "reactor:happy-oyster-adventure": {
+      "unit_type": "seconds",
+      "per_unit": 0.0139,
+      "source": "https://api.reactor.inc/pricing",
+      "checked": "2026-09-21",
+      "note": "Priced as happy-oyster (not listed separately)."
+    },
+    "reactor:happy-oyster-director": {
+      "unit_type": "seconds",
+      "per_unit": 0.0139,
+      "source": "https://api.reactor.inc/pricing",
+      "checked": "2026-09-21",
+      "note": "Priced as happy-oyster (not listed separately)."
+    },
+    "reactor:lingbot-world-2": {
+      "unit_type": "seconds",
+      "per_unit": 0.007,
+      "source": "https://api.reactor.inc/pricing",
+      "checked": "2026-09-21",
+      "note": "70 credits/s."
+    },
+    "reactor:lingbot": {
+      "unit_type": "seconds",
+      "per_unit": 0.007,
+      "source": "https://api.reactor.inc/pricing",
+      "checked": "2026-09-21",
+      "note": "Legacy; not listed. Priced as lingbot-world-2."
+    },
+    "reactor:helios": {
+      "unit_type": "seconds",
+      "per_unit": 0.0017,
+      "source": "https://api.reactor.inc/pricing",
+      "checked": "2026-09-21",
+      "note": "17 credits/s."
+    },
+    "reactor:longlive-v2": {
+      "unit_type": "seconds",
+      "per_unit": 0.0017,
+      "source": "https://api.reactor.inc/pricing",
+      "checked": "2026-09-21",
+      "note": "Not listed on 2026-09-21; previous value kept."
+    },
+    "reactor:sana-streaming": {
+      "unit_type": "seconds",
+      "per_unit": 0.0017,
+      "source": "https://api.reactor.inc/pricing",
+      "checked": "2026-09-21",
+      "note": "Not listed on 2026-09-21; previous value kept."
+    },
+    "reactor:x2": {
+      "unit_type": "seconds",
+      "per_unit": 0.0017,
+      "source": "https://api.reactor.inc/pricing",
+      "checked": "2026-09-21",
+      "note": "Not listed on 2026-09-21; previous value kept."
+    },
+    "reactor:default": {
+      "unit_type": "seconds",
+      "per_unit": 0.0139,
+      "source": "https://api.reactor.inc/pricing",
+      "checked": "2026-09-21",
+      "note": "Unknown world model -> priced as happy-oyster, the most expensive listed."
     }
   }
 }

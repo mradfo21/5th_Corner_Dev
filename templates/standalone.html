@@ -13,6 +13,7 @@
      screen and a fallback-font flash there is the one place it would show. -->
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@200;300;400;500&family=JetBrains+Mono:wght@300;400&display=swap">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/standalone.css') }}?v={{ asset_version }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/account.css') }}?v={{ asset_version }}">
 </head>
 <body class="start-menu-on awaiting-first-scene">
 
@@ -232,78 +233,24 @@
         <div id="xp-track" class="xp-track" role="listbox" aria-label="Experiences"></div>
       </div>
     </div>
-    <!-- Account pane: keys (BYOK) and usage (spend this month, optional cap).
-         Hosted servers report read-only status; only the desktop / run_local
-         app can write. -->
-    <div id="keys-panel" class="keys-panel hidden" hidden>
-      <button id="keys-back" class="keys-back" type="button">BACK</button>
-      <div class="keys-panel-inner">
-        <div class="keys-title">ACCOUNT</div>
-        <div class="account-tabs" role="tablist" aria-label="Account">
-          <button id="account-tab-keys" class="account-tab is-on" type="button" role="tab" aria-selected="true">KEYS</button>
-          <button id="account-tab-usage" class="account-tab" type="button" role="tab" aria-selected="false">USAGE</button>
+    <!-- ACCOUNT: a sheet on the right of the menu, over a black fall-off;
+         the menu and its film stay live on the left. Drawn and wired by
+         static/js/account.js; opened and closed by Accounts in standalone.js. -->
+    <div id="account-panel" aria-hidden="true">
+      <div class="acct-shade" aria-hidden="true"></div>
+      <aside class="acct-sheet" role="dialog" aria-labelledby="acct-title">
+        <div class="acct-head">
+          <button id="acct-back" class="acct-icon" type="button" aria-label="Back" hidden>
+            <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><path d="M11 3L5 9l6 6"/></svg>
+          </button>
+          <h2 id="acct-title" class="acct-title">ACCOUNT</h2>
+          <button id="acct-close" class="acct-icon acct-close" type="button" aria-label="Close">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>
+          </button>
         </div>
-        <div id="account-pane-keys" class="account-pane bill-pane">
-          <h2 class="bill-title">Keys</h2>
-          <p id="keys-lead" class="bill-note">Your keys stay on this machine.</p>
-          <div id="keys-list" class="keys-list"></div>
-          <p id="keys-msg" class="keys-msg hidden" hidden></p>
-        </div>
-        <div id="account-pane-usage" class="account-pane bill-pane hidden" hidden>
-          <section class="bill-card bill-id-card">
-            <div id="usage-account" class="bill-id"></div>
-          </section>
-          <h2 class="bill-title">Plan &amp; Usage</h2>
-          <section class="bill-card">
-            <div class="bill-kicker">Current plan</div>
-            <div class="bill-plan-head">
-              <div>
-                <div id="usage-plan-name" class="bill-plan-name">Free</div>
-                <p id="usage-plan-note" class="bill-note"></p>
-              </div>
-              <button id="usage-plan-adjust" class="bill-btn" type="button">Adjust plan</button>
-            </div>
-            <div id="usage-funds" class="bill-funds" hidden></div>
-          </section>
-          <section class="bill-card">
-            <div id="usage-included-kicker" class="bill-kicker">Included</div>
-            <div class="bill-meter">
-              <div class="bill-meter-top">
-                <span id="usage-included-label">This month</span>
-                <span id="usage-included-amt">$0.00</span>
-              </div>
-              <div class="bill-bar" aria-hidden="true"><i id="usage-included-bar"></i></div>
-              <p id="usage-included-hint" class="bill-note"></p>
-            </div>
-          </section>
-          <section class="bill-card">
-            <div class="bill-kicker">On-demand usage</div>
-            <div class="bill-meter">
-              <div class="bill-meter-top">
-                <span>On-demand</span>
-                <span id="usage-ondemand-amt">$0.00</span>
-              </div>
-              <div class="bill-bar" aria-hidden="true"><i id="usage-ondemand-bar"></i></div>
-              <p class="bill-note">Past included, spend comes from the wallet. Empty wallet pauses generation.</p>
-            </div>
-            <div class="bill-limit">
-              <div>
-                <div class="bill-limit-name">Monthly limit</div>
-                <p class="bill-note">Fixed amount or unlimited.</p>
-              </div>
-              <div class="bill-limit-row">
-                <select id="usage-cap-mode" class="bill-select" aria-label="Limit type">
-                  <option value="unlimited">Unlimited</option>
-                  <option value="fixed">Fixed</option>
-                </select>
-                <input id="usage-cap-input" class="bill-input" type="number" min="1" step="1" placeholder="0">
-                <button id="usage-cap-save" class="bill-btn" type="button">Save</button>
-              </div>
-            </div>
-          </section>
-          <p id="usage-msg" class="keys-msg hidden" hidden></p>
-        </div>
-      </div>
+        <div id="acct-body" class="acct-body"></div>
+        <p id="acct-msg" class="acct-msg" role="status" aria-live="polite" hidden></p>
+      </aside>
     </div>
   </div>
 
@@ -1590,6 +1537,7 @@
   <script src="{{ url_for('static', filename='js/reactor_renderer.js') }}?v={{ asset_version }}"></script>
   <script src="{{ url_for('static', filename='js/moments.js') }}?v={{ asset_version }}"></script>
   <script src="{{ url_for('static', filename='js/editor_graph.js') }}?v={{ asset_version }}"></script>
+  <script src="{{ url_for('static', filename='js/account.js') }}?v={{ asset_version }}"></script>
   <script src="{{ url_for('static', filename='js/standalone.js') }}?v={{ asset_version }}"></script>
 </body>
 </html>

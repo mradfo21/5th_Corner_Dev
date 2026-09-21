@@ -555,7 +555,17 @@ app.add_url_rule('/api/reset', 'standalone_api_reset', _session_scoped(engine.ap
 # continuously by every connected client and must not swap the shared global
 # mirror (see comment above). engine.api_feed resolves its own session id and
 # reads from disk.
-app.add_url_rule('/api/feed', 'standalone_api_feed', engine.api_feed, methods=['GET'])
+def _feed_with_heartbeat():
+    # The poll doubles as "this browser is still watching": live-time meters
+    # (Reactor, TALK) close at the last one if the browser never hangs up.
+    try:
+        billing.heartbeat()
+    except Exception:
+        pass
+    return engine.api_feed()
+
+
+app.add_url_rule('/api/feed', 'standalone_api_feed', _feed_with_heartbeat, methods=['GET'])
 
 
 def _spend_blocked(min_usd: float = 0.0):
@@ -568,6 +578,34 @@ def _spend_blocked(min_usd: float = 0.0):
     except Exception:
         pass
     return None
+
+
+# Every route that can start paid model work, gated in one place: on a hosted
+# wallet server, a POST/PUT to /api/ is refused (402) while the wallet can't
+# pay, unless it is one of these, which never spend. New routes are gated by
+# default. The routes with their own _spend_blocked hold (min_usd) keep it.
+_WALLET_FREE_PREFIXES = (
+    "/api/billing/", "/api/usage", "/api/keys", "/api/feed", "/api/coinop/",
+    "/api/lobby/heartbeat", "/api/lobby/leave", "/api/lobby/create", "/api/sessions",
+    "/api/state/save",
+    "/api/reactor/usage", "/api/talk/end", "/api/cutscene/complete",
+    "/api/bug/capture", "/api/replay/", "/api/shutdown", "/api/admin",
+)
+
+
+@app.before_request
+def _wallet_guard():
+    if request.method not in ("POST", "PUT", "PATCH"):
+        return None
+    path = request.path or ""
+    if not path.startswith("/api/") or path.startswith(_WALLET_FREE_PREFIXES):
+        return None
+    try:
+        if not billing.requires_wallet():
+            return None
+    except Exception:
+        return None
+    return _spend_blocked()
 
 
 def _credit_gated_choose():
@@ -904,6 +942,10 @@ try:
             import base64 as _b64
             import re as _re
             from flask import request as _req, jsonify as _jsonify
+            if billing.requires_wallet():
+                # Billed by wall-clock on a socket we don't meter: not on a
+                # server that charges players.
+                return _jsonify({"error": "not available on this server"}), 404
             blocked = _spend_blocked()
             if blocked:
                 return blocked
@@ -979,11 +1021,48 @@ app.add_url_rule('/api/investigations', 'standalone_api_investigations', engine.
 # configured, returns voice-agent config; otherwise the UI falls back to a text
 # conversation driven by the message endpoint. Both are stateless / read-only.
 # See engine.api_talk_session / engine.api_talk_message.
+def _response_status(response) -> int:
+    try:
+        payload = response[0] if isinstance(response, tuple) else response
+        status = response[1] if isinstance(response, tuple) and len(response) > 1 else None
+        return status if isinstance(status, int) else int(getattr(payload, "status_code", 200))
+    except Exception:
+        return 200
+
+
 def _gated_talk_session():
     blocked = _spend_blocked()
     if blocked:
         return blocked
-    return engine.api_talk_session()
+    response = engine.api_talk_session()
+    if _response_status(response) < 400:
+        try:
+            sid = str((request.get_json(silent=True) or {}).get("session_id") or "default")
+            billing.meter_start("talk", sid, service_type="voice",
+                                provider="elevenlabs", model="talk_agent")
+        except Exception:
+            traceback.print_exc()
+    return response
+
+
+def _metered_talk_end():
+    response = engine.api_talk_end()
+    try:
+        data = request.get_json(silent=True) or {}
+        sid = str(data.get("session_id") or "default")
+        try:
+            reported = float(data.get("duration_seconds") or 0)
+        except (TypeError, ValueError):
+            reported = 0.0
+        gap = billing.meter_stop("talk", sid, reported)
+        if gap > 0:
+            import cost_tracker
+            cost_tracker.record_usage(sid, "voice", "elevenlabs", "talk_agent",
+                                      operation="server_meter", output_units=gap,
+                                      unit_type="seconds", success=True)
+    except Exception:
+        traceback.print_exc()
+    return response
 
 
 def _gated_talk_message():
@@ -1144,7 +1223,7 @@ app.add_url_rule('/api/encounter/travel', 'standalone_api_encounter_travel',
 # Convai TTS override once a designed voice lands. Both are best-effort:
 # 200s even on internal failure so end-of-call cleanup never surfaces as a
 # user-visible error, and both no-op when voice_design is unavailable.
-app.add_url_rule('/api/talk/end', 'standalone_api_talk_end', engine.api_talk_end, methods=['POST'])
+app.add_url_rule('/api/talk/end', 'standalone_api_talk_end', _metered_talk_end, methods=['POST'])
 app.add_url_rule('/api/talk/voice/status', 'standalone_api_talk_voice_status', engine.api_talk_voice_status, methods=['GET'])
 # Opt-in experimental: bidirectional Gemini Live-API session for TALK,
 # replacing the ElevenLabs voice hop with native-audio streaming from Gemini
@@ -1164,6 +1243,13 @@ try:
             """First frame is a JSON handshake:
                 {"type":"start","subject":{"label":..,"kind":..},"session_id":"default"}
             Then bidirectional streaming (see gemini_live_talk.py docstring)."""
+            if billing.requires_wallet():
+                try:
+                    ws.send(json.dumps({"type": "error",
+                                        "message": "live talk is not available on this server"}))
+                except Exception:
+                    pass
+                return
             try:
                 first = ws.receive(timeout=10)
             except Exception:
@@ -1787,6 +1873,13 @@ def api_reactor_token():
                 f"HTTP {resp.status_code}: {resp.text[:500]}",
                 code=502,
             )
+        try:
+            body = request.get_json(silent=True) or {}
+            billing.meter_start(
+                "reactor", str(body.get("session_id") or request.args.get("session_id") or "default"),
+                service_type="video", provider="reactor", model=str(body.get("model") or "default"))
+        except Exception:
+            traceback.print_exc()
         return jsonify(resp.json())
     except Exception as e:
         traceback.print_exc()
@@ -1842,10 +1935,11 @@ def api_reactor_usage():
     was actually connected and reports it here (via sendBeacon) whenever that
     session ends: on model swap, disable, or page unload. Fire-and-forget:
     always 200, never blocks or breaks the client on failure.
+
+    Never gated: this reports time already spent, and refusing it (the old
+    min-balance hold here) let an empty wallet stream for free. The server's
+    own meter (from the token) is charged when it ran longer than reported.
     """
-    blocked = _spend_blocked(min_usd=0.25)
-    if blocked:
-        return blocked
     try:
         data = request.get_json(silent=True) or {}
         session_id = str(data.get("session_id") or "default").strip() or "default"
@@ -1854,6 +1948,10 @@ def api_reactor_usage():
             seconds = float(data.get("duration_seconds") or 0)
         except (TypeError, ValueError):
             seconds = 0.0
+        try:
+            seconds += billing.meter_stop("reactor", session_id, seconds)
+        except Exception:
+            traceback.print_exc()
         if seconds > 0:
             import cost_tracker
             cost_tracker.record_usage(
@@ -5554,13 +5652,86 @@ def api_keys_put():
     return jsonify(status)
 
 
+@app.route("/api/keys/custom", methods=["PUT", "DELETE"])
+def api_keys_custom():
+    """A custom key: any OpenAI-compatible address + model, used as the
+    narrator. Same local-only contract as PUT /api/keys."""
+    if not _local_keys_armed:
+        return error_response(
+            "Keys cannot be edited on this server",
+            "Only the local app can save API keys.", code=403)
+    if request.remote_addr not in ("127.0.0.1", "::1", "localhost"):
+        return error_response(
+            "Keys are local-only", request.remote_addr, code=403)
+    try:
+        if request.method == "DELETE":
+            return jsonify(keys_store.clear_custom())
+        body = request.get_json(silent=True) or {}
+        return jsonify(keys_store.set_custom(
+            body.get("address"), body.get("model"), body.get("value") or ""))
+    except ValueError as e:
+        return error_response("Invalid custom key", str(e)[:200], code=400)
+    except OSError:
+        return error_response("Could not save keys", "The local store is not writable.", code=500)
+
+
+def _recent_spend(limit: int = 4) -> list:
+    """The last 30 days on this machine, one line per run per day, newest
+    first. Local app only: on a shared server the ledger holds every
+    visitor's sessions."""
+    try:
+        import cost_tracker
+        from datetime import datetime, timedelta, timezone
+        month_start = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        cost_tracker.init_db()
+        with cost_tracker._lock:
+            conn = cost_tracker._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT session_id, substr(ts, 1, 10) AS day, "
+                    "SUM(COALESCE(cost_usd, 0)) AS cost, MAX(ts) AS last "
+                    "FROM usage_events WHERE ts >= ? "
+                    "GROUP BY session_id, day ORDER BY last DESC LIMIT ?",
+                    (month_start, int(limit)),
+                ).fetchall()
+            finally:
+                conn.close()
+        return [{
+            "when": r["last"],
+            "kind": "world" if str(r["session_id"] or "").startswith("wf-") else "play",
+            "cost_usd": round(float(r["cost"] or 0.0), 4),
+        } for r in rows]
+    except Exception:
+        return []
+
+
 def _usage_payload(*, ignore_cookie: bool = False) -> dict:
     """Ledger + account wallet. No secrets."""
     import usage_limits
     status = usage_limits.public_status()
     status.update(billing.public_status(ignore_cookie=ignore_cookie))
     status["editable"] = _keys_write_allowed()
+    if not status["editable"]:
+        # A shared server's ledger is every visitor's spend: never show it to
+        # a player. Their own numbers come from the wallet and receipts.
+        for k in ("spend_usd", "spend_today_usd", "event_count"):
+            status[k] = 0
+        status["cost_by_service"] = []
+        status["cost_by_provider"] = []
+        status["byok"] = False
     status["billing_editable"] = True
+    # Receipts (BILLING_LIVE_PLAN B2 / B6): the desktop app's whole ledger at
+    # provider cost; on a hosted server only this browser's wallet's rows.
+    status["recent"] = []
+    try:
+        import cost_tracker
+        if status["editable"]:
+            status["recent"] = cost_tracker.receipts(None)
+        elif billing.requires_wallet():
+            key = billing.current_key()
+            status["recent"] = cost_tracker.receipts(key) if key else []
+    except Exception:
+        status["recent"] = []
     if billing.requires_wallet() and status.get("account", {}).get("linked"):
         status["monthly_cap_usd"] = status.get("account_cap_usd")
         status["remaining_usd"] = status.get("account_remaining_usd")
@@ -5569,13 +5740,9 @@ def _usage_payload(*, ignore_cookie: bool = False) -> dict:
 
 
 def _set_account_cookie(resp, email: Optional[str]):
-    if email:
-        resp.set_cookie(
-            billing.COOKIE, billing.cookie_value(email),
-            max_age=365 * 24 * 3600, httponly=True, samesite="Lax", path="/",
-        )
-    else:
-        resp.delete_cookie(billing.COOKIE, path="/")
+    """Retired: the wallet cookie is a per-browser id that billing sets itself
+    (BILLING_LIVE_PLAN C2). An email is only where receipts go, and never
+    selects or drops a wallet."""
     return resp
 
 
@@ -5629,8 +5796,67 @@ def api_billing_link():
 @app.route("/api/billing/account", methods=["DELETE"])
 def api_billing_unlink():
     billing.unlink()
-    resp = jsonify(_usage_payload(ignore_cookie=True))
-    return _set_account_cookie(resp, None)
+    return jsonify(_usage_payload())
+
+
+@app.route("/owner", methods=["GET"])
+def owner_unlimited():
+    """The owner's cheat: open /owner?token=<ADMIN_TOKEN> once in a browser
+    and that browser's wallet plays free, forever (costs are still logged at
+    provider cost; nothing is charged). /owner?token=…&off=1 undoes it.
+    Needs ADMIN_TOKEN set; without one there is no way in."""
+    from flask import redirect
+    if not os.getenv("ADMIN_TOKEN") or not _admin_token_ok():
+        return error_response("Not found", None, code=404)
+    on = request.args.get("off") not in ("1", "true", "yes")
+    billing.set_unlimited(on)
+    back = billing._safe_return_path(request.args.get("next") or "/standalone")
+    return redirect(back)
+
+
+@app.route("/api/pricing", methods=["GET"])
+def api_pricing():
+    """The rate card (BILLING_LIVE_PLAN B3): what each thing costs us and
+    what it costs the player, from the same table every charge uses."""
+    return jsonify(billing.rate_card())
+
+
+@app.route("/pricing", methods=["GET"])
+def pricing_page():
+    """Public rate card, readable before paying."""
+    from html import escape
+    card = billing.rate_card()
+    m = card["markup"]
+
+    def usd(v):
+        return "—" if v is None else f"${v:,.4f}".rstrip("0").rstrip(".") if v < 0.01 else f"${v:,.2f}"
+
+    rows = "".join(
+        f"<tr><td>{escape(r['thing'])}<span>{escape(r['per'])}</span></td>"
+        f"<td>{usd(r['provider_usd'])}</td><td>{usd(r['price_usd'])}</td></tr>"
+        for r in card["rows"]
+    )
+    ours = "what the model provider charges us" if m <= 1 else f"provider cost × {m:g}"
+    page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>GOD · What things cost</title>
+<style>
+body{{margin:0;background:#000;color:#E8E6DF;font:15px/1.6 Manrope,system-ui,sans-serif}}
+main{{max-width:720px;margin:0 auto;padding:56px 20px}}
+h1{{font:300 12px/1 'JetBrains Mono',monospace;letter-spacing:.34em;color:#fff;margin:0 0 28px}}
+p{{color:rgba(232,230,223,.62);margin:0 0 20px}}
+table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}
+th{{font:300 11px/1 'JetBrains Mono',monospace;letter-spacing:.24em;color:rgba(232,230,223,.62);text-align:right;padding:0 0 12px}}
+th:first-child,td:first-child{{text-align:left}}
+td{{border-top:1px solid rgba(232,230,223,.12);padding:12px 0;text-align:right;vertical-align:top}}
+td span{{display:block;font-size:12px;color:rgba(232,230,223,.5)}}
+td:last-child{{color:#fff}}
+</style></head><body><main>
+<h1>WHAT THINGS COST</h1>
+<p>Every paid model call a run makes is logged and charged at {escape(ours)}. Your ACCOUNT shows each run's receipt.</p>
+<table><tr><th>THING</th><th>OUR COST</th><th>YOU PAY</th></tr>{rows}</table>
+<p style="margin-top:24px">Rates read from each provider's published price page on {escape(str(card['checked'] or '—'))}. Calls that fail are not charged.</p>
+</main></body></html>"""
+    return page
 
 
 @app.route("/api/billing/checkout", methods=["POST"])
@@ -5640,13 +5866,16 @@ def api_billing_checkout():
     body = request.get_json(silent=True) or {}
     try:
         out = billing.create_checkout(
-            body.get("kind") or "pack", request, pack_id=body.get("pack"))
+            body.get("kind") or "pack", request, pack_id=body.get("pack"),
+            return_to=body.get("return_to"))
         return jsonify(out)
     except ValueError as e:
         return error_response("Checkout refused", str(e)[:200], code=400)
     except Exception as e:
         traceback.print_exc()
-        return error_response("Checkout failed", str(e)[:200], code=500)
+        # Stripe's own error text is for us (the log), not the player.
+        return error_response("Checkout couldn't open. Try again in a moment.",
+                              "checkout_error", code=500)
 
 
 @app.route("/api/billing/redeem", methods=["POST"])
@@ -5660,9 +5889,9 @@ def api_billing_redeem():
     result = billing.redeem(cs)
     if not result.get("ok"):
         return jsonify(result), 402
-    resp = jsonify({**result, "usage": _usage_payload()})
-    email = (billing.current_account().get("email") or "").strip() or None
-    return _set_account_cookie(resp, email)
+    # The money went to the wallet written into the checkout (fulfill_checkout)
+    # — this browser's own, since it opened the checkout.
+    return jsonify({**result, "usage": _usage_payload()})
 
 
 @app.route('/', methods=['GET'])

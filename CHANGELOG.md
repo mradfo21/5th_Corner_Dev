@@ -68,8 +68,211 @@ the government building", "Clamber toward the distant door".
 Tests: `test_goal_sight.py` (new); `test_cutscene.py`'s goal tests follow the
 record (an authored goal still wins in its own words; a failed draft still
 falls back; one goal per playthrough).
+## 💳 FIX: A player with no money lands on ADD MONEY, and checkout opens
+
+Asked: *"merge into the app, making sure there is a simple way for me to
+cheat and play unlimited, then test and see what its like for a user with
+no money"*.
+
+**Tested as a new visitor with $0** on a local test-mode server, in the
+browser.
+
+**What was wrong.**
+
+- **PLAY left a black screen.** The run's `/api/reset` answered 402, and the
+  opening black never lifted.
+- **PAY failed.** Managed Payments refuses `invoice_creation.invoice_data`,
+  and the player saw Stripe's raw error text.
+- **`/api/usage` showed the whole server's 30-day model spend** (every
+  visitor's) to any player.
+
+**What changed.**
+
+- **Out of money now leads to ADD MONEY.** A 402 on starting a run lifts
+  the black, returns to the menu and opens ACCOUNT on ADD MONEY with the
+  reason. Mid-run 402s (a turn, an encounter) also land on ADD MONEY when
+  the wallet is empty. A first-time player reads "Add money to play. You
+  pay what each turn's AI costs — every run gets a receipt."
+- **Checkout works under Managed Payments.** It sends `invoice_creation:
+  {enabled: true}` only, and a checkout failure shows "Checkout couldn't
+  open. Try again in a moment." (the detail goes to the log). Verified: the
+  embedded checkout opens in the sheet ($10, card / Cash App / Link, TEST
+  MODE).
+- **Players see only their own numbers.** On a shared server the global
+  ledger figures are blanked from `/api/usage`; the wallet and receipts are
+  the player's own.
+- **"What things cost" is always in ACCOUNT,** even before the first run.
+- **Owner switch checked:** `/owner?token=…` → the wallet shows unlimited,
+  and a run starts with $0.
+
+## 💳 FIX: One wallet per browser, charged the moment a cost happens
+
+Asked: *"fix up all remaining issues … lets make sure we are ready to go to
+market NOW"*.
+
+**What was wrong.**
+
+- **Anyone could spend anyone's wallet.** Hosted accounts were keyed by an
+  unverified email, so typing someone's email moved your browser into their
+  wallet. Visitors with no cookie billed whoever signed in last.
+- **Turns were almost never charged.** `settle_session` only debited the
+  cost logged before a turn's response went out, and most pictures, sound
+  and talk finish after it.
+- **The wrong player could pay.** Background costs were attributed through
+  a global "active session".
+- **Many paid routes weren't gated.** An empty wallet could start new runs,
+  encounters, narration, music and look books.
+- **Live time was free with a low balance.** Reactor time was taken only
+  from the browser, and its usage report was refused when the balance was
+  low.
+- **Gemini calls went unlogged.** Several paths never logged their calls,
+  including `ai_provider_manager` chat and vision.
+- **The coin turn meter could double-charge** on top of the wallet.
+
+**What changed.**
+
+- **Wallet per browser** (C2). A random id in a signed, HttpOnly cookie is
+  made on the first hosted request. There's no sign-in, and a request never
+  falls back to a store-wide account. The cookie is signed with
+  `SOMEWHERE_BILLING_SECRET`, or a random secret kept on the disk. Email is
+  now only where receipts go. ACCOUNT drops SIGN IN / SIGN OUT and says the
+  wallet lives in this browser.
+- **Charged as it's logged** (C1).
+  - `cost_tracker.record_usage` charges every priced event at cost ×
+    markup to the wallet that caused it.
+  - Threads, and thread-pool jobs, started while serving a request carry
+    that request's wallet.
+  - Each ledger row stores `wallet`, `charged_usd` and `markup`.
+  - A cost that already happened is charged in full, even past $0.
+  - `settle_session` is retired, and field updates never overwrite a
+    charge or payment with a stale snapshot.
+- **Every paid route gated** (C14). One `before_request` answers 402 to any
+  POST/PUT under `/api/` while the wallet can't pay, except the routes that
+  never spend. The Gemini Live prototype routes are refused on a wallet
+  server (C15).
+- **Live time metered on the server** (A7). A meter runs from the Reactor
+  token / TALK session to the browser's report, and the player pays the
+  longer of the two. A browser that stops polling `/api/feed` is charged up
+  to its last poll. `/api/reactor/usage` is never refused.
+- **Gemini logged at the wire** (A3/A4). Every `generateContent` over
+  `requests` is logged from the HTTP call, under the model in the URL, with
+  the picture size and `usageMetadata` tokens. A caller's own log of the
+  same call folds into it rather than counting twice.
+- **Receipts and a rate card** (B1–B3, B6).
+  - RECENT in ACCOUNT lists runs. Tap one for story / pictures / live
+    video / voice, with the count, the charge, and failed calls "not
+    charged".
+  - `/pricing` (and `/api/pricing`) shows each thing a run can use, what it
+    costs us and what the player pays, from the same table the charges use.
+  - The desktop app shows the same receipts at provider cost.
+- **History re-priced** (A10). On first start the ledger is priced again on
+  the corrected table, keeping the old value in `cost_usd_v1`.
+- **Owner switch.** Open `/owner?token=<ADMIN_TOKEN>` once in a browser and
+  that browser's wallet plays free forever: nothing is charged, costs are
+  still logged, and ACCOUNT shows "∞". `&off=1` undoes it. With no
+  `ADMIN_TOKEN` set, the route doesn't exist.
+- The coin turn meter never runs while the wallet is on (C5).
+- `render.yaml` lists the Stripe keys, webhook secret and `PUBLIC_BASE_URL`.
+- `docs/LAUNCH_PAYMENTS.md` has the dashboard steps, the webhook, the Render
+  settings, a 5-minute test run, and go-live.
+
+## 💳 FIX: Checkout works on a Managed Payments account, inside the ACCOUNT sheet
+
+Asked: Stripe's Checkout Studio setup for an embedded payment form, and
+*"lets make sure we are ready to go to market NOW"*.
+
+**What was wrong.** This Stripe account has Managed Payments on by default
+(Stripe is the merchant of record and handles sales tax / VAT). Managed
+Payments refuses any product without a tax code, so every ADD MONEY checkout
+failed. It also allows only `ui_mode: hosted_page` or `embedded_page`, so
+Checkout Studio's embedded *form* (`ui_mode: form`, the beta Stripe.js
+`initCheckoutFormSdk`) is refused on this account — checked in test mode.
+
+**What changed.**
+
+- Every line item carries `tax_code` `txcd_10201003` ("Video Games -
+  streamed - non subscription - with limited rights"); `STRIPE_TAX_CODE`
+  overrides it. Also on the arcade coin checkout.
+- Checkout is drawn inside the ACCOUNT sheet (`ui_mode: embedded_page`,
+  Stripe.js loaded from js.stripe.com only when the player pays, so the
+  desktop app never loads it). A card payment finishes in the sheet and
+  returns through `return_url` with `?billing=success&cs=…`, which lands the
+  money exactly as the hosted return did. `STRIPE_CHECKOUT_UI=hosted_page`
+  sends players to checkout.stripe.com instead.
+- From Checkout Studio: `billing_address_collection: auto`,
+  `phone_number_collection` off, `submit_type: auto`. Its `automatic_tax:
+  false` is left out (Managed Payments requires tax on), and
+  `integration_identifier` belongs to the form it can't use.
+- Invoices, `customer_creation`, metadata and the 30-minute expiry are kept.
+- Test: embedded by default with `return_url` and a tax code; hosted with
+  success / cancel URLs and an overridden tax code.
+
+## 💵 FIX: The price table is per million tokens, sourced, and priced by image size
+
+Asked: *"if we're going to make money we need to know our costs."*
+
+**What was wrong.** `pricing.json` stored every provider's per-million token
+price in fields named per-thousand, so story text was logged about 150× too
+high overall (every token rate 1000× high, partly offset by calls landing on
+the wrong rates). Images were one flat price whatever their size, and a
+provider's `default` rate could price a call of a different kind (a text
+rate used for an image).
+
+**What changed.**
+
+- `pricing.json`: 36 rates, each read off the provider's own price page on
+  2026-09-21 and carrying its `source` and `checked` date. Token rates are
+  `input_per_1m` / `output_per_1m`; image rates carry their `sizes`
+  (0.5K / 1K / 2K / 4K). Unknown prices (fal, Lyria realtime, Gemini Live)
+  are `null` rather than guessed.
+- `pricing.estimate_cost` refuses the old per-1k token fields (warns once)
+  so the mistake can't come back, and prices an image at its size.
+- `pricing.get_rate` falls back to `provider:default:<unit type>` and only
+  then to `provider:default` when the unit type matches.
+- Tests: per-1k fields refused, no fallback across unit types, image priced
+  at its size, the shipped table is sourced and per-million, flash-lite text
+  is cheap. 57 pricing / cost-tracker / billing tests pass.
+- `BILLING_LIVE_PLAN.md`: "~1000×" corrected to "~150× overall".
 
 # 🔧 CHANGELOG - September 20, 2026
+
+## 💳 ACCOUNT is a sheet on the right of the menu, and takes a custom key
+
+Asked: *"design a better account / usage page, that will easily handle all
+money flow in and out, and is much simpler than our current one, and allows
+custom keys"*, then *"pressing account just brings up a menu on the right side
+of the screen that is seamless, with a black gradient under it … make sure the
+ui is genuinely functional and handles the actual uses of our app, simply."*
+
+The old ACCOUNT was a full-screen cover with KEYS / USAGE tabs, plan cards,
+two meters and a limit dropdown, and it hid the menu and its film. It is now
+one sheet on the right (`static/js/account.js`, `static/css/account.css`): the
+film keeps playing on the left under a black fall-off, the title and nav dim,
+and EXIT steps aside so it cannot sit on top of the sheet's close. It shows
+only what the app actually does, in the two places it runs:
+
+- **The desktop app (your keys).** The last 30 days of spend — the same
+  window the limit is checked against — the monthly limit (tap, type, SAVE or
+  NONE), every provider key (tap a row: paste, SAVE, REMOVE; a key that won't
+  work says so), and the last few runs with what each cost.
+- **A hosted server (a wallet).** Sign in with an email, the balance, ADD
+  MONEY (the server's packs, Stripe Checkout, redeemed on return), the limit,
+  the payments made, and SIGN OUT. The host's keys are not shown.
+
+**CUSTOM key.** Any OpenAI-compatible address + model + key (blank for a local
+server) — a model on this machine, OpenRouter, a lab's own endpoint — becomes
+the narrator. It rides the OpenAI slot the engine already had:
+`PUT /api/keys/custom` writes `OPENAI_BASE_URL`, `CUSTOM_TEXT_MODEL` and
+`OPENAI_API_KEY` to the local key file, re-points `engine.client`, and sets the
+text provider to that model; `DELETE` puts the narrator back on Gemini. Same
+local-only contract as `PUT /api/keys`. `GET /api/keys` reports it (address,
+model, last-four, never the secret).
+
+`GET /api/usage` adds `recent` on the desktop app only (the ledger on a shared
+server holds every visitor's runs). The `Accounts` module in standalone.js is
+now a thin opener around `window.AccountPanel`; the plan/tab/meter code it
+replaced is gone. Left out on purpose because nothing behind them exists yet:
+per-part "who pays", and auto top-up.
 
 ## ✅ FIXED: the editor ran the game underneath you and wrote Worlds into each other
 

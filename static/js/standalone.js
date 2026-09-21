@@ -12926,12 +12926,13 @@
     function menuOn() {
       return document.body.classList.contains("start-menu-on");
     }
-    // The picker or the Account pane is up over the wallpaper (see the
-    // `body.xp-open .start-signal` rule): the picture is hidden and the
-    // sound is meant to be down.
+    // The picker is up over the wallpaper (see the `body.xp-open
+    // .start-signal` rule): the picture is hidden and the sound is meant to
+    // be down. ACCOUNT is not a cover — it is a sheet on the right, and the
+    // film plays on beside it with its sound.
     function menuCovered() {
       const c = document.body.classList;
-      return c.contains("xp-open") || c.contains("keys-open") || c.contains("coin-open");
+      return c.contains("xp-open") || c.contains("coin-open");
     }
 
     function apply() {
@@ -13705,7 +13706,7 @@
     function onKey(e) {
       if (!isMenuOpen()) return false;
       if (document.body.classList.contains("keys-open")) {
-        if (e.key === "Escape") { e.preventDefault(); Accounts.close(); return true; }
+        if (e.key === "Escape") { e.preventDefault(); if (!Accounts.escape()) Accounts.close(); return true; }
         return false;
       }
       if (!isPickerOpen()) {
@@ -13804,714 +13805,62 @@
     return { init, begin, showMenu, hideMenu, returnHome, returnToPicker, ensurePlayViewport, adoptSelection, isMenuOpen, switchMode, onKey, isBooted, markBooted };
   })();
 
-  // ── ACCOUNT (keys + usage) ─────────────────────────────────────────────
-  // First-class start-menu surface. KEYS is BYOK; USAGE is the economy:
-  // ledger, linked email, Play plan, prepaid wallet, spend controls.
-  // GET /api/keys never returns a secret; PUT is refused on a hosted server.
+  // ── ACCOUNT ────────────────────────────────────────────────────────────
+  // A sheet on the right of the start menu; the menu and its film stay live
+  // behind it. What it draws and every request it makes live in
+  // static/js/account.js (window.AccountPanel). This module keeps the
+  // interface the rest of the file calls: open / close / refresh /
+  // refreshUsage / setUsageMsg / billingReturn.
   const Accounts = (function () {
-    let snapshot = null;
-    let usageSnap = null;
-    let billingReturn = false;
-
-    function setMsg(text, kind) {
-      if (!el.keysMsg) return;
-      el.keysMsg.textContent = text || "";
-      el.keysMsg.classList.toggle("hidden", !text);
-      el.keysMsg.hidden = !text;
-      el.keysMsg.classList.toggle("is-error", kind === "error");
-      el.keysMsg.classList.toggle("is-ok", kind === "ok");
-    }
-
-    function setUsageMsg(text, kind) {
-      if (!el.usageMsg) return;
-      el.usageMsg.textContent = text || "";
-      el.usageMsg.classList.toggle("hidden", !text);
-      el.usageMsg.hidden = !text;
-      el.usageMsg.classList.toggle("is-error", kind === "error");
-      el.usageMsg.classList.toggle("is-ok", kind === "ok");
-    }
-
-    function vis(node, on) {
-      if (!node) return;
-      node.classList.toggle("hidden", !on);
-      node.hidden = !on;
-    }
-
-    function usd(n) {
-      const v = Number(n);
-      if (!Number.isFinite(v)) return "$0.00";
-      return "$" + v.toFixed(2);
-    }
-
-    function showTab(name) {
-      const usage = name === "usage";
-      if (el.accountTabKeys) {
-        el.accountTabKeys.classList.toggle("is-on", !usage);
-        el.accountTabKeys.setAttribute("aria-selected", usage ? "false" : "true");
-      }
-      if (el.accountTabUsage) {
-        el.accountTabUsage.classList.toggle("is-on", usage);
-        el.accountTabUsage.setAttribute("aria-selected", usage ? "true" : "false");
-      }
-      vis(el.accountPaneKeys, !usage);
-      vis(el.accountPaneUsage, usage);
-      if (usage) refreshUsage();
-    }
-
-    function fillBar(node, pct, over) {
-      if (!node) return;
-      const n = Math.max(0, Math.min(100, Number(pct) || 0));
-      node.style.width = n.toFixed(1) + "%";
-      const bar = node.parentElement;
-      if (bar) {
-        bar.classList.toggle("is-full", n >= 99.5 && !over);
-        bar.classList.toggle("is-over", !!over);
-      }
-    }
-
-    function resetNote(periodStart) {
-      try {
-        const parts = String(periodStart || "").split("-");
-        const y = Number(parts[0]);
-        const m = Number(parts[1]);
-        if (!y || !m) return "";
-        const next = new Date(y, m, 1);
-        const days = Math.max(0, Math.ceil((next.getTime() - Date.now()) / 86400000));
-        const when = next.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-        return "Usage resets " + when + " (" + days + " day" + (days === 1 ? "" : "s") + " left)";
-      } catch (_) {
-        return "";
-      }
-    }
-
-    function paintUsage(data) {
-      usageSnap = data || {};
-      const hosted = !!data.hosted_view || !!data.requires_wallet;
-      const linked = !!(data.account && data.account.linked);
-      const payOn = !!data.payments_enabled;
-      const play = !!(data.plan && data.plan.id === "play");
-      const cap = data.monthly_cap_usd;
-      const over = !!data.over_cap || !!data.account_over_cap;
-      const month = Number(hosted ? (data.billed_usd || 0) : data.spend_usd) || 0;
-      const included = Number((data.plan && data.plan.included_usd) || 0);
-      const includedLeft = Number((data.plan && data.plan.included_left_usd) || 0);
-      const includedUsed = Math.max(0, included - includedLeft);
-      paintAccount(data);
-      if (el.usagePlanName) {
-        el.usagePlanName.textContent = play
-          ? ((data.plan && data.plan.label) || "Play") + " $12/mo"
-          : "Free";
-      }
-      if (el.usagePlanNote) {
-        el.usagePlanNote.textContent = play
-          ? resetNote(data.period_start)
-          : "Your keys. Provider bill.";
-      }
-      if (el.usagePlanAdjust) {
-        el.usagePlanAdjust.hidden = false;
-        el.usagePlanAdjust.textContent = play ? "Add funds" : "Adjust plan";
-      }
-      paintFunds(data);
-      if (el.usageIncludedKicker) {
-        el.usageIncludedKicker.textContent = play ? "Included in Play" : "Included";
-      }
-      if (play && included > 0) {
-        if (el.usageIncludedLabel) el.usageIncludedLabel.textContent = "Included";
-        if (el.usageIncludedAmt) el.usageIncludedAmt.textContent = Math.round((includedUsed / included) * 100) + "% used";
-        fillBar(el.usageIncludedBar, (includedUsed / included) * 100, false);
-        if (el.usageIncludedHint) {
-          el.usageIncludedHint.textContent = usd(includedLeft) + " left of " + usd(included) + " this month.";
-        }
-      } else {
-        if (el.usageIncludedLabel) el.usageIncludedLabel.textContent = "This month";
-        if (el.usageIncludedAmt) el.usageIncludedAmt.textContent = usd(month);
-        fillBar(el.usageIncludedBar, cap ? Math.min(100, (month / cap) * 100) : 0, over);
-        if (el.usageIncludedHint) {
-          el.usageIncludedHint.textContent = hosted
-            ? "No included pool on Free. Play adds $10 each month."
-            : "Spend on your keys this month.";
-        }
-      }
-      const demand = play ? Math.max(0, month - includedUsed) : (cap ? month : 0);
-      if (el.usageOndemandAmt) {
-        el.usageOndemandAmt.textContent = cap == null ? "—" : (usd(demand) + " / " + usd(cap));
-      }
-      fillBar(el.usageOndemandBar, cap ? Math.min(100, (demand / cap) * 100) : 0, over);
-      const canEditCap = hosted ? linked : !!data.editable;
-      const fixed = cap != null;
-      if (el.usageCapMode) {
-        if (document.activeElement !== el.usageCapMode) {
-          el.usageCapMode.value = fixed ? "fixed" : "unlimited";
-        }
-        el.usageCapMode.disabled = !canEditCap;
-      }
-      if (el.usageCapInput) {
-        el.usageCapInput.hidden = !fixed && (el.usageCapMode && el.usageCapMode.value !== "fixed");
-        if (document.activeElement !== el.usageCapInput) {
-          el.usageCapInput.value = fixed ? String(cap) : "";
-        }
-        el.usageCapInput.disabled = !canEditCap;
-      }
-      if (el.usageCapSave) el.usageCapSave.disabled = !canEditCap;
-      syncCapInput();
-      if (over) {
-        setUsageMsg("Monthly limit reached. Raise it to keep generating.", "error");
-      } else if (data.requires_wallet && !linked) {
-        setUsageMsg("Sign in to play on our keys.", "");
-      } else if (data.requires_wallet && (data.available_usd || 0) <= 0) {
-        setUsageMsg("Usage balance empty. Add funds or start Play.", "error");
-      } else if (!payOn && hosted) {
-        setUsageMsg("", "");
-      } else {
-        setUsageMsg("", "");
-      }
-    }
-
-    const ACCOUNT_SITE = "https://www.5th-corner.com";
-    const GEAR_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
-    const PERSON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.2"/><path d="M5.2 19.2a6.8 6.8 0 0 1 13.6 0"/></svg>';
-
-    function openAccountSite() {
-      try { window.open(ACCOUNT_SITE, "_blank", "noopener,noreferrer"); } catch (_) {
-        window.location.href = ACCOUNT_SITE;
-      }
-    }
-
-    function accountDisplayName(email) {
-      const local = String(email || "").split("@")[0] || "";
-      return local.replace(/[._-]+/g, " ").replace(/\s+/g, " ").trim().toLowerCase() || "account";
-    }
-
-    function accountInitials(name) {
-      const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
-      if (!parts.length) return "";
-      if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-    }
-
-    function accountAvatarTone(email) {
-      const s = String(email || "");
-      let n = 0;
-      for (let i = 0; i < s.length; i++) n = (n + s.charCodeAt(i) * (i + 1)) % 360;
-      return "hsla(" + n + ", 22%, 32%, 0.95)";
-    }
-
-    function closeAccountMenu() {
-      const menu = el.usageAccount && el.usageAccount.querySelector(".bill-id-menu");
-      const gear = el.usageAccount && el.usageAccount.querySelector(".bill-id-gear");
-      if (menu) menu.hidden = true;
-      if (gear) gear.setAttribute("aria-expanded", "false");
-    }
-
-    function menuItem(label, onClick) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "bill-id-item";
-      btn.textContent = label;
-      btn.addEventListener("click", () => {
-        closeAccountMenu();
-        onClick();
-      });
-      return btn;
-    }
-
-    function paintAccount(data) {
-      if (!el.usageAccount) return;
-      el.usageAccount.innerHTML = "";
-      const linked = !!(data.account && data.account.linked);
-      const email = (data.account && data.account.email) || "";
-      const name = linked ? accountDisplayName(email) : "Sign in";
-
-      const row = document.createElement("div");
-      row.className = "bill-id-row";
-
-      const who = document.createElement(linked ? "div" : "button");
-      if (!linked) who.type = "button";
-      who.className = "bill-id-who" + (linked ? "" : " is-guest");
-      if (!linked) who.addEventListener("click", () => openAccountSite());
-
-      const face = document.createElement("div");
-      face.className = "bill-id-avatar" + (linked ? "" : " is-empty");
-      if (linked) {
-        face.textContent = accountInitials(name);
-        face.style.background = accountAvatarTone(email);
-      } else {
-        face.innerHTML = PERSON_SVG;
-      }
-
-      const label = document.createElement("div");
-      label.className = "bill-id-name" + (linked ? "" : " is-guest");
-      label.textContent = name;
-
-      who.appendChild(face);
-      who.appendChild(label);
-
-      const gear = document.createElement("button");
-      gear.type = "button";
-      gear.className = "bill-id-gear";
-      gear.setAttribute("aria-label", "Account settings");
-      gear.setAttribute("aria-haspopup", "menu");
-      gear.setAttribute("aria-expanded", "false");
-      gear.innerHTML = GEAR_SVG;
-
-      const menu = document.createElement("div");
-      menu.className = "bill-id-menu";
-      menu.setAttribute("role", "menu");
-      menu.hidden = true;
-
-      if (linked) {
-        const mail = document.createElement("div");
-        mail.className = "bill-id-mail";
-        mail.textContent = email;
-        menu.appendChild(mail);
-        menu.appendChild(menuItem("Manage account", () => openAccountSite()));
-        menu.appendChild(menuItem("Sign out", () => unlinkAccount()));
-      } else {
-        menu.appendChild(menuItem("Sign in", () => openAccountSite()));
-        menu.appendChild(menuItem("Create account", () => openAccountSite()));
-        const linkRow = document.createElement("div");
-        linkRow.className = "bill-id-link";
-        const input = document.createElement("input");
-        input.type = "email";
-        input.className = "usage-account-email";
-        input.placeholder = "you@email";
-        input.autocomplete = "email";
-        input.setAttribute("aria-label", "Account email");
-        const go = document.createElement("button");
-        go.type = "button";
-        go.className = "bill-btn";
-        go.textContent = "Link";
-        const send = () => linkAccount(input.value);
-        go.addEventListener("click", send);
-        input.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") { e.preventDefault(); send(); }
-        });
-        linkRow.appendChild(input);
-        linkRow.appendChild(go);
-        menu.appendChild(linkRow);
-      }
-
-      gear.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const open = menu.hidden;
-        menu.hidden = !open;
-        gear.setAttribute("aria-expanded", open ? "true" : "false");
-      });
-      menu.addEventListener("click", (e) => e.stopPropagation());
-
-      row.appendChild(who);
-      row.appendChild(gear);
-      el.usageAccount.appendChild(row);
-      el.usageAccount.appendChild(menu);
-    }
-
-    function paintFunds(data) {
-      if (!el.usageFunds) return;
-      el.usageFunds.innerHTML = "";
-      const canBuy = !!(data.payments_enabled && data.account && data.account.linked);
-      if (!canBuy || !el.usageFunds.dataset.open) {
-        el.usageFunds.hidden = true;
-        return;
-      }
-      const packs = Array.isArray(data.packs) ? data.packs : [];
-      packs.forEach((p) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "bill-fund";
-        btn.textContent = p.display_price || p.label;
-        btn.addEventListener("click", () => startCheckout("pack", p.id));
-        el.usageFunds.appendChild(btn);
-      });
-      el.usageFunds.hidden = packs.length === 0;
-    }
-
-    function adjustPlan() {
-      const data = usageSnap || {};
-      const linked = !!(data.account && data.account.linked);
-      const play = !!(data.plan && data.plan.id === "play");
-      if (!linked) {
-        setUsageMsg("Sign in first.", "");
-        const gear = el.usageAccount && el.usageAccount.querySelector(".bill-id-gear");
-        if (gear) gear.click();
-        return;
-      }
-      if (!data.payments_enabled) {
-        setUsageMsg("Payments aren’t connected on this host yet.", "");
-        return;
-      }
-      if (!play) {
-        startCheckout("play");
-        return;
-      }
-      if (el.usageFunds) {
-        el.usageFunds.dataset.open = el.usageFunds.dataset.open ? "" : "1";
-        paintFunds(data);
-      }
-    }
-
-    function syncCapInput() {
-      if (!el.usageCapInput || !el.usageCapMode) return;
-      const fixed = el.usageCapMode.value === "fixed";
-      el.usageCapInput.hidden = !fixed;
-    }
-
-    async function refreshUsage() {
-      if (!el.accountPaneUsage) return;
-      try {
-        const r = await fetch("/api/usage", { cache: "no-store" });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error((data && (data.error || data.details)) || "Could not load usage.");
-        paintUsage(data);
-      } catch (err) {
-        setUsageMsg((err && err.message) || "Could not load usage.", "error");
-      }
-    }
-
-    async function linkAccount(raw) {
-      setUsageMsg("Linking…", "");
-      try {
-        const r = await fetch("/api/billing/account", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: raw }),
-        });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error((data && (data.error || data.details)) || "Could not link.");
-        paintUsage(data);
-        setUsageMsg("Account linked.", "ok");
-      } catch (err) {
-        setUsageMsg((err && err.message) || "Could not link.", "error");
-      }
-    }
-
-    async function unlinkAccount() {
-      setUsageMsg("Unlinking…", "");
-      try {
-        const r = await fetch("/api/billing/account", { method: "DELETE" });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error((data && (data.error || data.details)) || "Could not unlink.");
-        paintUsage(data);
-        setUsageMsg("Unlinked on this machine.", "ok");
-      } catch (err) {
-        setUsageMsg((err && err.message) || "Could not unlink.", "error");
-      }
-    }
-
-    async function startCheckout(kind, pack) {
-      setUsageMsg("Opening Stripe…", "");
-      try {
-        const r = await fetch("/api/billing/checkout", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ kind: kind, pack: pack || null }),
-        });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error((data && (data.error || data.details)) || "Checkout failed.");
-        if (data.url) {
-          window.location.href = data.url;
-          return;
-        }
-        throw new Error("Checkout did not return a URL.");
-      } catch (err) {
-        setUsageMsg((err && err.message) || "Checkout failed.", "error");
-      }
-    }
-
-    async function redeemReturn() {
-      let cs = "";
-      try {
-        const q = new URLSearchParams(location.search);
-        const billing = q.get("billing");
-        if (billing === "success" || billing === "cancel") billingReturn = true;
-        if (billing === "cancel") {
-          q.delete("billing");
-          q.delete("cs");
-          const rest = q.toString();
-          history.replaceState(null, "", location.pathname + (rest ? "?" + rest : "") + location.hash);
-          setUsageMsg("Checkout canceled.", "");
-          return;
-        }
-        if (billing !== "success") return;
-        cs = (q.get("cs") || "").trim();
-        q.delete("billing");
-        q.delete("cs");
-        const rest = q.toString();
-        history.replaceState(null, "", location.pathname + (rest ? "?" + rest : "") + location.hash);
-      } catch (_) { return; }
-      if (!cs) {
-        setUsageMsg("Payment returned without a receipt.", "error");
-        return;
-      }
-      setUsageMsg("Landing funds…", "");
-      try {
-        const r = await fetch("/api/billing/redeem", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ checkout_session_id: cs }),
-        });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok || !data.ok) {
-          throw new Error((data && (data.reason || data.error || data.details)) || "Redeem failed.");
-        }
-        if (data.usage) paintUsage(data.usage);
-        else await refreshUsage();
-        setUsageMsg(data.already_redeemed ? "Already applied." : "Payment landed.", "ok");
-      } catch (err) {
-        setUsageMsg((err && err.message) || "Could not apply payment.", "error");
-      }
-    }
-
-    async function saveCap() {
-      const fixed = el.usageCapMode && el.usageCapMode.value === "fixed";
-      const raw = String((el.usageCapInput && el.usageCapInput.value) || "").trim();
-      if (fixed && (!raw || !Number.isFinite(Number(raw)))) {
-        setUsageMsg("Enter a dollar amount.", "error");
-        return;
-      }
-      setUsageMsg("Saving…", "");
-      try {
-        const r = await fetch("/api/usage", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            monthly_cap_usd: fixed ? Number(raw) : null,
-            on_demand: true,
-          }),
-        });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error((data && (data.error || data.details)) || "Could not save limit.");
-        paintUsage(data);
-        if (!(data.over_cap || data.account_over_cap)) setUsageMsg("Limit saved.", "ok");
-      } catch (err) {
-        setUsageMsg((err && err.message) || "Could not save limit.", "error");
-      }
-    }
-
-    function applyStatus(data) {
-      snapshot = data;
-      renderPanel(data);
-    }
-
-    function renderPanel(data) {
-      if (!el.keysList) return;
-      el.keysList.innerHTML = "";
-      if (el.keysLead) {
-        el.keysLead.textContent = data && data.editable
-          ? "Stay on this machine. Never sent to a hosted server."
-          : "This host already has keys. They can’t be edited here.";
-      }
-      const blurbs = {
-        gemini: "Play, Watch, and images.",
-        openai: "Optional narrator.",
-        anthropic: "Optional Claude narrator.",
-        krea: "Optional stills.",
-        reactor: "Live video renderer.",
-        elevenlabs: "Voice, music, world sound, and talk agents. Paste the sk_ secret.",
-      };
-      const providers = (data && data.providers) || [];
-      const needed = providers.filter((p) => p.required);
-      const extra = providers.filter((p) => !p.required);
-      function card(kicker, rows) {
-        if (!rows.length) return;
-        const wrap = document.createElement("section");
-        wrap.className = "bill-card";
-        const head = document.createElement("div");
-        head.className = "bill-kicker";
-        head.textContent = kicker;
-        wrap.appendChild(head);
-        rows.forEach((p) => wrap.appendChild(keyRow(p, data)));
-        el.keysList.appendChild(wrap);
-      }
-      function keyRow(p, data) {
-        const row = document.createElement("div");
-        row.className = "keys-row" + (p.usable !== false && p.set ? " is-live" : " is-dark");
-        const top = document.createElement("div");
-        top.className = "keys-row-top";
-        const name = document.createElement("div");
-        name.className = "keys-row-name";
-        name.textContent = p.label || p.id;
-        const state = document.createElement("div");
-        state.className = "keys-row-state" + (p.usable !== false && p.set ? " is-set" : "");
-        if (p.problem) {
-          state.textContent = "Won't work";
-        } else if (p.set) {
-          state.textContent = p.hint ? ("On · " + p.hint) : "On";
-        } else {
-          state.textContent = p.required ? "Needed" : "Off";
-        }
-        name.setAttribute("aria-label",
-          (p.label || p.id) + (p.set ? " on" : " off"));
-        const right = document.createElement("div");
-        right.className = "keys-row-right";
-        right.appendChild(state);
-        top.appendChild(name);
-        top.appendChild(right);
-        const blurb = document.createElement("p");
-        blurb.className = "keys-row-blurb";
-        blurb.textContent = p.problem || blurbs[p.id] || p.blurb || "";
-        row.appendChild(top);
-        row.appendChild(blurb);
-        if (data && data.editable) {
-          const actions = document.createElement("div");
-          actions.className = "keys-row-actions";
-          const input = document.createElement("input");
-          input.type = "password";
-          input.autocomplete = "off";
-          input.spellcheck = false;
-          input.className = "keys-input";
-          input.placeholder = p.set ? "Paste a new key" : "Paste key";
-          input.setAttribute("aria-label", (p.label || p.id) + " API key");
-          const save = document.createElement("button");
-          save.type = "button";
-          save.className = "keys-btn";
-          save.textContent = "Save";
-          const go = () => putKey(p.id, input.value);
-          save.addEventListener("click", go);
-          input.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") { e.preventDefault(); go(); }
-          });
-          actions.appendChild(input);
-          actions.appendChild(save);
-          if (p.set) {
-            const clear = document.createElement("button");
-            clear.type = "button";
-            clear.className = "keys-btn";
-            clear.textContent = "Clear";
-            clear.addEventListener("click", () => putKey(p.id, ""));
-            actions.appendChild(clear);
-          }
-          if (!p.set && !p.required) {
-            actions.hidden = true;
-            const add = document.createElement("button");
-            add.type = "button";
-            add.className = "bill-btn";
-            add.textContent = "Add";
-            add.addEventListener("click", () => {
-              actions.hidden = false;
-              add.hidden = true;
-              input.focus();
-            });
-            right.appendChild(add);
-          }
-          row.appendChild(actions);
-        }
-        return row;
-      }
-      card("Needed for Play", needed);
-      card("Optional", extra);
-    }
-
-    async function refresh() {
-      try {
-        const r = await fetch("/api/keys", { cache: "no-store" });
-        const data = await r.json();
-        applyStatus(data);
-        return data;
-      } catch (_) {
-        applyStatus({ editable: false, play_ready: false, offline: true, providers: [] });
-        return null;
-      }
-    }
-
-    async function putKey(id, value) {
-      setMsg("", "");
-      try {
-        const r = await fetch("/api/keys", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: id, value: value }),
-        });
-        const data = await r.json();
-        if (!r.ok) {
-          setMsg((data && (data.error || data.details)) || "Could not save.", "error");
-          return;
-        }
-        applyStatus(data);
-        setMsg(value ? "Saved." : "Cleared.", "ok");
-        if (id === "reactor") {
-          try {
-            if (window.Renderer && window.Renderer.onReactorKeyChanged) {
-              window.Renderer.onReactorKeyChanged(!!value);
-            }
-          } catch (_) {}
-        }
-      } catch (_) {
-        setMsg("Could not reach the local store.", "error");
-      }
-    }
-
-    function applyOpen() {
-      try { Machine.close({ silent: true }); } catch (_) {}
-      document.body.classList.add("keys-open");
-      if (el.keysPanel) {
-        el.keysPanel.classList.remove("hidden");
-        el.keysPanel.hidden = false;
-      }
-    }
-
-    function applyClose() {
-      document.body.classList.remove("keys-open");
-      if (el.keysPanel) {
-        el.keysPanel.classList.add("hidden");
-        el.keysPanel.hidden = true;
-      }
-    }
+    const panel = () => window.AccountPanel || null;
+    const isOpen = () => document.body.classList.contains("keys-open");
 
     function open(opts) {
       opts = opts || {};
-      const tab = opts.tab === "usage" ? "usage" : "keys";
       if (!document.body.classList.contains("start-menu-on")) {
         try { StartMenu.showMenu(); } catch (_) {}
       }
-      showTab(tab);
-      setMsg("", "");
-      refresh();
-      if (document.body.classList.contains("keys-open")) return;
-      // The wallpaper hides under this pane; its soundtrack goes with it.
-      try { Signal.fadeSound(opts.instant ? 0 : 560); } catch (_) {}
-      if (opts.instant) { applyOpen(); return; }
-      if (Buck.isBusy()) return;
-      Buck.play(applyOpen);
+      try { Machine.close({ silent: true }); } catch (_) {}
+      const p = panel();
+      // "usage" is what a 402 (wallet empty / limit reached) asks for: land
+      // on the money, and on ADD MONEY when there is a wallet to fill.
+      if (p) {
+        p.show(opts.tab === "usage" && opts.addMoney ? "add" : "home");
+        p.refresh();
+      }
+      document.body.classList.add("keys-open");
+      const root = document.getElementById("account-panel");
+      if (root) root.setAttribute("aria-hidden", "false");
+      setTimeout(() => {
+        const first = document.getElementById("acct-close");
+        try { if (first && isOpen()) first.focus({ preventScroll: true }); } catch (_) {}
+      }, 60);
     }
 
-    function close(opts) {
-      if (!document.body.classList.contains("keys-open")) return;
-      if (opts && opts.silent) { applyClose(); return; }
-      if (Buck.isBusy()) return;
-      // BACK to the title screen: the film's sound comes back up with it. A
-      // silent close (the menu is being left for a run) leaves it down.
-      Buck.play(() => {
-        applyClose();
-        try { Signal.restoreSound(900); } catch (_) {}
-      });
+    function close() {
+      if (!isOpen()) return;
+      document.body.classList.remove("keys-open");
+      const root = document.getElementById("account-panel");
+      if (root) root.setAttribute("aria-hidden", "true");
+      try { if (el.startAccount) el.startAccount.focus({ preventScroll: true }); } catch (_) {}
     }
 
     function init() {
-      if (el.startKeys) el.startKeys.addEventListener("click", () => open());
-      if (el.keysBack) el.keysBack.addEventListener("click", close);
-      if (el.accountTabKeys) el.accountTabKeys.addEventListener("click", () => showTab("keys"));
-      if (el.accountTabUsage) el.accountTabUsage.addEventListener("click", () => showTab("usage"));
-      if (el.usageCapSave) el.usageCapSave.addEventListener("click", () => saveCap());
-      if (el.usageCapInput) {
-        el.usageCapInput.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") { e.preventDefault(); saveCap(); }
-        });
+      if (el.startKeys) {
+        el.startKeys.addEventListener("click", () => (isOpen() ? close() : open()));
       }
-      if (el.usageCapMode) {
-        el.usageCapMode.addEventListener("change", () => syncCapInput());
-      }
-      if (el.usagePlanAdjust) el.usagePlanAdjust.addEventListener("click", () => adjustPlan());
-      document.addEventListener("click", () => closeAccountMenu());
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") closeAccountMenu();
-      });
-      refresh();
-      redeemReturn();
+      const p = panel();
+      if (p) p.init({ onClose: () => close() });
     }
 
     return {
-      init, refresh, refreshUsage, open, close, showTab, setUsageMsg,
-      get billingReturn() { return billingReturn; },
+      init, open, close,
+      refresh() { const p = panel(); return p ? p.refresh() : Promise.resolve(null); },
+      refreshUsage() { const p = panel(); if (p) p.refreshUsage(); },
+      setUsageMsg(text, kind) { const p = panel(); if (p) p.setMsg(text, kind); },
+      showTab() {},
+      escape() { const p = panel(); return !!(p && p.escape()); },
+      get billingReturn() { const p = panel(); return !!(p && p.billingReturn); },
     };
   })();
 
@@ -17761,6 +17110,18 @@
     } catch (err) {
       console.error("[standalone] resetGame failed:", err);
       hideVeil();
+      if (err && err.status === 402 && err.body && (err.body.needs_usage || err.body.needs_billing)) {
+        // An empty wallet on a hosted server: the run can't start until it is
+        // paid for. Lift the opening black, go back to the menu, and open
+        // ACCOUNT on ADD MONEY with the reason — not an error on a black
+        // screen. PLAY again once there's money.
+        state.awaitingResolution = false;
+        try { OpeningFade.ready("needs money"); } catch (_) {}
+        try { StartMenu.showMenu(); } catch (_) {}
+        try { Accounts.open({ tab: "usage", addMoney: !!err.body.needs_billing, instant: true }); } catch (_) {}
+        try { Accounts.setUsageMsg(err.body.message || "Add money to play.", ""); } catch (_) {}
+        return;
+      }
       appendProse({ id: -1, type: "error_event", content: `Could not start the run: ${err.message}` });
       // Leave the player somewhere they can act from. Without this the boot
       // failure is a dead black screen: prose is the only thing on it, there
@@ -18074,7 +17435,8 @@
           content: (err.body && err.body.message) || "Usage paused. Open ACCOUNT to continue.",
         });
         try { StartMenu.showMenu(); } catch (_) {}
-        try { Accounts.open({ tab: "usage", instant: true }); } catch (_) {}
+        try { Accounts.open({ tab: "usage", addMoney: !!err.body.needs_billing, instant: true }); } catch (_) {}
+        try { Accounts.setUsageMsg(err.body.message || "", ""); } catch (_) {}
         if (actionSource === "encounter") {
           try { if (window.Encounter && Encounter.finish) Encounter.finish({ survived: true, aborted: true }); } catch (_) {}
         }
@@ -24787,7 +24149,8 @@
       try { Ceremony.abort(); hideVeil(); } catch (_) {}
       if (err && err.status === 402 && err.body && (err.body.needs_usage || err.body.needs_billing)) {
         try { StartMenu.showMenu(); } catch (_) {}
-        try { Accounts.open({ tab: "usage", instant: true }); } catch (_) {}
+        try { Accounts.open({ tab: "usage", addMoney: !!err.body.needs_billing, instant: true }); } catch (_) {}
+        try { Accounts.setUsageMsg(err.body.message || "", ""); } catch (_) {}
         try { clearTurnWatchdog(); } catch (_) {}
         state.awaitingResolution = false;
         finish({ survived: true, aborted: true });

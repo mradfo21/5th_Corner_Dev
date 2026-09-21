@@ -75,14 +75,31 @@ def save_pricing(data: Dict[str, Any]) -> None:
         _cache_timestamp = datetime.now(timezone.utc).timestamp()
 
 
-def get_rate(provider: str, model: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Look up the rate row for provider:model, falling back to provider:default."""
+def get_rate(provider: str, model: Optional[str] = None,
+             unit_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """The rate row for provider:model.
+
+    Falls back to ``provider:default:<unit_type>`` and then ``provider:default``
+    — but only to a default of the SAME unit type when ``unit_type`` is given.
+    Pricing a picture with a text model's token rate is how every
+    purpose-named image (talk_portrait, encounter_resolve…) came out at
+    ~$0.0003; a mismatch is now unpriced (None) and shows up as such.
+    """
     rates = load_pricing().get("rates", {})
     key = f"{provider}:{model}" if model else None
     if key and key in rates:
         return rates[key]
-    fallback = f"{provider}:default"
-    return rates.get(fallback)
+    if unit_type:
+        typed = rates.get(f"{provider}:default:{unit_type}")
+        if typed:
+            return typed
+    fallback = rates.get(f"{provider}:default")
+    if fallback and unit_type and fallback.get("unit_type") not in (None, unit_type):
+        return None
+    return fallback
+
+
+_WARNED_PER_1K: set = set()
 
 
 def set_rate(provider: str, model: str, rate: Dict[str, Any]) -> Dict[str, Any]:
@@ -97,29 +114,43 @@ def set_rate(provider: str, model: str, rate: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def estimate_cost(provider: str, model: Optional[str], unit_type: Optional[str],
-                   input_units: Optional[float] = None,
-                   output_units: Optional[float] = None) -> Optional[float]:
+                  input_units: Optional[float] = None,
+                  output_units: Optional[float] = None,
+                  size: Optional[str] = None) -> Optional[float]:
     """
     Estimate the $ cost of a single call. Returns None when no rate is
     configured (or the configured rate is explicitly null) so "unpriced"
     calls are visible in the dashboard rather than silently reported as $0.
+
+    Token rates are per MILLION tokens (``input_per_1m`` / ``output_per_1m``).
+    A token rate that still carries per-thousand fields is refused (None) and
+    warned about once — that unit mix-up priced text ~150x high for months.
+    Image rates may carry ``sizes``; ``size`` ("1K", "2K", "4K") picks one.
     """
-    rate = get_rate(provider, model)
+    rate = get_rate(provider, model, unit_type)
     if not rate:
         return None
 
     rate_unit_type = rate.get("unit_type", unit_type)
 
     if rate_unit_type == "tokens":
-        input_per_1k = rate.get("input_per_1k")
-        output_per_1k = rate.get("output_per_1k")
-        if input_per_1k is None and output_per_1k is None:
+        if ("input_per_1k" in rate or "output_per_1k" in rate) and not (
+                "input_per_1m" in rate or "output_per_1m" in rate):
+            key = f"{provider}:{model}"
+            if key not in _WARNED_PER_1K:
+                _WARNED_PER_1K.add(key)
+                print(f"[PRICING ERROR] {key} uses per-1k token fields; token rates must be "
+                      f"input_per_1m / output_per_1m. Unpriced until fixed.", flush=True)
+            return None
+        input_per_1m = rate.get("input_per_1m")
+        output_per_1m = rate.get("output_per_1m")
+        if input_per_1m is None and output_per_1m is None:
             return None
         cost = 0.0
         if input_units:
-            cost += (input_units / 1000.0) * (input_per_1k or 0.0)
+            cost += (input_units / 1_000_000.0) * (input_per_1m or 0.0)
         if output_units:
-            cost += (output_units / 1000.0) * (output_per_1k or 0.0)
+            cost += (output_units / 1_000_000.0) * (output_per_1m or 0.0)
         return round(cost, 8)
 
     if rate_unit_type == "characters":
@@ -131,6 +162,11 @@ def estimate_cost(provider: str, model: Optional[str], unit_type: Optional[str],
 
     # images / seconds / calls / minutes — all flat "per unit" rates.
     per_unit = rate.get("per_unit")
+    sizes = rate.get("sizes") or {}
+    if size and isinstance(sizes, dict):
+        want = str(size).strip().upper()
+        if want in sizes and sizes[want] is not None:
+            per_unit = sizes[want]
     if per_unit is None:
         return None
     units = output_units if output_units is not None else input_units

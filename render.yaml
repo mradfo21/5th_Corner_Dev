@@ -70,6 +70,22 @@ services:
         value: "1"
       - key: SOMEWHERE_BILLING_PATH
         value: /opt/render/project/src/sessions/_billing/billing.json
+      # Payments (docs/LAUNCH_PAYMENTS.md). With both Stripe keys set, hosted
+      # play needs money in the browser's wallet; without them it's free on
+      # our keys. Set the values in the Render dashboard, never in this file.
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      # The game's public address, for Stripe's return link (e.g.
+      # https://play.5th-corner.com). Falls back to the request's host.
+      - key: PUBLIC_BASE_URL
+        sync: false
+      # Markup on provider cost (2 = players pay twice what the models cost).
+      - key: BILLING_MARKUP
+        value: "2"
       # Reactor realtime world-model renderer (optional). REACTOR_API_KEY is a
       # secret used only server-side to mint short-lived browser tokens.
       - key: REACTOR_API_KEY
