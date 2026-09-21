@@ -1,5 +1,157 @@
 # 🔧 CHANGELOG - September 20, 2026
 
+## ✊ The FIST: the turn releases at the picture, and the choices wait behind a button
+
+Asked: *"how much time would we save if we moved choices to a button at the
+bottom and generated them on demand… would the app be any more responsive?
+would that throw off the world simulator somehow?"* — and then the design:
+*"similar to the camera button. a button at the bottom that looks like a fist,
+simple, tasteful, transparent. we generate the frame, the moment the image is
+done it plays back, then the fist appears greyed out, choices are generated in
+the background, when they're ready it turns green and fades up. if I click it
+then it fades down and is replaced by the choices + custom (a one way trip)."*
+
+**The numbers first**, from the live session log (`logs/play/default.jsonl`,
+60 turns tonight, medians): consequence text 2.1 s, image 19.7 s (a flipbook
+grid; 9.7 s for a still on the encounter path), vision read of the new frame
+2.1 s, choices call 1.2 s, turn 25.2 s. The choices call is ~5 % of a turn.
+What made it feel bigger is where it sat: the client did not consider a turn
+resolved until the slate landed, and the slate waits for the vision read so
+its pills describe the picture — so the player looked at a finished picture
+under a locked turn for a median 3.4 s. Generating the slate *on demand* would
+save the 1.2 s only for players who were going to type anyway and cost
+everyone else a click plus the same wait; the slate is downstream of the
+turn and nothing in threat, detection, the goal, the narrator or the
+encounter clock reads it, so moving it cannot desync the simulator. What
+was worth doing is the other half: keep writing the slate in the background,
+**release the turn when the picture has played**, and put the slate behind
+the fist.
+
+**What changed (client only; the server is untouched).**
+
+- `Fist` (standalone.js), `#fist-btn` (standalone.html), its ring in
+  standalone.css: the same transparent ring as the other hub instruments,
+  centred at the very bottom where ACT used to sit, a line-drawn fist. Idle
+  it is not there. `pictureLanded(playbackMs)` is called from the
+  `scene_image` beat (and the opening hand-off) with the flipbook's motion
+  length; the sequence player's new `onEnd` hook fires `playbackEnded()` when
+  the last frame holds, with a timer as the fallback — so the fist appears
+  after the motion, not on its first frame. It appears **greyed** (`.waiting`)
+  while the slate is still on its way and turns **green** (`.ready`, a soft
+  glow, faded up over 0.34 s, a note from `Sound.cereNote`) the moment
+  `player_choice_prompt` lands — or at once, if the slate beat the motion.
+  Pressing it (click, Enter, or the first number key) is the one-way trip:
+  `.opened` fades it down and 10 px lower as `renderChoices(item, {reveal})`
+  pops the rows + Custom in above it. A slate that never comes offers a bare
+  "Look around." after 30 s, so the fist is never a dead end.
+- `renderChoices` gates every world slate through `Fist.gate` (after
+  `Aftermath.holdSlate`); the boot-failure recovery (`__retry_boot`) is
+  exempt, and a slate arriving with the fist already open (a
+  `choices_revised` reground) paints in place.
+- **The turn releases at the picture.** In the `scene_image` beat (stills and
+  flipbook paths; realtime still releases on `video_showing`)
+  `awaitingResolution` clears, the watchdog is cancelled, the boot gate marks
+  the turn landed and `Ceremony.complete()` runs — SCAN / MOVE TO / PHOTO are
+  live the moment the picture has played, a median 3.4 s earlier than before.
+  `player_choice_prompt` no longer completes the ceremony when the picture
+  already did (`turnReleasedAtPicture`).
+- Because an action can now be committed while the previous turn's slate is
+  still being written, that slate would land under the *new* frame with last
+  turn's verbs. `state.lastActionItemId` (the feed id of the action last
+  committed, from the `/api/choose` response) draws the line: a
+  `player_choice_prompt` with a lower id is dropped. `Fist.reset()` runs on
+  every commit and on New Game.
+- Polling keeps its fast cadence while the fist is grey (`Fist.isWaiting()`),
+  or the green would arrive up to a poll interval late. Auto-play opens the
+  fist when the rows are behind it.
+- The harness (`playtest_app.py`): `open_fist` waits out the grey, screenshots
+  the grey and green states, presses, screenshots the rows, and logs the
+  grey-to-green wait — the slate's own cost, now visible instead of buried in
+  the turn. `do_choice` and the ACT path press the fist first.
+  `PT_SESSION=<id>` plays in a session of its own, so a run somebody is in the
+  middle of is left alone.
+
+**Seen so far.** A 5-turn harness run in a private session (`PT_SESSION=
+claude-fist`, plan choice / MOVE TO / choice / typed / choice) against an app
+instance that was still serving the *previous* page template — so the page
+had the new JS and CSS but no `#fist-btn`, the degrade path: `Fist.gate` finds
+no button and paints the rows directly. All five turns committed and
+resolved (27.8–33.9 s), every flipbook painted, no console errors — the
+release-at-picture plumbing holds without the button. The button's own three
+states have not been through the harness yet: the command runner on this
+machine wedged on a bad probe and a process cannot be started from the
+bridge, so that run (`_claude_cmd3_001.bat`, which restarts the app on port
+5177 and screenshots grey / green / open per turn) is queued for the next
+runner start. Matt has the build up and is playing on it.
+
+## 🎞️ The main menu plays an authored loop under a title that now reads GOD
+
+Asked: *"make this video a looping background video in the main menu splash of
+the app. change the text from SOMEWHERE to GOD. put the video in some nice
+place so I can swap it later with a better one."*
+
+The place is `static/menu/background_loop.mp4`. `Signal` (standalone.js)
+asks for it with one HEAD request when the menu warms; if it is there it goes
+into the wallpaper `<video>` the menu already had — muted, looping, at the
+speed it was cut at (last-run footage is slowed to 0.72×; an authored film is
+not), under the title with the vignette the title needs and a touch less light
+(`.start-signal.has-loop`, brightness 0.86 instead of the memory grade). If
+the file is missing the menu is the black card it has been — nothing else
+references the path, so swapping the film is replacing that one file. It hides
+under the Experience picker and the Account pane exactly as the old wallpaper
+did, stops when a run starts and resumes when the menu comes back. `*.mp4` is
+gitignored, so the film stays on this machine and out of the repo; note that
+`tools/ship_layout` bundles `static/`, so a build made with the file in place
+carries the ~200 MB with it. The title: `GOD` in `.start-brand-type`
+(standalone.html) and in `ensureDom`'s fallback. The Watch TV word and the
+exit card still say SOMEWHERE; the page title too.
+
+**Seen live.** With the file in place the menu came up on the film, and
+after one more relaunch, with its sound — the first deploy of the unmute went
+out through the bridge's cache and landed the previous copy of standalone.js;
+`grep` on the device is the check that caught it. Matt then restyled the menu
+in the same tree (wordmark top-centre in Manrope, nav in the bottom margin,
+exit and build tag in the corners, a top/bottom vignette, arrow keys across
+the nav; the loop no longer re-grades on hover) — that work rides in this
+commit on top of the loop and the title.
+
+**FIXED the morning after: "when entering CREATE the music / video doesn't
+fade down, I still hear it."** Two things. `Signal.warm()` finishes on its
+own clock — the status and tape reads, then up to 24 frame decodes — and its
+closing `apply()` landed after the player had already pressed CREATE,
+restarting the film with the menu gone: invisible, and now audible. `apply()`
+stops instead of starts when `start-menu-on` is off. And the menu's own exit
+was a hard cut (`stopVideo` in `Signal.hideMenu`): an audible loop now fades
+over 650 ms and stops after, with the picture gone the same frame. The
+Account pane fades the sound down as it opens and BACK brings it up; a loop
+that (re)starts under the picker or the pane starts at volume 0 so nothing
+can come in at full level under a cover.
+
+## ⚔️ The encounter slate reads ATTACK / FLEE / REASON and nothing else
+
+Asked, over a screenshot of a standoff: *"see the text here, showing the
+choice? this is a mistake. it needs to be JUST the actions, attack, reason,
+flee. the underlying choices can be what is decided but this will make it
+cleaner."* Each row now reads its lane word alone (`laneWord`: confront →
+ATTACK, evade → FLEE, parley → REASON), in the label setting — uppercase,
+tracked out, one line. The written verb the slate was generated with is
+still what is played: it stays on the item as `text`, and `pick()` sends it
+and the lane to `/api/encounter/resolve` as before, so the roll and the
+play-out are written from the same sentence. `Moments.setChoices` is handed
+the words only (it draws any `lane` it is given as an eyebrow, which would
+have put "confront" over "attack") and the row index maps back to the full
+item; auto-play still picks from the full items. Client only.
+
+## ⏸️ The pause sheet is RESUME / CASE / EXIT
+
+Asked: *"clean up this menu so it just has Resume, Case, Exit."* STORY, NEW
+and QUIT are `[hidden]` rather than removed (`init()` wires `btn-reset`
+unguarded, and J / R still reach the story log and a restart from the
+keyboard); `.pause-item` sets `display: block`, so `.pause-item[hidden]`
+restores the hide. LEAVE is renamed EXIT and still goes back to the start
+menu; closing the app is the start menu's own EXIT. The SCAN pills no longer
+read through the sheet (`body.menu-open #scan-tags` fades them out).
+
 ## ✅ FIXED: switching Worlds — the cutscene was the old World's, and the old World rode into the new one
 
 Asked: *"I still find issues switching worlds. It feels not all data gets

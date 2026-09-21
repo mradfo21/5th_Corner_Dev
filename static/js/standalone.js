@@ -128,6 +128,7 @@
     customInput: document.getElementById("custom-input"),
     customMic: document.getElementById("custom-mic"),
     freeWillBtn: document.getElementById("free-will-btn"),
+    fistBtn: document.getElementById("fist-btn"),
     realtimeBtn: document.getElementById("realtime-btn"),
     scanBtn: document.getElementById("scan-btn"),
     campBtn: document.getElementById("camp-btn"),
@@ -570,6 +571,8 @@
     autoDeadline: 0,            // realtime: latest time we'll wait for the new video before advancing anyway
     currentPromptId: null,     // id of the latest choice prompt (the live decision point)
     lastAdvancedPromptId: null, // guard: auto-advance at most once per prompt
+    lastActionItemId: 0,        // the feed id of the action last committed — a slate older than it is the previous turn's
+    turnReleasedAtPicture: false, // this turn was released when its picture landed (see the scene_image beat)
     observeTimer: null,         // debounce for feeding the video frame to the sim
     observedPromptId: null,     // guard: observe at most once per decision point
     turnResolved: false,        // the turn's pipeline finished (choices are live)
@@ -2152,6 +2155,16 @@
         currentSfxUrl = null;
         forgetRequest();
       },
+      // PLAY on the title screen: the track goes down with the picture, on
+      // the same clock as the fade to black, instead of running on under the
+      // picker. enterMenu() brings it back if the player steps back out.
+      fadeMenu(seconds) {
+        bumpToken();
+        stop(Math.max(0.05, Number(seconds) || 0.35));
+        currentUrl = null;
+        currentSfxUrl = null;
+        forgetRequest();
+      },
       // First gesture: replay whatever should be audible now. Title music
       // is requested on boot (usually blocked). A deep-linked PLAY may
       // have scored a scene against a suspended context.
@@ -3272,22 +3285,27 @@
       })));
     }
 
-    function step(mine, ms, loop) {
+    function step(mine, ms, loop, onEnd) {
       timer = setTimeout(() => {
         if (mine !== token) return;
         idx += 1;
         if (idx >= frames.length) {
-          if (!loop) { idx = frames.length - 1; return; }  // hold the last frame
+          if (!loop) {  // hold the last frame
+            idx = frames.length - 1;
+            if (typeof onEnd === "function") { try { onEnd(); } catch (_) {} }
+            return;
+          }
           idx = 0;
         }
         paint(frames[idx]);
-        step(mine, ms, loop);
+        step(mine, ms, loop, onEnd);
       }, ms);
     }
 
-    // `urls` are painted in order. opts: {frameMs, loop, key}. `key` lets a
-    // caller that re-paints on a timer (the Watch stage polls) ask for the same
-    // sequence repeatedly without restarting it from frame 1 every poll.
+    // `urls` are painted in order. opts: {frameMs, loop, key, onEnd}. `key`
+    // lets a caller that re-paints on a timer (the Watch stage polls) ask for
+    // the same sequence repeatedly without restarting it from frame 1 every
+    // poll. `onEnd` fires once, when a non-looping run holds its last frame.
     function play(urls, opts) {
       const list = (urls || []).filter(Boolean);
       const o = opts || {};
@@ -3303,12 +3321,13 @@
         // Show where the action ended and leave it there.
         frames = [list[list.length - 1]];
         paint(frames[0], { first: true });
+        if (typeof o.onEnd === "function") { try { o.onEnd(); } catch (_) {} }
         return true;
       }
       paint(list[0], { first: true });
       preload(list).then(() => {
         if (mine !== token) return;
-        step(mine, ms, !!o.loop);
+        step(mine, ms, !!o.loop, o.onEnd);
       });
       return true;
     }
@@ -3351,6 +3370,8 @@
       frameMs: sequenceFrameMs(sequence),
       loop: false,
       key: key,
+      // The fist waits for the motion to finish, not just for the first frame.
+      onEnd: () => { try { Fist.playbackEnded(); } catch (_) {} },
     });
     // The motion has the turn's own bed under it, armed when the consequence
     // landed. Keyed on the same frames the player is keyed on, so the feed
@@ -12235,13 +12256,22 @@
   })();
 
   // ── SIGNAL ─────────────────────────────────────────────────────────────
-  // Last-run footage is the start-menu wallpaper. SOMEWHERE sits on top.
-  // Prefers the latest Watch video, then its GIF/frames, then the Play tape,
-  // then a single still. No paid generation.
+  // The start-menu wallpaper. The title sits on top.
+  //
+  // First choice is the MENU LOOP: an authored background film at
+  // static/menu/background_loop.mp4 (MENU_LOOP below), played muted, looping,
+  // at its own speed, under the title — swap the file to swap the splash;
+  // nothing else references it. When the file is not there the menu is the
+  // black card it has been (WALLPAPER below), and the last-run footage path
+  // — the latest Watch video, then its frames, then the Play tape, then a
+  // single still — is still here behind that flag. No paid generation.
   const Signal = (function () {
     const STILL_MS = 2400;
     const VIDEO_RATE = 0.72;
     const MAX_FRAMES = 24;
+    const MENU_LOOP = "/static/menu/background_loop.mp4";
+    let loopUrl = "";            // MENU_LOOP once the server has said it exists
+    let loopProbed = false;
     let playUrl = null;
     let watchUrl = null;
     let playFrames = [];
@@ -12306,7 +12336,7 @@
         menu.insertBefore(host, menu.firstChild);
       }
       if (brand.querySelector(".start-brand-knockout")) {
-        const word = ((brand.querySelector(".start-brand-type") || brand).textContent || "").trim() || "SOMEWHERE";
+        const word = ((brand.querySelector(".start-brand-type") || brand).textContent || "").trim() || "GOD";
         brand.innerHTML = '<span class="start-brand-type"></span>';
         const type = brand.querySelector(".start-brand-type");
         if (type) type.textContent = word;
@@ -12351,8 +12381,8 @@
       const v = el.startSignalVideo;
       stopPump();
       if (!v) return;
-      try { v.pause(); } catch (_) {}
-      if (el.startSignal) el.startSignal.classList.remove("has-video");
+      try { v.pause(); v.muted = true; v.volume = 1; } catch (_) {}
+      if (el.startSignal) el.startSignal.classList.remove("has-video", "has-loop");
       if (v.getAttribute("src")) {
         try { v.removeAttribute("src"); v.load(); } catch (_) {}
       }
@@ -12412,10 +12442,12 @@
       }, STILL_MS);
     }
 
-    function startVideo(url) {
+    function startVideo(url, opts) {
       const v = el.startSignalVideo;
       if (!v || !url || reduceMotion()) return false;
+      const isLoop = !!(opts && opts.loop);
       stopCycle();
+      if (el.startSignal) el.startSignal.classList.toggle("has-loop", isLoop);
       if (activeVideo === url && el.startSignal && el.startSignal.classList.contains("has-video")) {
         try { v.play().catch(() => {}); } catch (_) {}
         markMedia(true);
@@ -12423,20 +12455,59 @@
       }
       activeVideo = url;
       v.src = url;
-      try { v.playbackRate = VIDEO_RATE; } catch (_) {}
+      // Last-run footage is slowed to read as memory and stays silent; an
+      // authored loop plays at the speed it was cut at, with its sound.
+      try { v.playbackRate = isLoop ? 1 : VIDEO_RATE; } catch (_) {}
+      // Under the picker or the Account pane the film starts silent (the
+      // picture is hidden there); applyPickerClose / Accounts.close bring
+      // the sound up on the way back to the title screen.
+      try { v.muted = !isLoop; v.volume = (isLoop && menuCovered()) ? 0 : 1; } catch (_) {}
       if (el.startSignal) el.startSignal.classList.add("has-video");
       markMedia(true);
       stopPump();
       const go = v.play();
       if (go && go.catch) {
         go.catch(() => {
-          if (el.startSignal) el.startSignal.classList.remove("has-video");
+          // Autoplay with sound is refused until the page has had a gesture
+          // (play.py lifts that policy for the desktop window; a plain
+          // browser tab does not). Play silent now and let the first press
+          // or keystroke bring the sound in, rather than dropping the film.
+          if (isLoop && !v.muted) {
+            v.muted = true;
+            const unmute = () => {
+              document.removeEventListener("pointerdown", unmute, true);
+              document.removeEventListener("keydown", unmute, true);
+              if (activeVideo !== url) return;
+              try { v.muted = false; v.play().catch(() => {}); } catch (_) {}
+            };
+            document.addEventListener("pointerdown", unmute, true);
+            document.addEventListener("keydown", unmute, true);
+            const again = v.play();
+            if (again && again.catch) again.catch(() => { /* fall through below */ });
+            return;
+          }
+          if (el.startSignal) el.startSignal.classList.remove("has-video", "has-loop");
           stopPump();
           activeVideo = "";
+          if (isLoop) { startCycle([]); return; }
           startCycle(watchFrames.length ? watchFrames : playFrames);
         });
       }
       return true;
+    }
+
+    // Is the authored loop on disk? Asked once per page; a missing file is
+    // the black card, not an error. HEAD keeps the probe off the 200 MB.
+    async function probeLoop() {
+      if (loopProbed) return loopUrl;
+      loopProbed = true;
+      try {
+        const r = await fetch(MENU_LOOP, { method: "HEAD", cache: "no-store" });
+        loopUrl = r && r.ok ? MENU_LOOP : "";
+      } catch (_) {
+        loopUrl = "";
+      }
+      return loopUrl;
     }
 
     function sourceFor(mode) {
@@ -12469,7 +12540,26 @@
     // ghost. Flip this to re-enable the wallpaper; nothing else has to change.
     const WALLPAPER = false;
 
+    function menuOn() {
+      return document.body.classList.contains("start-menu-on");
+    }
+    // The picker or the Account pane is up over the wallpaper (see the
+    // `body.xp-open .start-signal` rule): the picture is hidden and the
+    // sound is meant to be down.
+    function menuCovered() {
+      const c = document.body.classList;
+      return c.contains("xp-open") || c.contains("keys-open") || c.contains("coin-open");
+    }
+
     function apply() {
+      // warm() finishes on its own clock — the status and tape reads, then
+      // up to 24 frame decodes — and used to land here after the player had
+      // already left the title screen, restarting the film with the menu
+      // gone: invisible, and with an authored loop, audible. Reported as
+      // "when entering CREATE the music doesn't fade down, I still hear it".
+      if (!menuOn()) { stopVideo(); return; }
+      // The authored loop wins over everything, including the black card.
+      if (loopUrl && startVideo(loopUrl, { loop: true })) return;
       if (!WALLPAPER) {
         // showStill("") clears both layers and drops `has-media`, so the title
         // is styled for a card rather than for a photograph behind it.
@@ -12514,6 +12604,10 @@
     async function warm() {
       try {
         ensureDom();
+        // The loop first, on its own: it does not wait for the status and
+        // tape reads below, so the film is under the title as the splash
+        // bar gives way rather than a beat after.
+        probeLoop().then(() => { try { apply(); } catch (_) {} });
         const [status, tape] = await Promise.all([
           getJSON("/api/status").catch(() => ({})),
           fetch("/api/tape")
@@ -12563,22 +12657,75 @@
       return v;
     }
 
+    let stopTimer = null;
     function hideMenu(_cinematic) {
       // The buck veil owns the cover now. Drop the menu instantly at peak
       // so the destination is already sitting under the wash when it lifts.
       clearTimeout(hideTimer);
+      clearTimeout(stopTimer);
+      stopTimer = null;
       stopCycle();
-      stopVideo();
+      // An authored loop still audible here (CREATE hides the menu with no
+      // veil in front of it) goes down over a short fade rather than being
+      // cut; the picture is gone the same frame either way.
+      const v = el.startSignalVideo;
+      const audible = !!(v && !v.paused && !v.muted && v.volume > 0.01
+        && el.startSignal && el.startSignal.classList.contains("has-loop"));
       document.body.classList.remove(
         "start-menu-on", "signal-lock", "signal-peek-play", "signal-peek-watch",
       );
+      if (audible) {
+        fadeSound(650);
+        stopTimer = setTimeout(() => { stopTimer = null; stopVideo(); }, 720);
+      } else {
+        stopVideo();
+      }
     }
 
     function currentPlate() {
       return playUrl || watchUrl || "";
     }
 
-    return { warm, peek, lock, hold, takeHold, hideMenu, paintWatchGhost, currentPlate };
+    // The authored loop carries its own soundtrack. Ramp the video's volume
+    // to 0 over `ms` (a smooth curve, not a step) — the picture goes to black
+    // under the veil on the same clock — and `restoreSound()` brings it back
+    // when the player steps back out to the title screen.
+    let volRaf = 0;
+    function fadeSound(ms) {
+      const v = el.startSignalVideo;
+      if (volRaf) { cancelAnimationFrame(volRaf); volRaf = 0; }
+      if (!v) return;
+      const from = Number.isFinite(v.volume) ? v.volume : 1;
+      const dur = Math.max(0, Number(ms) || 0);
+      if (!dur || v.muted) { try { v.volume = 0; } catch (_) {} return; }
+      const t0 = performance.now();
+      const step = () => {
+        volRaf = 0;
+        const k = Math.min(1, (performance.now() - t0) / dur);
+        const e = 1 - Math.pow(1 - k, 2);          // ease-out: leaves fast, lands soft
+        try { v.volume = Math.max(0, from * (1 - e)); } catch (_) {}
+        if (k < 1) volRaf = requestAnimationFrame(step);
+      };
+      volRaf = requestAnimationFrame(step);
+    }
+    function restoreSound(ms) {
+      const v = el.startSignalVideo;
+      if (volRaf) { cancelAnimationFrame(volRaf); volRaf = 0; }
+      if (!v) return;
+      const dur = Math.max(0, Number(ms) || 0);
+      const from = Number.isFinite(v.volume) ? v.volume : 0;
+      if (!dur) { try { v.volume = 1; } catch (_) {} return; }
+      const t0 = performance.now();
+      const step = () => {
+        volRaf = 0;
+        const k = Math.min(1, (performance.now() - t0) / dur);
+        try { v.volume = Math.min(1, from + (1 - from) * k); } catch (_) {}
+        if (k < 1) volRaf = requestAnimationFrame(step);
+      };
+      volRaf = requestAnimationFrame(step);
+    }
+
+    return { warm, peek, lock, hold, takeHold, hideMenu, paintWatchGhost, currentPlate, fadeSound, restoreSound };
   })();
 
   // ── BUCK ───────────────────────────────────────────────────────────────
@@ -12592,6 +12739,12 @@
     // screens sit on the same backdrop (see .buck-soft).
     const SOFT_COVER_MS = 240;
     const SOFT_REVEAL_MS = 460;
+    // Fade-to-black beat for leaving the title screen (PLAY): the loop and
+    // its music go down together into black, a held beat, then the picker
+    // comes up out of it. No wash, no blooms — just black (see .buck-black).
+    const BLACK_COVER_MS = 1100;
+    const BLACK_HOLD_MS = 220;
+    const BLACK_REVEAL_MS = 900;
     let busy = false;
     let coverTimer = null;
     let revealTimer = null;
@@ -12639,7 +12792,7 @@
     }
 
     function finish() {
-      document.body.classList.remove("buck-on", "buck-out", "buck-soft");
+      document.body.classList.remove("buck-on", "buck-out", "buck-soft", "buck-black");
       busy = false;
       clear();
       const next = pending;
@@ -12650,6 +12803,7 @@
     function play(swap, opts) {
       const go = typeof swap === "function" ? swap : function () {};
       const soft = !!(opts && opts.soft);
+      const black = !!(opts && opts.black);
       let reduce = false;
       try { reduce = prefersReducedMotion(); } catch (_) {}
       if (reduce) { go(); return Promise.resolve(); }
@@ -12658,9 +12812,12 @@
       clear();
       const veil = ensure();
       document.body.classList.remove("buck-out");
-      document.body.classList.toggle("buck-soft", soft);
+      document.body.classList.toggle("buck-soft", soft && !black);
+      document.body.classList.toggle("buck-black", black);
       document.body.classList.add("buck-on");
       try { void veil.offsetWidth; } catch (_) {}
+      const coverMs = black ? BLACK_COVER_MS + BLACK_HOLD_MS : (soft ? SOFT_COVER_MS : COVER_MS);
+      const revealMs = black ? BLACK_REVEAL_MS : (soft ? SOFT_REVEAL_MS : REVEAL_MS);
       return new Promise((resolve) => {
         coverTimer = setTimeout(() => {
           try { go(); } catch (_) {}
@@ -12669,12 +12826,15 @@
           revealTimer = setTimeout(() => {
             finish();
             resolve();
-          }, soft ? SOFT_REVEAL_MS : REVEAL_MS);
-        }, soft ? SOFT_COVER_MS : COVER_MS);
+          }, revealMs);
+        }, coverMs);
       });
     }
 
-    return { play, isBusy, whenFree };
+    // Length of the fade-to-black cover, so audio can ride the same clock.
+    function blackCoverMs() { return BLACK_COVER_MS; }
+
+    return { play, isBusy, whenFree, blackCoverMs };
   })();
 
   // ── START MENU ─────────────────────────────────────────────────────────
@@ -13034,12 +13194,25 @@
     function applyPickerClose() {
       document.body.classList.remove("xp-open", "xp-ready");
       closePickerChrome();
+      // Back on the title screen: the sound that PLAY faded out comes back.
+      try { SceneAudio.enterMenu(); } catch (_) {}
+      try { Signal.restoreSound(900); } catch (_) {}
     }
 
     function openPicker() {
       if (isPickerOpen()) return;
       if (Buck.isBusy()) { Buck.whenFree(openPicker); return; }
-      Buck.play(applyPickerOpen, { soft: true });
+      // Leaving the title screen: the loop and its music fade down to black
+      // together, a breath of black, then the picker comes up out of it.
+      // The mint bloom is for hops between screens that share a backdrop;
+      // this is a change of context.
+      let fadeMs = 0;
+      try { fadeMs = Buck.blackCoverMs(); } catch (_) {}
+      let reduce = false;
+      try { reduce = prefersReducedMotion(); } catch (_) {}
+      try { SceneAudio.fadeMenu(reduce ? 0.35 : fadeMs / 1000); } catch (_) {}
+      try { Signal.fadeSound(reduce ? 350 : fadeMs); } catch (_) {}
+      Buck.play(applyPickerOpen, { black: true });
     }
 
     function closePicker() {
@@ -13141,7 +13314,24 @@
         if (e.key === "Escape") { e.preventDefault(); Accounts.close(); return true; }
         return false;
       }
-      if (!isPickerOpen()) return false;
+      if (!isPickerOpen()) {
+        // Root menu: arrow keys walk PLAY / CREATE / ACCOUNT (Tab already
+        // does, they are buttons); the focused one wears the hover look via
+        // :focus-visible; Enter activates natively.
+        const items = [el.startPlay, el.startCreate, el.startAccount].filter(Boolean);
+        if (!items.length) return false;
+        let dir = 0;
+        if (e.key === "ArrowRight" || e.key === "ArrowDown") dir = 1;
+        else if (e.key === "ArrowLeft" || e.key === "ArrowUp") dir = -1;
+        if (!dir) return false;
+        e.preventDefault();
+        const cur = items.indexOf(document.activeElement);
+        const next = cur < 0
+          ? (dir > 0 ? 0 : items.length - 1)
+          : (cur + dir + items.length) % items.length;
+        try { items[next].focus({ focusVisible: true }); } catch (_) { items[next].focus(); }
+        return true;
+      }
       if (e.key === "Escape") { e.preventDefault(); closePicker(); return true; }
       if (e.key === "ArrowLeft") { e.preventDefault(); selectXp(xpIndex - 1); return true; }
       if (e.key === "ArrowRight") { e.preventDefault(); selectXp(xpIndex + 1); return true; }
@@ -13883,6 +14073,8 @@
       setMsg("", "");
       refresh();
       if (document.body.classList.contains("keys-open")) return;
+      // The wallpaper hides under this pane; its soundtrack goes with it.
+      try { Signal.fadeSound(opts.instant ? 0 : 560); } catch (_) {}
       if (opts.instant) { applyOpen(); return; }
       if (Buck.isBusy()) return;
       Buck.play(applyOpen);
@@ -13892,7 +14084,12 @@
       if (!document.body.classList.contains("keys-open")) return;
       if (opts && opts.silent) { applyClose(); return; }
       if (Buck.isBusy()) return;
-      Buck.play(applyClose);
+      // BACK to the title screen: the film's sound comes back up with it. A
+      // silent close (the menu is being left for a run) leaves it down.
+      Buck.play(() => {
+        applyClose();
+        try { Signal.restoreSound(900); } catch (_) {}
+      });
     }
 
     function init() {
@@ -16447,12 +16644,148 @@
     };
   })();
 
+  // ── THE FIST ──────────────────────────────────────────────────────────
+  // The turn's choices wait behind a button. The picture is the turn's
+  // answer: it lands, plays back, and the turn is released THERE (see the
+  // scene_image beat), not when the slate lands. The fist appears greyed
+  // while the slate is still being written — the vision read of the new
+  // frame and the choice call, a median 3.4 s behind the picture on the live
+  // log, every second of which used to be a locked turn — and turns green
+  // when it arrives. Opening it is a one-way trip for the turn: the fist
+  // fades down and the choices + Custom take its place. Any other verb
+  // (SCAN, MOVE TO, PHOTO) is live from the picture; a slate for a frame the
+  // player has already left is dropped on arrival (see player_choice_prompt).
+  const Fist = (() => {
+    const WAIT_MAX_MS = 30000;   // a slate that never comes still leaves a way to act
+    const STILL_BEAT_MS = 260;   // a still has no motion to wait out; let the paint settle
+    let held = null;             // the player_choice_prompt not painted yet
+    let phase = "idle";          // idle | waiting | ready | open
+    let pictureDone = false;     // this turn's picture has landed and played
+    let playTimer = null;        // playback fallback, in case onEnd never fires
+    let waitTimer = null;        // the slate never came
+    let orphanTimer = null;      // a slate with no picture behind it (boot, reactor)
+
+    function btn() { return el.fistBtn; }
+    function clearTimers() {
+      clearTimeout(playTimer); playTimer = null;
+      clearTimeout(waitTimer); waitTimer = null;
+      clearTimeout(orphanTimer); orphanTimer = null;
+    }
+    function paintPhase() {
+      const b = btn();
+      if (!b) return;
+      b.classList.toggle("hidden", phase === "idle");
+      b.classList.toggle("waiting", phase === "waiting");
+      b.classList.toggle("ready", phase === "ready");
+      b.classList.toggle("opened", phase === "open");
+      b.setAttribute("aria-hidden", phase === "idle" ? "true" : "false");
+      b.disabled = phase !== "ready";
+    }
+    function show() {
+      // The picture has landed and played. Greyed if the slate is still on
+      // its way, green if it is already here.
+      pictureDone = true;
+      clearTimeout(playTimer); playTimer = null;
+      clearTimeout(orphanTimer); orphanTimer = null;
+      if (phase === "open") return;
+      if (held) { becomeReady(); return; }
+      if (phase !== "waiting") {
+        phase = "waiting";
+        paintPhase();
+      }
+      clearTimeout(waitTimer);
+      waitTimer = setTimeout(() => {
+        if (phase !== "waiting" || held) return;
+        console.warn("[fist] no slate arrived; offering a bare move");
+        held = { id: state.currentPromptId, choices: [{ text: "Look around." }] };
+        becomeReady();
+      }, WAIT_MAX_MS);
+    }
+    function becomeReady() {
+      clearTimeout(waitTimer); waitTimer = null;
+      if (phase === "ready") return;
+      phase = "ready";
+      paintPhase();
+      try { Sound.cereNote(); } catch (_) {}
+    }
+
+    return {
+      // A new action is committed: whatever this turn had is over.
+      reset() {
+        clearTimers();
+        held = null;
+        pictureDone = false;
+        phase = "idle";
+        paintPhase();
+      },
+
+      // The turn's picture is on screen. `playbackMs` is how long its motion
+      // runs (0 for a still); the fist appears once that has played out.
+      pictureLanded(playbackMs) {
+        if (phase === "open") return;
+        clearTimeout(playTimer);
+        const ms = Math.max(0, Number(playbackMs) || 0);
+        playTimer = setTimeout(show, ms > 0 ? Math.min(ms + 900, 14000) : STILL_BEAT_MS);
+      },
+
+      // The motion finished (sequence player). Beats the fallback above.
+      playbackEnded() {
+        if (playTimer) { clearTimeout(playTimer); playTimer = null; show(); }
+      },
+
+      // renderChoices: hold this slate behind the fist. Returns false when the
+      // rows should be painted right now — the fist is already open for this
+      // turn (a revision lands in place), the caller is the fist itself, or
+      // the slate is the boot-failure recovery, which has no picture to wait
+      // for and must always be pressable.
+      gate(item, opts) {
+        if (opts && opts.reveal) return false;
+        if (!btn() || !item || !Array.isArray(item.choices)) return false;
+        if (item.choices.some((c) => c && c.action_id === "__retry_boot")) return false;
+        if (phase === "open") return false;
+        held = item;
+        if (pictureDone) { becomeReady(); return true; }
+        // The picture is still playing out (pictureLanded armed the wait):
+        // the fist turns green when that finishes. Otherwise nothing has
+        // reported a picture for this slate (a path this file does not know
+        // about, or realtime, which never lands a still the player looks
+        // at) — give the beat a moment to report one, then show anyway.
+        if (!playTimer) {
+          clearTimeout(orphanTimer);
+          orphanTimer = setTimeout(show, 1500);
+        }
+        return true;
+      },
+
+      // The one-way trip: the fist goes, the choices come.
+      open() {
+        if (phase !== "ready" || !held) return false;
+        const item = held;
+        held = null;
+        phase = "open";
+        clearTimers();
+        paintPhase();
+        try { Sound.choices(); } catch (_) {}
+        try { Haptics.select(); } catch (_) {}
+        renderChoices(item, { reveal: true });
+        return true;
+      },
+
+      isReady() { return phase === "ready" && !!held; },
+      isWaiting() { return phase === "waiting"; },
+      isOpen() { return phase === "open"; },
+      phase() { return phase; },
+    };
+  })();
+
   function renderChoices(promptItem, opts) {
     // A confrontation's own slate is the only one on screen while it is up,
     // and after one ends the world's slate waits for the world's frame.
     // `force` is the recovery paths, which must always leave the player
     // something to press. See Aftermath.
     if (Aftermath.holdSlate(promptItem, opts)) return;
+    // The world's slate waits behind the fist until the player asks for it.
+    if (Fist.gate(promptItem, opts)) return;
     el.choices.innerHTML = "";
     if (state.gameOver) return; // death overlay owns the restart action
     if (!promptItem || !Array.isArray(promptItem.choices)) return;
@@ -16670,7 +17003,29 @@
         if (!scanInRealtime()) {
           markSceneVisible();
           Ceremony.imageLoaded();
+          // The picture IS the turn's answer. Release the turn here rather
+          // than when the slate lands: the slate is written FROM this frame
+          // and arrives a median 3.4 s behind it (vision read + choice call),
+          // and the player was locked out for all of it. The fist carries the
+          // "actions" beat from here (see Fist); a slate that arrives after
+          // the player has already acted again is dropped by id.
+          if (state.awaitingResolution && Renderer.mode !== "reactor") {
+            clearTurnWatchdog();
+            state.awaitingResolution = false;
+            state.turnReleasedAtPicture = true;
+            markBootTurnLanded();
+            Ceremony.complete();
+          }
         }
+        // The fist appears once the picture has played out — the motion of a
+        // flipbook beat, or a beat for a still. Every renderer: in realtime
+        // the still is not what is on screen, but the slate still waits for
+        // the player's hand.
+        try {
+          const seq = item.metadata && (item.metadata.sequence || item.metadata.flipbook);
+          const n = sequenceFrames(seq).length;
+          Fist.pictureLanded(n > 1 ? (n - 1) * sequenceFrameMs(seq) : 0);
+        } catch (_) {}
         // Auto-play (IMAGE mode only): the still just rendered — advance soon.
         // In REALTIME the scene_image feed item is NOT the on-screen frame (the
         // video re-anchor is still establishing), so realtime auto-advance is
@@ -16704,13 +17059,29 @@
           hideVeil();
           return;
         }
+        // A slate for a frame the player has already left. The turn is
+        // released at the picture now, so an action can be committed while
+        // the previous turn's slate is still being written; that slate then
+        // lands with an id below the new action's and describes a picture
+        // that is about to be replaced. Painting it would put last turn's
+        // verbs under this turn's frame — and completing the ceremony on it
+        // would release a turn that is still running.
+        if (state.lastActionItemId && Number(item.id) < Number(state.lastActionItemId)) {
+          console.debug("[fist] dropping a slate from the previous turn", item.id, "<", state.lastActionItemId);
+          return;
+        }
         appendProse(item);
-        renderChoices(item);
-        Sound.choices();
+        renderChoices(item);   // the fist holds the rows until it is pressed
+        const releasedAtPicture = !!state.turnReleasedAtPicture;
+        state.turnReleasedAtPicture = false;
         state.awaitingResolution = false;
         // Turn fully resolved: march the ceremony to its finish, flash green,
-        // then clear it — choices are live so input is released.
-        Ceremony.complete();
+        // then clear it — input is released. Already done at the picture on
+        // the stills path; doing it twice would re-run the veil teardown.
+        if (!releasedAtPicture) {
+          Sound.choices();
+          Ceremony.complete();
+        }
         // New decision point: these are now the live/latest choices. Auto-play
         // will advance against THIS prompt (and only once).
         state.currentPromptId = item.id;
@@ -16895,6 +17266,9 @@
       state.objDirectiveTurn = null;
       state.selectedInvestigation = null;
       try { Investigations.clear(); } catch (_) {} // the case file is per-run
+      try { Fist.reset(); } catch (_) {}
+      state.lastActionItemId = 0;
+      state.turnReleasedAtPicture = false;
       // Wipe the current visuals IMMEDIATELY and permanently: blank both still
       // layers and reset the realtime world model (which hides + suppresses the
       // live video and drains its queue). This runs regardless of the active
@@ -17154,6 +17528,8 @@
       beginMoveTransition(moveTarget);
     }
     el.choices.innerHTML = "";
+    Fist.reset();        // the last turn's slate, pressed or not, is over
+    state.turnReleasedAtPicture = false;
     if (actionSource !== "encounter") {
       Ceremony.begin(); // light up the turn pipeline — starting with "action selected"
     }
@@ -17262,6 +17638,13 @@
         // from what was actually said (see _record_turn_conversation).
         conversation: actionConversation,
       });
+      // The action's own feed id is the line between this turn and the
+      // last: a slate that lands with a lower id belongs to the frame just
+      // left (see player_choice_prompt).
+      try {
+        const ids = (Array.isArray(items) ? items : []).map((it) => Number(it && it.id) || 0);
+        if (ids.length) state.lastActionItemId = Math.max(state.lastActionItemId || 0, ...ids);
+      } catch (_) {}
       renderItems(items); // immediately shows the player_action echo
       beginFastPolling();
       // The server debits one credit on a successful turn. Poll the
@@ -23910,32 +24293,23 @@
       const mapped = choices.map((c, idx) => {
         const text = typeof c === "string" ? c : (c && (c.text || c.label)) || "";
         const lane = (typeof c === "object" && c && c.lane) || "";
-        // `label` is what the row READS; `laneWord` rides along as the eyebrow
-        // so the player can still see which of the three answers they are
-        // taking. The lane is what the server rolls against, so it has to stay
-        // legible — the verb alone tells you what you are doing, not the odds
-        // you are accepting.
+        // The row READS the lane word and nothing else — ATTACK / FLEE /
+        // REASON. The written verb ("Smash his calcified skull now") is still
+        // what gets played: it rides on the item as `text` and is what pick()
+        // sends, so the resolve and the play-out are written from it exactly
+        // as before. Matt: "it needs to be JUST the actions, attack, reason,
+        // flee. the underlying choices can be what is decided."
         return {
-          label: text || laneWord(lane, idx),
-          laneWord: laneWord(lane, idx),
+          label: laneWord(lane, idx),
           text: text,
           lane: lane,
         };
       }).filter((c) => c.text);
-      // The three authored verbs, plus a way to do something nobody wrote.
-      // What gets typed is posted as the choice and drives the roll, the
-      // resolve plate and the aftermath turn exactly like a picked one — the
-      // only difference is that the server has to read it to decide which lane
-      // it is (see match_encounter_choice).
-      window.Moments.setChoices(mapped, (item) => pick(item), {
-        custom: {
-          key: String(mapped.length + 1),
-          label: "Do something else — type it",
-          placeholder: "what do you do?",
-          maxLength: 200,
-          onSubmit: (text) => pick({ text, custom: true }),
-        },
-      });
+      // Moments gets the words only. The lane stays off what it is handed:
+      // setChoices draws any `lane` / `laneWord` as an eyebrow, which would
+      // put "confront" over "attack". The row index maps back to the full item.
+      const rows = mapped.map((c) => ({ label: c.label }));
+      window.Moments.setChoices(rows, (_row, idx) => pick(mapped[idx]));
       armAutoPick(mapped);
     }
 
@@ -24780,6 +25154,13 @@
         // Renderer.applyScene so it plays the frames and settles on the last
         // one — the same path a normal flipbook turn uses (metadata.sequence).
         try { Renderer.applyScene(hop.destUrl, "", { hard_transition: true, sequence: hop.sequence || null }); } catch (_) {}
+        // The frame the montage hands over is this turn's picture: the slate
+        // it ships with waits behind the fist, which appears once the motion
+        // (if any) has played.
+        try {
+          const n = sequenceFrames(hop.sequence).length;
+          Fist.pictureLanded(n > 1 ? (n - 1) * sequenceFrameMs(hop.sequence) : 0);
+        } catch (_) {}
       }
       if (hop.destWorld) {
         state.experienceWorldId = hop.destWorld;
@@ -25763,6 +26144,7 @@
   // "Move forward" — commit to one of the generated actions at random.
   function moveForward() {
     if (state.processing || state.gameOver || state.freeWillOpen) return;
+    if (!el.choices.children.length) Fist.open(); // the rows are behind the fist
     const btns = Array.from(el.choices.children);
     if (!btns.length) return;
     const pick = btns[Math.floor(Math.random() * btns.length)];
@@ -25808,6 +26190,7 @@
   // Auto-play's version of moveForward: same commit, chosen on purpose.
   async function advanceOnPurpose() {
     if (state.processing || state.gameOver || state.freeWillOpen) return;
+    if (!el.choices.children.length) Fist.open(); // the rows are behind the fist
     const btns = Array.from(el.choices.children);
     if (!btns.length) return;
     const texts = btns.map((b) => {
@@ -25841,7 +26224,7 @@
       if (!(state.autoPlay && !state.processing && !state.gameOver &&
             !state.freeWillOpen && !tapeIsOpen() &&
             !(window.Moments && window.Moments.isActive && window.Moments.isActive()) &&
-            el.choices.children.length &&
+            (el.choices.children.length || Fist.isReady()) &&
             state.currentPromptId != null &&
             state.currentPromptId !== state.lastAdvancedPromptId)) return;
       // Realtime: never advance until the NEW scene's video is genuinely on
@@ -26482,7 +26865,12 @@
     state.pollTimer = setInterval(async () => {
       await pollOnce();
       const timedOut = Date.now() - startedAt > FAST_POLL_TIMEOUT_MS;
-      if (!state.awaitingResolution || timedOut) {
+      // The turn releases at the picture now, but its slate is still on the
+      // way for a few seconds — keep the fast cadence until the fist is fed,
+      // or it turns green up to a poll interval late.
+      let fistWaiting = false;
+      try { fistWaiting = Fist.isWaiting(); } catch (_) {}
+      if ((!state.awaitingResolution && !fistWaiting) || timedOut) {
         if (timedOut) hideVeil();
         startPolling();
       }
@@ -27078,8 +27466,13 @@
     }
     if (e.key === "1" || e.key === "2" || e.key === "3") {
       const idx = Number(e.key) - 1;
+      // With the rows still behind the fist, the first press opens it.
+      if (!el.choices.children.length && Fist.isReady()) { e.preventDefault(); Fist.open(); return; }
       const btn = el.choices.children[idx];
       if (btn) btn.click();
+    } else if (e.key === "Enter" && Fist.isReady()) {
+      e.preventDefault();
+      Fist.open();
     } else if (e.key.toLowerCase() === "r") {
       resetGame();
     } else if (e.key.toLowerCase() === "v") {
@@ -28342,6 +28735,10 @@
     if (el.caseRestart) el.caseRestart.addEventListener("click", resetGame);
     if (el.caseContinue) el.caseContinue.addEventListener("click", hideCaseWin);
     el.freeWillBtn.addEventListener("click", openFreeWill);
+    if (el.fistBtn) el.fistBtn.addEventListener("click", (e) => {
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      Fist.open();
+    });
     if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", (e) => {
       if (e) { e.preventDefault(); e.stopPropagation(); }
       openTouch();

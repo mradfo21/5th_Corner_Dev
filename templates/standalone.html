@@ -7,10 +7,11 @@
 <link rel="icon" href="{{ url_for('static', filename='Logo.jpg') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<!-- Bebas Neue (SIL OFL, Google Fonts) for titles / labels. Instrument Sans
-     for readable body copy. Share Tech Mono stays for in-game HUD only. -->
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Instrument+Sans:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" media="print" onload="this.media='all'">
-<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Instrument+Sans:wght@400;500;600;700&family=Share+Tech+Mono&display=swap"></noscript>
+<!-- The app's two faces, set by the title screen: Manrope (200 for the
+     wordmark, 300 for sentences) and JetBrains Mono 300 for every label,
+     button and HUD readout. Loaded eagerly — the title is the first thing on
+     screen and a fallback-font flash there is the one place it would show. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@200;300;400;500&family=JetBrains+Mono:wght@300;400&display=swap">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/standalone.css') }}?v={{ asset_version }}">
 </head>
 <body class="start-menu-on awaiting-first-scene">
@@ -162,6 +163,10 @@
        under the big PLAY on that picker, not as its own start tile.
        Skip the menu with ?mode=play or ?mode=watch. -->
   <div id="start-menu" class="start-menu" aria-label="Start" aria-busy="true">
+    <!-- The wallpaper. Signal (standalone.js) plays the authored menu loop
+         at static/menu/background_loop.mp4 into the <video> when that file
+         exists — swap the file to swap the splash — and shows the black
+         card when it does not. -->
     <div id="start-signal" class="start-signal" aria-hidden="true">
       <video id="start-signal-video" class="start-signal-video"
              muted loop playsinline preload="none"></video>
@@ -172,29 +177,32 @@
     <div id="start-splash" class="start-splash" aria-hidden="true">
       <div class="start-splash-bar" aria-hidden="true"><i></i></div>
     </div>
+    <!-- Top/bottom vignette so the margin text holds contrast over any frame
+         of the loop. The mech in the middle of the frame is left alone. -->
+    <div class="start-vignette" aria-hidden="true"></div>
     <button id="start-exit" class="start-exit" type="button"
             title="Exit — close the app and stop the server">EXIT</button>
+    <!-- The mech is the hero. Text sits in the frame's margins — wordmark
+         top-centre, nav bottom-centre, exit top-right, build tag bottom-left —
+         never over the body of the picture. Hairline-light, widely tracked,
+         no glow, no icons, no markers. -->
     <div class="start-menu-inner">
-      <div class="start-brand" id="start-brand">
-        <span class="start-brand-type">SOMEWHERE</span>
-      </div>
-      <div class="start-tiles">
-        <button id="start-play" class="start-tile" type="button"
-                title="Choose an Experience and play it live.">
-          <span class="start-tile-ico" aria-hidden="true">&#9654;</span>
-          <span class="start-tile-name">PLAY</span>
-        </button>
-        <button id="start-create" class="start-tile" type="button"
-                title="Open the studio — Worlds, Experiences, playtest.">
-          <span class="start-tile-ico" aria-hidden="true">&#9998;</span>
-          <span class="start-tile-name">CREATE</span>
-        </button>
-        <button id="start-account" class="start-tile" type="button"
-                title="Keys, usage, and billing — account, plan, and spend.">
-          <span class="start-tile-ico" aria-hidden="true">&#9670;</span>
-          <span class="start-tile-name">ACCOUNT</span>
-        </button>
-      </div>
+      <header class="start-wordmark">
+        <div class="start-brand" id="start-brand">
+          <span class="start-brand-type">GOD</span>
+        </div>
+      </header>
+      <nav class="start-nav" aria-label="Main">
+        <div class="start-tiles">
+          <button id="start-play" class="start-tile" type="button" aria-current="true"
+                  title="Choose an Experience and play it live.">PLAY</button>
+          <button id="start-create" class="start-tile" type="button"
+                  title="Open the studio — Worlds, Experiences, playtest.">CREATE</button>
+          <button id="start-account" class="start-tile" type="button"
+                  title="Keys, usage, and billing — account, plan, and spend.">ACCOUNT</button>
+        </div>
+      </nav>
+      <span class="start-build" aria-hidden="true">Build 0.1</span>
     </div>
     <div id="xp-picker" class="xp-picker" hidden>
       <div class="xp-nav">
@@ -318,18 +326,20 @@
   </button>
 
   <!-- Pause: hamburger opens a 60% black fade and a text list, like a
-       traditional game. LEAVE returns to the start menu. QUIT still
-       closes the desktop app (two presses) so paid renders stop. -->
+       traditional game. Three lines: RESUME, CASE, EXIT (back to the start
+       menu). STORY, NEW and QUIT stay in the DOM, [hidden], because init()
+       wires them and J / R still reach them from the keyboard; quitting the
+       app lives on the start menu's own EXIT. -->
   <nav id="control-rail" aria-label="Paused" aria-hidden="true">
     <button id="pause-scrim" class="pause-scrim" type="button" tabindex="-1" aria-label="Resume"></button>
     <div class="pause-sheet">
       <div class="pause-kicker">PAUSED</div>
       <button id="btn-resume" class="pause-item" type="button">RESUME</button>
-      <button id="btn-story" class="pause-item" type="button" title="Story log (J)">STORY</button>
+      <button id="btn-story" class="pause-item" type="button" hidden title="Story log (J)">STORY</button>
       <button id="btn-objectives" class="pause-item" type="button" title="The case (O)">CASE</button>
-      <button id="btn-reset" class="pause-item" type="button" title="Restart this run (R)">NEW</button>
-      <button id="btn-leave" class="pause-item" type="button" title="Leave this experience and return to the start menu">LEAVE</button>
-      <button id="btn-exit" class="pause-item pause-item-quit" type="button" title="Close the app and stop the server">QUIT</button>
+      <button id="btn-reset" class="pause-item" type="button" hidden title="Restart this run (R)">NEW</button>
+      <button id="btn-leave" class="pause-item" type="button" title="Back to the start menu">EXIT</button>
+      <button id="btn-exit" class="pause-item pause-item-quit" type="button" hidden title="Close the app and stop the server">QUIT</button>
     </div>
   </nav>
 
@@ -751,6 +761,22 @@
 
     <button id="free-will-btn" type="button" title="Type your own action (F)">
       <span class="fw-icon">✎</span><span class="fw-label">ACT</span>
+    </button>
+    <!-- THE FIST: the turn's choices wait behind it. The picture lands and
+         plays back, the fist appears greyed while the slate is still being
+         written, turns green when it is ready, and pressing it is a one-way
+         trip for the turn — the fist fades down and the choices + Custom take
+         its place. Idle it is not there at all. See Fist in standalone.js. -->
+    <button id="fist-btn" type="button" class="hidden" aria-hidden="true" disabled
+            title="Your options (Enter)" aria-label="Show this turn's options">
+      <svg class="fist-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6.5 11V8.6a1.6 1.6 0 0 1 3.2 0V11"/>
+        <path d="M9.7 11V7.6a1.6 1.6 0 0 1 3.2 0V11"/>
+        <path d="M12.9 11V8a1.6 1.6 0 0 1 3.2 0V11"/>
+        <path d="M16.1 11V9.4a1.5 1.5 0 0 1 3 0V14c0 3.9-2.7 6.5-6.4 6.5h-2.2C7 20.5 4.9 18.3 4.9 15V12.4"/>
+        <path d="M4.9 12.4c0-.9.7-1.6 1.6-1.6h6.2c1 0 1.7.7 1.7 1.6s-.7 1.6-1.7 1.6H8.2"/>
+      </svg>
     </button>
     <!-- Realtime "TOUCH" tool (realtime mode only): arms an aiming reticle you
          steer with the mouse; a second click drops a location prompt that

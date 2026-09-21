@@ -219,6 +219,12 @@ earlier one.
   **both**; "wire it into the editor that is actually shipped" is a commit
   message in this repo for a reason.
 
+- `static/menu/background_loop.mp4` — the start menu's background film,
+  played muted and looping under the title by `Signal` (standalone.js). Swap
+  the file to swap the splash; absent, the menu is the black card. `*.mp4` is
+  gitignored, and `tools/ship_layout` bundles `static/`, so a build made with
+  it in place carries it.
+
 ### Providers and mock mode
 
 Text, vision and images route through `ai_provider_manager`, configured in

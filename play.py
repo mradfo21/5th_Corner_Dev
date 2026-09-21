@@ -240,6 +240,17 @@ def run_window(game_url: str, health_url: str, fullscreen: bool) -> int:
 
     import api as server
 
+    # The start menu's background film plays with its sound from the first
+    # frame. Chromium refuses audible autoplay until the page has had a user
+    # gesture; the WebView2 runtime reads this variable at start-up, and the
+    # desktop window is ours, so the policy is lifted here (a plain browser
+    # tab keeps the platform default and the client falls back to muted until
+    # the first press).
+    _extra = os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "")
+    if "--autoplay-policy" not in _extra:
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
+            _extra + " --autoplay-policy=no-user-gesture-required").strip()
+
     bridge = Api()
     window = webview.create_window(
         TITLE, html=SPLASH, js_api=bridge,

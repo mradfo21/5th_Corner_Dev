@@ -112,8 +112,65 @@ def fidelity(choice_text, new_prose):
     return len(hit) / float(len(words)), hit, [w for w in words if w not in hit]
 
 
+FIST_STATE = """() => {
+  const b = document.getElementById('fist-btn');
+  if (!b) return 'none';
+  if (b.classList.contains('ready')) return 'ready';
+  if (b.classList.contains('waiting')) return 'waiting';
+  return document.querySelector('.choice-btn') ? 'open' : 'idle';
+}"""
+
+
+def open_fist(page, log, wait_s=30.0):
+    """The rows wait behind the FIST (Fist, standalone.js): the turn releases
+    when its picture lands, the fist appears greyed while the slate is still
+    being written, turns green when it is ready, and pressing it reveals the
+    choices + Custom. A player presses it; so does the harness — and the wait
+    from "picture up" to "fist green" is logged, because that number is the
+    slate's own cost, which used to be buried inside the turn."""
+    t0 = time.time()
+    waited_grey = 0.0
+    tag = os.environ.get("PT_TAG_INDEX", "0")
+    shot_grey = False
+    while time.time() - t0 < wait_s:
+        try:
+            st = page.evaluate(FIST_STATE)
+        except Exception:
+            st = "idle"
+        if st in ("open", "none"):
+            return True
+        if st == "ready":
+            snap(page, f"turn_{int(tag):02d}_fist_green.png")
+            try:
+                page.click("#fist-btn", timeout=4000)
+            except Exception as exc:
+                log(f"    the fist would not press: {a(str(exc))[:80]}")
+                return False
+            log(f"    fist: green after {waited_grey:.1f}s grey; pressed")
+            for _ in range(20):
+                time.sleep(0.15)
+                try:
+                    if page.evaluate("() => !!document.querySelector('.choice-btn')"):
+                        time.sleep(0.5)  # the rows pop in staggered
+                        snap(page, f"turn_{int(tag):02d}_fist_open.png")
+                        return True
+                except Exception:
+                    pass
+            log("    fist pressed but no rows appeared")
+            return False
+        if st == "waiting":
+            waited_grey = time.time() - t0
+            if not shot_grey:
+                shot_grey = True
+                snap(page, f"turn_{int(tag):02d}_fist_grey.png")
+        time.sleep(0.25)
+    log(f"    the fist never turned green in {wait_s:.0f}s (last state: {st})")
+    return False
+
+
 def do_choice(page, log, turn):
     """Click one of the WRITTEN choices — the thing a player actually does."""
+    open_fist(page, log)
     # Wait for the rows. #choices-container lives inside #action-wheel, whose
     # opacity is animated, and the buttons are rendered when the prompt item
     # lands — so a single immediate check finds nothing on a turn that is about
@@ -1291,6 +1348,7 @@ def do_custom(page, log, typed):
     run "resolved" in 1.5s with no frames, and the report blamed the game for
     dropping four typed actions it had never actually been given.
     """
+    open_fist(page, log)
     for _ in range(40):
         try:
             ready = page.evaluate(
@@ -1478,7 +1536,18 @@ def main():
                 if m.type == "error" else None)
         page.on("pageerror", lambda e: errors.append(str(e)[:200]))
 
-        if os.environ.get("PT_RELOAD") == "1":
+        # PT_SESSION=<id> plays in a session of its own, so a run somebody is
+        # in the middle of on `default` is left exactly where it was. The
+        # page is put back on the plain URL when the harness is done.
+        home_url = page.url
+        if os.environ.get("PT_SESSION"):
+            sid = os.environ["PT_SESSION"].strip()
+            origin0 = page.evaluate("() => location.origin")
+            log(f">>> playing in session {sid!r}; the default run is left alone")
+            page.goto(f"{origin0}/standalone?session={sid}", wait_until="load")
+            page.wait_for_function("() => !!window.Renderer", timeout=60000)
+            time.sleep(3)
+        elif os.environ.get("PT_RELOAD") == "1":
             log(">>> reloading client for current CSS/JS")
             page.reload(wait_until="load")
             page.wait_for_function("() => !!window.Renderer", timeout=60000)
@@ -1620,6 +1689,7 @@ def main():
                 # (standalone.css, end of file), so clicking it waits out the
                 # timeout and files the *game* as broken for a UI change.
                 try:
+                    open_fist(page, log)
                     page.click(".choice-btn-custom", timeout=8000)
                     page.wait_for_selector("#custom-input", state="visible", timeout=8000)
                     typed = "Search the ground for tracks"
@@ -1817,6 +1887,13 @@ def main():
             log("\nENVIRONMENT (not a code fault):")
             for e in env[:4]:
                 log(f"  {a(e)[:200]}")
+
+        if os.environ.get("PT_SESSION"):
+            try:
+                page.goto(home_url, wait_until="load")
+                log(f">>> page put back on {home_url}")
+            except Exception as exc:
+                log(f"!! could not put the page back: {a(str(exc))[:80]}")
 
     with open(os.path.join(SHOTS, "REPORT.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
