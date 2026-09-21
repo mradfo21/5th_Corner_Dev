@@ -120,11 +120,18 @@ $16.95; Gemini pictures $17.04 over 30 days) still need A6.
 | **C4** | Checkout return drops the player's game | Carry a validated same-origin return path through `success_url` / `cancel_url` | test: `?session=` kept; `//evil` refused | open |
 | **C5** | Arcade coins double-charge if both on | Refuse coin gating when `FEATURE_BILLING` is on | test | open |
 | **C6** | $12/mo Play plan unused | Drop from checkout | test: `kind=play` → 400 | open (decision: drop) |
+| **C7** | **Money can't land at all on the installed Stripe library (15.5.1)** — Stripe objects are no longer dicts: `billing.redeem`'s `dict(cs.metadata)` raises TypeError, and `coinop.handle_webhook`'s `data.get(...)` raises AttributeError | Read Stripe objects with `obj["key"]` / `getattr` or `.to_dict()`; pin `stripe` to the major version tested (`requirements.txt` says only `>=10.0.0`) | test against a real test-mode session: return and webhook both credit once | open — **blocker** |
+| **C8** | Checkout offers only cards (`payment_method_types=["card"]`) | Drop the list and let the Dashboard's payment-method settings decide (the smoke test showed card, Link, Klarna, Cash App, Amazon Pay available) | checkout shows the Dashboard's methods | open |
+| **C9** | Delayed methods (Klarna, Cash App, bank) finish **after** checkout completes | Handle `checkout.session.async_payment_succeeded` / `…_failed` in the webhook; credit only on `payment_status == "paid"` | test with a delayed-method test payment | open |
+| **C10** | The webhook is a backup, the browser return is the main path | Make the webhook the source of truth (the return only shows "landing…" and refreshes); both stay idempotent on the checkout id | close the tab mid-checkout → still credited | open |
+| **C11** | No receipt/invoice for the player | Checkout `invoice_creation` (payment mode) gives each top-up a Stripe invoice PDF; `customer_creation="always"` keeps one Stripe customer per wallet | a test top-up produces an invoice in the Dashboard | open |
+| **C12** | Server uses the full secret key | A restricted key with only Checkout Sessions (write), Customers (write), Events/Webhooks (read) for the server | Render runs on the restricted key | open |
 
-Order: **A1 → A3 → A4 + A5 → A6 → A7 → A10**, then start **A9** (it needs
-two weeks of clean data, so everything after runs alongside it) → **C2 → C3 →
-C1** (C1 depends on C2's account id, and B1 on C1) **→ B1 → B2 → B3 → B5 → C4 →
-C5 / C6 → B4 / B6** → test-mode run (§7) → markup decision on reconciled
+Order: **C7 first** (small, and nothing can be tested end-to-end in test
+mode without it) → **A1 → A3 → A4 + A5 → A6 → A7 → A10**, then start **A9**
+(it needs two weeks of clean data, so everything after runs alongside it) →
+**C2 → C3 → C10 → C9 → C1** (C1 depends on C2's account id, and B1 on C1) **→ B1 → B2 → B3 → B5 → C4 →
+C8 / C11 / C12 → C5 / C6 → B4 / B6** → test-mode run (§7) → markup decision on reconciled
 numbers (§5) → live.
 
 ---
@@ -280,6 +287,33 @@ or backslash; used for both return URLs.
 
 **C5 / C6.** Coin gating refused when `FEATURE_BILLING` is on; checkout
 refuses `kind=play`.
+
+### 6b. Stripe review (2026-09-21, test mode)
+
+Checked against the sandbox with the test keys (kept on Matt's machine in
+`stripe_test.env`, gitignored by `*.env`, never committed):
+
+- Account `acct_1UIBNrFLvfCv690K`, "Art Almost LLC sandbox", US / USD,
+  `business_profile.url = https://5th-corner.com`, no support email set,
+  `details_submitted: false` (activation only matters for live mode). No
+  products, no webhook endpoints, test balance $0.
+- A $10 Checkout Session built the way `billing.create_checkout` builds it
+  opens fine in test mode — the payment page works.
+- The installed `stripe` is 15.5.1: C7 above. Both credit paths fail today.
+- Which Stripe products this needs:
+  - **Payments (Checkout)** — yes: one-off top-ups into the wallet.
+  - **Invoicing** — only as receipts for top-ups (C11); no invoices are
+    sent to players otherwise.
+  - **Billing** — not needed for prepaid top-ups. Stripe Billing's usage
+    meters and credit grants are an alternative to our own wallet, but they
+    are built around subscriptions and invoices, and our own ledger has to
+    exist anyway for cost accuracy (A) and receipts (B). Revisit only if a
+    subscription comes back (C6).
+  - **Treasury** — not applicable: it is for platforms offering financial
+    accounts to their own users through Connect, not for a game selling
+    credit.
+- The secret key was shared in a chat transcript. It is a test key (sandbox
+  only), but roll it in the Dashboard once setup is done.
 
 ### Setup (Matt — needs your identity and bank details)
 
