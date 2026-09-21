@@ -15439,6 +15439,7 @@ body.opening-blackout #fist-btn {
   #fist-btn.ready { animation: none; }
 }
 
+<<<<<<< HEAD
 /* The run's look book, on the Image node (look_book.py). The sheet is shown
    whole because it is read as a whole — nine frames, one world — and the
    roster as small plates with their roster line under them, because that line
@@ -15763,3 +15764,141 @@ body.world-editor-on .lookbook-status { display: none !important; }
   #world-editor .we-lookbook.is-live::after,
   #world-editor .we-lb-progress .lbs-bar i.live { animation: none; }
 }
+=======
+/* ── THE GOAL ─────────────────────────────────────────────────────────────────
+   One thing you can see (goal.py). Top-left names it; on the picture it gets an
+   item tag: a dot on the thing, a leader up and to the right, a rule, the name
+   above it and GOAL below. Bone ink, mono caps, a soft shadow because it sits
+   on the picture rather than on black. The photo tally steps down under it. */
+#goal-hud {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 58px);
+  left: calc(env(safe-area-inset-left, 0px) + 60px);
+  z-index: 22;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-width: min(360px, calc(100vw - 120px));
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+#goal-hud.on { opacity: 1; }
+#goal-hud .goal-hud-kind {
+  font: 300 10px/1 var(--font-mono);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--ink-quiet);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+}
+#goal-hud.reached .goal-hud-kind::after { content: " \00B7  reached"; }
+#goal-hud .goal-hud-name {
+  font: 300 16px/1.3 var(--font-ui);
+  color: var(--ink);
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.7);
+}
+#goal-hud .goal-hud-why {
+  font: 300 13px/1.5 var(--font-ui);
+  color: var(--ink-nav);
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.75);
+  max-height: 80px;
+  overflow: hidden;
+  transition: opacity 1.4s ease, max-height 1.4s ease;
+}
+#goal-hud .goal-hud-why.gone,
+#goal-hud .goal-hud-why:empty { opacity: 0; max-height: 0; }
+body.has-goal #shot-tally {
+  top: calc(env(safe-area-inset-top, 0px) + 58px + var(--goal-hud-h, 44px) + 12px);
+  transition: top 0.9s ease, opacity 0.4s ease, border-color 0.3s, color 0.3s;
+}
+
+#goal-tag {
+  position: fixed;
+  inset: 0;
+  z-index: 21;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+#goal-tag.on { opacity: 1; }
+#goal-tag svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: visible; }
+#goal-tag .gt-ring { fill: none; stroke: var(--ink); stroke-width: 1; opacity: 0.55; }
+#goal-tag .gt-dot { fill: var(--ink); }
+#goal-tag .gt-lead { fill: none; stroke: var(--ink); stroke-width: 1.25; }
+#goal-tag .gt-name,
+#goal-tag .gt-kind {
+  position: absolute;
+  white-space: nowrap;
+  text-transform: uppercase;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.75), 0 0 2px rgba(0, 0, 0, 0.6);
+}
+.scan-tag.goal-shadowed { opacity: 0 !important; pointer-events: none !important; }
+#goal-tag .gt-name { font: 400 12px/1 var(--font-mono); letter-spacing: 0.28em; color: #fff; }
+#goal-tag .gt-kind { font: 300 9px/1 var(--font-mono); letter-spacing: 0.34em; color: var(--ink-nav); }
+
+body.start-menu-on #goal-hud, body.start-menu-on #goal-tag,
+body.mode-watch #goal-hud, body.mode-watch #goal-tag,
+body.camera-mode #goal-hud, body.camera-mode #goal-tag,
+body.moment-active #goal-hud, body.moment-active #goal-tag,
+body.world-editor-on #goal-hud, body.world-editor-on #goal-tag,
+body.awaiting-first-scene #goal-hud, body.awaiting-first-scene #goal-tag {
+  opacity: 0 !important;
+}
+
+/* REACHED — the picture fades down under the name and the line that got them
+   there; CONTINUE hands the run back. Same type as the title screen. */
+#goal-reached {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 0 24px;
+  text-align: center;
+  background: radial-gradient(ellipse 80% 70% at 50% 50%, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.86) 100%);
+  opacity: 0;
+  transition: opacity 0.7s ease;
+}
+#goal-reached.hidden { display: none; }
+#goal-reached.on { opacity: 1; }
+#goal-reached .gr-kind {
+  font: 300 11px/1 var(--font-mono);
+  letter-spacing: 0.4em;
+  margin-right: -0.4em;
+  text-transform: uppercase;
+  color: var(--ink-quiet);
+}
+#goal-reached .gr-name {
+  font: 200 clamp(22px, 2.6vw, 34px)/1.2 var(--font-mono);
+  letter-spacing: 0.42em;
+  margin-right: -0.42em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+#goal-reached .gr-line {
+  max-width: 640px;
+  font: 300 15px/1.6 var(--font-ui);
+  color: var(--ink-nav);
+}
+#goal-reached .gr-line:empty { display: none; }
+#goal-reached .gr-continue {
+  margin-top: 26px;
+  height: 44px;
+  padding: 0 4px;
+  font: 300 12px/1 var(--font-mono);
+  letter-spacing: 0.4em;
+  margin-right: -0.4em;
+  text-transform: uppercase;
+  color: var(--ink-nav);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--ink-line);
+  cursor: pointer;
+  transition: color 0.25s ease, border-color 0.25s ease;
+}
+#goal-reached .gr-continue:hover,
+#goal-reached .gr-continue:focus-visible { color: var(--ink-hi); border-bottom-color: var(--ink); outline: none; }
+>>>>>>> claude/goal-first-frame

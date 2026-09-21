@@ -895,6 +895,9 @@ def _gated_detect():
 
 
 app.add_url_rule('/api/detect', 'standalone_api_detect', _gated_detect, methods=['POST'])
+# The run's goal on the picture: is it in this frame, and where (goal.py).
+import goal as _goal_mod
+app.add_url_rule('/api/goal/sight', 'standalone_api_goal_sight', _goal_mod.api_goal_sight, methods=['POST'])
 # Realtime danger grading for the peripheral-vignette / health system: the
 # client posts the on-screen video frame at ~1 Hz; the engine returns a single
 # ordinal threat level (0 safe / 1 threatened / 2 attacking) for that frame.
