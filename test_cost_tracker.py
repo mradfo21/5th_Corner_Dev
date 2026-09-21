@@ -33,7 +33,7 @@ class CostTrackerTestCase(unittest.TestCase):
         pricing._cache_timestamp = 0
         pricing.save_pricing({
             "rates": {
-                "gemini:gemini-3.1-flash-lite": {"unit_type": "tokens", "input_per_1k": 0.0375, "output_per_1k": 0.15},
+                "gemini:gemini-3.1-flash-lite": {"unit_type": "tokens", "input_per_1m": 37.5, "output_per_1m": 150.0},
                 "krea:krea-2/medium": {"unit_type": "images", "per_unit": 0.02},
                 "reactor:default": {"unit_type": "seconds", "per_unit": None},
             }

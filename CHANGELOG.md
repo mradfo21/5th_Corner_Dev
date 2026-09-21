@@ -1,3 +1,32 @@
+# 🔧 CHANGELOG - September 21, 2026
+
+## 💵 FIX: The price table is per million tokens, sourced, and priced by image size
+
+Asked: *"if we're going to make money we need to know our costs."*
+
+**What was wrong.** `pricing.json` stored every provider's per-million token
+price in fields named per-thousand, so story text was logged about 150× too
+high overall (every token rate 1000× high, partly offset by calls landing on
+the wrong rates). Images were one flat price whatever their size, and a
+provider's `default` rate could price a call of a different kind (a text
+rate used for an image).
+
+**What changed.**
+
+- `pricing.json`: 36 rates, each read off the provider's own price page on
+  2026-09-21 and carrying its `source` and `checked` date. Token rates are
+  `input_per_1m` / `output_per_1m`; image rates carry their `sizes`
+  (0.5K / 1K / 2K / 4K). Unknown prices (fal, Lyria realtime, Gemini Live)
+  are `null` rather than guessed.
+- `pricing.estimate_cost` refuses the old per-1k token fields (warns once)
+  so the mistake can't come back, and prices an image at its size.
+- `pricing.get_rate` falls back to `provider:default:<unit type>` and only
+  then to `provider:default` when the unit type matches.
+- Tests: per-1k fields refused, no fallback across unit types, image priced
+  at its size, the shipped table is sourced and per-million, flash-lite text
+  is cheap. 57 pricing / cost-tracker / billing tests pass.
+- `BILLING_LIVE_PLAN.md`: "~1000×" corrected to "~150× overall".
+
 # 🔧 CHANGELOG - September 20, 2026
 
 ## 💳 ACCOUNT is a sheet on the right of the menu, and takes a custom key
