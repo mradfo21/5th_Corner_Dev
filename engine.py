@@ -1579,6 +1579,45 @@ def apply_experience_cutscene(
         "status": "pending",
         "graph": True,
     }
+    # A cutscene that leads to ANOTHER World is that World's arrival, and the
+    # montage reads everything it draws from the live prompt file — the bible
+    # for its shotlist, the Level sheet for the place, landmarks and palette,
+    # the goal for its title card. Until now the destination was only bound
+    # when the montage finished (complete_cutscene → apply_experience_world),
+    # so a world-to-world cutscene was composed for the world the player was
+    # LEAVING and stitched onto the frame they were leaving from. Reported as
+    # "not all data gets cleared for the cutscene, which then pollutes the
+    # rest". Bind the destination here, before a shot is drawn; the state
+    # swap (goal, clock, detection, history boundary) still happens on
+    # completion, when the player actually arrives.
+    #
+    # The one mood that is ABOUT the place being left — "departure", a last
+    # look and a walk away — keeps the world it is leaving and lands on the
+    # destination's own plate afterwards, so the old place never becomes the
+    # new one's anchor either way.
+    to_world = _cutscene_outgoing_world(exp, dest["id"])
+    if to_world and to_world.get("id") != (src or {}).get("id"):
+        pending["to_world"] = to_world["id"]
+        if _cutscene_arrives(dest):
+            pending["arrival"] = True
+            if _bind_world_prompts(to_world):
+                print(f"[EXPERIENCE GRAPH] cutscene {dest.get('name')!r} arrives in "
+                      f"{to_world.get('name')!r} — its World is bound before the "
+                      f"montage draws", flush=True)
+                # The montage reads the run's "Lighting:" line from the state.
+                # Rolled here, off the destination's own palette, so the montage
+                # and the first playable frame agree on the hour; the stitch
+                # keeps this roll rather than making a second one (see
+                # complete_cutscene).
+                try:
+                    state["time_of_day"] = _generate_random_starting_time()
+                    pending["arrival_lighting"] = state["time_of_day"]
+                except Exception as e:
+                    logging.warning(f"[EXPERIENCE GRAPH] arrival lighting roll failed: {e}")
+        else:
+            print(f"[EXPERIENCE GRAPH] cutscene {dest.get('name')!r} is a departure "
+                  f"from {(src or {}).get('name')!r}; {to_world.get('name')!r} is "
+                  f"bound when it ends", flush=True)
     state["experience_id"] = exp.get("id") or "default"
     state["experience_cutscene_id"] = dest["id"]
     state["pending_cutscene"] = pending
@@ -1601,6 +1640,27 @@ def complete_cutscene(state: dict, session_id: str = "default") -> Optional[dict
     cid = str(state.get("experience_cutscene_id") or "").strip()
     pending = state.get("pending_cutscene") or {}
     to_world = str(pending.get("to_world") or "").strip()
+    # The arrival montage's last panel is the freshest picture of the
+    # destination there is — composed for that World, moments ago. It is what
+    # the first turn there continues from (see apply_experience_world).
+    arrival_shot = ""
+    montage_refs: List[str] = []
+    if pending.get("arrival"):
+        try:
+            for shot in reversed(list(pending.get("shots") or [])):
+                path = str((shot or {}).get("path") or "")
+                if path and os.path.exists(path):
+                    arrival_shot = path
+                    break
+            if arrival_shot:
+                montage_refs = _montage_place_refs(pending, plate_path=arrival_shot)
+        except Exception:
+            arrival_shot, montage_refs = "", []
+    # The arrival rolled the destination's lighting before the montage drew
+    # (see apply_experience_cutscene). Rolling again here would put the first
+    # playable frame under a different sky from the montage it continues.
+    rolled = str(pending.get("arrival_lighting") or "")
+    relight = not (rolled and rolled == str(state.get("time_of_day") or ""))
     state["experience_cutscene_id"] = ""
     state["pending_cutscene"] = None
     exp = experience_store.get_experience()
@@ -1619,12 +1679,181 @@ def complete_cutscene(state: dict, session_id: str = "default") -> Optional[dict
             info["kind"] = "cutscene"
             return info
         return {"kind": "resume"}
-    info = apply_experience_world(state, dest_id, session_id)
+    info = apply_experience_world(state, dest_id, session_id,
+                                  arrival_shot=arrival_shot, montage_refs=montage_refs,
+                                  relight=relight)
     if info:
         info["transition"] = hit
         info["kind"] = "world"
         return info
     return {"kind": "resume"}
+
+
+def _cutscene_outgoing_world(exp: dict, cutscene_id: str) -> Optional[dict]:
+    """The World this cutscene's outgoing edge leads to, if any."""
+    try:
+        import experience_store
+        for t in experience_store.transitions_from(exp, cutscene_id):
+            dest = experience_store.world_by_id(exp, t.get("to") or "")
+            if dest:
+                return dest
+    except Exception:
+        pass
+    return None
+
+
+def _cutscene_arrives(node: dict) -> bool:
+    """Does this cutscene show the place the player is ARRIVING in?
+
+    Every mood but one restages "this exact place" or crosses into the next
+    one, and when the edge out of it leads to another World that place is the
+    destination. "departure" is a last look at the place being left.
+    """
+    return str((node or {}).get("mood") or "").strip().lower() != "departure"
+
+
+def _bind_world_prompts(dest: dict) -> bool:
+    """Load a World snapshot into the live prompt file, keeping the run's cast.
+
+    Who the player IS belongs to the run, not to a World. `sync_cast_to_worlds`
+    copies one cast across every World of an Experience when the sheet is
+    saved, so in practice the snapshots agree — but a World saved before that
+    sync, or authored with a different protagonist, used to swap the player
+    mid-run: the old guard restored the prior cast only when the destination's
+    sheet was DISABLED, and two enabled-but-different sheets slid straight
+    through it (a run begun as Isaac Clarke would arrive as Jason Fleece). The
+    run's protagonist now wins whenever the run has one.
+    """
+    import worlds_store
+    slug = str((dest or {}).get("slug") or "")
+    if not slug:
+        return False
+    prior_cast = None
+    try:
+        if game_identity.character_enabled():
+            prior_cast = dict(game_identity.get_spec()[game_identity.CHARACTER_KEY])
+    except Exception:
+        prior_cast = None
+    try:
+        worlds_store.load_world(slug)
+    except KeyError:
+        logging.warning(f"[EXPERIENCE GRAPH] world '{slug}' missing")
+        return False
+    if prior_cast:
+        try:
+            import prompts_store
+            now = None
+            try:
+                now = dict(game_identity.get_spec()[game_identity.CHARACTER_KEY])
+            except Exception:
+                now = None
+            if now != prior_cast:
+                prompts_store.save_prompts_bulk({game_identity.CHARACTER_KEY: prior_cast})
+                logging.info(
+                    "[EXPERIENCE GRAPH] kept protagonist "
+                    f"{prior_cast.get('name')!r} across the world stitch"
+                )
+        except Exception as e:
+            logging.warning(f"[EXPERIENCE GRAPH] cast carry-over failed: {e}")
+    return True
+
+
+# Everything that describes THE PLACE the run is in, or what has happened in
+# it. A world stitch used to mutate the live state in place and clear six of
+# these; the rest survived by omission, and every one of them is read by a
+# prompt: the previous world's goal ("WHAT THE PLAYER CAME HERE FOR"), its
+# heat and witness, its narrator memory, its encounter roster (built from its
+# lore), its flipbook keyframe (the START of the next grid — reference slot 1),
+# its stagnation streak, its lighting line. New Game clears all of it because
+# it rebuilds the state from a literal; the stitch has to earn it key by key.
+_WORLD_SCOPED_KEYS = (
+    "level_goal", "goal_reached_turn", "_turn_goal_reached",
+    "detection_witness",
+    "environment_streak", "environment_streak_vocab",
+    "recent_events", "narrator_recent", "narrator_beat",
+    "encounter", "encounter_outcome", "encounter_resolving",
+    "encounter_roster", "encounter_kinds_used",
+    "encounter_last_turn", "encounter_last_at", "encounter_last_label",
+    "encounter_sighting", "encounter_travel_remain",
+    "flipbook_last_frame", "flipbook_first_frame", "flipbook_last_grid",
+    "current_sequence",
+    "choices", "choices_metadata", "pending_opening_choices",
+    "scene_objects", "scene_objects_turn",
+    "fate", "in_combat", "current_render_base",
+)
+
+
+def _clear_world_scoped_state(state: dict) -> None:
+    """Leave the previous World behind. What stays: who the player is, what
+    they carry, who is with them, whether they are hurt, the feed, and the
+    run's turn count. See _WORLD_SCOPED_KEYS for what goes."""
+    for key in _WORLD_SCOPED_KEYS:
+        state.pop(key, None)
+    state["seen_elements"] = []
+    state["scene_objects"] = []
+    state["scene_objects_turn"] = -1
+    state["choices"] = []
+    turn = int(state.get("turn_count") or 0)
+    # Nobody in the new place knows the player is there yet.
+    state["detection"] = {"heat": 0, "level": DETECT_HIDDEN, "since_turn": turn}
+    # The story clock is per place: a level that opens at "critical" writes
+    # every beat as a last stand from its first turn.
+    state["threat_level"] = 0
+    state["current_phase"] = "normal"
+    state["chaos_level"] = 0
+    state["in_combat"] = False
+
+
+def _stitch_history(session_id: str, state: dict, dest: dict, anchor: str,
+                    montage_refs: Optional[List[str]] = None) -> None:
+    """Mark the World boundary in history.json.
+
+    The next turn's img2img references are the last history images, walked
+    back until a hard transition — and nothing ever wrote one for a stitch,
+    so the new World's first frame was drawn off the old World's last frame,
+    and every frame after that chained off it. The row below is the boundary:
+    its image is the picture of the DESTINATION the run continues from (the
+    arrival montage's last panel, else the World's plate), it is a hard
+    transition so collection stops here, and it carries the destination's
+    setting so cutscene.environment_type reads this place, not the last one.
+
+    It is also written the way the level's opening writes its handoff row
+    (``cached_opening``, see _apply_cached_opening_frame): the turn after a
+    stitch is forced to a hard cut, and a hard cut blurs its reference to a
+    colour swatch — so the first frame in the new World shared only a palette
+    with the picture the player had just been shown. The handoff mark keeps
+    the anchor's pixels for that one turn, with the rest of the arrival
+    montage riding along as ``montage_refs``, exactly as turn one continues
+    the opening.
+    """
+    place = ""
+    try:
+        place = game_identity.place_summary() or ""
+    except Exception:
+        place = ""
+    try:
+        hist = _load_history(session_id) or []
+        hist.append({
+            "choice": "__world_stitch__",
+            "dispatch": f"You are in {dest.get('name') or 'a new place'} now. {place}".strip(),
+            "vision_dispatch": place or f"{dest.get('name') or 'A new place'}.",
+            "vision_analysis": "",
+            "world_prompt": state.get("world_prompt") or "",
+            "setting_type": classify_setting(place) or "",
+            "image": anchor or "",
+            "image_url": anchor or "",
+            "analysis_image": anchor or "",
+            "guide_image": anchor or "",
+            "image_prompt": place,
+            "hard_transition": True,
+            "cached_opening": bool(anchor),
+            "montage_refs": [str(p) for p in (montage_refs or []) if p],
+            "world_stitch": True,
+            "world": dest.get("slug") or dest.get("id") or "",
+        })
+        _save_history(hist, session_id)
+    except Exception as e:
+        logging.warning(f"[EXPERIENCE GRAPH] history stitch row failed: {e}")
 
 
 def _world_transition_feed_item(info: dict) -> dict:
@@ -1702,11 +1931,21 @@ def apply_experience_start(state: dict, session_id: str = "default") -> dict:
     return state
 
 
-def apply_experience_world(state: dict, world_id: str, session_id: str = "default") -> Optional[dict]:
-    """Load a World snapshot into the live prompts and re-seed world_prompt."""
+def apply_experience_world(state: dict, world_id: str, session_id: str = "default",
+                           *, arrival_shot: str = "",
+                           montage_refs: Optional[List[str]] = None,
+                           relight: bool = True) -> Optional[dict]:
+    """Land in a World: bind its prompts, leave the previous place behind.
+
+    ``arrival_shot`` is the last panel of the cutscene that brought the player
+    here, when there was one — the freshest picture of this World, composed
+    for it moments ago. It becomes the frame the run continues from, and
+    ``montage_refs`` (the montage's other panels) ride into that first frame's
+    references beside it. ``relight`` is off when that cutscene already rolled
+    this World's lighting line and drew under it.
+    """
     try:
         import experience_store
-        import worlds_store
     except Exception as e:
         logging.warning(f"[EXPERIENCE GRAPH] apply world skipped: {e}")
         return None
@@ -1716,58 +1955,19 @@ def apply_experience_world(state: dict, world_id: str, session_id: str = "defaul
         return None
     src = experience_store.world_by_id(exp, state.get("experience_world_id") or "")
     if dest.get("slug"):
-        # Who the player IS belongs to the run, not to a World. Most saved
-        # World snapshots carry an empty cast sheet, and loading one replaced
-        # the live sheet with nothing — so `effective_character` fell back to
-        # the shipped protagonist and the player became Jason Fleece mid-run.
-        prior_cast = None
-        try:
-            if game_identity.character_enabled():
-                prior_cast = dict(game_identity.get_spec()[game_identity.CHARACTER_KEY])
-        except Exception:
-            prior_cast = None
-        try:
-            worlds_store.load_world(dest["slug"])
-        except KeyError:
-            logging.warning(
-                f"[EXPERIENCE GRAPH] world '{dest.get('slug')}' missing"
-            )
+        # Idempotent when the arrival cutscene already bound it (see
+        # apply_experience_cutscene); a direct edge binds here.
+        if not _bind_world_prompts(dest):
             return None
-        if prior_cast and not game_identity.character_enabled():
-            try:
-                import prompts_store
-                prompts_store.save_prompts_bulk(
-                    {game_identity.CHARACTER_KEY: prior_cast}
-                )
-                logging.info(
-                    "[EXPERIENCE GRAPH] kept protagonist "
-                    f"{prior_cast.get('name')!r} across the world stitch"
-                )
-            except Exception as e:
-                logging.warning(f"[EXPERIENCE GRAPH] cast carry-over failed: {e}")
     state["experience_id"] = exp.get("id") or "default"
     state["experience_world_id"] = dest["id"]
     state["world_turn_count"] = 0
     state["pending_world_transition"] = True
-    # A confrontation belongs to the place it started in. Carrying it across a
-    # stitch left the player trailing the previous world's attacker into a new
-    # one, then rolling a second encounter on top of the open one.
-    state.pop("encounter", None)
-    state.pop("encounter_outcome", None)
-    state.pop("encounter_resolving", None)
-    # And so does the world's MEMORY. `seen_elements` is the discovered-entity
-    # list `grounded_entities` hands to the choice generator, and nothing ever
-    # pruned it — so a stitch from the desert into a facility kept offering
-    # "Heave open the truck door" and "Climb over the chain link fence" in a
-    # place that has neither. The player reads that as the game not having
-    # noticed where they are, which is exactly what has happened.
-    #
-    # `scene_objects` expires by itself (it is stamped with the turn it
-    # describes, see scene_objects_for_turn) but the stamp is cleared here too,
-    # because a stitch lands mid-turn and the stamp would otherwise still match.
-    state["seen_elements"] = []
-    state["scene_objects"] = []
-    state["scene_objects_turn"] = -1
+    # The previous place, its memory, its clock and its confrontation — gone.
+    # A stitch used to clear a confrontation, the discovered-entity list and
+    # the scene objects ("Heave open the truck door" offered in a facility that
+    # has no truck) and leave everything else; see _WORLD_SCOPED_KEYS.
+    _clear_world_scoped_state(state)
     # Caches keyed by session, not by world: the new world would otherwise open
     # on the previous one's palette gloss, its cast portraits and its campfire.
     purge_run_caches(session_id, reason=f"world stitch -> {dest.get('slug') or dest['id']}")
@@ -1776,17 +1976,48 @@ def apply_experience_world(state: dict, world_id: str, session_id: str = "defaul
             PROMPTS.get("world_initial_state", "Default world starting point.")
         )
     )
-    # Land on the destination's cached first frame so a world stitch isn't a
-    # black cut while the next turn renders.
+    # The lighting line rides into every render of the session as "Lighting:"
+    # and is rolled off the level's palette — so it is rolled again here, off
+    # THIS level's, the way New Game rolls it after its bind.
+    if relight:
+        try:
+            state["time_of_day"] = _generate_random_starting_time()
+        except Exception as e:
+            logging.warning(f"[EXPERIENCE GRAPH] lighting re-roll failed: {e}")
+    # And the run's goal is this World's goal, not the last one's.
+    try:
+        _goal_for_this_run(state, "")
+    except Exception as e:
+        logging.warning(f"[EXPERIENCE GRAPH] goal for the new world failed: {e}")
+    # Land on a picture of the destination so a world stitch isn't a black cut
+    # while the next turn renders: the arrival montage's last panel, else the
+    # World's plate when it was drawn from the prompts the run is playing on,
+    # else that plate anyway (a stale plate beats a black one). The same
+    # picture is the history boundary the next turn continues from.
     dest_slug = str(dest.get("slug") or "")
+    anchor = arrival_shot if (arrival_shot and os.path.exists(str(arrival_shot))) else ""
+    anchor_url = _to_web_image_url(anchor, session_id) if anchor else ""
     if dest_slug:
         try:
             import world_frames
             rec = world_frames.record(dest_slug)
-            if rec.get("url"):
-                state["current_image_url"] = rec["url"]
+            if not anchor and rec.get("path") and os.path.exists(str(rec.get("path"))):
+                anchor = str(rec["path"])
+                anchor_url = rec.get("url") or ""
+                if not world_frames.drawn_from_live(rec):
+                    print(f"[EXPERIENCE GRAPH] {dest_slug!r}'s plate predates the "
+                          f"prompts it is played on — landing on it anyway", flush=True)
+            elif not anchor and rec.get("url"):
+                anchor_url = rec["url"]
         except Exception:
             pass
+    if anchor_url:
+        state["current_image_url"] = anchor_url
+    _stitch_history(session_id, state, dest, anchor, montage_refs if anchor else None)
+    print(f"[EXPERIENCE GRAPH] stitched into {dest.get('name')!r}: goal "
+          f"{str(state.get('level_goal') or '')[:60]!r}, lighting "
+          f"{str(state.get('time_of_day') or '')[:40]!r}, anchor "
+          f"{os.path.basename(anchor) if anchor else '(none)'}", flush=True)
     return {"from": src or {}, "to": dest, "transition": None}
 
 
@@ -10136,10 +10367,23 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     # World's verbs live under the overlay (they would start
                     # another turn while the run is parked on the Cutscene).
                     _feed_append(st, _cutscene_feed_item(switched))
+                elif switched:
+                    # A direct edge into another World. The slate just written
+                    # was derived from the frame of the World being left, so
+                    # offering it under the new place's picture is the old
+                    # place leaking through ("Heave open the truck door" in a
+                    # facility with no truck). The new place gets the same
+                    # first move a cutscene arrival gets.
+                    _feed_append(st, _world_transition_feed_item(switched))
+                    dest_name = (switched.get("to") or {}).get("name") or "a new world"
+                    prompt_item = _structure_choices_for_feed(
+                        ["Look around"], dest_name,
+                        image_url=st.get("current_image_url"),
+                    )
+                    next_choices = ["Look around"]
+                    _feed_append(st, prompt_item)
                 else:
                     _feed_append(st, prompt_item)
-                    if switched:
-                        _feed_append(st, _world_transition_feed_item(switched))
                 MAX_FEED_LOG_ITEMS = 100  # keep feed_log manageable
                 if len(st.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
                     st["feed_log"] = st["feed_log"][-MAX_FEED_LOG_ITEMS:]

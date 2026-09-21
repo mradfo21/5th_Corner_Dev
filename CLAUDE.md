@@ -201,6 +201,18 @@ earlier one.
   `.frame.png` plate.
 - `experiences/*.json` — the graph: worlds and cutscenes stitched with edges.
   `experiences/.active` is this machine's pointer and must never ship.
+- The game never plays *from* those files. Binding a World copies its snapshot
+  over the one live prompt file (`prompts/simulation_prompts.json`), and a run
+  is one `sessions/<id>/state.json` + `history.json` regardless of which World
+  it is in. So a mid-run switch is three things, all in `engine.py`:
+  `_bind_world_prompts` (replace, keep the run's cast),
+  `_clear_world_scoped_state` (`_WORLD_SCOPED_KEYS` — everything about the
+  place: goal, lighting, heat, threat clock, roster, flipbook keyframe…) and
+  `_stitch_history` (a `hard_transition` + `cached_opening` row whose image is
+  the destination, so the next frame continues from it instead of the old
+  World's last frame). A cutscene that leads to another World binds that World
+  *before* it draws (`apply_experience_cutscene`) and draws plate-less like the
+  level opening; "departure" is the one mood that stays in the World it leaves.
 - `experiences/_lore/` — documents the narrator and worldbuilder read.
 - Two editors: **World Studio** at `/studio`, and the in-game **World Editor**
   (backtick, or the EDIT rail button, while playing). A change must land in

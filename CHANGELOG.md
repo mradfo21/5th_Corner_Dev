@@ -1,5 +1,122 @@
 # 🔧 CHANGELOG - September 20, 2026
 
+## ✅ FIXED: switching Worlds — the cutscene was the old World's, and the old World rode into the new one
+
+Asked: *"I still find issues switching worlds. It feels not all data gets
+cleared for the cutscene, which then pollutes the rest."*
+
+Each World is its own file (`worlds/<slug>.json`, a full snapshot of every
+editable key, plus its `.frame.png`), and an Experience only points at them by
+slug. But the game never plays *from* those files: binding a World copies its
+snapshot over the one live prompt file, and a run is one `state.json` + one
+`history.json` whichever World it is in. Traced, the pollution was that funnel,
+in four places.
+
+**The arrival cutscene was composed for the World being left.** A cutscene
+that leads to another World only bound that World when the montage *finished*
+(`complete_cutscene` → `apply_experience_world`), so `play_for_session` read
+the bible, the Level sheet, the landmarks, the goal and the lighting line of
+the old World, and its plate was the frame on screen — the client sends
+whatever is painted as `source_url`, and `resolve_source_path` takes a
+`source_url` over everything, including an authored "Destination World
+frame". The montage showed the old place in the old place's words and the run
+then arrived in the new one on its last panel. Now `apply_experience_cutscene`
+looks down the cutscene's outgoing edge (`_cutscene_outgoing_world`); when it
+leads elsewhere the destination is bound *before* a shot is drawn
+(`_bind_world_prompts`), the destination's lighting line is rolled then
+(`pending["arrival_lighting"]`, so the montage and the first playable frame
+agree on the hour — the stitch keeps that roll instead of making a second
+one), and `pending["arrival"]` tells `cutscene.play_for_session` to drop the
+on-screen plate, decide indoor/outdoor from the destination's own place rather
+than the history of the World being left, and compose toward the destination
+(`plate_role="destination"`, the level-opening grammar: unpeopled
+photographs, goal on the horizon). With the default "Incoming plate" it draws
+from no plate at all, the way the opening does — the destination's World frame
+carries the cast *it* was authored with, and the first live run put that
+stranger (a suited figure, on a level the run had entered as a photojournalist)
+in panel 2; "Destination World frame" is honoured when the author chose it.
+"Departure" is the one mood that is about the place being left: it keeps that
+World for the montage, and the run lands on the destination's own plate after.
+
+**The stitch cleared six keys and left the rest.** `apply_experience_world`
+mutated the live state and popped the open encounter, `seen_elements` and the
+scene objects. Everything else about the place survived by omission, and every
+one of them is read by a prompt: `level_goal` ("WHAT THE PLAYER CAME HERE
+FOR" — the old World's door), `time_of_day` (the "Lighting:" line in every
+render, rolled off the old World's palette), `detection` and its witness,
+`threat_level` / `current_phase` (a level that opened at critical wrote every
+beat as a last stand from turn one), `narrator_recent`, the encounter roster
+(built from the old World's lore) and its cooldowns, `flipbook_last_frame`
+(reference slot 1 of the next grid — the old World's last panel), the
+stagnation streak, the last render base, `chaos_level`, `in_combat`, `fate`.
+New Game clears all of it because it rebuilds the state from a literal; the
+stitch now does it by name — `_WORLD_SCOPED_KEYS` and
+`_clear_world_scoped_state`, which leaves what the player carries (inventory,
+companions, wounds, the feed, the run's turn count) and re-establishes the
+rest for the new place: detection HIDDEN since this turn, threat 0, phase
+normal, a fresh goal (`_goal_for_this_run` — the destination's authored goal,
+else a draft), a fresh lighting line unless the arrival already rolled one.
+
+**`history.json` had no boundary.** The next turn's img2img references are the
+last history images walked back until a `hard_transition` row, and nothing
+ever wrote one for a stitch — so the new World's first frame was drawn off the
+old World's last frame and every frame after chained off that. `_stitch_history`
+appends the boundary: `choice: "__world_stitch__"`, `hard_transition`, its
+image the picture of the destination the run continues from (the arrival
+montage's last panel, else the World's plate — a stale plate beats a black
+cut), the destination's setting type so `cutscene.environment_type` reads this
+place, and — because the turn after a stitch is forced to a hard cut, and a
+hard cut blurs its reference to a colour swatch — `cached_opening` with the
+montage's other panels as `montage_refs`, exactly the row the level opening
+writes, so the first frame keeps the anchor's pixels ("Hard transition, but the
+reference IS the opening handoff frame") and the montage rides in beside it.
+`state["current_image_url"]` lands on the same picture.
+
+**A bind was a merge.** `worlds_store.load_world` applied the snapshot's keys
+with `save_prompts_bulk`, which updates the keys it is given and leaves the
+rest — so an editable key the destination's file did not carry kept whatever
+the *previous* World had put in the live file. A World the editor creates is
+seeded from the harness fixture, which is short six keys (the encounter brief,
+plate anchor and choice rules among them). Missing keys now come from the
+factory defaults, logged as `[WORLDS] '<slug>' carries no copy of …`; the cast
+is the exception (the run's, see `CAST_KEYS`). And the cast guard itself:
+`apply_experience_world` restored the prior protagonist only when the
+destination's sheet was *disabled*, so two enabled-but-different sheets swapped
+the player mid-run (a run begun as Isaac would arrive as Jason). The run's
+protagonist wins whenever the run has one (`_bind_world_prompts`).
+
+Two more things the trace turned up. A direct World→World edge appended the
+slate written from the *old* World's frame under the new World's picture
+("Heave open the truck door" in a facility with no truck) — it gets the same
+"Look around" first move a cutscene arrival gets. And the client kept the
+case file, objectives board, evidence tally, last detection and the SCAN
+pre-warm across `world_transition` — reset now, alongside the server.
+
+**Seen live** (a scripted switch on this machine, its own session: SOMEWHERE
+→ "Down the hatch" (threshold, default source) → the authored Sector 044
+Sub-Level; `stitch_live_sheet.jpg`). Turn 1 at the fence fires the edge; the
+log reads `cutscene 'Down the hatch' arrives in 'Sector 044 Sub-Level' — its
+World is bound before the montage draws`, the lighting rolls to `Deep shadow,
+toxic neon green, harsh crimson accent lights`, the on-screen fence frame is
+refused as a plate, and the montage is four panels of the green corridor.
+Completion stitches: goal → the blast door with the green sigil, detection
+`{heat 0, HIDDEN, since_turn 1}`, threat 0 / normal, no roster, no keyframe,
+history's last row `__world_stitch__` with `cached_opening` and two
+`montage_refs`, setting `indoor-corridor`. "Look around" then draws Jason
+standing in that corridor (`OPENING HANDOFF frame … keeping its pixels`, `+ 2
+montage panel(s)`), lighting unchanged from the montage, and the slate offers
+"Shoulder the rusted blast door / Sprint past the industrial pipes / Kick the
+side door open". Twelve state checks, all pass. `test_world_stitch.py` (added
+with `-f`, the `test_*.py` ignore rule) covers the stitch, the arrival
+composition, the departure exception, the lighting hand-off, the cast
+carry-over, the bind-as-replace and the client reset; `test_run_isolation`
+and `test_encounter_fight` pin the new helper instead of the old inline pops.
+
+Also seen: `experiences/.active` was `somewhere` again at 01:16Z tonight
+(rewritten at app boot; the previous note stands — something flips it), and
+Matt's own play left `experiences/somewhere.json`, `prompts/simulation_prompts.json`
+and `worlds/somewhere.*` modified; those are his and are not in this commit.
+
 ## 🧪 The loop, traced: does the opening flow into the narrator, the encounters, the goal and the end?
 
 Asked: *"make sure all our systems — opening cutscene, narrator, encounters,

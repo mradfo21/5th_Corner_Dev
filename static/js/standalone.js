@@ -16785,6 +16785,19 @@
             try { WorldEditor.setLiveWorldId(to); } catch (_) {}
           }
         }
+        // A new World is a new place: the case file, the objectives board,
+        // the evidence tally and the last detection all described the one
+        // being left, and used to ride straight through the stitch (the
+        // server clears its side in engine.apply_experience_world). What
+        // stays is what the player carries: inventory, companions, the feed.
+        try { closeScan(); } catch (_) {}
+        state.scanPrewarm = { objects: [], size: null, ts: 0 };
+        state.objDirectiveTurn = null;
+        state.selectedInvestigation = null;
+        state._introGoalShown = false;
+        try { Evidence.reset(); } catch (_) {}
+        try { Objectives.reset(); } catch (_) {}
+        try { Investigations.clear(); } catch (_) {}
         return;
 
       default:
@@ -16878,6 +16891,7 @@
       state._introGoalShown = false; // re-show the one-line goal on a fresh case
       try { Evidence.reset(); } catch (_) {} // the EVIDENCE score + case file are per-run
       try { Objectives.reset(); } catch (_) {} // objectives are per-run; reseed the spine + challenges
+      state.scanPrewarm = { objects: [], size: null, ts: 0 }; // closeScan() leaves the last detection cached
       state.objDirectiveTurn = null;
       state.selectedInvestigation = null;
       try { Investigations.clear(); } catch (_) {} // the case file is per-run

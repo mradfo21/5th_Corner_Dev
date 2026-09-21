@@ -151,6 +151,28 @@ def load_world(slug: str) -> Dict[str, Any]:
               f"{', '.join(gutted)} — restored from the factory defaults rather "
               f"than playing the test fixture. Author these in the editor to "
               f"make the substitution stop.", flush=True)
+    # A bind is a REPLACE, not a merge. save_prompts_bulk updates the live
+    # file with the keys it is given and leaves the rest — so any editable key
+    # this snapshot does not carry kept whatever the previously bound World
+    # had put there. A World the editor creates is seeded from the harness
+    # fixture, which is short six keys (the encounter brief, plate anchor and
+    # choice rules among them), and those six were playing as the last World's
+    # on every bind. Missing keys come from the factory defaults instead. The
+    # cast is the exception: who the player is belongs to the run (CAST_KEYS,
+    # and engine._bind_world_prompts restores it across a stitch).
+    missing = [k for k in known if k not in fields and k not in CAST_KEYS]
+    if missing:
+        factory = prompts_store.load_defaults()
+        filled = []
+        for key in missing:
+            replacement = factory.get(key)
+            if replacement not in (None, ""):
+                fields[key] = replacement
+                filled.append(key)
+        if filled:
+            print(f"[WORLDS] '{_slug(slug)}' carries no copy of "
+                  f"{', '.join(filled)} — playing the factory defaults rather "
+                  f"than whatever the last World left in the live file", flush=True)
     if fields:
         prompts_store.save_prompts_bulk(fields)
     return {"slug": _slug(slug), "name": data.get("name", slug),

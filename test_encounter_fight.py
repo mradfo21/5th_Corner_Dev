@@ -1299,9 +1299,16 @@ class TestAWorldStitchDoesNotRecastYou(unittest.TestCase):
         self.assertIn("kept protagonist", self.SRC)
 
     def test_a_fight_does_not_survive_a_world_stitch(self):
+        # The stitch forgets the previous World through one helper now (it
+        # grew past the fight — see test_world_stitch); it has to call it, and
+        # the helper has to drop the fight.
         block = self.SRC.split("def apply_experience_world", 1)[1][:3000]
+        self.assertIn("_clear_world_scoped_state(state)", block)
+        st = {"turn_count": 3, "encounter": {"label": "a guard"},
+              "encounter_outcome": "escape", "encounter_resolving": True}
+        engine._clear_world_scoped_state(st)
         for key in ("encounter", "encounter_outcome", "encounter_resolving"):
-            self.assertIn(f'state.pop("{key}", None)', block)
+            self.assertNotIn(key, st)
 
 
 class TestChoiceTextIsNotTruncatedMidPhrase(unittest.TestCase):

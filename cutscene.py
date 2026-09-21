@@ -784,8 +784,14 @@ def resolve_source_path(
     source_url: str = "",
     source: str = "incoming",
     dest_world_id: str = "",
+    allow_current: bool = True,
 ) -> Optional[Path]:
-    """Find the plate this cutscene restages."""
+    """Find the plate this cutscene restages.
+
+    ``allow_current`` — fall back to the frame the player is standing on.
+    Off for an arrival in another World: that frame is the place being left,
+    and a montage composed for the destination must not restage it.
+    """
     import engine
 
     if source_url:
@@ -811,6 +817,8 @@ def resolve_source_path(
         except Exception:
             logging.exception("[CUTSCENE] dest_world frame lookup failed")
 
+    if not allow_current:
+        return None
     try:
         st = engine.get_state(session_id) or {}
         url = st.get("current_image_url") or ""
@@ -1043,19 +1051,60 @@ def play_for_session(
     # leave the opening with no reference at all.
     staged = engine.get_state(session_id) or {}
     staged = staged.get("pending_cutscene") or {}
+    staged_plate = ""
     if staged.get("cutscene_id") == cutscene_id:
-        source_url = str(staged.get("source_path") or "") or source_url
+        staged_plate = str(staged.get("source_path") or "")
+    source_url = staged_plate or source_url
+
+    # An ARRIVAL: this cutscene leads to a different World than the one the
+    # player is standing in. The engine bound that World's prompts when it
+    # staged this (engine.apply_experience_cutscene), so the bible, the place,
+    # the landmarks and the goal below are all the destination's — and the
+    # plate has to be too. Restaging the INCOMING frame (the place being left)
+    # under the destination's place lock was the montage that showed the old
+    # world in the new world's words. The frame the client sends as
+    # `source_url` is whatever is on screen — that same place being left — and
+    # is dropped. What is left is composed the way the level's opening is:
+    # toward the destination, no cast, and with "Incoming plate" (the default)
+    # from NO plate at all — the first photograph of that place, drawn from
+    # its Level sheet and bible (generate_shots with no source). The level's
+    # opening moved to that for its own reasons; an arrival has one more: the
+    # destination's World frame carries the cast IT was authored with, and a
+    # run whose protagonist is someone else got that stranger in a panel
+    # (seen live: a suited figure at the door of a level the run entered as a
+    # photojournalist). An author who wants the frame says so — "Destination
+    # World frame" is honoured. A "departure" is the other exception: it is a
+    # last look at the place being left, and it draws there.
+    arrival = bool(staged.get("arrival"))
+    if not arrival and dest_world and mood != "departure":
+        try:
+            cur = str((engine.get_state(session_id) or {}).get("experience_world_id") or "")
+        except Exception:
+            cur = ""
+        arrival = bool(cur) and dest_world != cur
+    if arrival and not staged_plate:
+        if source_url:
+            print(f"[CUTSCENE] {name or cutscene_id!r} arrives in another World — "
+                  f"the frame on screen is the place being left; not restaging it",
+                  flush=True)
+            source_url = ""
+        if source != "dest_world":
+            print(f"[CUTSCENE] {name or cutscene_id!r} arrives in another World — "
+                  f"its first photograph is drawn from that World's own sheet, "
+                  f"not from a plate", flush=True)
 
     # The level's OPENING draws first and has no plate — it IS the run's first
     # render (see generate_shots). Every other mood restages something the
     # player can already see, and without that photograph there is nothing to
-    # restage, so those still refuse.
-    opening = bool(staged.get("opening")) or mood == "approach"
+    # restage, so those still refuse. An arrival with no plate is an opening
+    # of that World: it establishes the place.
+    opening = bool(staged.get("opening")) or mood == "approach" or arrival
     plate = resolve_source_path(
         session_id,
         source_url=source_url,
         source=source,
         dest_world_id=dest_world,
+        allow_current=not arrival,
     )
     if plate is None and not opening:
         return {"ok": False, "error": "no_plate", "shots": []}
@@ -1074,6 +1123,17 @@ def play_for_session(
         except Exception:
             logging.exception("[CUTSCENE] level goal lookup failed")
 
+    # Indoor/outdoor: the destination's own place when arriving (history at
+    # this point is the World being left), the run's history otherwise.
+    setting = ""
+    if arrival:
+        try:
+            import game_identity
+            setting = engine.classify_setting(game_identity.place_summary() or "") or ""
+        except Exception:
+            setting = ""
+    if not setting:
+        setting = environment_type(session_id)
     try:
         generated = generate_shots(
             plate,
@@ -1081,9 +1141,9 @@ def play_for_session(
             mood=mood,
             name=name,
             shot_brief=shot_brief,
-            setting=environment_type(session_id),
+            setting=setting,
             goal=goal,
-            plate_role="destination" if mood == "approach" else "anchor",
+            plate_role="destination" if (mood == "approach" or arrival) else "anchor",
             offline=offline,
         )
     except Exception:
