@@ -1,5 +1,76 @@
 # 🔧 CHANGELOG - September 21, 2026
 
+## 💳 FIX: One wallet per browser, charged the moment a cost happens
+
+Asked: *"fix up all remaining issues … lets make sure we are ready to go to
+market NOW"*.
+
+**What was wrong.**
+
+- **Anyone could spend anyone's wallet.** Hosted accounts were keyed by an
+  unverified email, so typing someone's email moved your browser into their
+  wallet. Visitors with no cookie billed whoever signed in last.
+- **Turns were almost never charged.** `settle_session` only debited the
+  cost logged before a turn's response went out, and most pictures, sound
+  and talk finish after it.
+- **The wrong player could pay.** Background costs were attributed through
+  a global "active session".
+- **Many paid routes weren't gated.** An empty wallet could start new runs,
+  encounters, narration, music and look books.
+- **Live time was free with a low balance.** Reactor time was taken only
+  from the browser, and its usage report was refused when the balance was
+  low.
+- **Gemini calls went unlogged.** Several paths never logged their calls,
+  including `ai_provider_manager` chat and vision.
+- **The coin turn meter could double-charge** on top of the wallet.
+
+**What changed.**
+
+- **Wallet per browser** (C2). A random id in a signed, HttpOnly cookie is
+  made on the first hosted request. There's no sign-in, and a request never
+  falls back to a store-wide account. The cookie is signed with
+  `SOMEWHERE_BILLING_SECRET`, or a random secret kept on the disk. Email is
+  now only where receipts go. ACCOUNT drops SIGN IN / SIGN OUT and says the
+  wallet lives in this browser.
+- **Charged as it's logged** (C1).
+  - `cost_tracker.record_usage` charges every priced event at cost ×
+    markup to the wallet that caused it.
+  - Threads, and thread-pool jobs, started while serving a request carry
+    that request's wallet.
+  - Each ledger row stores `wallet`, `charged_usd` and `markup`.
+  - A cost that already happened is charged in full, even past $0.
+  - `settle_session` is retired, and field updates never overwrite a
+    charge or payment with a stale snapshot.
+- **Every paid route gated** (C14). One `before_request` answers 402 to any
+  POST/PUT under `/api/` while the wallet can't pay, except the routes that
+  never spend. The Gemini Live prototype routes are refused on a wallet
+  server (C15).
+- **Live time metered on the server** (A7). A meter runs from the Reactor
+  token / TALK session to the browser's report, and the player pays the
+  longer of the two. A browser that stops polling `/api/feed` is charged up
+  to its last poll. `/api/reactor/usage` is never refused.
+- **Gemini logged at the wire** (A3/A4). Every `generateContent` over
+  `requests` is logged from the HTTP call, under the model in the URL, with
+  the picture size and `usageMetadata` tokens. A caller's own log of the
+  same call folds into it rather than counting twice.
+- **Receipts and a rate card** (B1–B3, B6).
+  - RECENT in ACCOUNT lists runs. Tap one for story / pictures / live
+    video / voice, with the count, the charge, and failed calls "not
+    charged".
+  - `/pricing` (and `/api/pricing`) shows each thing a run can use, what it
+    costs us and what the player pays, from the same table the charges use.
+  - The desktop app shows the same receipts at provider cost.
+- **History re-priced** (A10). On first start the ledger is priced again on
+  the corrected table, keeping the old value in `cost_usd_v1`.
+- **Owner switch.** Open `/owner?token=<ADMIN_TOKEN>` once in a browser and
+  that browser's wallet plays free forever: nothing is charged, costs are
+  still logged, and ACCOUNT shows "∞". `&off=1` undoes it. With no
+  `ADMIN_TOKEN` set, the route doesn't exist.
+- The coin turn meter never runs while the wallet is on (C5).
+- `render.yaml` lists the Stripe keys, webhook secret and `PUBLIC_BASE_URL`.
+- `docs/LAUNCH_PAYMENTS.md` has the dashboard steps, the webhook, the Render
+  settings, a 5-minute test run, and go-live.
+
 ## 💳 FIX: Checkout works on a Managed Payments account, inside the ACCOUNT sheet
 
 Asked: Stripe's Checkout Studio setup for an embedded payment form, and

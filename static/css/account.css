@@ -255,6 +255,9 @@ button.acct-row:hover, button.acct-row:focus-visible, .acct-row.is-open { color:
   border-top: 1px solid var(--acct-line);
   font-size: 14px;
 }
+button.acct-line { width: 100%; padding: 0; background: none; border: none; border-top: 1px solid var(--acct-line); color: inherit; font: inherit; text-align: left; cursor: pointer; }
+button.acct-line:hover, button.acct-line:focus-visible, .acct-line.is-open { color: var(--acct-hi); outline: none; }
+.acct-line.is-part { border-top: none; min-height: 30px; font-size: 13px; color: var(--acct-dim); }
 .acct-line-when { font: 300 11px/1 var(--acct-mono); letter-spacing: 0.16em; color: var(--acct-dim); }
 .acct-line-amt { font-variant-numeric: tabular-nums; }
 .acct-line-amt.is-in { color: var(--acct-go); }

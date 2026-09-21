@@ -7,8 +7,9 @@
 //   every provider key, and a CUSTOM key — any OpenAI-compatible address and
 //   model, which becomes the narrator.
 //
-//   On a hosted server: a wallet. Sign in with an email, see the balance,
-//   ADD MONEY through Stripe Checkout, the limit, and the payments made.
+//   On a hosted server: a wallet that belongs to this browser (no sign-in).
+//   See the balance, ADD MONEY through Stripe Checkout, the limit, and the
+//   payments made.
 //   The host's keys are not shown and cannot be edited.
 //
 // It never holds a secret: /api/keys returns presence and a last-four hint.
@@ -163,23 +164,6 @@
     });
   }
 
-  function signIn(email) {
-    return guarded(async () => {
-      usage = await call("/api/billing/account", json("POST", { email }));
-      setMsg("Signed in.", "ok");
-      render();
-    });
-  }
-
-  function signOut() {
-    return guarded(async () => {
-      usage = await call("/api/billing/account", { method: "DELETE" });
-      view = "home";
-      setMsg("Signed out on this device.", "ok");
-      render();
-    });
-  }
-
   // Stripe.js comes from js.stripe.com on demand (never bundled: PCI), so
   // the desktop app, which never takes payments, never loads it.
   let stripeJs = null;
@@ -300,20 +284,14 @@
   // ── the money block ─────────────────────────────────────────────────
   function moneyBlock() {
     const out = h("section", { class: "acct-section" });
-    if (isHosted() && !linked()) {
-      out.appendChild(label("SIGN IN"));
-      const email = onEnter(input({ type: "email", placeholder: "you@example.com", "aria-label": "Email" }), () => signIn(email.value));
-      out.appendChild(h("div", { class: "acct-inline" }, [email, word("CONTINUE", () => signIn(email.value), "go")]));
-      out.appendChild(h("p", { class: "acct-note", text: "Your wallet follows this email to any device." }));
-      return out;
-    }
     const hosted = isHosted();
     // cost_tracker's window is the last 30 days — the same one the limit is
     // checked against — so that is what the number says it is.
-    out.appendChild(label(hosted ? "WALLET" : "LAST 30 DAYS"));
+    const unlimited = hosted && usage.unlimited;
+    out.appendChild(label(unlimited ? "WALLET · OWNER" : hosted ? "WALLET" : "LAST 30 DAYS"));
     const amount = hosted ? usage.available_usd : (usage ? usage.spend_usd : 0);
-    const top = h("div", { class: "acct-hero" }, [h("div", { class: "acct-big", text: usd(amount) })]);
-    if (hosted && usage.payments_enabled) {
+    const top = h("div", { class: "acct-hero" }, [h("div", { class: "acct-big", text: unlimited ? "∞" : usd(amount) })]);
+    if (hosted && usage.payments_enabled && !unlimited) {
       top.appendChild(word("ADD MONEY", () => { view = "add"; setMsg(""); render(); }, "go"));
     }
     out.appendChild(top);
@@ -390,38 +368,70 @@
   }
 
   // ── recent ───────────────────────────────────────────────────────────
+  // One receipt per run per day (BILLING_LIVE_PLAN B2 / B6): tap it for
+  // what the run used. Hosted: what you were charged. Desktop: what your own
+  // keys cost at the provider's rates.
+  const PART_NAMES = { text: "Story", image: "Pictures", video: "Live video", voice: "Voice & talk", realtime: "Live" };
+  function partLine(p) {
+    const n = p.unit === "seconds"
+      ? (p.count >= 60 ? Math.round(p.count / 60) + " min" : Math.round(p.count) + " s")
+      : Math.round(p.count) + (p.unit === "pictures" ? " pictures" : " calls");
+    const amt = isHosted() ? p.charged_usd : p.cost_usd;
+    const bits = [n];
+    if (p.failed) bits.push(p.failed + " failed, not charged");
+    return h("div", { class: "acct-line is-part" }, [
+      h("span", { class: "acct-line-when", text: "" }),
+      h("span", { class: "acct-line-what", text: (PART_NAMES[p.service] || p.service) + " · " + bits.join(" · ") }),
+      h("span", { class: "acct-line-amt", text: usd(amt) }),
+    ]);
+  }
+
   function recentBlock() {
     const items = [];
-    if (isLocal() && usage && Array.isArray(usage.recent)) {
-      usage.recent.forEach((r) => items.push({
-        when: shortDate(r.when), what: r.kind === "world" ? "World picture" : "Play",
-        amt: "−" + usd(r.cost_usd), dir: "out",
+    const hosted = isHosted();
+    if (usage && Array.isArray(usage.recent)) {
+      usage.recent.forEach((r, i) => items.push({
+        id: "run" + i, when: r.when, what: r.kind === "world" ? "World picture" : "Play",
+        amt: "−" + usd(hosted ? r.charged_usd : r.cost_usd), dir: "out", parts: r.parts || [],
       }));
     }
-    if (isHosted() && linked() && Array.isArray(usage.payments)) {
+    if (hosted && linked() && Array.isArray(usage.payments)) {
       usage.payments.slice(0, 4).forEach((p) => items.push({
-        when: shortDate(p.ts), what: p.kind === "play" ? "Play plan" : "Added money",
+        when: p.ts, what: p.kind === "play" ? "Play plan" : "Added money",
         amt: "+" + usd(p.credit_usd != null ? p.credit_usd : (p.amount_cents || 0) / 100), dir: "in",
       }));
     }
     if (!items.length) return null;
+    const t = (w) => (typeof w === "number" ? w * 1000 : Date.parse(w)) || 0;
+    items.sort((a, b) => t(b.when) - t(a.when));
     const out = h("section", { class: "acct-section" }, [label("RECENT")]);
-    items.forEach((it) => out.appendChild(h("div", { class: "acct-line" }, [
-      h("span", { class: "acct-line-when", text: it.when }),
-      h("span", { class: "acct-line-what", text: it.what }),
-      h("span", { class: "acct-line-amt" + (it.dir === "in" ? " is-in" : ""), text: it.amt }),
-    ])));
+    items.slice(0, 8).forEach((it) => {
+      const open = it.id && openRow === it.id;
+      const line = h(it.parts && it.parts.length ? "button" : "div", {
+        type: it.parts && it.parts.length ? "button" : null,
+        class: "acct-line" + (it.parts && it.parts.length ? " is-tap" : "") + (open ? " is-open" : ""),
+        "aria-expanded": it.parts && it.parts.length ? String(!!open) : null,
+        onclick: it.parts && it.parts.length ? () => { openRow = open ? null : it.id; render(); } : null,
+      }, [
+        h("span", { class: "acct-line-when", text: shortDate(typeof it.when === "number" ? it.when : it.when) }),
+        h("span", { class: "acct-line-what", text: it.what }),
+        h("span", { class: "acct-line-amt" + (it.dir === "in" ? " is-in" : ""), text: it.amt }),
+      ]);
+      out.appendChild(line);
+      if (open) it.parts.forEach((p) => out.appendChild(partLine(p)));
+    });
+    out.appendChild(row("What things cost", usage && usage.markup > 1 ? "provider cost × " + usage.markup : "provider cost", {
+      onclick: () => { try { window.open("/pricing", "_blank", "noopener"); } catch (_) { location.href = "/pricing"; } },
+    }));
     return out;
   }
 
   function accountFoot() {
-    if (!isHosted() || !linked()) return null;
-    return h("section", { class: "acct-section" }, [
-      h("div", { class: "acct-row is-static" }, [
-        h("span", { class: "acct-row-name", text: usage.account.email || "" }),
-        word("SIGN OUT", () => signOut()),
-      ]),
-    ]);
+    if (!isHosted()) return null;
+    const email = usage.account && usage.account.email;
+    return h("p", { class: "acct-note", text:
+      "This wallet lives in this browser. Clearing its cookies loses it — keep the Stripe receipt"
+      + (email ? " sent to " + email : "") + " and support can move the balance." });
   }
 
   // ── views ────────────────────────────────────────────────────────────

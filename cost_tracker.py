@@ -103,12 +103,51 @@ def init_db() -> None:
                     );
                     """
                 )
+                # What the player was charged for the event (hosted wallet
+                # servers; BILLING_LIVE_PLAN C1 / B1), next to what it cost us.
+                have = {r[1] for r in conn.execute("PRAGMA table_info(usage_events)")}
+                for col, decl in (("wallet", "TEXT"), ("charged_usd", "REAL"), ("markup", "REAL")):
+                    if col not in have:
+                        conn.execute(f"ALTER TABLE usage_events ADD COLUMN {col} {decl}")
+                if "cost_usd_v1" not in have:
+                    _reprice_history(conn)
                 conn.commit()
             finally:
                 conn.close()
             _initialized = True
         except Exception as e:
             print(f"[COST TRACKER] init_db failed (non-fatal, tracking disabled): {e}", flush=True)
+
+
+def _reprice_history(conn: sqlite3.Connection) -> None:
+    """One-time (BILLING_LIVE_PLAN A10): price every past event again on the
+    corrected table (per-million tokens, pictures by size), keeping what it
+    was first logged at in ``cost_usd_v1``, and rebuild the session rollups
+    from the ledger."""
+    conn.execute("ALTER TABLE usage_events ADD COLUMN cost_usd_v1 REAL")
+    conn.execute("UPDATE usage_events SET cost_usd_v1 = cost_usd")
+    rows = conn.execute(
+        "SELECT id, provider, model, unit_type, input_units, output_units, meta_json "
+        "FROM usage_events WHERE success = 1").fetchall()
+    for r in rows:
+        size = None
+        try:
+            meta = json.loads(r["meta_json"]) if r["meta_json"] else {}
+            size = meta.get("size") or meta.get("image_size")
+        except Exception:
+            size = None
+        try:
+            cost = pricing.estimate_cost(r["provider"], r["model"], r["unit_type"],
+                                         r["input_units"], r["output_units"], size=size)
+        except Exception:
+            continue
+        conn.execute("UPDATE usage_events SET cost_usd = ? WHERE id = ?", (cost, r["id"]))
+    conn.execute("DELETE FROM session_cost_rollup")
+    for r in conn.execute("SELECT session_id, service_type, provider, cost_usd, success, ts "
+                          "FROM usage_events ORDER BY id").fetchall():
+        _upsert_rollup(conn, r["session_id"], r["service_type"], r["provider"],
+                       r["cost_usd"], bool(r["success"]), r["ts"])
+    print(f"[COST TRACKER] re-priced {len(rows)} past events on the corrected rate table", flush=True)
 
 
 def _upsert_rollup(conn: sqlite3.Connection, session_id: str, service_type: str,
@@ -151,6 +190,123 @@ def _upsert_rollup(conn: sqlite3.Connection, session_id: str, service_type: str,
     )
 
 
+# ── Gemini calls, logged at the wire (BILLING_LIVE_PLAN A3) ───────────────
+# Some callers never logged their Gemini calls (ai_provider_manager's chat and
+# vision, several picture paths) and others logged pictures under a guessed
+# model. Every generateContent request to the Gemini API is now logged from
+# the HTTP call itself: the model in the URL, the picture size in the
+# payload, the tokens and pictures in the response. A caller that still logs
+# the same call afterwards on the same thread is folded into this record
+# instead of counted twice (see _claim_wire_logged).
+_wire = threading.local()
+_WIRE_TTL_S = 120.0
+_GEMINI_HOST = "generativelanguage.googleapis.com"
+
+
+def _wire_pending(kind: str) -> list:
+    table = getattr(_wire, "pending", None)
+    if table is None:
+        table = _wire.pending = {}
+    pending = table.setdefault(kind, [])
+    now = time.time()
+    pending[:] = [t for t in pending if now - t < _WIRE_TTL_S]
+    return pending
+
+
+def _claim_wire_logged(service_type: str, provider: str, operation: Optional[str],
+                       output_units: Optional[float]) -> bool:
+    if provider != "gemini" or operation == "wire" or service_type not in ("image", "text"):
+        return False
+    pending = _wire_pending(service_type)
+    if not pending:
+        return False
+    n = max(1, int(round(float(output_units or 1)))) if service_type == "image" else 1
+    del pending[:n]
+    return True
+
+
+def _gemini_model(url: str) -> Optional[str]:
+    if _GEMINI_HOST not in url or ":generateContent" not in url:
+        return None
+    model = url.split("/models/", 1)[-1].split(":", 1)[0].split("?", 1)[0]
+    return model[:-len("-preview")] if model.endswith("-preview") else model
+
+
+def _log_wire(model: str, payload: Any, response: Any, latency_ms: int) -> None:
+    try:
+        is_image = "image" in model
+        ok = getattr(response, "status_code", 0) == 200
+        count = 0
+        usage: Dict[str, Any] = {}
+        if ok:
+            try:
+                body = response.json()
+                usage = body.get("usageMetadata") or {}
+                for cand in body.get("candidates") or []:
+                    for part in ((cand or {}).get("content") or {}).get("parts") or []:
+                        if isinstance(part, dict) and "inlineData" in part:
+                            count += 1
+            except Exception:
+                count = 0
+        if ok and is_image and count <= 0:
+            return  # nothing drawn (blocked / text only): no picture billed
+        try:
+            import engine as _engine
+            sid = _engine.get_active_session_id() or "default"
+        except Exception:
+            sid = "default"
+        err = None if ok else f"HTTP {getattr(response, 'status_code', '?')}"
+        if is_image:
+            size = None
+            try:
+                size = (((payload or {}).get("generationConfig") or {}).get("imageConfig") or {}).get("imageSize")
+            except Exception:
+                size = None
+            meta = {"size": size, "source": "wire"}
+            if usage:
+                meta["usage"] = usage
+            record_usage(sid, "image", "gemini", model, operation="wire",
+                         output_units=count if ok else None, unit_type="images",
+                         latency_ms=latency_ms, success=ok, error_message=err, meta=meta)
+            if ok:
+                _wire_pending("image").extend([time.time()] * count)
+        else:
+            out_tokens = (usage.get("candidatesTokenCount") or 0) + (usage.get("thoughtsTokenCount") or 0)
+            record_usage(sid, "text", "gemini", model, operation="wire",
+                         input_units=usage.get("promptTokenCount") if ok else None,
+                         output_units=out_tokens if ok else None, unit_type="tokens",
+                         latency_ms=latency_ms, success=ok, error_message=err,
+                         meta={"source": "wire"})
+            if ok:
+                _wire_pending("text").append(time.time())
+    except Exception as e:  # noqa: BLE001
+        print(f"[COST TRACKER] wire log failed (non-fatal): {e}", flush=True)
+
+
+def _install_wire_meter() -> None:
+    try:
+        import requests
+    except Exception:
+        return
+    if getattr(requests.Session, "_cost_wire", False):
+        return
+    original = requests.Session.request
+
+    def request(self, method, url, *args, **kwargs):
+        model = _gemini_model(str(url or "")) if str(method).upper() == "POST" else None
+        t0 = time.time()
+        response = original(self, method, url, *args, **kwargs)
+        if model:
+            _log_wire(model, kwargs.get("json"), response, int((time.time() - t0) * 1000))
+        return response
+
+    requests.Session.request = request
+    requests.Session._cost_wire = True
+
+
+_install_wire_meter()
+
+
 def record_usage(session_id: str, service_type: str, provider: str, model: str, *,
                   operation: Optional[str] = None,
                   input_units: Optional[float] = None,
@@ -169,10 +325,17 @@ def record_usage(session_id: str, service_type: str, provider: str, model: str, 
     convenience for callers/tests — nothing depends on the return value.
     """
     try:
+        if success and _claim_wire_logged(service_type, provider, operation, output_units):
+            return None  # this picture was already logged from the HTTP call
         init_db()
         cost_usd = None
         if success:
-            cost_usd = pricing.estimate_cost(provider, model, unit_type, input_units, output_units)
+            size = None
+            if isinstance(meta, dict):
+                size = meta.get("size") or meta.get("image_size")
+            cost_usd = pricing.estimate_cost(provider, model, unit_type, input_units, output_units,
+                                             size=size)
+        charge = _charge(cost_usd, session_id) or _wallet_only()
         ts = _now_iso()
         error_text = (str(error_message)[:1000] if error_message else None)
 
@@ -184,13 +347,16 @@ def record_usage(session_id: str, service_type: str, provider: str, model: str, 
                     INSERT INTO usage_events
                         (ts, session_id, turn_count, service_type, provider, model, operation,
                          input_units, output_units, unit_type, cost_usd, latency_ms, success,
-                         error_message, discord_guild_id, discord_channel_id, meta_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         error_message, discord_guild_id, discord_channel_id, meta_json,
+                         wallet, charged_usd, markup)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (ts, session_id, turn_count, service_type, provider, model, operation,
                      input_units, output_units, unit_type, cost_usd, latency_ms, 1 if success else 0,
                      error_text, discord_guild_id, discord_channel_id,
-                     json.dumps(meta) if meta else None),
+                     json.dumps(meta) if meta else None,
+                     (charge or {}).get("wallet"), (charge or {}).get("charged_usd"),
+                     (charge or {}).get("markup")),
                 )
                 _upsert_rollup(conn, session_id, service_type, provider, cost_usd, success, ts)
                 conn.commit()
@@ -200,6 +366,33 @@ def record_usage(session_id: str, service_type: str, provider: str, model: str, 
     except Exception as e:
         print(f"[COST TRACKER] record_usage failed (non-fatal): {e}", flush=True)
         return None
+
+
+def _charge(cost_usd: Optional[float], session_id: str) -> Optional[Dict[str, Any]]:
+    """Charge the wallet behind this call, if this is a hosted wallet server.
+    Never raises: a billing fault must not break the game or the ledger."""
+    if cost_usd is None or cost_usd <= 0:
+        return None
+    try:
+        import billing
+        return billing.charge_cost(cost_usd, session_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[COST TRACKER] charge failed (non-fatal): {e}", flush=True)
+        return None
+
+
+def _wallet_only() -> Optional[Dict[str, Any]]:
+    """The wallet behind an uncharged event (failed, unpriced), so its
+    receipt can still list it as "not charged"."""
+    try:
+        import billing
+        if billing.requires_wallet():
+            key = billing._known_key()
+            if key:
+                return {"wallet": key, "charged_usd": 0.0, "markup": None}
+    except Exception:
+        pass
+    return None
 
 
 @contextmanager
@@ -446,6 +639,72 @@ def get_sessions(sort: str = "cost_desc", limit: int = 50, offset: int = 0) -> D
             return {"total": total, "sessions": sessions}
         finally:
             conn.close()
+
+
+def receipts(wallet: Optional[str] = None, *, days: int = 30, limit: int = 6) -> list:
+    """Receipts for ACCOUNT (BILLING_LIVE_PLAN B2 / B6): one per run per day,
+    newest first, each split by what it used — story, pictures, motion,
+    voice, live video — with the count, what it cost us, what the player was
+    charged, and the calls that failed (never charged).
+
+    ``wallet``: a hosted player's wallet id — only the rows charged to it.
+    None: every row (the desktop app, whose ledger is its one player's).
+    """
+    from datetime import timedelta
+    try:
+        init_db()
+        since = (datetime.now(timezone.utc) - timedelta(days=int(days))).isoformat()
+        where = "ts >= ?"
+        args: list = [since]
+        if wallet:
+            where += " AND wallet = ?"
+            args.append(wallet)
+        with _lock:
+            conn = _connect()
+            try:
+                runs = conn.execute(
+                    f"SELECT session_id, substr(ts, 1, 10) AS day, MAX(ts) AS last "
+                    f"FROM usage_events WHERE {where} GROUP BY session_id, day "
+                    f"ORDER BY last DESC LIMIT ?", (*args, int(limit)),
+                ).fetchall()
+                out = []
+                for r in runs:
+                    parts = conn.execute(
+                        f"SELECT service_type, "
+                        f"SUM(CASE WHEN success = 1 THEN COALESCE(output_units, 1) ELSE 0 END) AS units, "
+                        f"SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS calls, "
+                        f"SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failed, "
+                        f"MAX(unit_type) AS unit_type, "
+                        f"SUM(COALESCE(cost_usd, 0)) AS cost, SUM(COALESCE(charged_usd, 0)) AS charged "
+                        f"FROM usage_events WHERE {where} AND session_id = ? AND substr(ts, 1, 10) = ? "
+                        f"GROUP BY service_type ORDER BY charged DESC, cost DESC",
+                        (*args, r["session_id"], r["day"]),
+                    ).fetchall()
+                    items = []
+                    for p in parts:
+                        unit = p["unit_type"] or ""
+                        count = p["units"] if unit in ("images", "seconds") else p["calls"]
+                        items.append({
+                            "service": p["service_type"],
+                            "count": round(float(count or 0), 1),
+                            "unit": "seconds" if unit == "seconds" else ("pictures" if unit == "images" else "calls"),
+                            "failed": int(p["failed"] or 0),
+                            "cost_usd": round(float(p["cost"] or 0), 4),
+                            "charged_usd": round(float(p["charged"] or 0), 4),
+                        })
+                    out.append({
+                        "when": r["last"],
+                        "kind": "world" if str(r["session_id"] or "").startswith("wf-") else "play",
+                        "cost_usd": round(sum(i["cost_usd"] for i in items), 4),
+                        "charged_usd": round(sum(i["charged_usd"] for i in items), 4),
+                        "parts": items,
+                    })
+                return out
+            finally:
+                conn.close()
+    except Exception as e:  # noqa: BLE001
+        print(f"[COST TRACKER] receipts failed (non-fatal): {e}", flush=True)
+        return []
 
 
 def session_cost_usd(session_id: str) -> float:

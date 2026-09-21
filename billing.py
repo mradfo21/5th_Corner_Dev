@@ -1,9 +1,16 @@
 """Account + hosted usage wallet — Cursor-style billing.
 
 BYOK stays free (their keys, their provider bill). Hosted play is how
-SOMEWHERE gets paid: prepaid packs and a monthly Play plan through the
-same Stripe account as coin-op. We debit the wallet at provider cost
-times a markup.
+SOMEWHERE gets paid: prepaid wallet top-ups through the same Stripe account
+as coin-op. Every paid model call is charged to the wallet that caused it,
+at provider cost times a markup, the moment cost_tracker logs it.
+
+A wallet belongs to one browser (BILLING_LIVE_PLAN C2): a random id in a
+signed, HttpOnly cookie, made on the first hosted request. No sign-in, and
+no store-wide "current account" on a hosted server, so nobody can spend a
+wallet by typing someone's email. Threads started while serving a request
+inherit that request's wallet, so background renders charge the right
+player.
 
 Environment:
   STRIPE_SECRET_KEY / STRIPE_PUBLISHABLE_KEY   same as coin-op
@@ -12,6 +19,10 @@ Environment:
   BILLING_HOST_PAYS       "1" = this host foots the bill (dev / operator)
   PUBLIC_BASE_URL         checkout return host
   SOMEWHERE_BILLING_PATH  override store path (tests)
+  SOMEWHERE_BILLING_SECRET signs the wallet cookie (default: a random
+                           secret kept beside the wallet store)
+  STRIPE_TAX_CODE         product tax code (Managed Payments)
+  STRIPE_CHECKOUT_UI      embedded_page (default) | hosted_page
 """
 
 from __future__ import annotations
@@ -22,6 +33,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 from datetime import date
@@ -36,7 +48,9 @@ except Exception:  # noqa: BLE001
 log = logging.getLogger("billing")
 
 TITLE = "SOMEWHERE"
-COOKIE = "somewhere_account"
+# A new name: the old email cookie ("somewhere_account") is ignored.
+COOKIE = "somewhere_wallet"
+_KEY_RE = re.compile(r"^w_[0-9a-f]{32}$")
 
 PLANS = {
     "free": {
@@ -154,7 +168,7 @@ def _path() -> Path:
 
 
 def _empty_store() -> Dict[str, Any]:
-    return {"active_email": None, "accounts": {}}
+    return {"active_key": None, "accounts": {}}
 
 
 def _read() -> Dict[str, Any]:
@@ -163,7 +177,7 @@ def _read() -> Dict[str, Any]:
         if not isinstance(data, dict):
             return _empty_store()
         data.setdefault("accounts", {})
-        data.setdefault("active_email", None)
+        data.setdefault("active_key", None)
         return data
     except Exception:
         return _empty_store()
@@ -177,8 +191,9 @@ def _write(payload: Dict[str, Any]) -> None:
     tmp.replace(dest)
 
 
-def _new_account(email: str) -> Dict[str, Any]:
+def _new_account(key: str, email: Optional[str] = None) -> Dict[str, Any]:
     return {
+        "key": key,
         "email": email,
         "plan": "free",
         "stripe_customer_id": None,
@@ -207,44 +222,168 @@ def _normalize_email(raw: Any) -> str:
     return email
 
 
+_secret_cache: Dict[str, bytes] = {}
+_SECRET_LOCK = threading.Lock()
+
+
 def _cookie_secret() -> bytes:
-    raw = (
-        os.environ.get("STRIPE_SECRET_KEY")
-        or os.environ.get("SOMEWHERE_BILLING_SECRET")
-        or "somewhere-billing-dev"
-    ).encode("utf-8")
-    return raw
+    """Signs wallet cookies. SOMEWHERE_BILLING_SECRET if set; otherwise a
+    random secret made once and kept next to the wallet store (on the
+    persistent disk), so wallets survive redeploys and a rotated Stripe key."""
+    env = (os.environ.get("SOMEWHERE_BILLING_SECRET") or "").strip()
+    if env:
+        return env.encode("utf-8")
+    path = _path().with_name("billing_secret")
+    cached = _secret_cache.get(str(path))
+    if cached:
+        return cached
+    with _SECRET_LOCK:
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+        except Exception:
+            raw = ""
+        if not raw:
+            raw = secrets.token_hex(32)
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(raw, encoding="utf-8")
+            except Exception as e:  # noqa: BLE001
+                log.warning("billing: could not keep the cookie secret at %s: %s", path, e)
+        _secret_cache[str(path)] = raw.encode("utf-8")
+        return _secret_cache[str(path)]
 
 
-def cookie_value(email: str) -> str:
-    email = _normalize_email(email)
-    sig = hmac.new(_cookie_secret(), email.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
-    return f"{email}|{sig}"
+def new_key() -> str:
+    return "w_" + secrets.token_hex(16)
 
 
-def email_from_cookie(raw: Optional[str]) -> Optional[str]:
+def cookie_value(key: str) -> str:
+    if not _KEY_RE.match(key or ""):
+        raise ValueError("Not a wallet id.")
+    sig = hmac.new(_cookie_secret(), key.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+    return f"{key}|{sig}"
+
+
+def key_from_cookie(raw: Optional[str]) -> Optional[str]:
     text = (raw or "").strip()
     if "|" not in text:
         return None
-    email, sig = text.rsplit("|", 1)
-    try:
-        email = _normalize_email(email)
-    except ValueError:
+    key, sig = text.rsplit("|", 1)
+    if not _KEY_RE.match(key):
         return None
-    expect = hmac.new(_cookie_secret(), email.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+    expect = hmac.new(_cookie_secret(), key.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
     if not hmac.compare_digest(sig, expect):
         return None
-    return email
+    return key
 
 
-def _request_email() -> Optional[str]:
+def _in_request() -> bool:
     try:
-        from flask import has_request_context, request
-        if has_request_context():
-            return email_from_cookie(request.cookies.get(COOKIE))
+        from flask import has_request_context
+        return bool(has_request_context())
     except Exception:
-        pass
-    return None
+        return False
+
+
+def _request_key(*, mint: bool = False) -> Optional[str]:
+    """This browser's wallet id. With ``mint``, a browser without one gets a
+    new id now, and the response carries the cookie."""
+    if not _in_request():
+        return None
+    try:
+        from flask import after_this_request, g, request
+    except Exception:
+        return None
+    key = key_from_cookie(request.cookies.get(COOKIE))
+    if key:
+        return key
+    key = getattr(g, "_billing_new_key", None)
+    if key or not mint:
+        return key
+    key = new_key()
+    g._billing_new_key = key
+
+    @after_this_request
+    def _set_wallet_cookie(resp):
+        resp.set_cookie(COOKIE, cookie_value(key), max_age=5 * 365 * 24 * 3600,
+                        httponly=True, samesite="Lax", path="/",
+                        secure=request.is_secure)
+        return resp
+
+    return key
+
+
+# ── wallet attribution for work that outlives the request ─────────────────
+# A render started by a turn finishes on its own thread after the response
+# went out; the wallet that asked for it still pays. Every Thread made while
+# a wallet is known carries that wallet into its run().
+_tl = threading.local()
+
+
+def thread_key() -> Optional[str]:
+    return getattr(_tl, "key", None)
+
+
+def _known_key() -> Optional[str]:
+    return _request_key() or thread_key()
+
+
+def _install_thread_inheritance() -> None:
+    if getattr(threading.Thread, "_billing_inherits", False):
+        return
+    original_init = threading.Thread.__init__
+
+    def __init__(self, *args, **kwargs):  # type: ignore[no-redef]
+        original_init(self, *args, **kwargs)
+        try:
+            key = _known_key()
+        except Exception:  # noqa: BLE001
+            key = None
+        if not key:
+            return
+        run = self.run
+
+        def run_as_wallet():
+            _tl.key = key
+            try:
+                run()
+            finally:
+                _tl.key = None
+
+        self.run = run_as_wallet
+
+    threading.Thread.__init__ = __init__  # type: ignore[method-assign]
+    threading.Thread._billing_inherits = True  # type: ignore[attr-defined]
+
+    # A pool's worker threads outlive the job that started them: each job
+    # runs as the wallet that submitted it (or none), never as whoever
+    # happened to be first to wake the pool.
+    try:
+        import concurrent.futures.thread as cft
+    except Exception:  # noqa: BLE001
+        return
+    original_submit = cft.ThreadPoolExecutor.submit
+
+    def submit(self, fn, /, *args, **kwargs):
+        try:
+            key = _known_key()
+        except Exception:  # noqa: BLE001
+            key = None
+
+        def run_job(*a, **kw):
+            before = getattr(_tl, "key", None)
+            _tl.key = key
+            try:
+                return fn(*a, **kw)
+            finally:
+                _tl.key = before
+
+        return original_submit(self, run_job, *args, **kwargs)
+
+    cft.ThreadPoolExecutor.submit = submit  # type: ignore[method-assign]
+
+
+_install_thread_inheritance()
 
 
 def _roll_period(acct: Dict[str, Any]) -> None:
@@ -258,72 +397,109 @@ def _roll_period(acct: Dict[str, Any]) -> None:
         acct["included_usd"] = float(PLANS["play"]["included_usd"])
 
 
-def _active_email(store: Dict[str, Any], *, ignore_cookie: bool = False) -> Optional[str]:
-    if ignore_cookie:
-        return store.get("active_email")
-    return _request_email() or store.get("active_email")
+def current_key(*, mint: bool = False, ignore_cookie: bool = False) -> Optional[str]:
+    """The wallet this code is running for.
+
+    Serving a request: that browser's cookie, and nothing else — a hosted
+    server never falls back to a store-wide account. A thread started by a
+    request: the wallet it inherited. Outside both (the desktop app, tests):
+    the store's one active wallet.
+    """
+    if _in_request():
+        if ignore_cookie:
+            return None
+        return _request_key(mint=mint)
+    key = thread_key()
+    if key:
+        return key
+    return _read().get("active_key")
 
 
-def current_account(*, ignore_cookie: bool = False) -> Dict[str, Any]:
-    store = _read()
-    email = _active_email(store, ignore_cookie=ignore_cookie)
-    if not email:
+def current_account(*, ignore_cookie: bool = False, mint: bool = False) -> Dict[str, Any]:
+    key = current_key(mint=mint, ignore_cookie=ignore_cookie)
+    if not key:
         return _new_account("")
-    acct = store.get("accounts", {}).get(email)
+    acct = _read().get("accounts", {}).get(key)
     if not isinstance(acct, dict):
-        return _new_account(email)
+        return _new_account(key)
+    acct.setdefault("key", key)
     _roll_period(acct)
     return acct
 
 
 def _save_account(acct: Dict[str, Any]) -> Dict[str, Any]:
-    email = (acct.get("email") or "").strip().lower()
-    if not email:
-        raise ValueError("Account has no email.")
+    key = (acct.get("key") or "").strip()
+    if not key:
+        raise ValueError("Account has no wallet id.")
     with _LOCK:
         store = _read()
-        existing = store.get("accounts", {}).get(email) or {}
-        if existing.get("period_start") == acct.get("period_start"):
-            pass
+        existing = store.get("accounts", {}).get(key) or {}
         merged = dict(existing)
         merged.update(acct)
-        store.setdefault("accounts", {})[email] = merged
-        store["active_email"] = email
+        store.setdefault("accounts", {})[key] = merged
+        if not _in_request() and not thread_key():
+            store["active_key"] = key
         _write(store)
         return merged
 
 
-def link_email(raw: Any) -> str:
-    email = _normalize_email(raw)
+def _update_account(key: str, **fields: Any) -> Dict[str, Any]:
+    """Set just these fields on the wallet, read fresh under the lock — never
+    a whole stale snapshot, which could undo a charge or a payment that
+    landed in between."""
+    if not key:
+        raise ValueError("No wallet.")
     with _LOCK:
         store = _read()
-        if email not in store.get("accounts", {}):
-            store.setdefault("accounts", {})[email] = _new_account(email)
-        store["active_email"] = email
+        acct = store.get("accounts", {}).get(key)
+        acct = dict(acct) if isinstance(acct, dict) else _new_account(key)
+        acct["key"] = key
+        acct.update(fields)
+        store.setdefault("accounts", {})[key] = acct
+        if not _in_request() and not thread_key():
+            store["active_key"] = key
         _write(store)
+        return acct
+
+
+def link_email(raw: Any) -> str:
+    """Where Stripe sends this wallet's receipts. Not a sign-in: it never
+    moves the browser to another wallet."""
+    email = _normalize_email(raw)
+    if _in_request():
+        key = current_key(mint=True)
+    else:
+        key = current_key() or new_key()
+    _update_account(key, email=email)
     return email
 
 
 def unlink() -> None:
+    """Forget the receipt email. Outside a request (desktop, tests) also
+    deselect the active wallet."""
+    if _in_request():
+        key = current_key()
+        if key and current_account().get("email"):
+            _update_account(key, email=None)
+        return
     with _LOCK:
         store = _read()
-        store["active_email"] = None
+        store["active_key"] = None
         _write(store)
 
 
 def set_on_demand(value: Any) -> bool:
-    acct = current_account()
-    if not acct.get("email"):
-        raise ValueError("Link an email first.")
-    acct["on_demand"] = bool(value)
-    _save_account(acct)
-    return bool(acct["on_demand"])
+    acct = current_account(mint=True)
+    if not acct.get("key"):
+        raise ValueError("No wallet on this device yet.")
+    _update_account(acct["key"], on_demand=bool(value))
+    return bool(value)
 
 
 def set_monthly_cap_usd(value: Any) -> Optional[float]:
-    acct = current_account()
-    if not acct.get("email"):
-        raise ValueError("Link an email first.")
+    acct = current_account(mint=True)
+    if not acct.get("key"):
+        raise ValueError("No wallet on this device yet.")
     cap: Optional[float] = None
     if value is not None and str(value).strip() != "":
         n = float(value)
@@ -331,9 +507,19 @@ def set_monthly_cap_usd(value: Any) -> Optional[float]:
             raise ValueError("Monthly cap cannot be negative.")
         if n > 0:
             cap = round(n, 2)
-    acct["monthly_cap_usd"] = cap
-    _save_account(acct)
+    _update_account(acct["key"], monthly_cap_usd=cap)
     return cap
+
+
+def set_unlimited(value: bool) -> str:
+    """The owner's switch: this browser's wallet plays free and is never
+    charged (costs are still logged, at provider cost). Set from /owner with
+    the ADMIN_TOKEN."""
+    acct = current_account(mint=True)
+    if not acct.get("key"):
+        raise ValueError("No wallet on this device yet.")
+    _update_account(acct["key"], unlimited=bool(value))
+    return acct["key"]
 
 
 def included_left(acct: Optional[Dict[str, Any]] = None) -> float:
@@ -367,57 +553,243 @@ def over_account_cap(acct: Optional[Dict[str, Any]] = None) -> bool:
     return float(row.get("billed_usd") or 0.0) >= cap_n
 
 
-def debit(amount_usd: float) -> Dict[str, Any]:
-    """Burn included, then wallet. Returns the new account snapshot."""
+def debit(amount_usd: float, *, key: Optional[str] = None,
+          allow_negative: bool = False) -> Dict[str, Any]:
+    """Burn included, then wallet. Returns the new account snapshot.
+
+    ``allow_negative``: a cost that has already happened is charged in full
+    even past zero; the next top-up covers it. (The gate stops new work at
+    zero, so the overdraft is at most one in-flight call.)"""
     if amount_usd <= 0:
         return current_account()
-    acct = current_account()
-    if not acct.get("email"):
-        raise ValueError("No linked account.")
-    _roll_period(acct)
-    left = included_left(acct)
-    take_included = min(left, amount_usd)
-    rest = round(amount_usd - take_included, 6)
-    acct["included_used_usd"] = round(float(acct.get("included_used_usd") or 0.0) + take_included, 6)
-    if rest > 0:
-        wallet = max(0.0, float(acct.get("wallet_usd") or 0.0) - rest)
-        acct["wallet_usd"] = round(wallet, 6)
-    acct["billed_usd"] = round(float(acct.get("billed_usd") or 0.0) + amount_usd, 6)
-    return _save_account(acct)
+    with _LOCK:
+        store = _read()
+        k = key or current_key()
+        if not k:
+            raise ValueError("No wallet.")
+        acct = store.get("accounts", {}).get(k)
+        acct = dict(acct) if isinstance(acct, dict) else _new_account(k)
+        acct["key"] = k
+        _roll_period(acct)
+        left = included_left(acct)
+        take_included = min(left, amount_usd)
+        rest = round(amount_usd - take_included, 6)
+        acct["included_used_usd"] = round(float(acct.get("included_used_usd") or 0.0) + take_included, 6)
+        if rest > 0:
+            wallet = float(acct.get("wallet_usd") or 0.0) - rest
+            acct["wallet_usd"] = round(wallet if allow_negative else max(0.0, wallet), 6)
+        acct["billed_usd"] = round(float(acct.get("billed_usd") or 0.0) + amount_usd, 6)
+        store.setdefault("accounts", {})[k] = acct
+        _write(store)
+        return acct
+
+
+# session id -> the wallet that last played it, for costs logged on a thread
+# that carries no wallet of its own (a timer, a pool made at import).
+_session_owner: Dict[str, str] = {}
+
+
+def charge_cost(cost_usd: Optional[float], session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Charge one logged provider cost to the wallet that caused it
+    (BILLING_LIVE_PLAN C1). Called by cost_tracker.record_usage for every
+    priced event. Returns {wallet, charged_usd, markup} or None when nothing
+    is charged (not a hosted wallet server, unpriced, or no wallet known)."""
+    if cost_usd is None or cost_usd <= 0 or not requires_wallet():
+        return None
+    sid = str(session_id or "").strip()
+    key = _known_key()
+    if key and sid:
+        _session_owner[sid] = key
+    elif sid:
+        key = _session_owner.get(sid)
+    if not key:
+        log.warning("billing: unattributed cost $%.6f session=%s", cost_usd, sid or "?")
+        return None
+    try:
+        if (_read().get("accounts", {}).get(key) or {}).get("unlimited"):
+            return {"wallet": key, "charged_usd": 0.0, "markup": 0.0}
+    except Exception:  # noqa: BLE001
+        pass
+    m = markup()
+    retail = round(float(cost_usd) * m, 6)
+    try:
+        debit(retail, key=key, allow_negative=True)
+    except Exception as e:  # noqa: BLE001
+        log.warning("billing: charge failed wallet=%s: %s", key, e)
+        return None
+    return {"wallet": key, "charged_usd": retail, "markup": m}
 
 
 def grant_wallet(amount_usd: float, *, source: str, checkout_session_id: Optional[str] = None) -> Dict[str, Any]:
-    acct = current_account()
-    if not acct.get("email"):
-        raise ValueError("No linked account.")
-    acct["wallet_usd"] = round(float(acct.get("wallet_usd") or 0.0) + max(0.0, amount_usd), 6)
-    acct["on_demand"] = True
-    if checkout_session_id:
-        redeemed = list(acct.get("redeemed") or [])
-        if checkout_session_id not in redeemed:
-            redeemed.append(checkout_session_id)
-        acct["redeemed"] = redeemed
-    return _save_account(acct)
+    acct = current_account(mint=True)
+    if not acct.get("key"):
+        raise ValueError("No wallet.")
+    key = acct["key"]
+    with _LOCK:
+        store = _read()
+        row = store.get("accounts", {}).get(key)
+        row = dict(row) if isinstance(row, dict) else _new_account(key)
+        row["key"] = key
+        row["wallet_usd"] = round(float(row.get("wallet_usd") or 0.0) + max(0.0, amount_usd), 6)
+        row["on_demand"] = True
+        if checkout_session_id:
+            redeemed = list(row.get("redeemed") or [])
+            if checkout_session_id not in redeemed:
+                redeemed.append(checkout_session_id)
+            row["redeemed"] = redeemed
+        store.setdefault("accounts", {})[key] = row
+        _write(store)
+        return row
+
+
+# ── live time, measured here (BILLING_LIVE_PLAN A5) ───────────────────────
+# Reactor video and TALK agents stream browser <-> provider directly, so the
+# only duration the server is told is the one the browser reports when it
+# hangs up. A meter starts when the server hands out the connection (token /
+# talk session) and stops at the report; the player pays the longer of the
+# two. A meter whose browser stops polling /api/feed for REAP_AFTER_S is
+# closed at the last poll and charged then.
+REAP_AFTER_S = 90.0
+METER_CAP_S = 2 * 3600.0
+_METERS: Dict[tuple, Dict[str, Any]] = {}
+_LAST_SEEN: Dict[str, float] = {}
+_METER_LOCK = threading.Lock()
+_reaper_started = False
+
+
+def heartbeat() -> None:
+    """The browser is still here (called on /api/feed)."""
+    key = _request_key()
+    if key:
+        _LAST_SEEN[key] = time.time()
+
+
+def meter_start(kind: str, session_id: str, *, service_type: str, provider: str, model: str) -> None:
+    if not requires_wallet():
+        return
+    key = _known_key()
+    if not key:
+        return
+    now = time.time()
+    _LAST_SEEN[key] = now
+    with _METER_LOCK:
+        # A token refreshed mid-stream keeps the meter it already had.
+        _METERS.setdefault((key, kind, str(session_id or "default")), {
+            "start": now, "service_type": service_type, "provider": provider, "model": model,
+        })
+    _ensure_reaper()
+
+
+def meter_stop(kind: str, session_id: str, client_seconds: float, *, model: Optional[str] = None) -> float:
+    """Close the meter; return the seconds the browser left unreported (to be
+    logged on top of what it did report). 0 when no meter was running."""
+    key = _known_key()
+    if not key:
+        return 0.0
+    with _METER_LOCK:
+        m = _METERS.pop((key, kind, str(session_id or "default")), None)
+    if not m:
+        return 0.0
+    server = min(METER_CAP_S, max(0.0, time.time() - float(m["start"])))
+    reported = max(0.0, float(client_seconds or 0.0))
+    gap = server - reported
+    return round(gap, 1) if gap > 5.0 else 0.0
+
+
+def _reap_once(now: Optional[float] = None) -> int:
+    now = now or time.time()
+    stale = []
+    with _METER_LOCK:
+        for mk, m in list(_METERS.items()):
+            last = _LAST_SEEN.get(mk[0], m["start"])
+            if now - last > REAP_AFTER_S:
+                stale.append((mk, m, last))
+                _METERS.pop(mk, None)
+    for (key, kind, sid), m, last in stale:
+        seconds = min(METER_CAP_S, max(0.0, last - float(m["start"])))
+        if seconds <= 0:
+            continue
+        before = getattr(_tl, "key", None)
+        _tl.key = key
+        try:
+            import cost_tracker
+            cost_tracker.record_usage(sid, m["service_type"], m["provider"], m["model"],
+                                      operation="server_meter_reaped",
+                                      output_units=seconds, unit_type="seconds", success=True)
+        except Exception as e:  # noqa: BLE001
+            log.warning("billing: reaping %s failed: %s", kind, e)
+        finally:
+            _tl.key = before
+    return len(stale)
+
+
+def _ensure_reaper() -> None:
+    global _reaper_started
+    if _reaper_started:
+        return
+    _reaper_started = True
+
+    def loop():
+        _tl.key = None
+        while True:
+            time.sleep(30)
+            try:
+                _reap_once()
+            except Exception as e:  # noqa: BLE001
+                log.warning("billing: reaper: %s", e)
+
+    t = threading.Thread(target=loop, name="billing-meter-reaper", daemon=True)
+    t.run = loop  # never inherit the wallet of the request that woke it
+    t.start()
+
+
+# ── the rate card (BILLING_LIVE_PLAN B3) ──────────────────────────────────
+# Each thing a run can use, computed from pricing.json and markup() at the
+# moment it is read — the same numbers every charge is computed from, so the
+# card cannot drift from the bill.
+_CARD = (
+    # label, provider, model, unit_type, units, size, per
+    ("Story beat", "gemini", "gemini-3.1-flash-lite", "tokens", (10000, 400), None,
+     "about 10K tokens read, 400 written"),
+    ("Picture", "gemini", "gemini-3.1-flash-lite-image", "images", 1, "1K", "each, 1K"),
+    ("Sharp picture", "gemini", "gemini-3.1-flash-image", "images", 1, "2K", "each, 2K"),
+    ("Cutscene frame", "gemini", "gemini-3-pro-image", "images", 1, "4K", "each, 4K"),
+    ("Spoken line", "elevenlabs", "tts", "characters", 200, None, "about 200 characters"),
+    ("Sound effect", "elevenlabs", "eleven_text_to_sound_v2", "seconds", 60, None, "per minute"),
+    ("Music", "elevenlabs", "music_v2", "seconds", 60, None, "per minute"),
+    ("Talking with someone", "elevenlabs", "talk_agent", "seconds", 60, None, "per minute"),
+    ("Live video", "reactor", "happy-oyster", "seconds", 60, None, "per minute"),
+    ("Live video, light", "reactor", "lingbot-world-2", "seconds", 60, None, "per minute"),
+    ("Video clip", "veo", "veo-3.1-generate-preview", "seconds", 8, None, "8 seconds"),
+)
+
+
+def rate_card() -> Dict[str, Any]:
+    import pricing
+    m = markup() if requires_wallet() else 1.0
+    rows = []
+    checked = []
+    for label, provider, model, unit_type, units, size, per in _CARD:
+        if isinstance(units, tuple):
+            cost = pricing.estimate_cost(provider, model, unit_type, units[0], units[1])
+        else:
+            cost = pricing.estimate_cost(provider, model, unit_type, None, units, size=size)
+        rate = pricing.get_rate(provider, model, unit_type) or {}
+        if rate.get("checked"):
+            checked.append(str(rate["checked"]))
+        rows.append({
+            "thing": label, "per": per, "provider": provider, "model": model,
+            "provider_usd": None if cost is None else round(cost, 4),
+            "price_usd": None if cost is None else round(cost * m, 4),
+            "source": rate.get("source"),
+        })
+    return {"markup": m, "checked": max(checked) if checked else None, "rows": rows}
 
 
 def settle_session(session_id: str, cost_before_usd: float) -> Optional[Dict[str, Any]]:
-    """Debit retail (cost × markup) for hosted play after a successful turn."""
-    if not requires_wallet():
-        return None
-    try:
-        import cost_tracker
-        after = float(cost_tracker.session_cost_usd(session_id) or 0.0)
-    except Exception:
-        return None
-    delta = max(0.0, after - max(0.0, float(cost_before_usd or 0.0)))
-    if delta <= 0:
-        return None
-    retail = round(delta * markup(), 6)
-    try:
-        return debit(retail)
-    except Exception as e:
-        log.warning("billing: settle failed session=%s: %s", session_id, e)
-        return None
+    """Retired: costs are charged as they are logged (charge_cost). Kept so
+    older call sites stay harmless — charging here too would bill twice."""
+    return None
 
 
 def gate(min_usd: float = 0.0) -> Optional[Dict[str, Any]]:
@@ -439,12 +811,14 @@ def gate(min_usd: float = 0.0) -> Optional[Dict[str, Any]]:
         pass
     if not requires_wallet():
         return None
-    acct = current_account()
-    if not (acct.get("email") or "").strip():
+    acct = current_account(mint=True)
+    if acct.get("unlimited"):
+        return None
+    if not (acct.get("key") or "").strip():
         return {
             "needs_billing": True,
             "reason": "needs_account",
-            "message": "Link an email in ACCOUNT to play on our keys.",
+            "message": "Open ACCOUNT to add money and play on our keys.",
         }
     if over_account_cap(acct):
         return {
@@ -489,11 +863,11 @@ def apply_invoice_paid(invoice: Any) -> Dict[str, Any]:
     with _LOCK:
         store = _read()
         found = None
-        for email, acct in (store.get("accounts") or {}).items():
+        for key, acct in (store.get("accounts") or {}).items():
             if not isinstance(acct, dict):
                 continue
             if str(acct.get("stripe_customer_id") or "") == customer:
-                found = email
+                found = key
                 break
         if not found:
             return {"ok": False, "reason": "unknown_customer"}
@@ -505,8 +879,8 @@ def apply_invoice_paid(invoice: Any) -> Dict[str, Any]:
         acct["period_start"] = _period_start()
         store["accounts"][found] = acct
         _write(store)
-    log.info("billing: invoice.paid refreshed Play included email=%s", found)
-    return {"ok": True, "email": found, "included_usd": float(PLANS["play"]["included_usd"])}
+    log.info("billing: invoice.paid refreshed Play included wallet=%s", found)
+    return {"ok": True, "account": found, "included_usd": float(PLANS["play"]["included_usd"])}
 
 
 def _plain(obj: Any) -> Dict[str, Any]:
@@ -586,10 +960,11 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None,
                     return_to: Optional[str] = None) -> Dict[str, Any]:
     if not is_payments_enabled():
         raise RuntimeError("Payments are not configured.")
-    acct = current_account()
+    acct = current_account(mint=True)
+    key = (acct.get("key") or "").strip()
+    if not key:
+        raise ValueError("No wallet on this device.")
     email = (acct.get("email") or "").strip()
-    if not email:
-        raise ValueError("Link an email before paying.")
     kind = (kind or "pack").strip().lower()
     if kind == "play":
         # The monthly plan is not sold (BILLING_LIVE_PLAN C6): one way in,
@@ -638,10 +1013,10 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None,
     kwargs: Dict[str, Any] = {
         "mode": mode,
         "line_items": line_items,
-        "client_reference_id": email,
+        "client_reference_id": key,
         "metadata": {
             "purpose": kind,
-            "email": email,
+            "account": key,
             "pack": (pack or {}).get("id") or "",
         },
         "expires_at": int(time.time()) + 30 * 60,
@@ -665,18 +1040,20 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None,
             "enabled": True,
             "invoice_data": {
                 "description": f"GOD wallet top-up · {(pack or {}).get('label', '')}".strip(),
-                "metadata": {"email": email, "pack": (pack or {}).get("id") or ""},
+                "metadata": {"account": key, "pack": (pack or {}).get("id") or ""},
             },
         }
     if acct.get("stripe_customer_id"):
         kwargs["customer"] = acct["stripe_customer_id"]
     else:
-        kwargs["customer_email"] = email
+        # Checkout asks for the receipt email itself when we don't know it.
+        if email:
+            kwargs["customer_email"] = email
         if mode == "payment":
             kwargs["customer_creation"] = "always"
 
     checkout = s.checkout.Session.create(**kwargs)
-    log.info("billing: checkout %s kind=%s email=%s", checkout.id, kind, email)
+    log.info("billing: checkout %s kind=%s wallet=%s", checkout.id, kind, key)
     return {
         "ui_mode": ui_mode,
         "url": checkout.url,
@@ -693,9 +1070,9 @@ def fulfill_checkout(session: Any) -> Dict[str, Any]:
 
     The one path money takes into a wallet — the browser's return
     (``redeem``) and the webhook both land here, in either order, any number
-    of times. The account is the one written into the session at checkout
-    (``metadata.email``), never the browser's current account: a shared or
-    signed-in-elsewhere browser must not collect someone else's payment.
+    of times. The wallet is the one written into the session at checkout
+    (``metadata.account``; ``metadata.email`` on sessions made before
+    per-device wallets), never the browser's current one.
     Idempotent on the checkout id, store-wide, under the lock.
     """
     cs = _plain(session)
@@ -713,11 +1090,13 @@ def fulfill_checkout(session: Any) -> Dict[str, Any]:
         status = str(cs.get("status") or "").lower()
         return {"ok": False, "reason": "processing" if status == "complete" else "unpaid"}
     details = _plain(cs.get("customer_details"))
-    raw_email = md.get("email") or cs.get("customer_email") or details.get("email") or ""
-    try:
-        email = _normalize_email(raw_email)
-    except ValueError:
-        return {"ok": False, "reason": "no_account"}
+    receipt_email = str(details.get("email") or cs.get("customer_email") or "").strip().lower() or None
+    target = str(md.get("account") or "").strip()
+    if not _KEY_RE.match(target):
+        try:
+            target = _normalize_email(md.get("email") or "")  # legacy wallet keyed by email
+        except ValueError:
+            return {"ok": False, "reason": "no_account"}
 
     pack = pack_by_id(md.get("pack"))
     credit = float(pack["credit_usd"])
@@ -725,12 +1104,15 @@ def fulfill_checkout(session: Any) -> Dict[str, Any]:
         store = _read()
         done = store.setdefault("redeemed_checkouts", [])
         accounts = store.setdefault("accounts", {})
-        acct = accounts.get(email)
+        acct = accounts.get(target)
         legacy = bool(acct and cs_id in (acct.get("redeemed") or []))
         if cs_id in done or legacy:
-            return {"ok": True, "already_redeemed": True, "email": email}
+            return {"ok": True, "already_redeemed": True, "account": target}
         if not isinstance(acct, dict):
-            acct = _new_account(email)
+            acct = _new_account(target)
+        acct.setdefault("key", target)
+        if receipt_email and not acct.get("email"):
+            acct["email"] = receipt_email
         _roll_period(acct)
         customer = cs.get("customer")
         if customer:
@@ -751,12 +1133,12 @@ def fulfill_checkout(session: Any) -> Dict[str, Any]:
         redeemed = list(acct.get("redeemed") or [])
         redeemed.append(cs_id)
         acct["redeemed"] = redeemed[-200:]
-        accounts[email] = acct
+        accounts[target] = acct
         done.append(cs_id)
         store["redeemed_checkouts"] = done[-5000:]
         _write(store)
-    log.info("billing: credited %s -> %s (+$%.2f)", cs_id, email, credit)
-    return {"ok": True, "already_redeemed": False, "email": email, "credit_usd": credit}
+    log.info("billing: credited %s -> %s (+$%.2f)", cs_id, target, credit)
+    return {"ok": True, "already_redeemed": False, "account": target, "credit_usd": credit}
 
 
 def redeem(checkout_session_id: str) -> Dict[str, Any]:
@@ -782,15 +1164,17 @@ def handle_paid_checkout(checkout_session_id: str, metadata: Optional[Dict[str, 
 
 
 def public_status(*, ignore_cookie: bool = False) -> Dict[str, Any]:
-    acct = current_account(ignore_cookie=ignore_cookie)
+    # A hosted wallet server gives every browser its wallet on first look.
+    acct = current_account(ignore_cookie=ignore_cookie, mint=requires_wallet())
     _roll_period(acct)
+    has = bool((acct.get("key") or "").strip())
     email = (acct.get("email") or "").strip() or None
-    plan_id = acct.get("plan") if email else "free"
+    plan_id = acct.get("plan") if has else "free"
     if plan_id not in PLANS:
         plan_id = "free"
     plan = PLANS[plan_id]
-    cap = acct.get("monthly_cap_usd") if email else None
-    billed = float(acct.get("billed_usd") or 0.0) if email else 0.0
+    cap = acct.get("monthly_cap_usd") if has else None
+    billed = float(acct.get("billed_usd") or 0.0) if has else 0.0
     remaining_cap = None if cap is None else round(max(0.0, float(cap) - billed), 6)
     hosted = requires_wallet() or plan_id == "play"
     payments_on = is_payments_enabled()
@@ -799,17 +1183,18 @@ def public_status(*, ignore_cookie: bool = False) -> Dict[str, Any]:
         "requires_wallet": requires_wallet(),
         "hosted_view": hosted,
         "markup": markup() if hosted else 1.0,
+        "unlimited": bool(acct.get("unlimited")) if has else False,
         "account": {
             "email": email,
-            "linked": bool(email),
+            "linked": has,
             "has_customer": bool(acct.get("stripe_customer_id")),
         },
         "plan": {
             "id": plan_id,
             "label": plan["label"],
             "price_cents": plan["price_cents"],
-            "included_usd": float(acct.get("included_usd") or plan["included_usd"] or 0.0) if email else 0.0,
-            "included_left_usd": included_left(acct) if email else 0.0,
+            "included_usd": float(acct.get("included_usd") or plan["included_usd"] or 0.0) if has else 0.0,
+            "included_left_usd": included_left(acct) if has else 0.0,
             "blurb": plan["blurb"],
         },
         "plans": [
@@ -823,14 +1208,14 @@ def public_status(*, ignore_cookie: bool = False) -> Dict[str, Any]:
             }
             for p in PLANS.values()
         ],
-        "wallet_usd": round(float(acct.get("wallet_usd") or 0.0), 6) if email else 0.0,
+        "wallet_usd": round(float(acct.get("wallet_usd") or 0.0), 6) if has else 0.0,
         "billed_usd": round(billed, 6),
-        "available_usd": available_usd(acct) if email else 0.0,
-        "on_demand": bool(acct.get("on_demand", True)) if email else True,
+        "available_usd": available_usd(acct) if has else 0.0,
+        "on_demand": bool(acct.get("on_demand", True)) if has else True,
         "account_cap_usd": cap,
         "account_remaining_usd": remaining_cap,
-        "account_over_cap": over_account_cap(acct) if email else False,
-        "period_start": acct.get("period_start") if email else _period_start(),
+        "account_over_cap": over_account_cap(acct) if has else False,
+        "period_start": acct.get("period_start") if has else _period_start(),
         "packs": [
             {
                 "id": p["id"],
@@ -843,5 +1228,5 @@ def public_status(*, ignore_cookie: bool = False) -> Dict[str, Any]:
             }
             for p in PACKS
         ],
-        "payments": list(acct.get("payments") or [])[:8] if email else [],
+        "payments": list(acct.get("payments") or [])[:8] if has else [],
     }

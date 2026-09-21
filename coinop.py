@@ -213,6 +213,15 @@ def is_credit_gating_enabled() -> bool:
     """
     if not is_enabled():
         return False
+    # Never on top of the billing wallet (BILLING_LIVE_PLAN C5): a turn would
+    # cost a coin AND its model cost. COINOP_ON_HOSTED lights the cabinet's
+    # paid continue, not the turn meter.
+    try:
+        import billing
+        if billing.requires_wallet():
+            return False
+    except Exception:
+        pass
     return bool(_cfg()["credit_gating"])
 
 
