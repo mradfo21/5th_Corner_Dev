@@ -5551,6 +5551,59 @@ def api_keys_put():
     return jsonify(status)
 
 
+@app.route("/api/keys/custom", methods=["PUT", "DELETE"])
+def api_keys_custom():
+    """A custom key: any OpenAI-compatible address + model, used as the
+    narrator. Same local-only contract as PUT /api/keys."""
+    if not _local_keys_armed:
+        return error_response(
+            "Keys cannot be edited on this server",
+            "Only the local app can save API keys.", code=403)
+    if request.remote_addr not in ("127.0.0.1", "::1", "localhost"):
+        return error_response(
+            "Keys are local-only", request.remote_addr, code=403)
+    try:
+        if request.method == "DELETE":
+            return jsonify(keys_store.clear_custom())
+        body = request.get_json(silent=True) or {}
+        return jsonify(keys_store.set_custom(
+            body.get("address"), body.get("model"), body.get("value") or ""))
+    except ValueError as e:
+        return error_response("Invalid custom key", str(e)[:200], code=400)
+    except OSError:
+        return error_response("Could not save keys", "The local store is not writable.", code=500)
+
+
+def _recent_spend(limit: int = 4) -> list:
+    """The last 30 days on this machine, one line per run per day, newest
+    first. Local app only: on a shared server the ledger holds every
+    visitor's sessions."""
+    try:
+        import cost_tracker
+        from datetime import datetime, timedelta, timezone
+        month_start = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        cost_tracker.init_db()
+        with cost_tracker._lock:
+            conn = cost_tracker._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT session_id, substr(ts, 1, 10) AS day, "
+                    "SUM(COALESCE(cost_usd, 0)) AS cost, MAX(ts) AS last "
+                    "FROM usage_events WHERE ts >= ? "
+                    "GROUP BY session_id, day ORDER BY last DESC LIMIT ?",
+                    (month_start, int(limit)),
+                ).fetchall()
+            finally:
+                conn.close()
+        return [{
+            "when": r["last"],
+            "kind": "world" if str(r["session_id"] or "").startswith("wf-") else "play",
+            "cost_usd": round(float(r["cost"] or 0.0), 4),
+        } for r in rows]
+    except Exception:
+        return []
+
+
 def _usage_payload(*, ignore_cookie: bool = False) -> dict:
     """Ledger + account wallet. No secrets."""
     import usage_limits
@@ -5558,6 +5611,7 @@ def _usage_payload(*, ignore_cookie: bool = False) -> dict:
     status.update(billing.public_status(ignore_cookie=ignore_cookie))
     status["editable"] = _keys_write_allowed()
     status["billing_editable"] = True
+    status["recent"] = _recent_spend() if status["editable"] else []
     if billing.requires_wallet() and status.get("account", {}).get("linked"):
         status["monthly_cap_usd"] = status.get("account_cap_usd")
         status["remaining_usd"] = status.get("account_remaining_usd")

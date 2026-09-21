@@ -1,5 +1,43 @@
 # 🔧 CHANGELOG - September 20, 2026
 
+## 💳 ACCOUNT is a sheet on the right of the menu, and takes a custom key
+
+Asked: *"design a better account / usage page, that will easily handle all
+money flow in and out, and is much simpler than our current one, and allows
+custom keys"*, then *"pressing account just brings up a menu on the right side
+of the screen that is seamless, with a black gradient under it … make sure the
+ui is genuinely functional and handles the actual uses of our app, simply."*
+
+The old ACCOUNT was a full-screen cover with KEYS / USAGE tabs, plan cards,
+two meters and a limit dropdown, and it hid the menu and its film. It is now
+one sheet on the right (`static/js/account.js`, `static/css/account.css`): the
+film keeps playing on the left under a black fall-off, the title and nav dim,
+and EXIT steps aside so it cannot sit on top of the sheet's close. It shows
+only what the app actually does, in the two places it runs:
+
+- **The desktop app (your keys).** The last 30 days of spend — the same
+  window the limit is checked against — the monthly limit (tap, type, SAVE or
+  NONE), every provider key (tap a row: paste, SAVE, REMOVE; a key that won't
+  work says so), and the last few runs with what each cost.
+- **A hosted server (a wallet).** Sign in with an email, the balance, ADD
+  MONEY (the server's packs, Stripe Checkout, redeemed on return), the limit,
+  the payments made, and SIGN OUT. The host's keys are not shown.
+
+**CUSTOM key.** Any OpenAI-compatible address + model + key (blank for a local
+server) — a model on this machine, OpenRouter, a lab's own endpoint — becomes
+the narrator. It rides the OpenAI slot the engine already had:
+`PUT /api/keys/custom` writes `OPENAI_BASE_URL`, `CUSTOM_TEXT_MODEL` and
+`OPENAI_API_KEY` to the local key file, re-points `engine.client`, and sets the
+text provider to that model; `DELETE` puts the narrator back on Gemini. Same
+local-only contract as `PUT /api/keys`. `GET /api/keys` reports it (address,
+model, last-four, never the secret).
+
+`GET /api/usage` adds `recent` on the desktop app only (the ledger on a shared
+server holds every visitor's runs). The `Accounts` module in standalone.js is
+now a thin opener around `window.AccountPanel`; the plan/tab/meter code it
+replaced is gone. Left out on purpose because nothing behind them exists yet:
+per-part "who pays", and auto top-up.
+
 ## ✅ FIXED: the editor ran the game underneath you and wrote Worlds into each other
 
 Asked: *"when I'm making changes to the world I notice it's STILL trying to run
