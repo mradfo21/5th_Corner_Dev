@@ -478,7 +478,11 @@ def apply_invoice_paid(invoice: Any) -> Dict[str, Any]:
     Checkout redeem sets the first month. Recurring ``invoice.paid`` events
     are what keep included_usd from going stale.
     """
-    data = invoice if isinstance(invoice, dict) else {}
+    data = _plain(invoice)
+    if not (data.get("subscription") or (_plain(data.get("parent")).get("subscription_details"))):
+        # A top-up's own invoice (invoice_creation) — the wallet was credited
+        # by fulfill_checkout; this must not turn the payer into a Play member.
+        return {"ok": True, "ignored": "not_a_subscription_invoice"}
     customer = str(data.get("customer") or "").strip()
     if not customer:
         return {"ok": False, "reason": "no_customer"}
@@ -505,6 +509,29 @@ def apply_invoice_paid(invoice: Any) -> Dict[str, Any]:
     return {"ok": True, "email": found, "included_usd": float(PLANS["play"]["included_usd"])}
 
 
+def _plain(obj: Any) -> Dict[str, Any]:
+    """A Stripe object as a plain dict. stripe-python 15 objects are not
+    dicts (`dict(obj)` raises TypeError, `obj.get` raises AttributeError),
+    older ones were; webhook payloads may already be plain dicts."""
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    for name in ("to_dict_recursive", "to_dict"):
+        fn = getattr(type(obj), name, None)
+        if callable(fn):
+            try:
+                out = fn(obj)
+                if isinstance(out, dict):
+                    return out
+            except Exception:  # noqa: BLE001
+                pass
+    try:
+        return dict(obj)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _stripe_client():
     if stripe is None:
         raise RuntimeError("stripe package not installed")
@@ -519,7 +546,23 @@ def _return_base(request) -> str:
     return request.host_url.rstrip("/")
 
 
-def create_checkout(kind: str, request, pack_id: Optional[str] = None) -> Dict[str, Any]:
+def _safe_return_path(raw: Any) -> str:
+    """Same-origin path to come back to after checkout. Only the game's own
+    pages; anything else (absolute URLs, //host, backslashes) -> /standalone."""
+    path = str(raw or "").strip()
+    if (not path.startswith(("/play", "/standalone")) or "//" in path
+            or "\\" in path or ":" in path.split("?", 1)[0] or len(path) > 512):
+        return "/standalone"
+    # Drop any billing params left over from a previous return.
+    if "?" in path:
+        base, _, query = path.partition("?")
+        keep = [p for p in query.split("&") if p and not p.startswith(("billing=", "cs="))]
+        path = base + ("?" + "&".join(keep) if keep else "")
+    return path
+
+
+def create_checkout(kind: str, request, pack_id: Optional[str] = None,
+                    return_to: Optional[str] = None) -> Dict[str, Any]:
     if not is_payments_enabled():
         raise RuntimeError("Payments are not configured.")
     acct = current_account()
@@ -527,13 +570,19 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None) -> Dict[s
     if not email:
         raise ValueError("Link an email before paying.")
     kind = (kind or "pack").strip().lower()
-    if kind not in ("pack", "play"):
+    if kind == "play":
+        # The monthly plan is not sold (BILLING_LIVE_PLAN C6): one way in,
+        # wallet top-ups.
+        raise ValueError("The Play plan isn't sold. Add money to the wallet instead.")
+    if kind != "pack":
         raise ValueError("Unknown checkout kind.")
 
     s = _stripe_client()
     base = _return_base(request)
-    success = f"{base}/standalone?billing=success&cs={{CHECKOUT_SESSION_ID}}"
-    cancel = f"{base}/standalone?billing=cancel"
+    back = _safe_return_path(return_to)
+    sep = "&" if "?" in back else "?"
+    success = f"{base}{back}{sep}billing=success&cs={{CHECKOUT_SESSION_ID}}"
+    cancel = f"{base}{back}{sep}billing=cancel"
     currency = (os.environ.get("COINOP_CONTINUE_CURRENCY") or "usd").strip().lower()
 
     if kind == "play":
@@ -561,9 +610,11 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None) -> Dict[s
         }]
         mode = "payment"
 
+    # No payment_method_types: the Dashboard's payment-method settings decide
+    # (card, Link, wallets, Klarna…). Delayed methods finish after checkout —
+    # the webhook's checkout.session.async_payment_succeeded credits those.
     kwargs: Dict[str, Any] = {
         "mode": mode,
-        "payment_method_types": ["card"],
         "line_items": line_items,
         "client_reference_id": email,
         "metadata": {
@@ -575,10 +626,22 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None) -> Dict[s
         "cancel_url": cancel,
         "expires_at": int(time.time()) + 30 * 60,
     }
+    if mode == "payment":
+        # Every top-up gets a Stripe invoice: the player's receipt, and a
+        # record the Dashboard can show next to the wallet credit.
+        kwargs["invoice_creation"] = {
+            "enabled": True,
+            "invoice_data": {
+                "description": f"GOD wallet top-up · {(pack or {}).get('label', '')}".strip(),
+                "metadata": {"email": email, "pack": (pack or {}).get("id") or ""},
+            },
+        }
     if acct.get("stripe_customer_id"):
         kwargs["customer"] = acct["stripe_customer_id"]
     else:
         kwargs["customer_email"] = email
+        if mode == "payment":
+            kwargs["customer_creation"] = "always"
 
     checkout = s.checkout.Session.create(**kwargs)
     log.info("billing: checkout %s kind=%s email=%s", checkout.id, kind, email)
@@ -590,91 +653,96 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None) -> Dict[s
     }
 
 
-def _already_redeemed(acct: Dict[str, Any], checkout_session_id: str) -> bool:
-    return checkout_session_id in (acct.get("redeemed") or [])
+def fulfill_checkout(session: Any) -> Dict[str, Any]:
+    """Credit a paid top-up Checkout Session to the account that paid.
+
+    The one path money takes into a wallet — the browser's return
+    (``redeem``) and the webhook both land here, in either order, any number
+    of times. The account is the one written into the session at checkout
+    (``metadata.email``), never the browser's current account: a shared or
+    signed-in-elsewhere browser must not collect someone else's payment.
+    Idempotent on the checkout id, store-wide, under the lock.
+    """
+    cs = _plain(session)
+    cs_id = str(cs.get("id") or "").strip()
+    if not cs_id.startswith("cs_"):
+        return {"ok": False, "reason": "bad_checkout_id"}
+    md = _plain(cs.get("metadata"))
+    kind = (md.get("purpose") or "pack").strip().lower()
+    if kind != "pack":
+        return {"ok": False, "reason": "not_a_top_up"}
+    payment_status = str(cs.get("payment_status") or "").lower()
+    if payment_status != "paid":
+        # complete + unpaid = a delayed method (Klarna, bank) still clearing;
+        # async_payment_succeeded arrives later and lands it.
+        status = str(cs.get("status") or "").lower()
+        return {"ok": False, "reason": "processing" if status == "complete" else "unpaid"}
+    details = _plain(cs.get("customer_details"))
+    raw_email = md.get("email") or cs.get("customer_email") or details.get("email") or ""
+    try:
+        email = _normalize_email(raw_email)
+    except ValueError:
+        return {"ok": False, "reason": "no_account"}
+
+    pack = pack_by_id(md.get("pack"))
+    credit = float(pack["credit_usd"])
+    with _LOCK:
+        store = _read()
+        done = store.setdefault("redeemed_checkouts", [])
+        accounts = store.setdefault("accounts", {})
+        acct = accounts.get(email)
+        legacy = bool(acct and cs_id in (acct.get("redeemed") or []))
+        if cs_id in done or legacy:
+            return {"ok": True, "already_redeemed": True, "email": email}
+        if not isinstance(acct, dict):
+            acct = _new_account(email)
+        _roll_period(acct)
+        customer = cs.get("customer")
+        if customer:
+            acct["stripe_customer_id"] = str(customer)
+        acct["wallet_usd"] = round(float(acct.get("wallet_usd") or 0.0) + credit, 6)
+        acct["on_demand"] = True
+        receipt = {
+            "cs": cs_id,
+            "kind": "pack",
+            "label": pack["label"],
+            "pack": pack["id"],
+            "credit_usd": credit,
+            "amount_cents": int(cs.get("amount_total") or 0),
+            "invoice": str(cs.get("invoice") or "") or None,
+            "ts": int(time.time()),
+        }
+        acct["payments"] = ([receipt] + list(acct.get("payments") or []))[:24]
+        redeemed = list(acct.get("redeemed") or [])
+        redeemed.append(cs_id)
+        acct["redeemed"] = redeemed[-200:]
+        accounts[email] = acct
+        done.append(cs_id)
+        store["redeemed_checkouts"] = done[-5000:]
+        _write(store)
+    log.info("billing: credited %s -> %s (+$%.2f)", cs_id, email, credit)
+    return {"ok": True, "already_redeemed": False, "email": email, "credit_usd": credit}
 
 
 def redeem(checkout_session_id: str) -> Dict[str, Any]:
-    """Apply a paid Stripe Checkout Session to the linked account."""
+    """Browser return from Checkout: look the session up at Stripe (never
+    trust the URL) and fulfil it. The webhook may already have."""
     if not is_payments_enabled():
         return {"ok": False, "reason": "payments_disabled"}
     cs_id = (checkout_session_id or "").strip()
     if not cs_id.startswith("cs_"):
         return {"ok": False, "reason": "bad_checkout_id"}
-
     s = _stripe_client()
-    cs = s.checkout.Session.retrieve(cs_id)
-    md = dict(getattr(cs, "metadata", None) or {})
-    email = (md.get("email") or getattr(cs, "customer_email", None) or "").strip().lower()
-    if email:
-        try:
-            link_email(email)
-        except ValueError:
-            pass
-    acct = current_account()
-    if not acct.get("email"):
-        return {"ok": False, "reason": "no_account"}
-    if _already_redeemed(acct, cs_id):
-        return {"ok": True, "already_redeemed": True, "account": public_status()}
-
-    status = (getattr(cs, "status", None) or "").lower()
-    payment_status = (getattr(cs, "payment_status", None) or "").lower()
-    mode = (getattr(cs, "mode", None) or "").lower()
-    paid = payment_status == "paid" or (mode == "subscription" and status == "complete")
-    if not paid:
-        return {"ok": False, "reason": "unpaid"}
-
-    customer = getattr(cs, "customer", None)
-    if customer:
-        acct["stripe_customer_id"] = str(customer)
-
-    kind = (md.get("purpose") or "pack").strip().lower()
-    amount_cents = int(getattr(cs, "amount_total", 0) or 0)
-    receipt = {
-        "cs": cs_id,
-        "kind": kind,
-        "amount_cents": amount_cents,
-        "ts": int(time.time()),
-    }
-
-    if kind == "play":
-        acct["plan"] = "play"
-        acct["included_usd"] = float(PLANS["play"]["included_usd"])
-        acct["included_used_usd"] = 0.0
-        acct["period_start"] = _period_start()
-        sub = getattr(cs, "subscription", None)
-        if sub:
-            acct["stripe_subscription_id"] = str(sub)
-        receipt["label"] = "Play"
-        receipt["credit_usd"] = float(PLANS["play"]["included_usd"])
-    else:
-        pack = pack_by_id(md.get("pack"))
-        acct["wallet_usd"] = round(float(acct.get("wallet_usd") or 0.0) + float(pack["credit_usd"]), 6)
-        acct["on_demand"] = True
-        receipt["label"] = pack["label"]
-        receipt["credit_usd"] = float(pack["credit_usd"])
-        receipt["pack"] = pack["id"]
-
-    redeemed = list(acct.get("redeemed") or [])
-    redeemed.append(cs_id)
-    acct["redeemed"] = redeemed
-    payments = list(acct.get("payments") or [])
-    payments.insert(0, receipt)
-    acct["payments"] = payments[:24]
-    _save_account(acct)
-    log.info("billing: redeemed %s kind=%s email=%s", cs_id, kind, acct.get("email"))
-    return {"ok": True, "already_redeemed": False, "account": public_status()}
+    try:
+        cs = s.checkout.Session.retrieve(cs_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("billing: retrieve %s failed: %s", cs_id, e)
+        return {"ok": False, "reason": "checkout_not_found"}
+    return fulfill_checkout(cs)
 
 
 def handle_paid_checkout(checkout_session_id: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Webhook helper — same redeem path, idempotent."""
-    md = metadata or {}
-    email = (md.get("email") or "").strip()
-    if email:
-        try:
-            link_email(email)
-        except ValueError:
-            pass
+    """Kept for callers of the old name: re-fetch and fulfil."""
     return redeem(checkout_session_id)
 
 

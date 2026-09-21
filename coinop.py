@@ -869,30 +869,40 @@ def handle_webhook(payload: bytes, signature: str) -> Dict[str, Any]:
         log.warning("coinop: webhook signature verification failed: %s", e)
         return {"ok": False, "reason": "bad_signature"}
 
-    etype = event.get("type") if hasattr(event, "get") else getattr(event, "type", None)
-    data = event["data"]["object"] if hasattr(event, "__getitem__") else event.data.object  # type: ignore
+    # stripe-python 15 objects are not dicts (`.get` raises AttributeError);
+    # read the verified event as plain data from here on.
+    import billing
+    ev = billing._plain(event)
+    etype = ev.get("type")
+    data = billing._plain(billing._plain(ev.get("data")).get("object"))
     if etype == "invoice.paid":
         try:
-            import billing
             return {"ok": True, "billing": billing.apply_invoice_paid(data)}
         except Exception as e:  # noqa: BLE001
             log.warning("coinop: invoice.paid failed: %s", e)
             return {"ok": False, "reason": "billing_invoice_failed"}
-    if etype != "checkout.session.completed":
+    if etype == "checkout.session.async_payment_failed":
+        log.warning("coinop: delayed payment failed for %s", data.get("id"))
+        return {"ok": True, "failed": data.get("id")}
+    if etype not in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
         return {"ok": True, "ignored": etype}
 
-    md = data.get("metadata", {}) or {}
+    md = billing._plain(data.get("metadata"))
     checkout_session_id = data.get("id")
     purpose = (md.get("purpose") or "").strip().lower()
     if purpose in ("pack", "play", "usage"):
         if not checkout_session_id:
             return {"ok": False, "reason": "missing_metadata"}
         try:
-            import billing
-            return {"ok": True, "billing": billing.handle_paid_checkout(checkout_session_id, md)}
+            # The event is signature-verified, so its session is the truth;
+            # a card is paid at `completed`, a delayed method at
+            # `async_payment_succeeded` — fulfill_checkout credits only paid.
+            return {"ok": True, "billing": billing.fulfill_checkout(data)}
         except Exception as e:  # noqa: BLE001
             log.warning("coinop: billing webhook failed: %s", e)
             return {"ok": False, "reason": "billing_redeem_failed"}
+    if etype != "checkout.session.completed":
+        return {"ok": True, "ignored": etype}
     session_id = md.get("game_session_id")
     if not session_id or not checkout_session_id:
         return {"ok": False, "reason": "missing_metadata"}

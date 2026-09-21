@@ -5691,7 +5691,8 @@ def api_billing_checkout():
     body = request.get_json(silent=True) or {}
     try:
         out = billing.create_checkout(
-            body.get("kind") or "pack", request, pack_id=body.get("pack"))
+            body.get("kind") or "pack", request, pack_id=body.get("pack"),
+            return_to=body.get("return_to"))
         return jsonify(out)
     except ValueError as e:
         return error_response("Checkout refused", str(e)[:200], code=400)
@@ -5711,9 +5712,16 @@ def api_billing_redeem():
     result = billing.redeem(cs)
     if not result.get("ok"):
         return jsonify(result), 402
-    resp = jsonify({**result, "usage": _usage_payload()})
-    email = (billing.current_account().get("email") or "").strip() or None
-    return _set_account_cookie(resp, email)
+    # The money went to the account that paid (fulfill_checkout); show this
+    # browser that wallet. (Per-device wallets replace this: BILLING_LIVE_PLAN C2.)
+    email = (result.get("email") or "").strip() or None
+    if email:
+        try:
+            billing.link_email(email)
+        except ValueError:
+            email = None
+    resp = jsonify({**result, "usage": _usage_payload(ignore_cookie=bool(email))})
+    return _set_account_cookie(resp, email or (billing.current_account().get("email") or "").strip() or None)
 
 
 @app.route('/', methods=['GET'])

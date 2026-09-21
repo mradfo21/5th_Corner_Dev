@@ -132,7 +132,7 @@ class BillingCase(unittest.TestCase):
         acct["included_usd"] = 10.0
         acct["included_used_usd"] = 9.5
         billing._save_account(acct)
-        out = billing.apply_invoice_paid({"customer": "cus_test"})
+        out = billing.apply_invoice_paid({"customer": "cus_test", "subscription": "sub_test"})
         self.assertTrue(out["ok"])
         row = billing.current_account()
         self.assertAlmostEqual(row["included_used_usd"], 0.0)
@@ -198,6 +198,137 @@ class BillingApiCase(unittest.TestCase):
                 os.environ.pop("ADMIN_TOKEN", None)
             else:
                 os.environ["ADMIN_TOKEN"] = saved
+
+
+class StripeCheckoutCase(unittest.TestCase):
+    """The top-up path against real stripe-python objects (15.x objects are
+    not dicts — the reason both credit paths used to fail)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        billing.set_store_path(Path(self._tmp.name) / "billing.json")
+        self.addCleanup(billing.set_store_path, None)
+        billing._local_app = False
+
+    def _session(self, **over):
+        import stripe
+        data = {
+            "id": "cs_test_abc", "object": "checkout.session", "status": "complete",
+            "payment_status": "paid", "amount_total": 1000, "customer": "cus_payer",
+            "invoice": "in_123", "customer_details": {"email": "payer@example.com"},
+            "metadata": {"purpose": "pack", "pack": "ten", "email": "payer@example.com"},
+        }
+        data.update(over)
+        return stripe.checkout.Session.construct_from(data, "sk_test_x")
+
+    def _wallet(self, email):
+        return float(billing._read()["accounts"].get(email, {}).get("wallet_usd") or 0.0)
+
+    def test_plain_reads_a_stripe_object(self):
+        cs = self._session()
+        with self.assertRaises(TypeError):
+            dict(cs.metadata)  # the old redeem's failure, on this library
+        md = billing._plain(billing._plain(cs).get("metadata"))
+        self.assertEqual(md["pack"], "ten")
+
+    def test_credits_the_account_that_paid_not_the_browser(self):
+        billing.link_email("someone-else@example.com")  # this browser's account
+        out = billing.fulfill_checkout(self._session())
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["email"], "payer@example.com")
+        self.assertAlmostEqual(self._wallet("payer@example.com"), 10.0)
+        self.assertAlmostEqual(self._wallet("someone-else@example.com"), 0.0)
+        row = billing._read()["accounts"]["payer@example.com"]
+        self.assertEqual(row["stripe_customer_id"], "cus_payer")
+        self.assertEqual(row["payments"][0]["invoice"], "in_123")
+
+    def test_webhook_and_return_credit_once(self):
+        self.assertFalse(billing.fulfill_checkout(self._session())["already_redeemed"])
+        self.assertTrue(billing.fulfill_checkout(self._session())["already_redeemed"])
+        self.assertAlmostEqual(self._wallet("payer@example.com"), 10.0)
+
+    def test_delayed_payment_waits(self):
+        out = billing.fulfill_checkout(self._session(payment_status="unpaid"))
+        self.assertEqual(out["reason"], "processing")
+        self.assertAlmostEqual(self._wallet("payer@example.com"), 0.0)
+        # …and lands when async_payment_succeeded brings it back paid.
+        self.assertTrue(billing.fulfill_checkout(self._session())["ok"])
+        self.assertAlmostEqual(self._wallet("payer@example.com"), 10.0)
+
+    def test_top_up_invoice_is_not_a_plan(self):
+        billing.fulfill_checkout(self._session())
+        out = billing.apply_invoice_paid({"customer": "cus_payer"})
+        self.assertEqual(out.get("ignored"), "not_a_subscription_invoice")
+        self.assertEqual(billing._read()["accounts"]["payer@example.com"]["plan"], "free")
+
+    def test_return_path_stays_in_the_game(self):
+        self.assertEqual(billing._safe_return_path("/play?session=abc&billing=success&cs=cs_1"), "/play?session=abc")
+        for bad in ("https://evil.example/x", "//evil.example", "/play\\..\\x", "/admin", "", None):
+            self.assertEqual(billing._safe_return_path(bad), "/standalone", bad)
+
+    def test_checkout_request(self):
+        seen = {}
+
+        class _Sessions:
+            @staticmethod
+            def create(**kw):
+                seen.update(kw)
+                return type("CS", (), {"id": "cs_test_new", "url": "https://checkout.stripe.com/x"})()
+
+        fake = type("S", (), {"checkout": type("C", (), {"Session": _Sessions})})
+        req = type("R", (), {"host_url": "http://127.0.0.1:5188/"})()
+        billing.link_email("payer@example.com")
+        with patch.object(billing, "is_payments_enabled", return_value=True), \
+                patch.object(billing, "_stripe_client", return_value=fake):
+            out = billing.create_checkout("pack", req, pack_id="ten", return_to="/play?session=abc")
+            with self.assertRaises(ValueError):
+                billing.create_checkout("play", req)
+        self.assertEqual(out["checkout_session_id"], "cs_test_new")
+        self.assertNotIn("payment_method_types", seen)
+        self.assertTrue(seen["invoice_creation"]["enabled"])
+        self.assertEqual(seen["customer_creation"], "always")
+        self.assertTrue(seen["success_url"].startswith("http://127.0.0.1:5188/play?session=abc&billing=success&cs="))
+        self.assertEqual(seen["metadata"]["email"], "payer@example.com")
+
+
+class WebhookCase(unittest.TestCase):
+    """A signed checkout.session.completed event credits the wallet."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        billing.set_store_path(Path(self._tmp.name) / "billing.json")
+        self.addCleanup(billing.set_store_path, None)
+        billing._local_app = False
+
+    def _signed(self, secret, event):
+        import hashlib, hmac, json, time
+        payload = json.dumps(event).encode("utf-8")
+        t = int(time.time())
+        sig = hmac.new(secret.encode(), f"{t}.".encode() + payload, hashlib.sha256).hexdigest()
+        return payload, f"t={t},v1={sig}"
+
+    def test_signed_events_credit_once_and_async_lands(self):
+        import coinop
+        secret = "whsec_test_local"
+        cs = {"id": "cs_test_hook", "object": "checkout.session", "status": "complete",
+              "payment_status": "unpaid", "amount_total": 2500,
+              "metadata": {"purpose": "pack", "pack": "twentyfive", "email": "hook@example.com"}}
+        with patch.dict("os.environ", {"STRIPE_WEBHOOK_SECRET": secret}, clear=False):
+            ev = {"id": "evt_1", "object": "event", "type": "checkout.session.completed",
+                  "data": {"object": cs}}
+            out = coinop.handle_webhook(*self._signed(secret, ev))
+            self.assertTrue(out["ok"])
+            self.assertEqual(out["billing"]["reason"], "processing")
+            ev2 = {"id": "evt_2", "object": "event", "type": "checkout.session.async_payment_succeeded",
+                   "data": {"object": dict(cs, payment_status="paid")}}
+            self.assertTrue(coinop.handle_webhook(*self._signed(secret, ev2))["billing"]["ok"])
+            self.assertTrue(coinop.handle_webhook(*self._signed(secret, ev2))["billing"]["already_redeemed"])
+            bad = coinop.handle_webhook(self._signed(secret, ev2)[0], "t=1,v1=00")
+            self.assertEqual(bad["reason"], "bad_signature")
+        wallet = billing._read()["accounts"]["hook@example.com"]["wallet_usd"]
+        self.assertAlmostEqual(wallet, 27.5)
 
 
 class CoinopHostedCase(unittest.TestCase):

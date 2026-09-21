@@ -181,7 +181,9 @@
   function checkout(packId) {
     return guarded(async () => {
       setMsg("Opening checkout…", "");
-      const data = await call("/api/billing/checkout", json("POST", { kind: "pack", pack: packId }));
+      // Come back to this game, not the default session (BILLING_LIVE_PLAN C4).
+      const back = location.pathname + location.search;
+      const data = await call("/api/billing/checkout", json("POST", { kind: "pack", pack: packId, return_to: back }));
       if (!data.url) throw new Error("Checkout did not open.");
       window.location.href = data.url;
     });
@@ -203,6 +205,7 @@
       if (b === "cancel") { setMsg("Checkout canceled. Nothing was charged.", ""); return; }
     } catch (_) { return; }
     if (!cs) { setMsg("The payment came back without a receipt.", "error"); return; }
+    setMsg("Adding your payment…", "");
     try {
       const data = await call("/api/billing/redeem", json("POST", { checkout_session_id: cs }));
       if (data.usage) usage = data.usage;
@@ -210,7 +213,16 @@
       render();
       setMsg(data.already_redeemed ? "That payment is already in your wallet." : "Money added.", "ok");
     } catch (e) {
-      setMsg(e.message || "Could not apply the payment.", "error");
+      const reason = e.data && e.data.reason;
+      if (reason === "processing") {
+        // Klarna, bank payments and the like clear after checkout; the
+        // webhook adds the money when they do.
+        setMsg("Your payment is still clearing. The money lands in your wallet as soon as it does.", "");
+      } else if (reason === "unpaid") {
+        setMsg("That checkout wasn't paid. Nothing was charged.", "");
+      } else {
+        setMsg(e.message || "Could not apply the payment.", "error");
+      }
     }
   }
 
