@@ -996,6 +996,7 @@ def generate_gemini_img2img(
     model: str | None = None,
     reference_labels: dict | None = None,
     lead_reference: str | None = None,
+    design_refs: list[str] | None = None,
 ) -> str:
     """
     Edit an image using Google Gemini (image-to-image).
@@ -1016,6 +1017,14 @@ def generate_gemini_img2img(
     previous panel wants that panel there: it already shows the character, in
     the pose and from the side panel 1 must continue, whereas the character
     sheet in slot 1 is a face-on portrait and panel 1 kept coming back face-on.
+
+    ``design_refs`` are the run's look book (see look_book.py): the world
+    contact sheet, and on an encounter the roster plate. They are DESIGN, not
+    continuity, so they ride at the lowest-weight end of the list — after the
+    previous frame, never ahead of it — but still ahead of a flipbook's blank
+    layout guide, which has to stay last. They carry their own captions
+    (look_book.label_for) so a nine-panel sheet is never read as "the previous
+    moment" and reproduced as a grid.
 
     ``image_size`` ("1K" / "2K" / "4K") and ``model`` override the configured play
     settings for this one call. Grid renders need both: the panels are slices of a
@@ -1085,6 +1094,15 @@ def generate_gemini_img2img(
     identity_set = set(identity_paths)
     cast_plates = [p for p in (cast_plates or []) if p and p not in identity_set]
     cast_set = set(cast_plates)
+    # A roster plate from the look book rides the cast-plate path (same slot,
+    # same "this is WHO is here" job) but it is a DESIGN, not something the
+    # player has just studied up close, so the wording below tells them apart.
+    try:
+        import look_book as _look_book
+        book_cast = [p for p in cast_plates if _look_book.is_book_path(p)]
+    except Exception:
+        book_cast = []
+    closeup_cast = [p for p in cast_plates if p not in book_cast]
     # Character / level plates FIRST. Gemini copies the person in slot 1;
     # putting the previous still there is why MOVE TO redrew the leftover guy
     # even when a woman plate was attached last. Continuity frames follow,
@@ -1104,6 +1122,20 @@ def generate_gemini_img2img(
         )
     if lead_reference and lead_reference in image_paths:
         image_paths = [lead_reference] + [p for p in image_paths if p != lead_reference]
+    # The look book goes in behind everything that decides WHERE and WHO,
+    # and in front of a trailing layout guide. It takes its slots from the
+    # low-weight tail (an older context frame), never from the plates or the
+    # previous moment.
+    design_refs = [str(p) for p in (design_refs or []) if p and os.path.exists(str(p))
+                   and str(p) not in image_paths][:2]
+    if design_refs:
+        guide_tail = [p for p in image_paths[-1:]
+                      if os.path.basename(str(p)).startswith("flipbook_guide")]
+        body = [p for p in image_paths if p not in guide_tail]
+        body = body[:max(0, 6 - len(design_refs) - len(guide_tail))]
+        image_paths = body + design_refs + guide_tail
+        print(f"[LOOK BOOK] {len(design_refs)} design reference(s) ride with this "
+              f"frame: {', '.join(os.path.basename(p) for p in design_refs)}", flush=True)
     image_paths = image_paths[:6]
     
     print(f"[GOOGLE GEMINI] Image editing mode with {len(image_paths)} reference image(s)", flush=True)
@@ -1152,10 +1184,21 @@ def generate_gemini_img2img(
             }
         }
         image_parts.append(encoded)
+        _book_label = None
+        try:
+            import look_book as _look_book
+            _book_label = _look_book.label_for(img_path)
+        except Exception:
+            _book_label = None
         if reference_labels and img_path in reference_labels:
             # The caller has said what this attachment is; that beats every
             # generic caption below.
             labeled_parts.append({"text": str(reference_labels[img_path])})
+        elif _book_label:
+            # A look-book sheet or roster plate. Unlabelled, the sheet is "the
+            # previous frame" and comes back as a nine-panel grid; the plate is
+            # "a close-up already in this scene" and gets copied framing and all.
+            labeled_parts.append({"text": _book_label})
         elif identity_seed or identity_paths or cast_plates or game_identity.is_viewfinder_spec(spec):
             if img_path in cast_set:
                 # Unlabeled, a close-up is just "the previous frame" — and the
@@ -1576,7 +1619,18 @@ def generate_gemini_img2img(
                      "ONLY SHOW: Environment, objects, vehicles, structures, sky, ground, debris, fire, smoke - NO HUMANS."
         structured_prompt = structured_prompt + anti_person
 
-    if cast_plates:
+    if book_cast:
+        structured_prompt = structured_prompt + (
+            "\n\n🎭 THE DESIGNED LOOK OF WHO ARRIVES:\n"
+            "A ROSTER PLATE is attached — the art-directed design of the person "
+            "or thing this frame introduces. Whoever the instruction brings into "
+            "frame is THAT design: copy its face, build, wardrobe, gear, anatomy "
+            "and colours. It is NOT the player character and must not be dressed "
+            "as them. Do not copy the plate's plain background or its framing: "
+            "place the subject into this scene, at the distance the instruction "
+            "describes, doing what the instruction says."
+        )
+    if closeup_cast:
         # The dive showed the player this subject up close and the scene has to
         # hand back the same one. Two failure modes to close, and they pull in
         # opposite directions: drop the subject entirely (the environment paths

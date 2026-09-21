@@ -121,6 +121,25 @@ FIST_STATE = """() => {
 }"""
 
 
+# Why a green fist would not take a click: what sits on top of it, and
+# which ancestor hides it.
+FIST_BLOCKER = """() => {
+  const b = document.getElementById('fist-btn');
+  const r = b.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  const top = document.elementFromPoint(x, y);
+  const chain = [];
+  for (let n = b; n && n !== document.documentElement; n = n.parentElement) {
+    const cs = getComputedStyle(n);
+    chain.push({ id: n.id, cls: String(n.className).slice(0, 120), op: cs.opacity,
+                 pe: cs.pointerEvents, vis: cs.visibility, disp: cs.display });
+  }
+  return { rect: [r.left, r.top, r.width, r.height], disabled: b.disabled,
+           top: top ? (top.id || top.tagName) + '.' + String(top.className).slice(0, 120) : null,
+           body: document.body.className, chain };
+}"""
+
+
 def open_fist(page, log, wait_s=30.0):
     """The rows wait behind the FIST (Fist, standalone.js): the turn releases
     when its picture lands, the fist appears greyed while the slate is still
@@ -145,6 +164,10 @@ def open_fist(page, log, wait_s=30.0):
                 page.click("#fist-btn", timeout=4000)
             except Exception as exc:
                 log(f"    the fist would not press: {a(str(exc))[:80]}")
+                try:
+                    log("    fist blocker: " + a(json.dumps(page.evaluate(FIST_BLOCKER))))
+                except Exception as exc2:
+                    log(f"    fist blocker probe failed: {a(str(exc2))[:80]}")
                 return False
             log(f"    fist: green after {waited_grey:.1f}s grey; pressed")
             for _ in range(20):

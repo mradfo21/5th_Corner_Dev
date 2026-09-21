@@ -109,6 +109,7 @@ anywhere. Grep `add_url_rule` in `api.py` for the gameplay routes and
 | `encounter.py` | ~4.1k | Confrontation Moments: briefs, lanes, plates, resolution |
 | `game_identity.py` | ~3k | The cast sheet — who you play as, the level, the camera |
 | `cutscene.py` | ~1.1k | The 4-shot montage |
+| `look_book.py` | ~1.3k | The run's contact sheet: world sheet + one designed plate per roster entry, shot in the background at reset, attached to frames and encounters; the editor's Look Book desk shows and redoes each stage |
 | `choices.py` | ~940 | Choice generation, grounded in the current frame |
 | `flipbook.py` | | Grid-of-panels image turns, split back into frames; `grid_prompt` is the keyframe contract |
 | `local_vision.py` | | On-device MediaPipe detector for SCAN (falls back to Gemini) |

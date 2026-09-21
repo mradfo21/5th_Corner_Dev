@@ -15438,3 +15438,328 @@ body.opening-blackout #fist-btn {
 @media (prefers-reduced-motion: reduce) {
   #fist-btn.ready { animation: none; }
 }
+
+/* The run's look book, on the Image node (look_book.py). The sheet is shown
+   whole because it is read as a whole — nine frames, one world — and the
+   roster as small plates with their roster line under them, because that line
+   is what the dice roll and the plate is what gets drawn. */
+#world-editor .eg-lb { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+#world-editor .eg-lb-sheet { display: block; border-radius: 4px; overflow: hidden; line-height: 0; }
+#world-editor .eg-lb-sheet img { width: 100%; height: auto; display: block; }
+#world-editor .eg-lb-roster {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+#world-editor .eg-lb-plate { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+#world-editor .eg-lb-plate img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 3px;
+  display: block;
+}
+#world-editor .eg-lb-plate figcaption {
+  font-size: calc(10.5px * var(--we-fs));
+  line-height: 1.3;
+  color: var(--we-text-mid);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+#world-editor .eg-lb-actions { display: flex; gap: 8px; margin-top: 4px; }
+
+/* ── LOOK BOOK VIEW ─────────────────────────────────────────────────────────
+   The run's look book as a desk in the start menu's own language: bone ink on
+   #0B0B0A, Manrope 200 for the wordmark, widely tracked JetBrains Mono for
+   everything else, hairlines instead of boxes, actions as text. The pictures
+   are the content; mint marks what is done, amber what is being shot, and
+   nothing glows. One stage at a time, chosen from the rail, in the order the
+   pipeline runs (see openLookBookView in editor_graph.js). */
+#look-book-view {
+  --lbv-ink: #E8E6DF;
+  --lbv-hi: #FFFFFF;
+  --lbv-nav: rgba(232, 230, 223, 0.62);
+  --lbv-quiet: rgba(232, 230, 223, 0.42);
+  --lbv-line: rgba(232, 230, 223, 0.14);
+  --lbv-base: #0B0B0A;
+  --lbv-mint: #8EFFC1;
+  --lbv-amber: #F0C14A;
+  --lbv-red: #FF6A55;
+  --lbv-margin: 56px;
+  --lbv-display: 'Manrope', var(--font-ui, sans-serif), sans-serif;
+  --lbv-mono: 'JetBrains Mono', "Share Tech Mono", ui-monospace, monospace;
+  position: fixed;
+  inset: 0;
+  /* Over the start menu (8500) and the editor; under the bug-capture cover. */
+  z-index: 9500;
+  display: none;
+  background: var(--lbv-base);
+  color: var(--lbv-ink);
+  font: 300 12px/1.5 var(--lbv-mono);
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+}
+#look-book-view.is-open { display: block; animation: lbv-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes lbv-in { from { opacity: 0; } to { opacity: 1; } }
+#look-book-view button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+#look-book-view button:disabled { cursor: default; opacity: 0.35; }
+#look-book-view button:focus-visible { outline: 1px solid var(--lbv-nav); outline-offset: 4px; }
+#look-book-view .lbv-page { height: 100%; display: flex; flex-direction: column; }
+#look-book-view .lbv-header {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 32px;
+  padding: 48px var(--lbv-margin) 0;
+}
+#look-book-view .lbv-brand { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+#look-book-view .lbv-wordmark {
+  margin: 0; font: 200 40px/1 var(--lbv-display); letter-spacing: 0.34em; color: var(--lbv-ink);
+}
+#look-book-view .lbv-meta { font-size: 10px; letter-spacing: 0.28em; color: var(--lbv-quiet); min-height: 1em; }
+#look-book-view .lbv-nav { display: flex; gap: 40px; padding-top: 14px; }
+#look-book-view .lbv-link {
+  font-size: 11px; letter-spacing: 0.32em; color: var(--lbv-nav); transition: color 0.2s ease;
+}
+#look-book-view .lbv-link:hover:not(:disabled) { color: var(--lbv-hi); }
+#look-book-view .lbv-underline { border-bottom: 1px solid var(--lbv-line); padding-bottom: 4px; }
+#look-book-view .lbv-desk {
+  flex: 1 1 auto; min-height: 0; display: flex; gap: 56px; padding: 40px var(--lbv-margin) 0;
+}
+#look-book-view .lbv-rail {
+  width: 200px; flex-shrink: 0; display: flex; flex-direction: column;
+  border-top: 1px solid var(--lbv-line); padding-top: 6px;
+}
+#look-book-view .lbv-rail-item {
+  display: flex; align-items: center; gap: 12px; padding: 11px 0; text-align: left;
+  font-size: 11px; letter-spacing: 0.28em; color: var(--lbv-quiet); transition: color 0.2s ease;
+}
+#look-book-view .lbv-rail-item:hover { color: var(--lbv-nav); }
+#look-book-view .lbv-rail-item.is-on { color: var(--lbv-ink); }
+#look-book-view .lbv-rail-item.is-live { color: var(--lbv-amber); }
+#look-book-view .lbv-rail-dot { width: 5px; height: 5px; border-radius: 50%; background: transparent; flex-shrink: 0; }
+#look-book-view .lbv-rail-item.is-on .lbv-rail-dot { background: var(--lbv-mint); }
+#look-book-view .lbv-rail-item.is-live .lbv-rail-dot { background: var(--lbv-amber); animation: lbv-pulse 1.2s ease-in-out infinite; }
+#look-book-view .lbv-rail-n { width: 22px; color: var(--lbv-quiet); }
+#look-book-view .lbv-rail-name { flex: 1 1 auto; }
+#look-book-view .lbv-rail-count { font-size: 10px; letter-spacing: 0.1em; color: var(--lbv-quiet); }
+@keyframes lbv-pulse { 50% { opacity: 0.35; } }
+#look-book-view .lbv-main {
+  flex: 1 1 auto; min-width: 0; overflow-y: auto; padding-bottom: 32px;
+  display: flex; flex-direction: column; gap: 22px;
+  scrollbar-width: thin; scrollbar-color: var(--lbv-line) transparent;
+}
+#look-book-view .lbv-stage-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 24px;
+  border-bottom: 1px solid var(--lbv-line); padding-bottom: 14px;
+}
+#look-book-view .lbv-stage-title { display: flex; align-items: baseline; gap: 22px; flex-wrap: wrap; min-width: 0; }
+#look-book-view .lbv-stage-title h3 {
+  margin: 0; font: 300 20px/1 var(--lbv-display); letter-spacing: 0.3em; color: var(--lbv-ink);
+}
+#look-book-view .lbv-quiet { color: var(--lbv-quiet); }
+#look-book-view .lbv-micro { font-size: 9px; letter-spacing: 0.26em; color: var(--lbv-quiet); white-space: pre; }
+#look-book-view .lbv-flash { color: var(--lbv-red); margin: 0; letter-spacing: 0.04em; }
+#look-book-view .lbv-pic { display: block; width: 100%; line-height: 0; cursor: zoom-in; }
+#look-book-view .lbv-pic img { width: 100%; height: auto; display: block; }
+#look-book-view .lbv-empty {
+  display: grid; place-items: center; aspect-ratio: 4 / 3; width: 100%;
+  border: 1px solid var(--lbv-line); font-size: 10px; letter-spacing: 0.3em; color: var(--lbv-quiet);
+}
+/* Roster */
+#look-book-view .lbv-roster {
+  list-style: none; margin: 0; padding: 0; columns: 2 360px; column-gap: 48px;
+}
+#look-book-view .lbv-roster li {
+  display: flex; gap: 18px; padding: 10px 0; border-bottom: 1px solid var(--lbv-line);
+  break-inside: avoid; color: var(--lbv-ink);
+}
+/* Brief */
+#look-book-view .lbv-palette { display: flex; gap: 12px; }
+#look-book-view .lbv-swatch { flex: 1 1 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+#look-book-view .lbv-chip { height: 44px; }
+#look-book-view .lbv-swatch-cap { display: flex; flex-direction: column; gap: 2px; font-size: 9px; letter-spacing: 0.16em; }
+#look-book-view .lbv-facts { display: grid; grid-template-columns: 90px 1fr; gap: 10px 24px; margin: 0; max-width: 980px; }
+#look-book-view .lbv-facts dt { font-size: 9px; letter-spacing: 0.28em; color: var(--lbv-quiet); padding-top: 2px; }
+#look-book-view .lbv-facts dd { margin: 0; color: var(--lbv-nav); line-height: 1.7; }
+#look-book-view .lbv-frame-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 32px; }
+#look-book-view .lbv-frame { display: flex; flex-direction: column; gap: 6px; padding: 16px 0; border-top: 1px solid var(--lbv-line); }
+#look-book-view .lbv-frame-title { letter-spacing: 0.12em; color: var(--lbv-ink); }
+#look-book-view .lbv-specs { margin: 4px 0 0; padding-left: 14px; color: var(--lbv-quiet); font-size: 11px; line-height: 1.6; }
+/* World */
+#look-book-view .lbv-world { display: flex; gap: 40px; align-items: flex-start; }
+#look-book-view .lbv-world-sheet { flex: 0 0 min(62%, 760px); }
+#look-book-view .lbv-world-side { flex: 1 1 auto; min-width: 0; }
+#look-book-view .lbv-caps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 18px; }
+#look-book-view .lbv-cap {
+  display: flex; flex-direction: column; gap: 4px; text-align: left; padding-top: 10px;
+  border-top: 1px solid var(--lbv-line); font-size: 11px; letter-spacing: 0.08em; color: var(--lbv-ink);
+}
+#look-book-view .lbv-cap:hover:not(:disabled) { color: var(--lbv-hi); }
+/* Casting */
+#look-book-view .lbv-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px; }
+#look-book-view .lbv-fig { margin: 0; display: flex; flex-direction: column; gap: 10px; }
+/* Plates */
+#look-book-view .lbv-plates { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 26px 20px; }
+#look-book-view .lbv-plate { margin: 0; display: flex; flex-direction: column; gap: 9px; }
+#look-book-view .lbv-plate-frame { position: relative; line-height: 0; }
+#look-book-view .lbv-plate-frame .lbv-pic img { aspect-ratio: 4 / 3; object-fit: cover; }
+#look-book-view .lbv-plate-frame:hover .lbv-pic img { outline: 1px solid rgba(232, 230, 223, 0.6); outline-offset: 3px; }
+#look-book-view .lbv-reshoot {
+  position: absolute; right: 8px; bottom: 8px; line-height: 1;
+  font-size: 9px !important; letter-spacing: 0.3em; color: var(--lbv-hi) !important;
+  background: rgba(11, 11, 10, 0.72) !important; padding: 7px 9px !important;
+  opacity: 0; transition: opacity 0.2s ease;
+}
+#look-book-view .lbv-plate-frame:hover .lbv-reshoot,
+#look-book-view .lbv-reshoot:focus-visible { opacity: 1; }
+#look-book-view .lbv-plate figcaption { display: flex; flex-direction: column; gap: 5px; }
+#look-book-view .lbv-plate-name { font-size: 11px; line-height: 1.45; color: var(--lbv-ink); }
+#look-book-view .lbv-terms { display: flex; flex-wrap: wrap; gap: 10px; font-size: 9.5px; letter-spacing: 0.1em; }
+#look-book-view .lbv-terms .is-ok { color: var(--lbv-mint); }
+#look-book-view .lbv-terms .is-off { color: var(--lbv-quiet); text-decoration: line-through; }
+/* Log */
+#look-book-view .lbv-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; color: var(--lbv-nav); }
+#look-book-view .lbv-log li { display: flex; gap: 18px; }
+#look-book-view .lbv-log li > :first-child { width: 52px; flex-shrink: 0; }
+/* Footer — the in-game strip, larger */
+#look-book-view .lbv-footer {
+  padding: 18px var(--lbv-margin) 28px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+}
+#look-book-view .lbv-foot-text { font-size: 9px; letter-spacing: 0.24em; color: var(--lbv-quiet); }
+#look-book-view .lbv-foot-text.is-ok { color: var(--lbv-mint); }
+#look-book-view .lbv-foot-text.is-live { color: var(--lbv-amber); }
+#look-book-view .lbv-foot-bar { display: flex; gap: 4px; width: 260px; }
+#look-book-view .lbv-foot-bar i { flex: 1 1 0; height: 2px; background: rgba(232, 230, 223, 0.16); }
+#look-book-view .lbv-foot-bar i.done { background: var(--lbv-mint); }
+#look-book-view .lbv-foot-bar i.live { background: var(--lbv-amber); animation: lbv-pulse 1.2s ease-in-out infinite; }
+/* Lightbox */
+#look-book-view .lbv-lightbox {
+  position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 16px; padding: 48px;
+  background: rgba(11, 11, 10, 0.94); cursor: zoom-out; animation: lbv-in 0.3s ease both;
+}
+#look-book-view .lbv-lightbox img { max-width: 100%; max-height: calc(100% - 48px); object-fit: contain; }
+#look-book-view .lbv-lightbox-cap { font-size: 10px; letter-spacing: 0.24em; color: var(--lbv-nav); text-transform: uppercase; }
+@media (max-width: 900px) {
+  #look-book-view { --lbv-margin: 16px; }
+  #look-book-view .lbv-desk { flex-direction: column; gap: 20px; }
+  #look-book-view .lbv-rail { width: auto; flex-direction: row; overflow-x: auto; gap: 18px; }
+  #look-book-view .lbv-rail-count, #look-book-view .lbv-rail-n { display: none; }
+  #look-book-view .lbv-world, #look-book-view .lbv-pair { display: flex; flex-direction: column; }
+  #look-book-view .lbv-frame-grid, #look-book-view .lbv-caps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #look-book-view .lbv-header { flex-direction: column; gap: 18px; }
+  #look-book-view .lbv-wordmark { font-size: 28px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #look-book-view.is-open, #look-book-view .lbv-lightbox { animation: none; }
+  #look-book-view .lbv-rail-dot, #look-book-view .lbv-foot-bar i.live { animation: none; }
+}
+
+/* ── LOOK BOOK STATUS ───────────────────────────────────────────────────────
+   Micro text over a five-segment bar, under the corner loader, while the run's
+   look book is being shot (LookBookStatus in standalone.js). Same type as the
+   loader's own caption; it never blocks, it reports. */
+.lookbook-status {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 122px);
+  right: calc(env(safe-area-inset-right, 0px) + 14px);
+  z-index: 20;
+  width: 216px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.6s ease;
+}
+.lookbook-status.hidden { opacity: 0; }
+.lookbook-status .lbs-text {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: rgba(216, 240, 228, 0.82);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+.lookbook-status.is-ready .lbs-text { color: #8effc1; }
+.lookbook-status.is-bad .lbs-text { color: #ff6a55; }
+.lookbook-status .lbs-bar { display: flex; gap: 3px; width: 100%; }
+.lookbook-status .lbs-bar i {
+  flex: 1 1 0;
+  height: 2px;
+  background: rgba(216, 240, 228, 0.16);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+.lookbook-status .lbs-bar i.done { background: #8effc1; }
+.lookbook-status .lbs-bar i.live { background: #f0c14a; animation: lbs-pulse 1.1s ease-in-out infinite; }
+@keyframes lbs-pulse { 50% { opacity: 0.45; } }
+@media (max-width: 420px) {
+  .lookbook-status { top: calc(env(safe-area-inset-top, 0px) + 104px); width: 180px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lookbook-status .lbs-bar i.live { animation: none; }
+}
+
+/* The editor stops the run; its loading strip has nothing to report there,
+   and it sat over the editor's top-right corner. */
+body.world-editor-on .lookbook-status { display: none !important; }
+#world-editor .we-lookbook { white-space: nowrap; }
+#world-editor .we-lookbook { position: relative; }
+#world-editor .we-lookbook.is-live::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #F0C14A;
+  animation: we-lb-pulse 1.2s ease-in-out infinite;
+}
+@keyframes we-lb-pulse { 50% { opacity: 0.25; } }
+#world-editor .we-lb-progress {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: flex-start;
+  margin: -4px 16px 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--we-text-dim);
+  font: inherit;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: calc(9.5px * var(--we-fs));
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+  pointer-events: auto;
+  position: relative;
+  z-index: 4;
+  max-width: 540px;
+}
+#world-editor .we-lb-progress.hidden { display: none; }
+#world-editor .we-lb-progress:hover,
+#world-editor .we-lb-progress:focus-visible { color: var(--we-text); outline: none; }
+#world-editor .we-lb-progress.is-live { color: #F0C14A; }
+#world-editor .we-lb-progress.is-ready { color: var(--we-mint); }
+#world-editor .we-lb-progress.is-bad { color: #ff7a6b; }
+#world-editor .we-lb-progress .lbs-bar { display: flex; gap: 3px; width: 100%; max-width: 260px; }
+#world-editor .we-lb-progress .lbs-bar i {
+  flex: 1;
+  height: 2px;
+  background: rgba(232, 230, 223, 0.14);
+}
+#world-editor .we-lb-progress .lbs-bar i.done { background: var(--we-mint); }
+#world-editor .we-lb-progress .lbs-bar i.live {
+  background: #F0C14A;
+  animation: we-lb-pulse 1.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  #world-editor .we-lookbook.is-live::after,
+  #world-editor .we-lb-progress .lbs-bar i.live { animation: none; }
+}

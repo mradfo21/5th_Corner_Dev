@@ -9,6 +9,7 @@ import json
 import sys
 import threading
 import time
+import re
 import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -4361,7 +4362,17 @@ def admin_studio_world_frames_reset():
         print(f"[EDITOR] GENERATE '{slug}': bound clean, drawing its opening "
               f"({(lighting or 'no lighting line')[:60]})", flush=True)
         rec = world_frames.force_reset(slug, wait=False, time_of_day=lighting)
+        # The run that closing the editor starts is in this World, and gets a
+        # look book: shoot it now, alongside the still, so the editor can show
+        # it being made and the run starts with it (look_book.prebuild_for_generate).
+        look_book_started = False
+        try:
+            import look_book
+            look_book_started = look_book.prebuild_for_generate(_engine._resolve_request_session_id())
+        except Exception as lb_err:  # noqa: BLE001
+            print(f"[EDITOR] GENERATE: look book not started: {lb_err}", flush=True)
         return jsonify(success_response({
+            "look_book": look_book_started,
             "frame": rec,
             "experience": _experience_json(),
             "world": world or {},
@@ -5341,6 +5352,102 @@ def studio_tunables_put():
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         return error_response("Failed to save settings", str(e))
+
+
+@app.route('/api/look_book', methods=['GET'])
+def api_look_book():
+    """The run's look book, for the editor: status, sheets, the designed cast.
+
+    See look_book.py. `?session=` picks the run; defaults to this request's.
+    """
+    try:
+        import look_book
+        sid = (request.args.get("session") or "").strip() or engine._resolve_request_session_id()
+        return jsonify({"data": look_book.summary(sid)})
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to read the look book", str(e))
+
+
+@app.route('/api/look_book/<session_id>/file/<name>', methods=['GET'])
+def api_look_book_file(session_id, name):
+    import look_book
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{1,80}", session_id or ""):
+        return jsonify({"error": "bad session"}), 400
+    path = look_book.file_path(session_id, name)
+    if not path:
+        return jsonify({"error": "not found"}), 404
+    resp = send_file(str(path))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route('/api/look_book/generate', methods=['POST'])
+def api_look_book_generate():
+    """Regenerate one stage of this run's look book, in the background.
+
+    Body: {"part": "all"|"brief"|"world"|"roster"|"plate", "plate": <index>}.
+    "all" is a new roster and a new everything; the others rework the book
+    that is there so a stage can be judged and redone on its own. Poll
+    GET /api/look_book for progress (status, log, building).
+    """
+    try:
+        import look_book
+        body = request.get_json(silent=True) or {}
+        sid = str(body.get("session") or "").strip() or engine._resolve_request_session_id()
+        part = str(body.get("part") or "all")
+        if part not in ("all", "brief", "world", "roster", "plate"):
+            return jsonify({"error": "invalid", "message": f"unknown part {part!r}"}), 400
+        if not look_book.enabled():
+            return jsonify({"error": "disabled",
+                            "message": "The look book is off, or there is no image key."}), 409
+        if look_book.building(sid):
+            return jsonify({"error": "busy", "message": "Already shooting — wait for it to land."}), 409
+        plate = body.get("plate")
+        plate = int(plate) if isinstance(plate, (int, float, str)) and str(plate).lstrip("-").isdigit() else None
+        if part == "all":
+            try:
+                st = engine._load_state(sid) or {}
+                # A new book means a new roster: the old one's plates are gone.
+                st.pop("encounter_roster", None)
+                engine._save_state(st, sid)
+            except Exception:
+                pass
+            look_book.reset_for_new_run(sid)
+        else:
+            look_book.spawn(sid, reason=f"editor: {part}", part=part, plate=plate)
+        return jsonify({"data": look_book.summary(sid)})
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to regenerate the look book", str(e))
+
+
+@app.route('/api/look_book/reshoot', methods=['POST'])
+def api_look_book_reshoot():
+    """Throw this run's book away and shoot a new one (new roster, new cast).
+
+    Encounters already rolled keep their plates on screen; the next roll uses
+    the new book once it lands (~50 s).
+    """
+    try:
+        import look_book
+        body = request.get_json(silent=True) or {}
+        sid = str(body.get("session") or "").strip() or engine._resolve_request_session_id()
+        if not look_book.enabled():
+            return jsonify({"error": "disabled",
+                            "message": "The look book is off, or there is no image key."}), 409
+        try:
+            st = engine._load_state(sid) or {}
+            # A reshoot means a new roster too: the old one's plates are gone.
+            st.pop("encounter_roster", None)
+            engine._save_state(st, sid)
+        except Exception:
+            pass
+        look_book.reset_for_new_run(sid)
+        return jsonify({"data": look_book.summary(sid)})
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to reshoot the look book", str(e))
 
 
 @app.route('/api/flipbook', methods=['GET', 'POST'])

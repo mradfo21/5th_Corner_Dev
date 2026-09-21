@@ -1087,7 +1087,7 @@
     <!-- Graph cards, names, and prompt windows already write themselves.
          SAVE flushes leftover prompt edits and refreshes a dirty frame;
          REDRAW forces a new still; RESET puts the sheets back to what
-         the app shipped. -->
+         the app shipped; LOOK BOOK opens the run's contact sheet desk. -->
     <div id="we-picture-bar" class="we-picture-bar">
       <span id="we-save-status" class="we-save-status" aria-live="polite"></span>
       <button id="we-reset" class="we-reset" type="button"
@@ -1096,7 +1096,14 @@
               title="Write leftover prompt edits to this World. Does not draw — press GENERATE for that.">SAVE</button>
       <button id="we-defaults" class="we-defaults" type="button"
               title="Roll character, level, camera, and prompts back to what the app shipped">RESET</button>
+      <button id="we-lookbook" class="we-defaults we-lookbook" type="button"
+              title="Open this run's look book: the designed roster, the brief, the world and casting sheets, every plate — with a reshoot on each stage.">LOOK BOOK</button>
     </div>
+    <!-- The look book's progress while GENERATE (or a new run) shoots it:
+         stage, World, seconds, five segments. Filled by LookBookStatus;
+         click to open the desk. -->
+    <button id="we-lb-progress" class="we-lb-progress hidden" type="button"
+            aria-live="polite" title="Open the look book"></button>
 
     <nav class="we-tabs" id="we-tabs" role="tablist"></nav>
 

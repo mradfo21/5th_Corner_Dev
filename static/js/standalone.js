@@ -2686,6 +2686,179 @@
   // in video mode the realtime sub-events (prompt submitted, seed accepted,
   // stream live, chunk rendered) show on the sub-line.
   // ------------------------------------------------------------------
+  // ── LOOK BOOK STATUS ─────────────────────────────────────────────────
+  // The run's look book (look_book.py) is shot in the background after a
+  // reset: roster → brief → sheets → crop check → plates, ~45-55 s. Nothing
+  // waits on it — frames rendered before it lands simply go without it — but
+  // you should be able to see where it is, so a small strip sits under the
+  // corner loader: micro text naming the stage over a five-segment bar. It
+  // shows only while a book is being shot, says READY for a moment, and goes.
+  const LookBookStatus = (function () {
+    const STAGES = [
+      { keys: ["start", "roster"], label: "rolling the roster" },
+      { keys: ["brief"], label: "writing the brief" },
+      { keys: ["shoot", "world", "roster_sheet"], label: "shooting the sheets" },
+      { keys: ["placement"], label: "checking the crops" },
+      { keys: ["plates"], label: "cutting the plates" },
+    ];
+    let node = null;
+    let timer = null;
+    let t0 = 0;
+    let seenBusy = false;
+    let lastSeen = null;
+
+    function ensure() {
+      if (node) return node;
+      node = document.createElement("div");
+      node.id = "lookbook-status";
+      node.className = "lookbook-status hidden";
+      node.setAttribute("role", "status");
+      node.setAttribute("aria-live", "polite");
+      node.innerHTML =
+        '<div class="lbs-text"></div>' +
+        '<div class="lbs-bar" aria-hidden="true">' + STAGES.map(() => "<i></i>").join("") + "</div>";
+      document.body.appendChild(node);
+      return node;
+    }
+
+    // The editor's own line (under GENERATE / SAVE / RESET / LOOK BOOK). The
+    // corner strip is hidden while the editor is open, so GENERATE's book
+    // reports here; it stays put when the book is done, as a way in.
+    function deskNode() {
+      const n = document.getElementById("we-lb-progress");
+      if (n && !n.querySelector(".lbs-bar")) {
+        n.innerHTML = '<span class="lbs-text"></span>' +
+          '<span class="lbs-bar" aria-hidden="true">' + STAGES.map(() => "<i></i>").join("") + "</span>";
+      }
+      return n;
+    }
+
+    function stageOf(lb) {
+      const log = (lb && lb.log) || [];
+      const last = log.length ? log[log.length - 1].stage : "";
+      let idx = 0;
+      STAGES.forEach((s, i) => { if (s.keys.includes(last)) idx = i; });
+      // A stage further along never goes backwards on a later, earlier-named line.
+      log.forEach((l) => STAGES.forEach((s, i) => { if (s.keys.includes(l.stage)) idx = Math.max(idx, i); }));
+      return { idx, t: log.length ? log[log.length - 1].t : 0 };
+    }
+
+    function isBusy(lb) {
+      return !!(lb && (lb.building || ["roster", "brief", "shooting"].includes(lb.status)));
+    }
+
+    function plateCount(lb) {
+      return ((lb && lb.roster) || []).filter((r) => r.plate).length;
+    }
+
+    function setBar(n, idx, ok) {
+      n.querySelectorAll(".lbs-bar i").forEach((g, i) => {
+        g.className = idx < 0 ? (ok ? "done" : "") : (i < idx ? "done" : i === idx ? "live" : "");
+      });
+    }
+
+    function paintDesk(lb) {
+      const n = deskNode();
+      if (!n) return;
+      const text = n.querySelector(".lbs-text");
+      const lbBtn = document.getElementById("we-lookbook");
+      const busy = isBusy(lb);
+      if (lbBtn) lbBtn.classList.toggle("is-live", busy);
+      n.classList.remove("is-ready", "is-bad", "is-live", "hidden");
+      if (busy) {
+        const { idx } = stageOf(lb);
+        const secs = Math.round((Date.now() - t0) / 1000);
+        text.textContent = `LOOK BOOK ${idx + 1}/${STAGES.length} · ${STAGES[idx].label} · ${secs}s`;
+        n.title = lb.world_name ? "Shooting the look book for " + lb.world_name : "Open the look book";
+        setBar(n, idx, false);
+        n.classList.add("is-live");
+        return;
+      }
+      if (!lb || !lb.status || lb.status === "none") { n.classList.add("hidden"); return; }
+      if (lb.status === "ready" && !lb.stale) {
+        const secs = lb.timings && lb.timings.total ? ` · SHOT IN ${lb.timings.total}s` : "";
+        text.textContent = `LOOK BOOK READY · ${plateCount(lb)} PLATES${secs} · OPEN`;
+        setBar(n, -1, true);
+        n.classList.add("is-ready");
+        return;
+      }
+      if (lb.stale) {
+        text.textContent = `LOOK BOOK · SHOT FOR ${(lb.world_name || "ANOTHER WORLD")} · GENERATE MAKES THIS WORLD'S`;
+        setBar(n, -1, false);
+        return;
+      }
+      text.textContent = "LOOK BOOK FAILED · OPEN TO SEE WHY";
+      setBar(n, -1, false);
+      n.classList.add("is-bad");
+    }
+
+    function paint(lb) {
+      const n = ensure();
+      paintDesk(lb);
+      const busy = isBusy(lb);
+      const text = n.querySelector(".lbs-text");
+      if (busy) {
+        seenBusy = true;
+        const { idx } = stageOf(lb);
+        const secs = Math.round((Date.now() - t0) / 1000);
+        text.textContent = `LOOK BOOK ${idx + 1}/${STAGES.length} · ${STAGES[idx].label} · ${secs}s`;
+        setBar(n, idx, false);
+        n.classList.remove("hidden", "is-ready", "is-bad");
+        return true;
+      }
+      if (!seenBusy) { n.classList.add("hidden"); return false; }
+      seenBusy = false;
+      const ok = lb && lb.status === "ready" && !lb.stale;
+      text.textContent = ok
+        ? `LOOK BOOK READY · ${plateCount(lb)} PLATES · ${lb.timings && lb.timings.total ? lb.timings.total + "s" : ""}`
+        : "LOOK BOOK FAILED · FRAMES DRAWN WITHOUT IT";
+      setBar(n, -1, !!ok);
+      n.classList.remove("hidden");
+      n.classList.toggle("is-ready", !!ok);
+      n.classList.toggle("is-bad", !ok);
+      setTimeout(() => n.classList.add("hidden"), ok ? 4000 : 7000);
+      return false;
+    }
+
+    async function poll() {
+      clearTimeout(timer);
+      let lb = null;
+      try { lb = await getJSON("/api/look_book"); } catch (_) { lb = null; }
+      lb = lb && lb.data ? lb.data : lb;
+      lastSeen = lb;
+      const more = paint(lb);
+      // Keep polling while busy; at the start, give the server a few seconds
+      // to begin before deciding there is nothing to show.
+      if (more || Date.now() - t0 < 8000) timer = setTimeout(poll, 1000);
+    }
+
+    function wire() {
+      const n = deskNode();
+      if (!n || n.dataset.wired) return;
+      n.dataset.wired = "1";
+      n.addEventListener("click", () => {
+        try { if (window.LookBookView) window.LookBookView.open(isBusy(lastSeen) ? "log" : "plates"); } catch (_) {}
+      });
+    }
+
+    return {
+      watch() {
+        wire();
+        t0 = Date.now();
+        seenBusy = false;
+        poll();
+      },
+      // The editor opening: show where the book stands without restarting the
+      // elapsed clock of a build already under way.
+      peek() {
+        wire();
+        if (!t0) t0 = Date.now();
+        poll();
+      },
+    };
+  })();
+  try { window.LookBookStatus = LookBookStatus; } catch (_) {}
+
   const Ceremony = (function () {
     // Order mirrors the SERVER's turn pipeline, which renders the picture
     // BEFORE it reads it back for vision + choices:
@@ -8053,8 +8226,10 @@
         // The server binds this World's file over the live one (clean — the
         // blank place for anything it lacks), forgets the last draw's private
         // session, lights it from its own palette and draws its opening.
-        const { ok, data } = await weFetch("POST", "/api/admin/studio/worlds/frames/reset", { id: wid });
+        const { ok, data } = await weFetch("POST", "/api/admin/studio/worlds/frames/reset",
+          { id: wid, session_id: SESSION_ID });
         const payload = data && (data.data || data);
+        if (payload && payload.look_book) watchLookBook();
         if (!ok || !payload) {
           setSaveStatus("error");
           toast((data && (data.error || data.message)) || "Couldn't generate this World.", "warn");
@@ -8095,6 +8270,12 @@
     // live contract is reloaded before the restage — the same image must not
     // keep the old look. Split out of persistAndRender so GENERATE can do it
     // without an empty catch in its own body.
+    // GENERATE also started the run's look book for this World (the server's
+    // look_book.prebuild_for_generate); its progress line sits under the bar.
+    function watchLookBook() {
+      try { LookBookStatus.watch(); } catch (err) { console.warn("[editor] look book watch failed:", err); }
+    }
+
     async function applySheetToLiveScene() {
       try { await Camera.reload(); } catch (err) { console.warn("[editor] camera reload failed:", err); }
       try { resteerLiveFromSheet(); } catch (err) { console.warn("[editor] restage failed:", err); }
@@ -8109,7 +8290,7 @@
         if (wid) {
           try {
             const { ok, data } = await weFetch(
-              "POST", "/api/admin/studio/worlds/frames/reset", { id: wid });
+              "POST", "/api/admin/studio/worlds/frames/reset", { id: wid, session_id: SESSION_ID });
             const payload = data && (data.data || data);
             if (ok && payload) applyExperience(payload);
           } catch (_) {}
@@ -8717,6 +8898,7 @@
       // and the server keeps the run's prompts so closing without GENERATE
       // hands it back exactly as it was (see resumeRun).
       pauseRun();
+      try { Cutscene.holdForEditor(); } catch (_) {}
       try { await weFetch("POST", "/api/admin/studio/session/hold", {}); } catch (_) {}
       if (el.worldEditor) {
         el.worldEditor.classList.remove("hidden");
@@ -8758,6 +8940,7 @@
       if (ok) { await loadWorlds(); render(); }
       try { await refreshStatus(); } catch (_) {}
       try { await loadXpCatalog(); } catch (_) {}
+      try { LookBookStatus.peek(); } catch (_) {}
       try { await ensureWorldFrames(); } catch (_) {}
       paintViewportFromFrame();
       keepLiveExperience();
@@ -8802,6 +8985,12 @@
       const toGame = dest !== "picker" && dest !== "watch";
       let booted = true;
       try { booted = StartMenu.isBooted(); } catch (_) {}
+      // A cutscene the editor took down (Cutscene.holdForEditor). The run's
+      // opening montage is the start of the run, so a held opening restarts
+      // it; any other cutscene is completed now, onto the restored prompts.
+      let held = "";
+      try { held = Cutscene.takeHeld(); } catch (_) {}
+      if (held === "opening") booted = false;
       if (opts.restarting) {
         // Save & Restart runs its own resetGame().
         try { await weFetch("POST", "/api/admin/studio/session/release", { restore: false }); } catch (_) {}
@@ -8818,6 +9007,9 @@
       }
       try { await weFetch("POST", "/api/admin/studio/session/release", { restore: true }); } catch (_) {}
       try { await Camera.reload(); } catch (_) {}
+      if (held === "cut" && toGame) {
+        try { await Cutscene.unstickGraph(); } catch (_) {}
+      }
       try { startPolling(); } catch (_) {}
       try { if (state.awaitingResolution) armTurnWatchdog(); } catch (_) {}
       try { if (state.autoPlay) scheduleAutoAdvance(1200); } catch (_) {}
@@ -9087,6 +9279,12 @@
         el.weDefaults = b;
       }
       if (el.weReset) el.weReset.addEventListener("click", () => { resetWorldPicture(); });
+      const lookBookBtn = document.getElementById("we-lookbook");
+      if (lookBookBtn) {
+        lookBookBtn.addEventListener("click", () => {
+          try { if (window.LookBookView) window.LookBookView.open(); } catch (_) {}
+        });
+      }
       if (el.weDefaults) el.weDefaults.addEventListener("click", () => { resetToAppDefaults(); });
       if (el.weApply) el.weApply.addEventListener("click", applyLive);
       if (el.weRestart) el.weRestart.addEventListener("click", saveAndRestart);
@@ -16814,6 +17012,7 @@
       try { Narrator.armColdOpen(); } catch (_) {}
       renderItems(items);
       refreshStatus();
+      try { LookBookStatus.watch(); } catch (_) {}
     } catch (err) {
       console.error("[standalone] resetGame failed:", err);
       hideVeil();
@@ -24532,6 +24731,9 @@
     let seq = 0;
     let queued = null;
     let flushTimer = 0;
+    // Set when the editor opened over a cutscene and stopped it (see
+    // holdForEditor): "opening" or "cut", so closing knows what to redo.
+    let heldByEditor = "";
 
     function reduced() {
       try {
@@ -24546,6 +24748,42 @@
     }
 
     function sceneImg() { return document.getElementById("moment-scene-img"); }
+
+    function editorOpen() {
+      try { return !!(WorldEditor && WorldEditor.isOpen && WorldEditor.isOpen()); } catch (_) { return false; }
+    }
+
+    // The editor stops the run, and a cutscene is part of the run. Left
+    // playing under the editor, the montage kept advancing and its last shot
+    // called /api/cutscene/complete, which drew the opening frame from the
+    // live prompt file — by then holding whichever World the author had
+    // switched to — and painted it over the World being edited. Reported as
+    // GENERATE on THE FIFTH CORNER showing the SWAT run's megaphone. So the
+    // editor takes the cutscene down without completing it, and closing puts
+    // it back (see takeHeld / WorldEditor.resumeRun).
+    function holdForEditor() {
+      const busy = playing || generating || completing || !!queued;
+      if (!busy) return false;
+      heldByEditor = (lastPayload && lastPayload.opening) || (queued && queued.opening) ? "opening" : "cut";
+      seq += 1;
+      clearTimer();
+      playing = false;
+      generating = false;
+      queued = null;
+      if (flushTimer) { clearInterval(flushTimer); flushTimer = 0; }
+      try {
+        if (window.Moments && window.Moments.topType && window.Moments.topType() === "cutscene") {
+          window.Moments.pop({ aborted: true });
+        }
+      } catch (_) {}
+      return true;
+    }
+
+    function takeHeld() {
+      const held = heldByEditor;
+      heldByEditor = "";
+      return held;
+    }
 
     function plateUrl() {
       const url = state.currentStillUrl
@@ -24684,6 +24922,7 @@
     }
 
     async function unstickGraph() {
+      if (editorOpen()) { if (!heldByEditor) heldByEditor = "cut"; return; }
       try {
         const hop = readHop(await postJSON("/api/cutscene/complete", {}));
         applyDest(hop);
@@ -24698,6 +24937,7 @@
     }
 
     async function finish() {
+      if (editorOpen()) { holdForEditor(); return; }
       if (completing) return;
       completing = true;
       generating = false;
@@ -24713,6 +24953,13 @@
         } catch (err) {
           console.warn("[cutscene] complete failed:", err);
         }
+      }
+      // The editor opened while the server drew the destination: it is the
+      // run's picture, not the World on the desk. Hold it until close.
+      if (editorOpen()) {
+        completing = false;
+        if (!heldByEditor) heldByEditor = "cut";
+        return;
       }
       applyDest(hop);
       // The montage is the cover. Keep it there until there is a real picture
@@ -24878,6 +25125,10 @@
       // montage never plays and the run opens on nothing at all.
       if (state.processing && !opts.opening) return false;
       if (menuOpen()) return false;
+      if (editorOpen()) {
+        if (opts.graph) heldByEditor = opts.opening ? "opening" : (heldByEditor || "cut");
+        return false;
+      }
       if (window.Moments && window.Moments.isActive && window.Moments.isActive()) return false;
       if (!window.Moments || typeof window.Moments.push !== "function") {
         if (opts.graph) await unstickGraph();
@@ -24982,6 +25233,9 @@
       isActive: () => playing || completing || generating,
       isGenerating: () => generating,
       isPlaying: () => playing,
+      holdForEditor,
+      takeHeld,
+      unstickGraph,
     };
   })();
   try { window.Cutscene = Cutscene; } catch (_) {}

@@ -1407,7 +1407,43 @@ def normalize_encounter_brief(raw: Any, place_hold: str = "") -> dict:
     setting = _clip(data.get("setting") or "", "", 400)
     if setting:
         out["setting"] = setting
+    # Which roster entry this fight is, so round two can still find its
+    # look-book plate. Same rebuild, same rescue.
+    roster_kind = _clip(data.get("roster_kind") or "", "", 200)
+    if roster_kind:
+        out["roster_kind"] = roster_kind
+    if data.get("roster_plate"):
+        out["roster_plate"] = _clip(data.get("roster_plate"), "", 80)
     return out
+
+
+def _book_cast_plates(session_id: str, brief: Optional[dict]) -> list:
+    """The look-book plate for the roster entry this fight is, if any.
+
+    It rides the cast-plate path the sighting close-up uses (slot behind the
+    player's sheet, captioned by look_book as a ROSTER PLATE), so the thing the
+    dice rolled is drawn from its design instead of invented per render. In the
+    2026-09-21 probe the same guard went from four different people across four
+    places (3.3/10) to one designed guard (7.0/10).
+    """
+    kind = str((brief or {}).get("roster_kind") or "").strip()
+    if not kind:
+        return []
+    try:
+        import look_book
+        plate = look_book.plate_for(session_id, kind)
+    except Exception:
+        plate = None
+    return [plate] if plate else []
+
+
+def _book_design_refs(session_id: str) -> list:
+    try:
+        import look_book
+        sheet = look_book.world_sheet(session_id)
+    except Exception:
+        sheet = None
+    return [sheet] if sheet else []
 
 
 _PULP_RANKS = (
@@ -1734,10 +1770,37 @@ def adopt_plate_look(brief: dict, plate_seen: str) -> dict:
         return brief
     char["look"] = look
     char["locked_look"] = look
+    if brief.get("roster_plate") and _label_names_roster_entry(brief) \
+            and not look_clones_player(char.get("label") or ""):
+        # Drawn from the roster entry's look-book plate: what it IS was decided
+        # before the render and the render copied it. The look follows the
+        # pixels; the name stays the roster entry's.
+        return brief
     grounded = _grounded_label_from_look(look, plate_seen)
     if grounded and not look_clones_player(grounded) and not _is_clothing_clause_label(grounded):
         char["label"] = grounded
     return brief
+
+
+def _label_names_roster_entry(brief: dict) -> bool:
+    """The brief's label is a name for the roster entry it was drawn from.
+
+    Only such a label outranks the vision pass. A label that is a scrap of
+    clothing ("Charcoal-black nylon tactical rig over", seen live) is exactly
+    what the plate grounding exists to replace.
+    """
+    label = str(((brief or {}).get("character") or {}).get("label") or "").strip()
+    kind = str((brief or {}).get("roster_kind") or "").lower()
+    if not label or not kind or _is_clothing_clause_label(label):
+        return False
+    words = [w for w in re.split(r"[^a-z0-9]+", label.lower()) if w]
+    if words and words[-1] in ("over", "with", "in", "and", "of", "under", "wearing"):
+        return False  # a clause cut off mid-description, not a name
+    colours = {"black", "charcoal", "olive", "khaki", "grey", "gray", "brown", "green",
+               "blue", "white", "yellow", "orange", "tan", "nylon", "canvas", "denim"}
+    tokens = [w for w in words if len(w) > 3 and w not in _WARDROBE_STOP and w not in colours
+              and w not in ("with", "wearing", "over", "from", "that", "gear")]
+    return any(re.search(r"(?<![a-z])" + re.escape(t), kind) for t in tokens)
 
 
 def _camera_shows_player() -> bool:
@@ -1820,6 +1883,13 @@ def align_brief_to_plate(brief: dict, vision: Optional[dict] = None) -> dict:
                                     "lost", "fallen", "lone", "wearing")
     ]
     named_in_plate = bool(tokens) and any(t in plow for t in tokens)
+    # Drawn from a look-book plate: the picture was made FROM the roster
+    # entry's design, so a label that names that entry is the truth even when
+    # the vision pass only saw "a figure in tactical gear". Without this every
+    # designed guard, rancher and mule deer was renamed "A figure" / "A body"
+    # on the first live run with the book on.
+    if brief.get("roster_plate") and tokens and not named_in_plate:
+        named_in_plate = _label_names_roster_entry(brief)
     if (look_clones_player(label) or _is_clothing_clause_label(label)
             or (pulp and not pulp_in_plate) or (tokens and not named_in_plate)):
         grounded = _grounded_label_from_look(char.get("look") or "", seen)
@@ -2098,7 +2168,18 @@ def encounter_roster(session_id: str = "default") -> list:
         if kinds:
             return kinds
 
-    roster = build_encounter_roster(session_id)
+    # The look book builds the roster at reset and designs a plate for every
+    # entry (look_book.py). Drawing from a second, private roster here would
+    # roll a guard the book never designed — so take the book's, waiting a
+    # few seconds if it is being written right now.
+    roster = []
+    try:
+        import look_book
+        roster = look_book.wait_for_roster(session_id)
+    except Exception:
+        roster = []
+    if not roster:
+        roster = build_encounter_roster(session_id)
     if not roster:
         return []
     try:
@@ -3613,6 +3694,7 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
     # be here — not to choose the thing, because asked to choose it always chose
     # the same thing.
     aimed = _clip((target or {}).get("label") if isinstance(target, dict) else target, "", 60)
+    designed = ""
     sighted = bool(isinstance(target, dict) and target.get("source") == "sighting")
     if aimed and sighted:
         rolled = aimed
@@ -3632,8 +3714,25 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
         )
     else:
         rolled = roll_encounter_kind(session_id)
+        designed = ""
+        if rolled:
+            try:
+                import look_book
+                designed = look_book.look_for(session_id, rolled)
+            except Exception:
+                designed = ""
         roll_line = (
             f"THIS ENCOUNTER IS: {rolled}\n"
+            + (
+                # The look book has already designed this roster entry and its
+                # plate rides into the plate render. The words have to describe
+                # the same person the picture copies, or the slate and the
+                # narrator talk about someone the frame does not show.
+                f"HOW IT LOOKS IN THIS WORLD (the art-directed design — your "
+                f"`look` is this, in your own words, and adds nothing that "
+                f"contradicts it): {designed}\n"
+                if designed else ""
+            ) +
             "That is the roll for this turn, not a suggestion and not a menu: what "
             "arrives IS that. Everything else you write serves it — the label names "
             "this thing, the look is this thing's body, the motive is what THIS "
@@ -3694,7 +3793,21 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
         return fallback_encounter_brief(hold, seed=seed, vision=vis, rolled=rolled)
     if hold and not brief.get("place_hold"):
         brief["place_hold"] = _clip(hold, "", 160)
-    return separate_cast(brief)
+    brief = separate_cast(brief)
+    if not aimed and rolled and isinstance(brief, dict):
+        # Which roster entry this is, so every render of this fight can attach
+        # its look-book plate (see _book_cast_plates).
+        brief["roster_kind"] = rolled
+        # The safety nets in separate_cast swap a suspect look for a stock
+        # stranger — and "camcorder" reads as camera language, so a designed
+        # activist came back as "a sentry in unmarked fatigues" while his plate
+        # drew the activist. A designed look that does not clone the player
+        # beats any stock stranger.
+        char = brief.get("character") or {}
+        if designed and is_default_stranger_look(char.get("look") or "") \
+                and not look_clones_player(designed):
+            char["look"] = _clip(designed, "", 240)
+    return brief
 
 
 def _safe_vision_analyze(image_path: Optional[str]) -> dict:
@@ -4024,7 +4137,8 @@ def _plate_stranger_billing(brief: Optional[dict]) -> tuple[str, str]:
 def _plate_sequence(session_id: str, prompt: str, ref_path: Optional[str],
                     caption: str = "", two_shot: str = "", two_shot_look: str = "",
                     beat: str = "", hold_cast: bool = False,
-                    cast_plates: Optional[list] = None) -> Optional[dict]:
+                    cast_plates: Optional[list] = None,
+                    design_refs: Optional[list] = None) -> Optional[dict]:
     """This plate as flipbook frames, or None to stay a still.
 
     Every stage of a confrontation should move the way the ordinary view does —
@@ -4093,6 +4207,7 @@ def _plate_sequence(session_id: str, prompt: str, ref_path: Optional[str],
                 # A sighting's close-up: the stranger's own pixels, labelled
                 # as WHO is there so the grid draws that face, not a new one.
                 cast_plates=[p for p in (cast_plates or []) if p and os.path.exists(str(p))] or None,
+                design_refs=design_refs or None,
             )
 
         seq = _grid([use_ref] if use_ref else None)
@@ -4251,6 +4366,15 @@ def api_begin():
     # Pinned so api_resolve rolls every round against the level the fight
     # OPENED on. See the `opened_at` read there.
     brief["detection"] = detection
+    # A rolled roster entry has a designed plate in the look book; a sighting
+    # already has the figure's own pixels, which beat any design.
+    if not cast_plates:
+        cast_plates = _book_cast_plates(session_id, brief)
+        if cast_plates:
+            brief["roster_plate"] = os.path.basename(cast_plates[0])
+            print(f"[ENCOUNTER] look book: {brief.get('roster_kind')!r} is drawn "
+                  f"from {os.path.basename(cast_plates[0])}", flush=True)
+    design_refs = _book_design_refs(session_id)
     if detection >= 3 and isinstance(brief.get("character"), dict):
         # Something that tracked the player across a run is not here to
         # bargain. The brief is told this too, but stance is a closed set the
@@ -4286,6 +4410,7 @@ def api_begin():
         two_shot=_billed, two_shot_look=_billed_look,
         beat=_clip(brief.get("danger") or brief.get("stakes") or "", "", 200),
         cast_plates=cast_plates or None,
+        design_refs=design_refs,
     )
     if _fb and _fb.get("still"):
         image_path = _fb["still"]
@@ -4318,6 +4443,7 @@ def api_begin():
                     # The sighted figure's close-up (see above) — the still
                     # path's version of the same cast plate.
                     cast_plates=cast_plates or None,
+                    design_refs=design_refs or None,
                 )
                 gen_mode = "img2img"
                 _ground_brief_on_plate(brief, image_path)
@@ -4469,10 +4595,15 @@ def _generate_resolve_plate(session_id: str, brief: dict, prompt: str,
     # hold_cast: both bodies are already in the standoff plate this beat is
     # generated from, so they are copied out of it rather than introduced.
     billed, billed_look = _plate_stranger_billing(brief)
+    # The roster entry's plate keeps the antagonist the same design through
+    # every round; the standoff plate alone drifted a little per beat.
+    book_plates = _book_cast_plates(session_id, brief)
+    design_refs = _book_design_refs(session_id)
     fb = _plate_sequence(session_id, prompt, ref_path, caption=caption,
                          two_shot=billed, two_shot_look=billed_look,
                          beat=_clip(verb or (brief or {}).get("stakes") or "", "", 200),
-                         hold_cast=True)
+                         hold_cast=True, cast_plates=book_plates or None,
+                         design_refs=design_refs)
     if fb and fb.get("still"):
         if isinstance(brief, dict):
             brief["_sequence"] = fb.get("payload")
@@ -4509,6 +4640,8 @@ def _generate_resolve_plate(session_id: str, brief: dict, prompt: str,
                 style_only_swatch=False,
                 identity_paths=identity or None,
                 identity_seed=bool(identity),
+                cast_plates=book_plates or None,
+                design_refs=design_refs or None,
             )
             gen_mode = "hard_cut_plate" if plate else "hard_cut_identity"
         if not image_path:

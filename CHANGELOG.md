@@ -1,5 +1,122 @@
 # 🔧 CHANGELOG - September 21, 2026
 
+## 🎨 GENERATE shoots the look book too, and the editor shows it being made
+
+Asked: *"now does the look book generate when i press generate? can it show
+realtime progress?"*
+
+**Before:** no. GENERATE drew the World's opening still and nothing else.
+The book was shot by the reset that started the next run, after the editor
+had closed, and its progress only showed in the corner strip during loading.
+
+**Now:** GENERATE starts the book for the World it just bound, at the same
+time as the still. The book is for the session that will play it
+(`session_id` is sent with GENERATE) — not the private `wf-` frame session.
+
+**Progress in the editor.** A line under GENERATE / SAVE / RESET / LOOK
+BOOK shows the stage, its number of five, and seconds:
+*LOOK BOOK 2/5 · WRITING THE BRIEF · 8S*. A five-segment bar sits under it,
+amber while shooting. It updates every second.
+- When the book is done, the line turns mint:
+  *LOOK BOOK READY · 12 PLATES · SHOT IN 48S · OPEN*. It stays up, and
+  clicking it opens the desk.
+- While a build runs, the LOOK BOOK button carries an amber dot.
+- Opening the editor shows where the current book stands. A book made for
+  another World says so.
+
+**No second book.** The run that follows — closing the editor, or PLAY —
+takes the book GENERATE made, finished or still in progress, instead of
+rolling another. It takes it once; the next New Game rolls its own roster, as
+before. Pressing GENERATE again while this World's book is still being made
+keeps that build.
+
+**A newer build replaces an older one.** Each build now gets a ticket, and an
+older build stops at its next save once a newer one starts. Before, GENERATE
+on a new World waited for the previous World's build to finish (up to a
+minute). The previous build's saves also kept overwriting the new book's
+progress. The new book's placeholder is written at once, so the line never
+shows the old World's 5/5.
+
+Checked in a browser on a copy of this repo, from the picker: EDITOR →
+GENERATE on THE FIFTH CORNER.
+- The line went 2/5 → 3/5 → READY in 48 s while the still drew.
+- The desk opened from it.
+- PLAY then logged `the run takes the book GENERATE shot`, and no second
+  build started.
+
+Tests: `GenerateShootsTheBook` in `test_look_book` (50 pass).
+`test_editor_is_manual`, `test_editor_wiring`, `test_cutscene`,
+`test_experience_mode` and `test_world_frames` pass (370 in total).
+
+## ✅ FIX: GENERATE draws the World on the desk, not the run behind it — and the look book has a button
+
+Asked: *"right off the back i dont see anywhere to access the look book. also
+the editor immediately starts rendering the wrong world, its drawing the swat
+world when it should be re-rendering / generating the fifth corner world. why?"*
+
+**Why it drew SWAT.** A SWAT run had just started (REC 00:00:43) when the
+editor opened. The editor stops the run — polling, autoplay, narrator — but
+not the opening cutscene. Its montage kept playing under the editor. When it
+ended, it called `/api/cutscene/complete`, which drew the run's first frame
+and painted it into the viewport. That happened after GENERATE had drawn THE
+FIFTH CORNER, so the SWAT megaphone covered it. The files on disk agree:
+`worlds/somewhere.frame.png` 14:41:41, then the SWAT
+`opening_flipbook_f04.png` in `sessions/default` 14:41:43.
+
+Reproduced on a copy of this repo, same three Experiences, in a browser:
+PLAY SWAT → open the editor during the montage → click THE FIFTH CORNER →
+GENERATE. The montage and first frame then came from whichever World the
+live prompt file held at that moment. The narrator line mixed the two
+Worlds (*"Horizon Industries built this perimeter in 2088 to contain the
+city's urban rot"*).
+
+**What changed.**
+
+- Opening the editor now stops the cutscene (`Cutscene.holdForEditor`):
+  the montage comes down without completing, and nothing it was fetching
+  gets painted.
+- A montage can't complete while the editor is open, and can't start
+  either.
+- Closing the editor puts the cutscene back:
+  - a held **opening** restarts the run, since the run hadn't begun;
+  - any other held cutscene completes then, after the run's prompts are
+    restored;
+  - after GENERATE, the run restarts in the World you drew, as before.
+- Checked in the browser: GENERATE shows only THE FIFTH CORNER and no
+  montage completes under the editor. On close, the run restarts in THE
+  FIFTH CORNER with its own opening.
+
+**The look book button.** The desk was only on HARNESS › Image.
+- **LOOK BOOK** now sits next to GENERATE / SAVE / RESET on the
+  EXPERIENCE desk.
+- A World's sheet (inspector › Edit) also has the look book group:
+  switches, shelf, OPEN / RESHOOT.
+- The desk header names the World the book was shot for (for example
+  *SOMEWHERE · JASON FLEECE*), so a book for another World is obvious.
+
+**The look book also stops following the editor.**
+- **GENERATE no longer builds a book.** GENERATE draws through the private
+  frame session `wf-<world>`, which had no book, so reading the sheet
+  started a whole build there (~60 s of image calls) every time. Reading
+  now never builds; `reset` starts a run's book; `wf-` sessions never get
+  one.
+- **A build shoots the World it started with.** The World is frozen at
+  spawn and carried onto the sheet threads. Before, a build read the live
+  file stage by stage, so switching Worlds mid-build gave a SWAT brief
+  with FIFTH CORNER sheets.
+- **A finished book isn't thrown away.** A book that finished while the
+  editor had another World bound used to be marked `stale`. Being for
+  another World is now a question asked when the book is read, as before.
+- **The in-game LOOK BOOK strip is hidden while the editor is open.** It
+  sat over the editor's top-right corner.
+
+Tests: `test_look_book` adds `TheEditorDoesNotLeakIntoTheBook` and
+`TheEditorStopsTheCutscene` (39 pass). `test_editor_is_manual`,
+`test_editor_wiring`, `test_cutscene`, `test_experience_mode` and
+`test_world_frames` pass. The two `test_render_mode` menu-style failures and
+the two `test_exit_button` browser-quit failures fail the same way without
+this change.
+
 ## 💳 FIX: A player with no money lands on ADD MONEY, and checkout opens
 
 Asked: *"merge into the app, making sure there is a simple way for me to
@@ -165,6 +282,153 @@ rate used for an image).
   at its size, the shipped table is sourced and per-million, flash-lite text
   is cheap. 57 pricing / cost-tracker / billing tests pass.
 - `BILLING_LIVE_PLAN.md`: "~1000×" corrected to "~150× overall".
+
+## 🎨 NEW: The run gets a look book — the same guard is the same guard
+
+Asked: *"what if when we go to generate the world, we take ALL the existing
+data we have and generate a contact sheet of characters in stylish poses,
+extreme conflicts full of danger, distinct sets full of narrative and world
+building … sent cleverly into the system as it's building new scenes /
+encounters, so that we can somehow attempt to art direct these experiences a
+bit more … actually find out."* Then: *"lets work towards implementing this."*
+
+**What was wrong.** Nothing in the pipeline decided what this world's people
+and creatures LOOK like. The consequence model writes "a Horizon security
+guard steps out", the image model invents a guard, and the next frame that
+says "guard" invents another. Measured before building anything (harness and
+data in `_claude_lookbook/`): the engine's own terse guard line, rendered in
+four places with the engine's own references and templates, came back as a
+hazmat suit, a lab tech, an olive gas-mask soldier and a cop — **3.3/10** on
+design consistency (Gemini 3.1 Pro, all four frames shown at once, 3 passes).
+With a designed plate of that guard attached: the same black-helmeted guard
+with red goggles every time, **7.0/10**. The creature went 4.0 → 7.0. The
+control case mattered most: a rival photojournalist who was only *described*
+(no plate) scored 3.0 and bled into the player — the model handed Jason the
+rival's camcorder — and with his own plate, 6.7 with Jason intact.
+
+**What it is.** `look_book.py`. At reset, in the background (~45–50 s, nothing
+waits on it), per run:
+
+1. the encounter roster is built HERE instead of at the first encounter, so
+   the book and the fights agree on who exists (`encounter.encounter_roster`
+   now takes the book's, waiting up to 6 s while it is being written);
+2. one text call (`gemini-3.8-flash` — the most specific of four models tried;
+   3.1-pro was twice as slow and blander) writes the brief: look rules, nine
+   frames (cast / conflicts / sets) and a designed look + match terms for
+   every roster entry;
+3. two sheets are shot in parallel on `gemini-3.1-flash-image` at 2K, in the
+   game's own medium, with the character sheet attached — the WORLD sheet
+   (3×3) and the ROSTER sheet (one full-body design shot per entry);
+4. the roster sheet is cut row by row on its gutters, the crops are shown to a
+   vision pass on a montage WE number, and each crop is kept only where it is
+   clearly one whole roster entry. Anything the sheet did not deliver cleanly
+   is shot on its own.
+
+Stored in `sessions/<id>/look_book/`, keyed on the World's content (character,
+level, bible, art direction) — editing the protagonist invalidates it as
+surely as switching Worlds, and a stale book is never served.
+
+**Where it rides.**
+
+- **Encounters.** The rolled entry's plate goes in through the existing
+  `cast_plates` path (slot behind the player's sheet) on the standoff and on
+  every play-out; the brief is told the designed look so the words describe
+  the person the picture copies. The brief remembers its `roster_kind` /
+  `roster_plate` through `normalize_encounter_brief`'s rebuild (the same trap
+  `setting` fell into). A sighting still wins — the figure's own pixels beat
+  any design.
+- **Ordinary turns** (stills and flipbook grids). The world sheet rides LAST as
+  a captioned design reference (`design_refs`), ahead of a flipbook's layout
+  guide. A roster plate rides when the scene text names that entry — terms
+  filtered against the player's own description ("journalist" is inside
+  "photojournalist") and against words two entries share, or that fit any body
+  ("carcass" pulled a different creature over the jackrabbit the player had
+  just killed, live, for three turns).
+- **Captions.** `look_book.label_for` names every book attachment in the image
+  layer, so a nine-panel sheet is never "the previous moment" (which returns a
+  grid) and a plate is a DESIGN of who arrives, not a close-up "the player has
+  just been looking at".
+
+**Found by playing it, fixed before it shipped.**
+
+- `_ensure_disk_headroom` sweeps oldest-first across sessions, and every book
+  file is the oldest thing in its session: book.json was deleted mid-run and
+  the book rebuilt itself twice in five turns. `look_book/` is protected like
+  `companion_` and `prop_`.
+- The roster sheet came back 4 / 5 / 4 with frame numbers printed in the
+  corners; an even split cut row two's frames in half and the whole-sheet
+  placement check waved it through as 12/12 — the activist was drawn in a
+  yellow hazmat suit. Hence the row-by-row cut and the crop-level check.
+- Plate grounding renamed every designed fighter "A figure" / "A body" (the
+  vision pass only ever says "a figure in tactical gear"). A label that NAMES
+  the roster entry the plate was drawn from is kept; a clothing scrap
+  ("Charcoal-black nylon tactical rig over") is still replaced.
+- A world sheet came back as painted illustration with "CAST" printed on
+  it, and a casting sheet printed frame numbers that survived into the
+  plates. The sheet prompts now carry hard rules (a photograph, no text of
+  any kind) and crops are inset 5%.
+- "camcorder" reads as camera language to `separate_cast`, which swapped the
+  designed activist for the stock "sentry in unmarked fatigues" while his
+  plate drew the activist. A designed look that does not clone the player now
+  beats any stock stranger.
+
+**See it, judge it, redo it.** *"make sure there is a visualization mode for
+the look book, in the editor, with generate buttons etc so i can see the
+process and judge"* — the Image node in the World Editor has a Look book group
+(the switches, the sheet, the plates) and OPEN LOOK BOOK, a full-screen desk
+in the start menu's own language (bone on #0B0B0A, Manrope 200 wordmark,
+tracked JetBrains Mono, hairlines, actions as text; designed on the canvas
+first). A rail walks the pipeline in the order it runs — ROSTER, BRIEF (the
+palette, film, lens, motifs and all nine frames with their design
+specifics), WORLD (the sheet and its nine captions, each opening its panel),
+CASTING (the sheet as the model drew it beside the crop check as we cut it),
+PLATES (every plate with its roster line, where it came from, and its match
+terms — struck through where they are not acted on), LOG — and every stage
+can be redone on its own: NEW BOOK, REWRITE BRIEF, RESHOOT SHEET, RESHOOT
+CASTING, and RESHOOT on any single plate (`POST /api/look_book/generate`
+with `part`). The build is split into those stages (`look_book._stage_*`)
+and writes a timestamped log the desk and the strip both read.
+`window.LookBookView.open()` opens it from anywhere.
+
+**The loading screen says where it is.** *"if the lookbook is going to add to
+the generation times when we load into a world, please document the loading
+screen accurately with small micro text above the bar."* It does not add to
+them — nothing waits on the book — but it is still working for ~50 s after
+the world opens, so under the corner loader there is now micro text over a
+five-segment bar: `LOOK BOOK 2/5 · WRITING THE BRIEF · 18S` → rolling the
+roster, writing the brief, shooting the sheets, checking the crops, cutting
+the plates → `LOOK BOOK READY · 12 PLATES · 48S`, then it goes
+(`LookBookStatus` in standalone.js; started by `resetGame` and by any
+generate in the desk).
+
+**Switches** (tunables, on the Image node in the World Editor): `look_book`,
+`look_book_sheet_on_turns`, `look_book_roster_plates` — three, because the
+parts were measured separately and the plates carried most of the effect —
+and `look_book_story` (on; see below). `SOMEWHERE_LOOK_BOOK=0` turns it off at
+boot. No key / mock mode: never builds, frames are drawn exactly as before.
+
+**What was tried and deliberately left out.** The conflict row as an image
+reference (handed "spotted at the fence", the model drew its guard into a beat
+about a rival journalist); a written look with no plate; a painted key-art
+sheet (stylish, pulled frames off the game's medium — lost on world look and
+scored 12% on new locations with one judge).
+
+**On: `look_book_story`.** The sheet's rows as a plan — the
+consequence prompt is handed the designed cast, the three designed places and
+the phase's set piece (conflict frame 1 / 2 / 3 for normal / escalating /
+critical), and a cut that lands in a designed set carries that set's panel.
+Measured in full runs before it was switched on: the real server played by `~/cs_exp/run_ab.py` — reset, the opening, 8 turns via /api/choose, a forced encounter at turn 4 — in three conditions (book off / pictures only / pictures + story), every frame and line of prose kept, then judged blind in pairs by Gemini 3.1 Pro in both orders (7 usable runs; one "on" run was thrown away because it started on the previous run's death screen). Pictures alone won where pictures live — world look 100%, places 92% — and LOST on agreement between the prose and the picture (29%): the frames showed a designed guard the prose never mentioned. With the story half the prose names what the frames draw, and it won every criterion against both: vs pictures-only consistency 88%, danger 100%, agreement 94%, narrative 100%, overall 100% (n=8); vs off, overall 100% (n=12). Small n, one judge family, independent runs with different rosters — strong enough to ship on, with the switch there to cut it.
+
+**Verified.** 32 new invariants in `test_look_book.py` (payload order on the
+wire, the flipbook guide staying last, the six-reference cap, captions, term
+filtering, stale books, the switches, the brief rebuild, the sweep).
+`test_encounter`, `_fight`, `_sighting`, `test_flipbook`,
+`test_interact_plate_handoff`, `test_prompts_store`, `test_run_isolation`,
+`test_encounter_roster` unchanged (`test_encounter_custom_action` fails the
+same one test before and after). Played against the real API: autoplay 5/5
+turns PASS with the sheet riding; forced encounters drew the red-goggled
+guard, the rancher, the crystalline mule deer and the jackrabbit from their
+own plates (`[ENCOUNTER] look book: '…' is drawn from plate_NN.jpg`).
 
 # 🔧 CHANGELOG - September 20, 2026
 

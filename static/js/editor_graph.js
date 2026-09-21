@@ -3516,6 +3516,9 @@
       closeSheet();
       diveWorld(n);
     });
+    // The look book lives with the World, where the author is looking — not
+    // only on HARNESS > Image, which nobody opening a World ever sees.
+    fillLookBook(group(body, "Look book"), n);
     if (B.resetWorldPicture) {
       button(body, "Reset this World", "", async () => {
         await saveCard();
@@ -5449,6 +5452,478 @@
         vals.flipbook_frame_ms, spec.flipbook_frame_ms.help,
         (v) => setTunable("flipbook_frame_ms", v));
     });
+
+    // The run's look book (look_book.py): the contact sheet every frame is drawn
+    // against, and the designed plate for everything the run can roll. It lives
+    // on the Image node because it is the same decision as the model above —
+    // what one frame is made from — and because the switches are how a part of
+    // it gets cut if it stops earning its place.
+    fillLookBook(group(body, "Look book"), n);
+  }
+
+  // ── LOOK BOOK VIEW ────────────────────────────────────────────────────
+  // The whole pipeline laid out in the order it runs, so the book can be
+  // judged stage by stage and any stage redone on its own: the roster the
+  // dice roll from, the brief the production designer wrote, the world sheet
+  // and its nine panels, the casting sheet beside the crop check that decided
+  // which frame is whose, and every plate with its designed look, its match
+  // terms (struck through when unsafe) and where it came from. Everything here
+  // is read from GET /api/look_book and redone through POST
+  // /api/look_book/generate; the page polls while a stage is being shot.
+  let lbvTimer = null;
+  // The run this page is bound to (standalone.js sets it from ?session=).
+  const lbSession = () => window.__SOMEWHERE_SESSION__ || "default";
+  const lbUrl = () => "/api/look_book?session=" + encodeURIComponent(lbSession());
+  function openLookBookView(startStage) {
+    let root = document.getElementById("look-book-view");
+    if (!root) {
+      root = document.createElement("div");
+      root.id = "look-book-view";
+      root.setAttribute("role", "dialog");
+      root.setAttribute("aria-modal", "true");
+      root.setAttribute("aria-label", "Look book");
+      document.body.appendChild(root);
+    }
+    root.classList.add("is-open");
+    let stage = startStage || "plates";
+    let last = null;
+    let flashMsg = "";
+    const close = () => {
+      clearTimeout(lbvTimer);
+      root.classList.remove("is-open");
+      root.innerHTML = "";
+      document.removeEventListener("keydown", onKey, true);
+    };
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      const box = root.querySelector(".lbv-lightbox");
+      if (box) box.remove(); else close();
+    };
+    document.addEventListener("keydown", onKey, true);
+
+    const el = (tag, cls, text) => {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text != null) n.textContent = text;
+      return n;
+    };
+    // Pictures open in place, over the desk, not in a new tab.
+    const lightbox = (src, caption) => {
+      const box = el("div", "lbv-lightbox");
+      const im = el("img");
+      im.src = src; im.alt = caption || "";
+      box.appendChild(im);
+      if (caption) box.appendChild(el("div", "lbv-lightbox-cap", caption));
+      box.addEventListener("click", () => box.remove());
+      root.appendChild(box);
+    };
+    const pic = (src, alt, cls) => {
+      const b = el("button", "lbv-pic " + (cls || ""));
+      b.type = "button";
+      b.setAttribute("aria-label", "Open " + (alt || "picture"));
+      const im = el("img");
+      im.src = src; im.alt = alt || ""; im.loading = "lazy";
+      b.appendChild(im);
+      b.addEventListener("click", () => lightbox(src, alt));
+      return b;
+    };
+    const gen = async (part, plate) => {
+      try {
+        const r = await fetch("/api/look_book/generate", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(plate == null ? { part, session: lbSession() }
+                                             : { part, plate, session: lbSession() }),
+        });
+        if (!r.ok) {
+          const b = await r.json().catch(() => ({}));
+          flashMsg = b.message || "Could not start that.";
+        }
+      } catch (_) { flashMsg = "Could not reach the server."; }
+      try { if (window.LookBookStatus) window.LookBookStatus.watch(); } catch (_) {}
+      refresh();
+    };
+    const textBtn = (host, label, onClick, disabled) => {
+      const b = el("button", "lbv-link", label);
+      b.type = "button";
+      b.disabled = !!disabled;
+      b.addEventListener("click", onClick);
+      host.appendChild(b);
+      return b;
+    };
+
+    // The same five steps the in-game strip counts.
+    const STEPS = [
+      { keys: ["start", "roster"], label: "rolling the roster" },
+      { keys: ["brief"], label: "writing the brief" },
+      { keys: ["shoot", "world", "roster_sheet"], label: "shooting the sheets" },
+      { keys: ["placement"], label: "checking the crops" },
+      { keys: ["plates"], label: "cutting the plates" },
+    ];
+    const stepOf = (log) => {
+      let idx = 0;
+      (log || []).forEach((l) => STEPS.forEach((s, i) => { if (s.keys.includes(l.stage)) idx = Math.max(idx, i); }));
+      return idx;
+    };
+    const RAIL = [
+      ["roster", "01", "ROSTER"], ["brief", "02", "BRIEF"], ["world", "03", "WORLD"],
+      ["casting", "04", "CASTING"], ["plates", "05", "PLATES"], ["log", "06", "LOG"],
+    ];
+    const liveStage = (lb, busy) => {
+      if (!busy) return "";
+      const i = stepOf(lb.log);
+      return ["roster", "brief", "world", "casting", "plates"][Math.min(i === 3 ? 3 : i === 4 ? 4 : i, 4)];
+    };
+
+    const stageHead = (host, title, note, action) => {
+      const h = el("div", "lbv-stage-head");
+      const t = el("div", "lbv-stage-title");
+      t.appendChild(el("h3", "", title));
+      if (note) t.appendChild(el("span", "lbv-quiet", note));
+      h.appendChild(t);
+      if (action) h.appendChild(action);
+      host.appendChild(h);
+    };
+
+    const draw = (lb) => {
+      last = lb;
+      const main0 = root.querySelector(".lbv-main");
+      const scroll = main0 ? main0.scrollTop : 0;
+      root.innerHTML = "";
+      const busy = !!(lb && (lb.building || ["roster", "brief", "shooting"].includes(lb.status)));
+      const live = lb ? liveStage(lb, busy) : "";
+
+      const page = el("div", "lbv-page");
+      root.appendChild(page);
+
+      // Header — the menu's wordmark treatment, actions as tracked text.
+      const head = el("header", "lbv-header");
+      const brand = el("div", "lbv-brand");
+      brand.appendChild(el("h2", "lbv-wordmark", "LOOK BOOK"));
+      const bits = [];
+      if (lb && lb.world_name) bits.push(String(lb.world_name).toUpperCase());
+      if (lb && lb.roster && lb.roster.length) bits.push(`${lb.roster.length} ROSTER ENTRIES`);
+      if (lb && lb.reason) bits.push(String(lb.reason).toUpperCase());
+      if (lb && lb.stale) bits.push("SHOT FOR ANOTHER WORLD");
+      brand.appendChild(el("div", "lbv-meta", bits.join(" · ")));
+      head.appendChild(brand);
+      const nav = el("nav", "lbv-nav");
+      nav.setAttribute("aria-label", "Look book actions");
+      textBtn(nav, "NEW BOOK", () => gen("all"), busy || !(lb && lb.enabled));
+      textBtn(nav, "CLOSE", close);
+      head.appendChild(nav);
+      page.appendChild(head);
+
+      const desk = el("div", "lbv-desk");
+      page.appendChild(desk);
+
+      // Stage rail
+      const rail = el("nav", "lbv-rail");
+      rail.setAttribute("aria-label", "Stages");
+      const counts = {
+        roster: lb && lb.roster ? String((lb.roster.length || (lb.roster_only || []).length) || "") : "",
+        brief: lb && lb.frames && lb.frames.length ? `${lb.frames.length} FRAMES` : "",
+        world: lb && lb.world_sheet ? "3 × 3" : "",
+        casting: lb && lb.roster ? `${lb.roster.filter((r) => r.plate).length} / ${lb.roster.length}` : "",
+        plates: lb && lb.roster ? String(lb.roster.filter((r) => r.plate).length || "") : "",
+        log: lb && lb.log ? String(lb.log.length || "") : "",
+      };
+      RAIL.forEach(([key, n, name]) => {
+        const b = el("button", "lbv-rail-item" + (key === stage ? " is-on" : "") + (key === live ? " is-live" : ""));
+        b.type = "button";
+        b.setAttribute("aria-current", key === stage ? "page" : "false");
+        b.appendChild(el("span", "lbv-rail-dot"));
+        b.appendChild(el("span", "lbv-rail-n", n));
+        b.appendChild(el("span", "lbv-rail-name", name));
+        b.appendChild(el("span", "lbv-rail-count", counts[key] || ""));
+        b.addEventListener("click", () => { stage = key; draw(last); });
+        rail.appendChild(b);
+      });
+      desk.appendChild(rail);
+
+      const main = el("main", "lbv-main");
+      desk.appendChild(main);
+      if (flashMsg) { main.appendChild(el("p", "lbv-flash", flashMsg)); flashMsg = ""; }
+      if (!lb) { main.appendChild(el("p", "lbv-quiet", "Could not read the look book.")); }
+      else if (!lb.enabled) main.appendChild(el("p", "lbv-quiet", "The look book is off, or there is no image key — frames are drawn without it."));
+      if (lb && lb.error) main.appendChild(el("p", "lbv-flash", lb.error));
+
+      const act = (label, part, disabled) => {
+        const b = el("button", "lbv-link lbv-underline", label);
+        b.type = "button";
+        b.disabled = !!disabled;
+        b.addEventListener("click", () => { b.disabled = true; b.textContent = "STARTING…"; gen(part); });
+        return b;
+      };
+
+      if (lb && stage === "roster") {
+        stageHead(main, "ROSTER", "What this run can roll. Built at reset, so the fights and the book agree on who exists.",
+          act("NEW BOOK", "all", busy));
+        const kinds = (lb.roster && lb.roster.length) ? lb.roster.map((r) => r.kind) : (lb.roster_only || []);
+        const ol = el("ol", "lbv-roster");
+        kinds.forEach((k, i) => {
+          const li = el("li");
+          li.appendChild(el("span", "lbv-quiet", String(i + 1).padStart(2, "0")));
+          li.appendChild(el("span", "", k));
+          ol.appendChild(li);
+        });
+        if (!kinds.length) main.appendChild(el("p", "lbv-quiet", busy ? "Rolling…" : "No roster yet."));
+        main.appendChild(ol);
+      }
+
+      if (lb && stage === "brief") {
+        stageHead(main, "BRIEF", "The production designer's decisions, before a single frame is shot.",
+          act("REWRITE BRIEF", "brief", busy || !(lb.roster || []).length));
+        const rules = lb.look_rules || {};
+        const palRaw = rules.palette || {};
+        const pal = Array.isArray(palRaw)
+          ? palRaw.map((c) => (c && typeof c === "object")
+              ? [c.name || c.label || "", c.hex || c.color || c.value || ""] : [String(c), String(c)])
+          : Object.entries(palRaw);
+        if (pal.length) {
+          const row = el("div", "lbv-palette");
+          pal.forEach(([name, hex]) => {
+            const sw = el("div", "lbv-swatch");
+            const chip = el("div", "lbv-chip");
+            chip.style.background = String(hex);
+            sw.appendChild(chip);
+            const cap = el("div", "lbv-swatch-cap");
+            cap.appendChild(el("span", "lbv-quiet", String(name).toUpperCase()));
+            cap.appendChild(el("span", "", String(hex)));
+            sw.appendChild(cap);
+            row.appendChild(sw);
+          });
+          main.appendChild(row);
+        }
+        const facts = el("dl", "lbv-facts");
+        [["FILM", rules.film], ["LENS", rules.lens], ["MOTIFS", (rules.motifs || []).join("  ·  ")]].forEach(([k, v]) => {
+          if (!v) return;
+          facts.appendChild(el("dt", "", k));
+          facts.appendChild(el("dd", "", v));
+        });
+        main.appendChild(facts);
+        const grid = el("div", "lbv-frame-grid");
+        (lb.frames || []).forEach((f) => {
+          const c = el("article", "lbv-frame");
+          c.appendChild(el("div", "lbv-micro", `${String(f.n || "").padStart(2, "0")} · ${f.row || ""}`));
+          c.appendChild(el("div", "lbv-frame-title", f.title || ""));
+          c.appendChild(el("div", "lbv-quiet", f.subject || ""));
+          const ds = Array.isArray(f.design_specifics) ? f.design_specifics : [f.design_specifics].filter(Boolean);
+          if (ds.length) {
+            const ul = el("ul", "lbv-specs");
+            ds.forEach((d) => ul.appendChild(el("li", "", d)));
+            c.appendChild(ul);
+          }
+          grid.appendChild(c);
+        });
+        main.appendChild(grid);
+      }
+
+      if (lb && stage === "world") {
+        stageHead(main, "WORLD", "Rides with every frame, last, as design — never as layout.",
+          act("RESHOOT SHEET", "world", busy || !(lb.frames || []).length));
+        const row = el("div", "lbv-world");
+        if (lb.world_sheet) row.appendChild(pic(lb.world_sheet, "World contact sheet", "lbv-world-sheet"));
+        else row.appendChild(el("div", "lbv-empty", busy ? "SHOOTING…" : "NO WORLD SHEET"));
+        const side = el("div", "lbv-world-side");
+        const caps = el("div", "lbv-caps");
+        (lb.frames || []).forEach((f) => {
+          const c = el("button", "lbv-cap");
+          c.type = "button";
+          c.appendChild(el("span", "lbv-micro", `${String(f.n || "").padStart(2, "0")} · ${f.row || ""}`));
+          c.appendChild(el("span", "", f.title || ""));
+          if (f.panel) c.addEventListener("click", () => lightbox(f.panel, `${f.title} — ${f.subject || ""}`));
+          else c.disabled = true;
+          caps.appendChild(c);
+        });
+        side.appendChild(caps);
+        row.appendChild(side);
+        main.appendChild(row);
+      }
+
+      if (lb && stage === "casting") {
+        stageHead(main, "CASTING", "As the model drew it, beside what our cut and the crop check saw.",
+          act("RESHOOT CASTING", "roster", busy || !(lb.roster || []).length));
+        const pair = el("div", "lbv-pair");
+        const fig = (src, alt, cap) => {
+          const f = el("figure", "lbv-fig");
+          f.appendChild(src ? pic(src, alt) : el("div", "lbv-empty", busy ? "SHOOTING…" : "NOTHING YET"));
+          f.appendChild(el("figcaption", "lbv-micro", cap));
+          return f;
+        };
+        pair.appendChild(fig(lb.roster_sheet, "Casting sheet as drawn", "AS DRAWN"));
+        pair.appendChild(fig(lb.placement_check, "Crop check", "AS CUT · EACH TILE CHECKED BY EYE"));
+        main.appendChild(pair);
+      }
+
+      if (lb && stage === "plates") {
+        stageHead(main, "PLATES", "What each roster entry looks like when it arrives — in a fight, or any frame that names it.",
+          act("RESHOOT CASTING", "roster", busy || !(lb.roster || []).length));
+        const grid = el("div", "lbv-plates");
+        (lb.roster || []).forEach((r, i) => {
+          const f = el("figure", "lbv-plate");
+          const frame = el("div", "lbv-plate-frame");
+          frame.appendChild(r.plate ? pic(r.plate, r.kind) : el("div", "lbv-empty", "NO PLATE"));
+          const re = el("button", "lbv-reshoot", "RESHOOT");
+          re.type = "button";
+          re.disabled = busy;
+          re.addEventListener("click", (e) => { e.stopPropagation(); re.disabled = true; re.textContent = "…"; gen("plate", r.index); });
+          frame.appendChild(re);
+          f.appendChild(frame);
+          const cap = el("figcaption", "");
+          cap.appendChild(el("div", "lbv-micro", `${String(i + 1).padStart(2, "0")}  ${(r.plate_source || "").toUpperCase()}`));
+          const name = el("div", "lbv-plate-name", r.kind);
+          if (r.look) name.title = r.look;
+          cap.appendChild(name);
+          const terms = el("div", "lbv-terms");
+          (r.terms || []).forEach((t) => {
+            const ok = (r.usable_terms || []).includes(t);
+            const sp = el("span", ok ? "is-ok" : "is-off", t);
+            sp.title = ok ? "Names this entry in a frame's text" : "Not acted on: generic, shared, or could describe the player";
+            terms.appendChild(sp);
+          });
+          cap.appendChild(terms);
+          f.appendChild(cap);
+          grid.appendChild(f);
+        });
+        if (!(lb.roster || []).length) main.appendChild(el("p", "lbv-quiet", busy ? "Shooting…" : "No plates yet."));
+        main.appendChild(grid);
+      }
+
+      if (lb && stage === "log") {
+        stageHead(main, "LOG", "Every stage of the last build, as it happened.", null);
+        const ol = el("ol", "lbv-log");
+        (lb.log || []).forEach((l) => {
+          const li = el("li");
+          li.appendChild(el("span", "lbv-quiet", `${l.t}s`));
+          li.appendChild(el("span", "", l.msg));
+          ol.appendChild(li);
+        });
+        if (!(lb.log || []).length) main.appendChild(el("p", "lbv-quiet", "Nothing yet."));
+        main.appendChild(ol);
+      }
+      main.scrollTop = scroll;
+
+      // Footer — the same micro text over five segments the game shows.
+      const foot = el("footer", "lbv-footer");
+      const idx = lb ? stepOf(lb.log) : 0;
+      let line = "";
+      if (!lb) line = "LOOK BOOK · UNREACHABLE";
+      else if (busy) line = `LOOK BOOK ${idx + 1}/5 · ${STEPS[idx].label.toUpperCase()}`;
+      else if (lb.status === "ready" && !lb.stale) line = `LOOK BOOK · READY${lb.timings && lb.timings.total ? " · SHOT IN " + Math.round(lb.timings.total) + "S" : ""}`;
+      else line = `LOOK BOOK · ${(lb.stale ? "shot for another world" : lb.status || "none").toUpperCase()}`;
+      const txt = el("div", "lbv-foot-text" + (busy ? " is-live" : lb && lb.status === "ready" && !lb.stale ? " is-ok" : ""), line);
+      foot.appendChild(txt);
+      const bar = el("div", "lbv-foot-bar");
+      for (let k = 0; k < 5; k++) {
+        const done = lb && (!busy ? (lb.status === "ready" && !lb.stale) : k < idx);
+        bar.appendChild(el("i", done ? "done" : (busy && k === idx ? "live" : "")));
+      }
+      foot.appendChild(bar);
+      page.appendChild(foot);
+
+      clearTimeout(lbvTimer);
+      if (busy && root.classList.contains("is-open")) lbvTimer = setTimeout(refresh, 2500);
+    };
+    const refresh = () => {
+      if (!root.classList.contains("is-open")) return;
+      if (root.querySelector(".lbv-lightbox")) { lbvTimer = setTimeout(refresh, 2500); return; }
+      getJson(lbUrl()).then(draw);
+    };
+    root.innerHTML = '<div class="lbv-page"><p class="lbv-quiet" style="padding:56px">Reading the look book…</p></div>';
+    refresh();
+  }
+
+  // Reachable without the graph too (a playtest or the console can open it).
+  window.LookBookView = { open: openLookBookView };
+
+  function fillLookBook(host, n) {
+    const knobs = document.createElement("div");
+    host.appendChild(knobs);
+    pending(knobs);
+    loadTunables(true).then((t) => {
+      knobs.innerHTML = "";
+      const spec = (t && t.schema) || {};
+      const vals = (t && t.values) || {};
+      ["look_book", "look_book_sheet_on_turns", "look_book_roster_plates", "look_book_story"].forEach((k) => {
+        if (spec[k]) switchRow(knobs, spec[k].label, vals[k], spec[k].help, (v) => setTunable(k, v));
+      });
+    });
+
+    const shelf = document.createElement("div");
+    shelf.className = "eg-lb";
+    host.appendChild(shelf);
+    const openedFor = sheetId;
+    let timer = null;
+
+    const draw = (lb) => {
+      shelf.innerHTML = "";
+      if (!lb) { note(shelf, "Could not read the look book."); return; }
+      const status = lb.stale ? "shot for another World" : (lb.building ? "shooting…" : lb.status);
+      statusRow(shelf, "This run", status, lb.status === "failed" || lb.stale);
+      if (lb.timings && lb.timings.total) statusRow(shelf, "Shot in", lb.timings.total + " s");
+      if (!lb.enabled) note(shelf, "Off, or no image key — frames are drawn without it.");
+      if (lb.error) note(shelf, lb.error);
+      if (lb.world_sheet) {
+        const a = document.createElement("a");
+        a.href = lb.world_sheet;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.className = "eg-lb-sheet";
+        const img = document.createElement("img");
+        img.src = lb.world_sheet + "?t=" + Date.now();
+        img.alt = "World contact sheet: cast, conflicts, sets";
+        a.appendChild(img);
+        shelf.appendChild(a);
+        note(shelf, "Cast · conflicts · sets. Rides with every frame as design, never as layout.");
+      }
+      const cast = (lb.roster || []).filter((r) => r.plate);
+      if (cast.length) {
+        const grid = document.createElement("div");
+        grid.className = "eg-lb-roster";
+        cast.forEach((r) => {
+          const fig = document.createElement("figure");
+          fig.className = "eg-lb-plate";
+          const img = document.createElement("img");
+          img.src = r.plate + "?t=" + Date.now();
+          img.alt = r.kind;
+          img.title = r.look || r.kind;
+          fig.appendChild(img);
+          const cap = document.createElement("figcaption");
+          cap.textContent = r.kind;
+          fig.appendChild(cap);
+          grid.appendChild(fig);
+        });
+        shelf.appendChild(grid);
+        note(shelf, "Everything this run can roll, as it will be drawn. An encounter, " +
+                    "and any turn that names one, is drawn from its plate.");
+      }
+      const row = document.createElement("div");
+      row.className = "eg-lb-actions";
+      shelf.appendChild(row);
+      button(row, "Open look book", "", () => openLookBookView());
+      button(row, lb.building ? "Shooting…" : "Reshoot", "", async (ev) => {
+        ev.currentTarget.disabled = true;
+        try {
+          await fetch("/api/look_book/generate", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ part: "all", session: lbSession() }),
+          });
+        } catch (_) { /* the poll below reports it */ }
+        refresh();
+      }).disabled = !!lb.building || !lb.enabled;
+      // Keep the shelf live while a book is being shot and this window is open.
+      clearTimeout(timer);
+      if ((lb.building || ["roster", "brief", "shooting"].includes(lb.status)) && sheetId === openedFor) {
+        timer = setTimeout(refresh, 4000);
+      }
+    };
+    const refresh = () => {
+      if (sheetId !== openedFor || !shelf.isConnected) return;
+      getJson(lbUrl()).then(draw);
+    };
+    pending(shelf);
+    refresh();
   }
 
   function sheetVoice(n, body) {

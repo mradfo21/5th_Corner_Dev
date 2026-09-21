@@ -107,6 +107,40 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
         "help": "How many companions come to the fire. The image model takes "
                 "six references, and the jeep is one of them.",
     },
+    # ── Look book ─────────────────────────────────────────────────────────
+    # The run's contact sheet (look_book.py). Three switches rather than one
+    # because the parts were measured separately and any of them may be the
+    # one worth cutting: the roster plates carried most of the effect.
+    "look_book": {
+        "kind": "bool",
+        "label": "Look book",
+        "default": True,
+        "help": "Shoot a contact sheet for each run: the cast, the conflicts, "
+                "the sets, and a designed plate for every encounter the run can "
+                "roll. Off = frames are drawn exactly as before.",
+    },
+    "look_book_sheet_on_turns": {
+        "kind": "bool",
+        "label": "Sheet on every frame",
+        "default": True,
+        "help": "Attach the world sheet to ordinary turns as a design reference "
+                "(palette, film look, how people and places here look).",
+    },
+    "look_book_roster_plates": {
+        "kind": "bool",
+        "label": "Roster plates",
+        "default": True,
+        "help": "Draw encounters, and anyone a turn names from the roster, from "
+                "their designed plate, so the same guard is the same guard.",
+    },
+    "look_book_story": {
+        "kind": "bool",
+        "label": "Look book steers the story",
+        "default": True,
+        "help": "Hand the consequence model the designed cast, the "
+                "three designed places and this phase's set piece, and draw a cut "
+                "into a designed place from its panel.",
+    },
     "camp_include_jeep": {
         "kind": "bool",
         "label": "Bring the jeep",
@@ -364,6 +398,18 @@ def _live(name: str, spec: Dict[str, Any]) -> Any:
         if name == "camp_include_jeep":
             import engine
             return getattr(engine, "CAMP_INCLUDE_JEEP", spec.get("default"))
+        if name == "look_book":
+            import look_book
+            return look_book.LOOK_BOOK_ENABLED
+        if name == "look_book_sheet_on_turns":
+            import look_book
+            return look_book.LOOK_BOOK_SHEET_ON_TURNS
+        if name == "look_book_roster_plates":
+            import look_book
+            return look_book.LOOK_BOOK_ROSTER_PLATES
+        if name == "look_book_story":
+            import look_book
+            return look_book.LOOK_BOOK_STORY
         if name == "flipbook_enabled":
             import engine
             return getattr(engine, "FLIPBOOK_ENABLED", spec.get("default"))
@@ -444,6 +490,18 @@ def _apply_one(name: str, value: Any) -> None:
     elif name == "camp_include_jeep":
         import engine
         engine.CAMP_INCLUDE_JEEP = bool(value)
+    elif name == "look_book":
+        import look_book
+        look_book.LOOK_BOOK_ENABLED = bool(value)
+    elif name == "look_book_sheet_on_turns":
+        import look_book
+        look_book.LOOK_BOOK_SHEET_ON_TURNS = bool(value)
+    elif name == "look_book_roster_plates":
+        import look_book
+        look_book.LOOK_BOOK_ROSTER_PLATES = bool(value)
+    elif name == "look_book_story":
+        import look_book
+        look_book.LOOK_BOOK_STORY = bool(value)
     elif name == "flipbook_enabled":
         import engine
         engine.FLIPBOOK_ENABLED = bool(value)

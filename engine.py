@@ -7840,7 +7840,8 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
                        hold_cast: bool = False,
                        cast_plates: Optional[list] = None,
                        write_state: bool = True,
-                       hard_cut: bool = False) -> Optional[dict]:
+                       hard_cut: bool = False,
+                       design_refs: Optional[list] = None) -> Optional[dict]:
     """Draw this turn as a grid of in-betweens and split it back into frames.
 
     hard_cut — the engine has already decided this turn LEAVES the place the
@@ -8143,6 +8144,10 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
                 # in the pose panel 1 has to continue, and the sheet in slot 1
                 # (a face-on portrait) is what kept opening the grid face-on.
                 lead_reference=(start_ref if continues else None),
+                # The run's look book, behind everything and ahead of the
+                # layout guide. 24 test grids with a 3x3 sheet attached all
+                # came back as the grid that was asked for, not the sheet's.
+                design_refs=design_refs,
             )
         else:
             # Nothing to continue from and no guide built: a plain grid request.
@@ -8611,6 +8616,35 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                   f"this frame: {', '.join(os.path.basename(p) for p in cast_plate_paths)}",
                   flush=True)
 
+        # --- LOOK BOOK (the run's contact sheet; see look_book.py) ---
+        # The world sheet rides last as DESIGN (how this world's people, places
+        # and film look); a roster plate rides when this frame's text names a
+        # roster entry, so the guard from the fight is the guard on the catwalk.
+        # A viewfinder restage is the player's own photograph and takes neither.
+        design_ref_paths: List[str] = []
+        roster_plate_paths: List[str] = []
+        if not game_identity.is_viewfinder_spec(identity_spec):
+            try:
+                import look_book
+                sheet = look_book.world_sheet(session_id)
+                if sheet:
+                    design_ref_paths.append(sheet)
+                # A cut that lands in one of the book's designed sets gets that
+                # set's panel too (story half only; see look_book.set_panel_for).
+                if hard_transition:
+                    set_panel = look_book.set_panel_for(session_id, f"{caption}\n{dispatch}")
+                    if set_panel:
+                        design_ref_paths.insert(0, set_panel)
+                if not cast_plate_paths:
+                    roster_plate_paths = look_book.plates_named_in(
+                        session_id, f"{caption}\n{dispatch}")
+            except Exception as _lb_err:
+                print(f"[LOOK BOOK] skipped for this frame: {_lb_err}", flush=True)
+        if roster_plate_paths:
+            print(f"[LOOK BOOK] roster plate rides into this frame: "
+                  f"{', '.join(os.path.basename(p) for p in roster_plate_paths)}", flush=True)
+            cast_plate_paths = cast_plate_paths + roster_plate_paths
+
         # --- LOGGING ---
         print("[IMG LOG] --- IMAGE GENERATION PARAMETERS ---")
         print(f"[IMG LOG] frame_idx: {frame_idx}")
@@ -8886,6 +8920,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                         # ...and it is the renderer that was ignoring hard cuts:
                         # the still path relocates, the grid held the room.
                         hard_cut=bool(hard_transition and frame_idx > 0),
+                        design_refs=design_ref_paths or None,
                     )
                     # A flipbook that didn't come back costs quality, not the
                     # turn: fall through to the ordinary still below.
@@ -8927,6 +8962,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                         identity_paths=identity_plates,
                         spec=identity_spec,
                         cast_plates=cast_plate_paths,
+                        design_refs=design_ref_paths or None,
                     )
                     # SAFETY NET: img2img can come back empty (API timeout on the
                     # slow lite model, a safety block triggered by the accumulated
@@ -12490,6 +12526,14 @@ def _perform_game_reset(start_world_id: str = "") -> List[Dict[str, Any]]:
             state = new_state
             history = new_history
         logging.info(f"_perform_game_reset: Game reset complete. {len(initial_items)} initial items generated and saved.")
+    # The run's look book (look_book.py): a new run gets a new roster and a
+    # new cast, shot in the background while the montage plays. Nothing waits
+    # on it; frames rendered before it lands simply go without it.
+    try:
+        import look_book
+        look_book.reset_for_new_run(SID)
+    except Exception as _lb_err:
+        log_error(f"[LOOK BOOK] could not start: {_lb_err}")
     # Spawn the intro render OUTSIDE the TURN_LOCK block and AFTER the save
     # above, so it can never be clobbered by that save and never holds the
     # global lock. Skip it when the cache is warm and clean — that render is
@@ -13144,6 +13188,14 @@ def _ensure_disk_headroom(force: bool = False):
             # sweep them. Prop images (e.g. prop_jeep.png) are the same idea
             # for durable objects (see _record_prop).
             if p.name.startswith("companion_") or p.name.startswith("prop_"):
+                return True
+            # The run's look book (look_book.py) is written once at the start
+            # of a run, which makes every file in it the OLDEST thing in the
+            # session — first in line for an oldest-first sweep. On a tight
+            # disk the sweep deleted book.json mid-run and the book rebuilt
+            # itself twice in five turns; the plates vanished under the fight
+            # that was drawing from them.
+            if "look_book" in p.parts:
                 return True
             return False
 
@@ -18498,6 +18550,15 @@ def _resolve_permanence(st: dict, vision_text: str) -> None:
 
 
 # ───────── COMBINED dispatch generator (saves 1 API call) ─────────────────────
+def _look_book_story(state: dict) -> str:
+    """The look book's story half (look_book.story_directive); "" when off."""
+    try:
+        import look_book
+        return look_book.story_directive(get_active_session_id(), state)
+    except Exception:
+        return ""
+
+
 def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL", is_interaction: bool = False, subject: str = "", is_move: bool = False, environment_streak: int = 0, is_custom_action: bool = False) -> tuple[str, str, bool, list, Optional[bool]]:
     """
     Generate BOTH narrative dispatch AND vision dispatch in ONE API call.
@@ -18763,6 +18824,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             f"{interaction_directive}"
             f"{_conversation_directive(state)}"
             f"{stagnation_directive(environment_streak)}"
+            f"{_look_book_story(state)}"
         )
 
         # Use JUST the action_consequence_instructions (which has JSON format).
