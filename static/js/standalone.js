@@ -16817,6 +16817,18 @@
     } catch (err) {
       console.error("[standalone] resetGame failed:", err);
       hideVeil();
+      if (err && err.status === 402 && err.body && (err.body.needs_usage || err.body.needs_billing)) {
+        // An empty wallet on a hosted server: the run can't start until it is
+        // paid for. Lift the opening black, go back to the menu, and open
+        // ACCOUNT on ADD MONEY with the reason — not an error on a black
+        // screen. PLAY again once there's money.
+        state.awaitingResolution = false;
+        try { OpeningFade.ready("needs money"); } catch (_) {}
+        try { StartMenu.showMenu(); } catch (_) {}
+        try { Accounts.open({ tab: "usage", addMoney: !!err.body.needs_billing, instant: true }); } catch (_) {}
+        try { Accounts.setUsageMsg(err.body.message || "Add money to play.", ""); } catch (_) {}
+        return;
+      }
       appendProse({ id: -1, type: "error_event", content: `Could not start the run: ${err.message}` });
       // Leave the player somewhere they can act from. Without this the boot
       // failure is a dead black screen: prose is the only thing on it, there
@@ -17130,7 +17142,8 @@
           content: (err.body && err.body.message) || "Usage paused. Open ACCOUNT to continue.",
         });
         try { StartMenu.showMenu(); } catch (_) {}
-        try { Accounts.open({ tab: "usage", instant: true }); } catch (_) {}
+        try { Accounts.open({ tab: "usage", addMoney: !!err.body.needs_billing, instant: true }); } catch (_) {}
+        try { Accounts.setUsageMsg(err.body.message || "", ""); } catch (_) {}
         if (actionSource === "encounter") {
           try { if (window.Encounter && Encounter.finish) Encounter.finish({ survived: true, aborted: true }); } catch (_) {}
         }
@@ -23843,7 +23856,8 @@
       try { Ceremony.abort(); hideVeil(); } catch (_) {}
       if (err && err.status === 402 && err.body && (err.body.needs_usage || err.body.needs_billing)) {
         try { StartMenu.showMenu(); } catch (_) {}
-        try { Accounts.open({ tab: "usage", instant: true }); } catch (_) {}
+        try { Accounts.open({ tab: "usage", addMoney: !!err.body.needs_billing, instant: true }); } catch (_) {}
+        try { Accounts.setUsageMsg(err.body.message || "", ""); } catch (_) {}
         try { clearTurnWatchdog(); } catch (_) {}
         state.awaitingResolution = false;
         finish({ survived: true, aborted: true });

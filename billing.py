@@ -838,9 +838,11 @@ def gate(min_usd: float = 0.0) -> Optional[Dict[str, Any]]:
             "message": (
                 "Included usage is gone. Turn on on-demand or add funds."
                 if reason == "on_demand_off"
-                else "This action costs more than the remaining balance. Add funds in ACCOUNT."
+                else "This costs more than what's left in your wallet. Add money to go on."
                 if reason == "insufficient_balance"
-                else "Usage balance empty. Add funds in ACCOUNT."
+                else "Your wallet is empty. Add money to keep playing."
+                if acct.get("payments")
+                else "Add money to play. You pay what each turn's AI costs — every run gets a receipt."
             ),
         }
     return None
@@ -1036,13 +1038,9 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None,
     if mode == "payment":
         # Every top-up gets a Stripe invoice: the player's receipt, and a
         # record the Dashboard can show next to the wallet credit.
-        kwargs["invoice_creation"] = {
-            "enabled": True,
-            "invoice_data": {
-                "description": f"GOD wallet top-up · {(pack or {}).get('label', '')}".strip(),
-                "metadata": {"account": key, "pack": (pack or {}).get("id") or ""},
-            },
-        }
+        # Managed Payments refuses invoice_data (checked in test mode): the
+        # invoice is Stripe's own, issued in the seller-of-record's name.
+        kwargs["invoice_creation"] = {"enabled": True}
     if acct.get("stripe_customer_id"):
         kwargs["customer"] = acct["stripe_customer_id"]
     else:

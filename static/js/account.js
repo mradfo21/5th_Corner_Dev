@@ -401,10 +401,9 @@
         amt: "+" + usd(p.credit_usd != null ? p.credit_usd : (p.amount_cents || 0) / 100), dir: "in",
       }));
     }
-    if (!items.length) return null;
     const t = (w) => (typeof w === "number" ? w * 1000 : Date.parse(w)) || 0;
     items.sort((a, b) => t(b.when) - t(a.when));
-    const out = h("section", { class: "acct-section" }, [label("RECENT")]);
+    const out = h("section", { class: "acct-section" }, items.length ? [label("RECENT")] : []);
     items.slice(0, 8).forEach((it) => {
       const open = it.id && openRow === it.id;
       const line = h(it.parts && it.parts.length ? "button" : "div", {

@@ -1,5 +1,42 @@
 # 🔧 CHANGELOG - September 21, 2026
 
+## 💳 FIX: A player with no money lands on ADD MONEY, and checkout opens
+
+Asked: *"merge into the app, making sure there is a simple way for me to
+cheat and play unlimited, then test and see what its like for a user with
+no money"*.
+
+**Tested as a new visitor with $0** on a local test-mode server, in the
+browser.
+
+**What was wrong.**
+
+- **PLAY left a black screen.** The run's `/api/reset` answered 402, and the
+  opening black never lifted.
+- **PAY failed.** Managed Payments refuses `invoice_creation.invoice_data`,
+  and the player saw Stripe's raw error text.
+- **`/api/usage` showed the whole server's 30-day model spend** (every
+  visitor's) to any player.
+
+**What changed.**
+
+- **Out of money now leads to ADD MONEY.** A 402 on starting a run lifts
+  the black, returns to the menu and opens ACCOUNT on ADD MONEY with the
+  reason. Mid-run 402s (a turn, an encounter) also land on ADD MONEY when
+  the wallet is empty. A first-time player reads "Add money to play. You
+  pay what each turn's AI costs — every run gets a receipt."
+- **Checkout works under Managed Payments.** It sends `invoice_creation:
+  {enabled: true}` only, and a checkout failure shows "Checkout couldn't
+  open. Try again in a moment." (the detail goes to the log). Verified: the
+  embedded checkout opens in the sheet ($10, card / Cash App / Link, TEST
+  MODE).
+- **Players see only their own numbers.** On a shared server the global
+  ledger figures are blanked from `/api/usage`; the wallet and receipts are
+  the player's own.
+- **"What things cost" is always in ACCOUNT,** even before the first run.
+- **Owner switch checked:** `/owner?token=…` → the wallet shows unlimited,
+  and a run starts with $0.
+
 ## 💳 FIX: One wallet per browser, charged the moment a cost happens
 
 Asked: *"fix up all remaining issues … lets make sure we are ready to go to

@@ -5708,6 +5708,14 @@ def _usage_payload(*, ignore_cookie: bool = False) -> dict:
     status = usage_limits.public_status()
     status.update(billing.public_status(ignore_cookie=ignore_cookie))
     status["editable"] = _keys_write_allowed()
+    if not status["editable"]:
+        # A shared server's ledger is every visitor's spend: never show it to
+        # a player. Their own numbers come from the wallet and receipts.
+        for k in ("spend_usd", "spend_today_usd", "event_count"):
+            status[k] = 0
+        status["cost_by_service"] = []
+        status["cost_by_provider"] = []
+        status["byok"] = False
     status["billing_editable"] = True
     # Receipts (BILLING_LIVE_PLAN B2 / B6): the desktop app's whole ledger at
     # provider cost; on a hosted server only this browser's wallet's rows.
@@ -5862,7 +5870,9 @@ def api_billing_checkout():
         return error_response("Checkout refused", str(e)[:200], code=400)
     except Exception as e:
         traceback.print_exc()
-        return error_response("Checkout failed", str(e)[:200], code=500)
+        # Stripe's own error text is for us (the log), not the player.
+        return error_response("Checkout couldn't open. Try again in a moment.",
+                              "checkout_error", code=500)
 
 
 @app.route("/api/billing/redeem", methods=["POST"])
