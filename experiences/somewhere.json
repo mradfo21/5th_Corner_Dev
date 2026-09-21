@@ -1,6 +1,6 @@
 {
   "id": "somewhere",
-  "name": "SOMEWHERE",
+  "name": "The FIFTH CORNER",
   "start_world": "w-somewhere",
   "worlds": [
     {
@@ -31,5 +31,7 @@
     "beat_normal": "BEAT: put a character or a direct threat in view early — a patrol, a figure, a voice — don't let the opening stay empty.",
     "beat_escalating": "BEAT: pressure is rising. Push the situation forward.",
     "beat_critical": "BEAT: the situation is critical. Offer a way through or a last stand."
-  }
+  },
+  "x": -391.02000000000004,
+  "y": 215.46
 }
