@@ -15,7 +15,7 @@ against our actual provider bills.
 
 We are not there. The cost ledger (`cost_tracker.py` → `usage.db`, priced by
 `pricing.py` + `pricing.json`) is the only record of what things cost, and
-today it is wrong in both directions: story text is priced ~1000× too high,
+today it is wrong in both directions: story text is priced ~150× too high overall (each rate is stored 1000× high),
 several pictures are priced at ~$0, and some paid calls are never logged at
 all. Charging players off it would be charging them fiction.
 
@@ -44,7 +44,7 @@ much.
 
 | Problem | Evidence | Effect |
 |---------|----------|--------|
-| Token rates are per-million values stored as per-thousand | One `ask` of 9,731 in / 201 out tokens logged at $0.395; `gpt-4o-mini` stored as 0.15 / 0.60 and Anthropic as 3.0 / 15.0, which are those providers' per-million list prices | Story text ~1000× high: $479.60 logged for `gemini-3.1-flash-lite` in 30 days, really ≈ $0.50 |
+| Token rates are per-million values stored as per-thousand | One `ask` of 9,731 in / 201 out tokens logged at $0.395; `gpt-4o-mini` stored as 0.15 / 0.60 and Anthropic as 3.0 / 15.0, which are those providers' per-million list prices | Story text ~150× high overall: every token rate is 1000× high, but calls land on the wrong rates; real text spend over 30 days was about $5 |
 | Pictures logged under made-up model names fall back to a **token** rate | `talk_portrait`, `companion_place`, `prop_jeep`, `camp_enter`, `encounter_plate`, `encounter_resolve` are not in `pricing.json`; `get_rate` falls back to `gemini:default` (tokens) and prices 1 image as 1 output token | Each of those pictures ≈ $0.0003 (60 talk portraits logged at $0.02 total) |
 | Some calls log zero units | `prop_jeep`, `camp_enter`, and encounter failures log `output_units=0` | $0 even when the provider billed |
 | Known gaps | `gemini:models/lyria-realtime-exp`, `gemini_live:default` rates are `null` | Unpriced |
@@ -126,6 +126,7 @@ $16.95; Gemini pictures $17.04 over 30 days) still need A6.
 | **C10** | The webhook is a backup, the browser return is the main path | Make the webhook the source of truth (the return only shows "landing…" and refreshes); both stay idempotent on the checkout id | close the tab mid-checkout → still credited | in progress — webhook and return share `fulfill_checkout`; needs the Render endpoint + `STRIPE_WEBHOOK_SECRET` |
 | **C11** | No receipt/invoice for the player | Checkout `invoice_creation` (payment mode) gives each top-up a Stripe invoice PDF; `customer_creation="always"` keeps one Stripe customer per wallet | a test top-up produces an invoice in the Dashboard | done — `invoice_creation` + `customer_creation="always"`; `invoice.paid` for a top-up no longer touches the plan |
 | **C12** | Server uses the full secret key | A restricted key with only Checkout Sessions (write), Customers (write), Events/Webhooks (read) for the server | Render runs on the restricted key | open |
+| **C13** | **Checkout refused on this account**: Managed Payments (Stripe as merchant of record) is on by default, and it refuses any product without a tax code and any `ui_mode` except `hosted_page` / `embedded_page` — so Checkout Studio's embedded *form* (`ui_mode: form`) can't run here | Tax code on every line item (`txcd_10201003`, "Video Games - streamed - non subscription - with limited rights"; override `STRIPE_TAX_CODE`); checkout drawn in the ACCOUNT sheet with `ui_mode: embedded_page` (`STRIPE_CHECKOUT_UI=hosted_page` to leave for Stripe instead) | test-mode session created both ways with Managed Payments on | done — Matt to confirm the tax code with Stripe or an accountant |
 
 Order: **C7 first** (small, and nothing can be tested end-to-end in test
 mode without it) → **A1 → A3 → A4 + A5 → A6 → A7 → A10**, then start **A9**

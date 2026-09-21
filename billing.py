@@ -539,6 +539,27 @@ def _stripe_client():
     return stripe
 
 
+# Stripe is the merchant of record on this account (Managed Payments): it
+# works out and remits sales tax / VAT, and every product must carry a tax
+# code. A wallet top-up is time on a game that is generated and streamed to
+# the player, never downloaded: "Video Games - streamed - non subscription -
+# with limited rights". Override with STRIPE_TAX_CODE if Stripe or your
+# accountant classify it differently.
+DEFAULT_TAX_CODE = "txcd_10201003"
+
+
+def _tax_code() -> str:
+    return (os.environ.get("STRIPE_TAX_CODE") or DEFAULT_TAX_CODE).strip()
+
+
+def checkout_ui_mode() -> str:
+    """embedded_page: Stripe's checkout drawn inside the ACCOUNT sheet (the
+    default). hosted_page: the player leaves for checkout.stripe.com and comes
+    back. Managed Payments allows only these two."""
+    mode = (os.environ.get("STRIPE_CHECKOUT_UI") or "embedded_page").strip().lower()
+    return mode if mode in ("embedded_page", "hosted_page") else "embedded_page"
+
+
 def _return_base(request) -> str:
     base = (os.environ.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if base:
@@ -593,7 +614,7 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None,
                 "currency": currency,
                 "recurring": {"interval": "month"},
                 "unit_amount": int(plan["price_cents"]),
-                "product_data": {"name": "SOMEWHERE Play"},
+                "product_data": {"name": "SOMEWHERE Play", "tax_code": _tax_code()},
             },
         }]
         mode = "subscription"
@@ -605,7 +626,8 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None,
             "price_data": {
                 "currency": currency,
                 "unit_amount": int(pack["price_cents"]),
-                "product_data": {"name": f"SOMEWHERE usage · {pack['label']}"},
+                "product_data": {"name": f"GOD wallet top-up · {pack['label']}",
+                                 "tax_code": _tax_code()},
             },
         }]
         mode = "payment"
@@ -622,10 +644,20 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None,
             "email": email,
             "pack": (pack or {}).get("id") or "",
         },
-        "success_url": success,
-        "cancel_url": cancel,
         "expires_at": int(time.time()) + 30 * 60,
+        "billing_address_collection": "auto",
+        "phone_number_collection": {"enabled": False},
+        "submit_type": "auto",
     }
+    ui_mode = checkout_ui_mode()
+    kwargs["ui_mode"] = ui_mode
+    if ui_mode == "embedded_page":
+        # Cards finish inside the sheet; methods that leave for a bank come
+        # back here, and the page redeems exactly as after hosted checkout.
+        kwargs["return_url"] = success
+    else:
+        kwargs["success_url"] = success
+        kwargs["cancel_url"] = cancel
     if mode == "payment":
         # Every top-up gets a Stripe invoice: the player's receipt, and a
         # record the Dashboard can show next to the wallet credit.
@@ -646,7 +678,10 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None,
     checkout = s.checkout.Session.create(**kwargs)
     log.info("billing: checkout %s kind=%s email=%s", checkout.id, kind, email)
     return {
+        "ui_mode": ui_mode,
         "url": checkout.url,
+        "client_secret": getattr(checkout, "client_secret", None),
+        "publishable_key": os.environ.get("STRIPE_PUBLISHABLE_KEY", "").strip(),
         "checkout_session_id": checkout.id,
         "kind": kind,
         "pack": (pack or {}).get("id"),

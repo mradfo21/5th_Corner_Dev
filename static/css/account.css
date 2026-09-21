@@ -259,6 +259,14 @@ button.acct-row:hover, button.acct-row:focus-visible, .acct-row.is-open { color:
 .acct-line-amt { font-variant-numeric: tabular-nums; }
 .acct-line-amt.is-in { color: var(--acct-go); }
 
+/* Stripe's embedded checkout: its own page, on its own light ground. */
+.acct-checkout {
+  min-height: 520px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #fff;
+}
+
 .acct-msg { margin: -10px 0 0; font-size: 13px; line-height: 1.5; color: var(--acct-dim); }
 .acct-msg.is-ok { color: var(--acct-go); }
 .acct-msg.is-error { color: var(--acct-warn); }

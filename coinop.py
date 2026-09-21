@@ -704,6 +704,7 @@ def create_checkout(session_id: str, request, comp_code: Optional[str] = None,
     )
 
     product = f"SOMEWHERE — {pack['label']} (+{pack['credits']} credits)"
+    from billing import _tax_code as billing_tax_code
     checkout = s.checkout.Session.create(
         mode="payment",
         payment_method_types=["card"],
@@ -712,7 +713,7 @@ def create_checkout(session_id: str, request, comp_code: Optional[str] = None,
             "price_data": {
                 "currency": c["currency"],
                 "unit_amount": pack["price_cents"],
-                "product_data": {"name": product},
+                "product_data": {"name": product, "tax_code": billing_tax_code()},
             },
         }],
         metadata={

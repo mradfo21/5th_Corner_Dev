@@ -19,12 +19,14 @@
 
   let keys = null;        // GET /api/keys
   let usage = null;       // GET /api/usage
-  let view = "home";      // home | add | custom
+  let view = "home";      // home | add | pay | custom
   let openRow = null;     // the one row expanded inline (a provider id, or "limit")
   let pack = null;        // the pack picked on ADD MONEY
   let busy = false;
   let billingReturn = false;
   let onClose = null;
+  let payHost = null;     // the node Stripe's embedded checkout is mounted in
+  let embedded = null;    // that checkout, while it is up
 
   const $ = (id) => document.getElementById(id);
 
@@ -178,12 +180,49 @@
     });
   }
 
+  // Stripe.js comes from js.stripe.com on demand (never bundled: PCI), so
+  // the desktop app, which never takes payments, never loads it.
+  let stripeJs = null;
+  function loadStripeJs() {
+    if (window.Stripe) return Promise.resolve(window.Stripe);
+    if (stripeJs) return stripeJs;
+    stripeJs = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://js.stripe.com/dahlia/stripe.js";
+      s.onload = () => (window.Stripe ? resolve(window.Stripe) : reject(new Error("Stripe did not load.")));
+      s.onerror = () => { stripeJs = null; reject(new Error("Couldn't reach Stripe. Check your connection.")); };
+      document.head.appendChild(s);
+    });
+    return stripeJs;
+  }
+
+  function destroyCheckout() {
+    if (embedded) { try { embedded.destroy(); } catch (_) {} }
+    embedded = null;
+    payHost = null;
+  }
+
   function checkout(packId) {
     return guarded(async () => {
       setMsg("Opening checkout…", "");
       // Come back to this game, not the default session (BILLING_LIVE_PLAN C4).
       const back = location.pathname + location.search;
       const data = await call("/api/billing/checkout", json("POST", { kind: "pack", pack: packId, return_to: back }));
+      if (data.ui_mode === "embedded_page" && data.client_secret && data.publishable_key) {
+        // Stripe's checkout, drawn in the sheet. Paying by card finishes
+        // here and returns to this page with ?billing=success&cs=…, which
+        // redeemReturn() lands exactly as it does after hosted checkout.
+        const StripeCtor = await loadStripeJs();
+        destroyCheckout();
+        view = "pay";
+        render();
+        const stripe = StripeCtor(data.publishable_key);
+        embedded = await stripe.createEmbeddedCheckoutPage({ fetchClientSecret: async () => data.client_secret });
+        if (view !== "pay" || !payHost) { destroyCheckout(); return; }
+        embedded.mount(payHost);
+        setMsg("");
+        return;
+      }
       if (!data.url) throw new Error("Checkout did not open.");
       window.location.href = data.url;
     });
@@ -424,6 +463,14 @@
     return out;
   }
 
+  function payView() {
+    if (!payHost) payHost = h("div", { class: "acct-checkout", id: "acct-checkout" });
+    return [
+      payHost,
+      h("p", { class: "acct-note", text: "Stripe takes the payment and sends the receipt. Your card never touches our server." }),
+    ];
+  }
+
   function customView() {
     const c = (keys && keys.custom) || {};
     const address = input({ type: "url", placeholder: "http://localhost:11434/v1", value: c.address || "", "aria-label": "Address" });
@@ -445,14 +492,18 @@
   function render() {
     const body = $("acct-body");
     if (!body) return;
-    if (view === "add" && !isHosted()) view = "home";
+    if ((view === "add" || view === "pay") && !isHosted()) view = "home";
+    if (view !== "pay") destroyCheckout();
+    // The checkout is an iframe mid-payment: re-drawing the sheet would
+    // reload it, so while it is up the sheet stays as it is.
+    else if (payHost && body.contains(payHost)) return;
     if (view === "custom" && !isLocal()) view = "home";
-    const titles = { home: "ACCOUNT", add: "ADD MONEY", custom: "CUSTOM KEY" };
+    const titles = { home: "ACCOUNT", add: "ADD MONEY", pay: "PAY", custom: "CUSTOM KEY" };
     const t = $("acct-title");
     if (t) t.textContent = titles[view] || "ACCOUNT";
     const back = $("acct-back");
     if (back) back.hidden = view === "home";
-    body.replaceChildren(...(view === "add" ? addView() : view === "custom" ? customView() : homeView()).filter(Boolean));
+    body.replaceChildren(...(view === "add" ? addView() : view === "pay" ? payView() : view === "custom" ? customView() : homeView()).filter(Boolean));
   }
 
   function goHome() { view = "home"; openRow = null; setMsg(""); render(); }
@@ -472,6 +523,7 @@
   // Escape: step back inside the sheet first, then close it.
   function escape() {
     if (openRow) { openRow = null; render(); return true; }
+    if (view === "pay") { view = "add"; setMsg(""); render(); return true; }
     if (view !== "home") { goHome(); return true; }
     return false;
   }

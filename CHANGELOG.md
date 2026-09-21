@@ -1,5 +1,36 @@
 # 🔧 CHANGELOG - September 21, 2026
 
+## 💳 FIX: Checkout works on a Managed Payments account, inside the ACCOUNT sheet
+
+Asked: Stripe's Checkout Studio setup for an embedded payment form, and
+*"lets make sure we are ready to go to market NOW"*.
+
+**What was wrong.** This Stripe account has Managed Payments on by default
+(Stripe is the merchant of record and handles sales tax / VAT). Managed
+Payments refuses any product without a tax code, so every ADD MONEY checkout
+failed. It also allows only `ui_mode: hosted_page` or `embedded_page`, so
+Checkout Studio's embedded *form* (`ui_mode: form`, the beta Stripe.js
+`initCheckoutFormSdk`) is refused on this account — checked in test mode.
+
+**What changed.**
+
+- Every line item carries `tax_code` `txcd_10201003` ("Video Games -
+  streamed - non subscription - with limited rights"); `STRIPE_TAX_CODE`
+  overrides it. Also on the arcade coin checkout.
+- Checkout is drawn inside the ACCOUNT sheet (`ui_mode: embedded_page`,
+  Stripe.js loaded from js.stripe.com only when the player pays, so the
+  desktop app never loads it). A card payment finishes in the sheet and
+  returns through `return_url` with `?billing=success&cs=…`, which lands the
+  money exactly as the hosted return did. `STRIPE_CHECKOUT_UI=hosted_page`
+  sends players to checkout.stripe.com instead.
+- From Checkout Studio: `billing_address_collection: auto`,
+  `phone_number_collection` off, `submit_type: auto`. Its `automatic_tax:
+  false` is left out (Managed Payments requires tax on), and
+  `integration_identifier` belongs to the form it can't use.
+- Invoices, `customer_creation`, metadata and the 30-minute expiry are kept.
+- Test: embedded by default with `return_url` and a tax code; hosted with
+  success / cancel URLs and an overridden tax code.
+
 ## 💵 FIX: The price table is per million tokens, sourced, and priced by image size
 
 Asked: *"if we're going to make money we need to know our costs."*

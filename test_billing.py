@@ -288,8 +288,26 @@ class StripeCheckoutCase(unittest.TestCase):
         self.assertNotIn("payment_method_types", seen)
         self.assertTrue(seen["invoice_creation"]["enabled"])
         self.assertEqual(seen["customer_creation"], "always")
-        self.assertTrue(seen["success_url"].startswith("http://127.0.0.1:5188/play?session=abc&billing=success&cs="))
+        # Embedded in the sheet by default; a bank redirect comes back here.
+        self.assertEqual(seen["ui_mode"], "embedded_page")
+        self.assertNotIn("success_url", seen)
+        self.assertTrue(seen["return_url"].startswith("http://127.0.0.1:5188/play?session=abc&billing=success&cs="))
+        self.assertEqual(out["ui_mode"], "embedded_page")
         self.assertEqual(seen["metadata"]["email"], "payer@example.com")
+        # Managed Payments refuses a product without a tax code.
+        self.assertEqual(seen["line_items"][0]["price_data"]["product_data"]["tax_code"], "txcd_10201003")
+
+        seen.clear()
+        with patch.dict(os.environ, {"STRIPE_CHECKOUT_UI": "hosted_page", "STRIPE_TAX_CODE": "txcd_10201001"}), \
+                patch.object(billing, "is_payments_enabled", return_value=True), \
+                patch.object(billing, "_stripe_client", return_value=fake):
+            out = billing.create_checkout("pack", req, pack_id="ten", return_to="/play?session=abc")
+        self.assertEqual(seen["ui_mode"], "hosted_page")
+        self.assertNotIn("return_url", seen)
+        self.assertTrue(seen["success_url"].startswith("http://127.0.0.1:5188/play?session=abc&billing=success&cs="))
+        self.assertTrue(seen["cancel_url"].endswith("billing=cancel"))
+        self.assertEqual(seen["line_items"][0]["price_data"]["product_data"]["tax_code"], "txcd_10201001")
+        self.assertEqual(out["url"], "https://checkout.stripe.com/x")
 
 
 class WebhookCase(unittest.TestCase):
