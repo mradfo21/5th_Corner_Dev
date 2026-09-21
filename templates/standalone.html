@@ -1049,6 +1049,25 @@
        close the case. No score, no rank, no bar, no film gauge — a rank you
        can't act on mid-run is just noise, and it all reads at the end anyway.
        `obj-count` keeps its id so the objectives system has one place to write. -->
+  <!-- THE GOAL (goal.py / GoalTag in standalone.js): named top-left, and tagged
+       on the picture whenever it is in view. -->
+  <div id="goal-hud" aria-live="polite" aria-label="Goal">
+    <span class="goal-hud-kind">Goal</span>
+    <span class="goal-hud-name" id="goal-hud-name"></span>
+    <span class="goal-hud-why" id="goal-hud-why"></span>
+  </div>
+  <div id="goal-tag" aria-hidden="true">
+    <svg xmlns="http://www.w3.org/2000/svg"><circle class="gt-ring" r="9" cx="-50" cy="-50"></circle><circle class="gt-dot" r="2.5" cx="-50" cy="-50"></circle><path class="gt-lead" d=""></path></svg>
+    <span class="gt-name"></span>
+    <span class="gt-kind">Goal</span>
+  </div>
+  <div id="goal-reached" class="hidden" role="dialog" aria-modal="true" aria-label="Goal reached">
+    <div class="gr-kind">Reached</div>
+    <div class="gr-name" id="goal-reached-name"></div>
+    <div class="gr-line" id="goal-reached-line"></div>
+    <button type="button" class="gr-continue" id="goal-reached-continue">Continue</button>
+  </div>
+
   <div id="shot-tally" class="hidden" aria-live="polite" aria-label="Photographs kept">
     <span class="tally-mark" aria-hidden="true">&#9635;</span>
     <span class="tally-count" id="tally-count">0/8</span>

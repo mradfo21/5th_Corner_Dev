@@ -867,6 +867,9 @@ game_identity.ensure_spec_keys()
 # flipbook.py). Pure geometry and PIL crops, so it imports at module scope.
 import flipbook
 
+# The run's goal: invent, find, steer (goal.py).
+import goal as _goal_mod
+
 # On-device object detection for the SCAN tool (see local_vision.py). Optional
 # in exactly the way flask_sock is optional: if `mediapipe` isn't installed or
 # the .tflite is missing, `local_vision` reports itself unavailable and
@@ -1768,6 +1771,7 @@ def _bind_world_prompts(dest: dict) -> bool:
 # it rebuilds the state from a literal; the stitch has to earn it key by key.
 _WORLD_SCOPED_KEYS = (
     "level_goal", "goal_reached_turn", "_turn_goal_reached",
+    "goal_name", "goal_why", "goal_look",
     "detection_witness",
     "environment_streak", "environment_streak_vocab",
     "recent_events", "narrator_recent", "narrator_beat",
@@ -7617,8 +7621,8 @@ _KEEP_THE_HORIZON = (
 )
 
 
-def _flipbook_establishing_block(frames: int = None, *,
-                                 single: bool = False) -> str:
+def _flipbook_establishing_block_base(frames: int = None, *,
+                                      single: bool = False) -> str:
     """A held ESTABLISHING beat: an IDLE, played with the camera locked off.
 
     The action block walks the character across the panels — exactly wrong for an
@@ -7748,6 +7752,57 @@ def _flipbook_establishing_block(frames: int = None, *,
         "light.\n\n"
         + "=" * 70 + "\n\n"
     )
+
+
+def _flipbook_establishing_block(frames: int = None, *, single: bool = False,
+                                 goal: str = "") -> str:
+    """The establishing idle, pointed at the run's goal when it has one.
+
+    The idle used to end on the character looking off at "something coming",
+    unreadable and never identified. With a goal that becomes the thing they
+    are looking at: plainly in frame, far off, unreached — so the first frame
+    a player controls is a view of where they are going (goal.py).
+    """
+    text = _flipbook_establishing_block_base(frames, single=single)
+    goal = str(goal or "").strip()
+    if not goal:
+        return text
+    far = (
+        f"IN THE FAR DISTANCE, WHAT THEY CAME HERE FOR: {goal}.\n"
+        "It is PLAINLY VISIBLE and readable, standing on the horizon or at the "
+        "far end of the space, in the upper half of the frame, crisp and "
+        "unmistakable: a hard silhouette against the sky, or lit against the "
+        "dark. Rain, fog and haze sit in front of the rest of the view, never "
+        "over it. It is the thing the eye "
+        "goes to. The figure stands off to one side of it and looks at it; never "
+        "in front of it, never hiding it. It is far away and unreached, and it "
+        "does not move, grow or come closer.\n\n"
+    )
+    before = text
+    text = re.sub(r"IN THE FAR DISTANCE: something is coming.*?deep distance\.\n\n",
+                  lambda m: far, text, flags=re.S)
+    text = re.sub(r"WHAT IS HAPPENING IN THE FAR DISTANCE:\n.*?Dread, not an event\.\n\n",
+                  lambda m: far, text, flags=re.S)
+    if text == before:
+        text = text.replace(_KEEP_THE_HORIZON, _KEEP_THE_HORIZON + far, 1)
+    text = text.replace(
+        "not already in the reference.",
+        "not already in the reference, except what they came here for, which "
+        "MUST be in the frame.")
+    text = text.replace(
+        "that are not in the reference.",
+        "that are not in the reference, except what they came here for, which "
+        "MUST be in the frame.")
+    # VISTA v5
+    # The first playtest drew the character a third of the frame high,
+    # dead centre, standing in front of the very thing they came for.
+    text = text.replace(
+        "reading at roughly a third to a half of the frame height, with the "
+        "place opening away beyond them so it stays legible.",
+        "SMALL in the frame, no more than a quarter of its height, standing "
+        "in the lower left or lower right third, so the wide view past them "
+        "to what they came for stays open. This is a VISTA, not a portrait.")
+    return text
 
 
 def _flipbook_shot_block(is_free_will: bool) -> str:
@@ -8053,7 +8108,7 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
         # montage's unpeopled plate, so panel 1 inherits its camera and place
         # but not a pose: the establishing block places the character.
         flipbook_prompt = game_identity.apply(
-            _flipbook_establishing_block(frames)
+            _flipbook_establishing_block(frames, goal=_goal_mod.look_line(st))
             + flipbook.grid_prompt(frames, seconds=_flipbook_seconds(frames, frame_ms),
                                    keyframe_subject=False)
             + "\n" + prompt_str,
@@ -11176,48 +11231,53 @@ def _goal_for_this_run(new_state: dict, authored: str = "") -> str:
     landmark) still stands if the draft fails, which is worse but not broken.
     """
     authored = str(authored or "").strip()
-    # An authored goal wins, always. `establishing_shot` may also have handed us
-    # a LANDMARK it fell back to, which is the thing this exists to improve on:
-    # a fence the player is already standing at is a destination in name only.
-    written = str(game_identity.level_goal(fallback=False) or "").strip()
-    if written:
-        new_state["level_goal"] = written
-        return written
-
+    # GOAL-BODY v2
+    # Chosen already for this run: a second call on the same reset, or a state
+    # that already carries a line (kept verbatim, labelled without a model).
+    if str((new_state or {}).get("goal_name") or "").strip():
+        return str(new_state.get("level_goal") or "")
     cached = str((new_state or {}).get("level_goal") or "").strip()
     if cached:
-        return cached
+        return _goal_mod.install(new_state, {}, line=cached)
 
-    if not LLM_ENABLED:
-        # ASCII only: this lands on a Windows console whose default codec is
-        # cp1252, and a subprocess reading it back as UTF-8 chokes on a dash.
-        print("[GOAL] no text model - the run opens toward "
-              f"{authored or 'nothing in particular'!r}", flush=True)
-        return authored
-
-    lore = ""
-    try:
-        import experience_store as _xs
-        lore = _xs.lore_brief() or ""
-    except Exception:
-        pass  # no lore is a thinner draft, not a failed one
-    try:
-        drafted = game_identity.draft_level_goal(
-            lore=lore,
-            world_prompt=str((new_state or {}).get("world_prompt") or ""),
-        )
-    except Exception as err:
-        log_error(f"[GOAL] draft failed ({err}) - falling back to "
-                  f"{authored or 'no goal'!r}")
-        return authored
-
-    drafted = str(drafted or "").strip()
-    if not drafted:
-        return authored
-    new_state["level_goal"] = drafted
-    print(f"[GOAL] this run is walking toward: {drafted}", flush=True)
-    return drafted
-
+    # An authored goal wins, always, in its own words. The model only gives it
+    # a label-length name and a far-off look for the pictures; nothing is
+    # written back to the Level sheet either way (see the docstring above).
+    written = str(game_identity.level_goal(fallback=False) or "").strip()
+    rec = {}
+    if LLM_ENABLED:
+        lore = ""
+        try:
+            import experience_store as _xs
+            lore = _xs.lore_brief() or ""
+        except Exception:
+            pass  # no lore is a thinner draft, not a failed one
+        try:
+            rec = _goal_mod.invent(
+                lore=lore,
+                world_prompt=str((new_state or {}).get("world_prompt") or ""),
+                authored=written,
+            ) or {}
+        except Exception as err:
+            log_error(f"[GOAL] invent failed ({err})")
+            rec = {}
+    if written:
+        line = _goal_mod.install(
+            new_state, {"name": rec.get("name") or "", "why": rec.get("why") or "",
+                        "look": rec.get("look") or written}, line=written)
+    elif rec:
+        line = _goal_mod.install(new_state, rec)
+    else:
+        # No model, or it failed: the landmark the montage fell back to.
+        fallback = authored or str(game_identity.level_goal() or "").strip()
+        if not fallback:
+            print("[GOAL] no goal this run", flush=True)
+            return ""
+        line = _goal_mod.install(new_state, {"look": fallback}, line=fallback)
+    # ASCII only on the console (cp1252).
+    print(f"[GOAL] this run is walking toward: "
+          f"{str(new_state.get('goal_name') or '')!r}", flush=True)
+    return line
 
 def run_goal(state: Optional[dict] = None) -> str:
     """The goal THIS run is walking toward, as the rest of the loop should read it.
@@ -11271,7 +11331,7 @@ def goal_directive(state: Optional[dict] = None) -> str:
         "reaches it: the beat may bring it closer, block it, or make it cost "
         "something, but it must not forget it exists, and must not hand it over "
         "for free.\n"
-    )
+    ) + _goal_mod.sight_directive(st)
 
 
 def _ensure_level_sheet_is_filled() -> bool:
@@ -11811,7 +11871,8 @@ def _opening_idle_still(session_id: str, pending: dict, st: dict,
     from gemini_image_utils import generate_gemini_img2img
 
     prompt = game_identity.apply(
-        _flipbook_establishing_block(single=True) + "\n" + prompt_str, "raw")
+        _flipbook_establishing_block(single=True, goal=_goal_mod.look_line(st))
+        + "\n" + prompt_str, "raw")
     try:
         path = generate_gemini_img2img(
             prompt=prompt,
@@ -14968,6 +15029,12 @@ def _stage_encounter_sighting(st: dict, session_id: str, candidates: list,
     if not pool:
         return None
     ok, why = _encounter.sighting_can_fire(st)
+    # The first frame of a run with a goal is the view of where they are
+    # going (goal.py). A person standing in that view used to open a
+    # confrontation two seconds after it painted, and the player never saw
+    # the goal at all. The view first; the street's people from turn one.
+    if ok and str(st.get("goal_name") or "").strip() and int(st.get("turn_count") or 0) < 1:
+        ok, why = False, "the opening view of the goal"
     if not ok:
         print(f"[ENCOUNTER] sighting: {len(pool)} figure(s) in frame, not firing ({why})",
               flush=True)

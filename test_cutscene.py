@@ -1594,11 +1594,18 @@ class TestTheSheetsAreFilledBeforeAnythingRenders(_Isolated):
         """
         st = {"world_prompt": "a quarantined site"}
         with patch.object(gi, "level_goal", return_value=""), \
-             patch.object(gi, "draft_level_goal",
-                          return_value="The drill tower on the ridge."):
+             patch.object(engine, "LLM_ENABLED", True), \
+             patch.object(engine._goal_mod, "invent",
+                          return_value={"name": "Drill Tower",
+                                        "why": "The survey stopped there.",
+                                        "look": "a lattice drill tower on the ridge"}):
             got = engine._goal_for_this_run(st, "")
-        self.assertEqual(got, "The drill tower on the ridge.")
-        self.assertEqual(st["level_goal"], "The drill tower on the ridge.")
+        # The line every prompt reads names it and says what it looks like;
+        # the label the picture carries is the short name.
+        self.assertEqual(got, "Drill Tower — a lattice drill tower on the ridge")
+        self.assertEqual(st["level_goal"], got)
+        self.assertEqual(st["goal_name"], "Drill Tower")
+        self.assertEqual(st["goal_why"], "The survey stopped there.")
 
     def test_it_never_writes_over_the_level_sheet(self):
         """The distinction the whole design rests on.
@@ -1620,9 +1627,16 @@ class TestTheSheetsAreFilledBeforeAnythingRenders(_Isolated):
     def test_an_authored_goal_is_never_second_guessed(self):
         st = {}
         with patch.object(gi, "level_goal", return_value="The red pump house."), \
-             patch.object(gi, "draft_level_goal") as draft:
+             patch.object(gi, "draft_level_goal") as draft, \
+             patch.object(engine, "LLM_ENABLED", True), \
+             patch.object(engine._goal_mod, "invent",
+                          return_value={"name": "Pump House", "why": "",
+                                        "look": "a red brick pump house"}):
             got = engine._goal_for_this_run(st, "chain-link fence")
+        # The author's words are the line, verbatim; the model only labels it.
         self.assertEqual(got, "The red pump house.")
+        self.assertEqual(st["level_goal"], "The red pump house.")
+        self.assertEqual(st["goal_name"], "Pump House")
         draft.assert_not_called()
 
     def test_one_draft_per_playthrough(self):

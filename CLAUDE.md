@@ -148,7 +148,7 @@ alerted → hunted) moves off the frame witness and the prose. The clock — tim
 of day and the lighting line — is rolled once at reset, after the World bind,
 and never moves: the light is the run's identity, not a tension dial. The run
 also knows its goal (`level_goal`) and whether it has been reached
-(`goal_reached_turn`, the consequence model's verdict). Injuries persist in
+(`goal_reached_turn`, the consequence model's verdict). The goal is one thing you can see — `goal.py`: a name, a why and a look invented at reset, drawn into the first frame, found on every settled picture (`/api/goal/sight`) and tagged by `GoalTag` in standalone.js. Injuries persist in
 the prose (the previous beat is always in the prompt), not as HP
 (`DAMAGE_SYSTEM_ENABLED` is off); the one mechanical flag,
 `player_state.condition`, is read only by the next fight's odds.

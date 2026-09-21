@@ -1,3 +1,74 @@
+# 🔧 CHANGELOG - September 21, 2026
+
+## ✅ SHIPPED: the goal is a thing you can see — named, drawn into the first frame, tagged, and kept in view
+
+Asked: *"right now there is a whole universe to explore but nothing to do …
+make the goal something I can author in the editor but is also auto generated
+per world … how can we make our world simulator genuinely steer you TOWARDS the
+goal"*, then *"simplified and elegant … what is the simplest goal we can work
+towards?"*, then *"the first image we play must be some kind of vista SHOWING
+the goal"* and *"label it … like a label of an item in Starfield"*.
+
+The simplest goal: **one thing you can see from where you start, one line of
+why, kept in view until you reach it.** Everything is in `goal.py`; the engine
+and client carry small hooks.
+
+**Invented at world start.** `_goal_for_this_run` now drafts a record, not a
+sentence: a label-length NAME ("Administration Hub"), one line of WHY, and a
+LOOK (what it is from far off, for the image prompts). A premise authored as
+the goal ("the president has been kidnapped…") becomes the place where it is.
+An authored goal keeps its own words as `level_goal`; the model only labels it.
+Nothing is written to the Level sheet. `goal_name/why/look` are world-scoped.
+
+**The first frame is a view of it.** The establishing idle used to end on the
+character looking at "something coming … never identified". With a goal it
+looks at the goal: plainly in frame, a hard silhouette in the upper half, the
+figure small and to one side (a VISTA, not a portrait). A figure standing in
+that first view no longer opens an encounter two seconds in — the sighting
+waits for turn one (`the opening view of the goal`).
+
+**Found on every settled picture, tagged like an item.** `POST /api/goal/sight`
+asks the vision model once per picture (cached by file) whether the goal is in
+it and where. The client (`GoalTag`) draws a Starfield-style tag at the box: a
+dot on the thing, a leader up and to the right (flipping left at the screen
+edge), the name over a rule, GOAL under it. Top-left names the goal whether or
+not it is in view; the WHY sits under it for the first few seconds and folds
+away; the photo tally steps down under it. A SCAN tag on the same object steps
+back while the goal tag is up. Reaching it plays a REACHED card with the line
+that got them there, and CONTINUE.
+
+**The world steers.** `goal_directive` carries one more line: keep it in view
+in `visual_scene` wherever the place allows; after two turns without a
+sighting, the next beat MUST put it back (a window, a gap, over a roofline)
+without moving the player.
+
+**Two bugs found on the way, both in the playtest:**
+- `sceneSequence.playing()` stays true forever once a beat holds its last
+  frame (the timer handle is kept so a repaint of the same key cannot restart
+  it). Anything waiting for "the motion is over" waited forever. Added
+  `atRest()`; `playing()` is unchanged.
+- The first locate prompt ("that specific thing, not something merely similar")
+  rejected the tower standing dead centre: every frame is redrawn from a
+  description, so the goal never matches it exactly. It now asks the player's
+  question — is the place I am going to in this picture — with an explicit
+  rule for interiors.
+
+**Measured, in the real app** (`_claude_goal_pt.py`: its own session, port
+5188 and CDP 9444, eight rounds), the last round on each shipped World:
+
+| World | Goal it invented | In sight & tagged | First frame |
+| --- | --- | --- | --- |
+| World (city, authored premise) | Administration Hub | 7 / 7 frames | tagged |
+| SOMEWHERE (no goal authored) | Deep Drill Rig | 6 / 6 frames | tagged |
+| Sector 044 (authored door, interior) | Sigil Blast Door | 5 / 6 frames (the miss: a turn looking down at a floor grate; back in view the next) | tagged |
+
+The slates lean on their own: "Sprint toward the drill rig", "Sprint toward
+the government building", "Clamber toward the distant door".
+
+Tests: `test_goal_sight.py` (new); `test_cutscene.py`'s goal tests follow the
+record (an authored goal still wins in its own words; a failed draft still
+falls back; one goal per playthrough).
+
 # 🔧 CHANGELOG - September 20, 2026
 
 ## ✅ FIXED: the editor ran the game underneath you and wrote Worlds into each other

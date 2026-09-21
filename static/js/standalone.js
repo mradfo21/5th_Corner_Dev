@@ -2481,11 +2481,293 @@
     // see AutoScan. Armed before the realtime early-return below, because a
     // live session needs its options announced just as much as a still one.
     try { AutoScan.arm(); } catch (_) {}
+    // And the goal: is it in this picture, and where (GoalTag).
+    try { GoalTag.onScene(); } catch (_) {}
     try {
       if (typeof scanInRealtime === "function" && scanInRealtime()) return;
     } catch (_) {}
     markSceneVisible();
   }
+
+  // ── THE GOAL, ON THE PICTURE ───────────────────────────────────────────────
+  // The run's goal is one thing you can see (goal.py). Every settled picture
+  // is asked once, server-side, whether it is in view and where; when it is,
+  // it gets an item tag — a dot on the thing, a leader up and to the right, a
+  // rule, the name above it and GOAL below — and the top-left names it
+  // whether it is in view or not. The first time a run shows it, the WHY sits
+  // under the name for a few seconds and then folds away.
+  //
+  // Nothing here can hold up play: the lookup is one request per picture,
+  // cached server-side by file, and a miss or an error just means no tag.
+  const GoalTag = (function () {
+    const SETTLE_MS = 650;
+    const WHY_MS = 11000;
+    let timer = 0;
+    let inflight = "";
+    let result = null;          // last answer: {src, name, why, found, box, reached}
+    let whyShownFor = "";
+    let whyTimer = 0;
+    const natural = Object.create(null);
+    let lastDraw = null;        // for the harness: where the tag was put
+    let reachedShownFor = "";   // the REACHED card plays once per goal
+
+    function $(id) { return document.getElementById(id); }
+
+    function inPlay() {
+      const c = document.body.classList;
+      if (c.contains("start-menu-on") || c.contains("mode-watch")) return false;
+      if (c.contains("world-editor-on") || c.contains("moment-active")) return false;
+      if (state.gameOver) return false;
+      try { if (isCameraMode()) return false; } catch (_) {}
+      const card = $("goal-reached");
+      if (card && !card.classList.contains("hidden")) return false;
+      return true;
+    }
+
+    function settled() {
+      if (state.processing || state.moving || state.awaitingResolution) return false;
+      // A flipbook beat is only settled once it holds its last frame. The
+      // player's `playing()` stays true while it holds (its timer handle is
+      // kept so the feed poll cannot restart the same beat), so ask atRest().
+      try {
+        if (sceneSequence.atRest ? !sceneSequence.atRest() : sceneSequence.playing()) return false;
+      } catch (_) {}
+      return true;
+    }
+
+    // Only pictures the player is playing in: the World plate the menu paints
+    // through setScene is not one, and would spend a lookup on every boot.
+    function playable(url) { return /\/images\//.test(url || ""); }
+
+    function hide() {
+      const t = $("goal-tag");
+      if (t) t.classList.remove("on");
+      lastDraw = null;
+      shadowScanTags(null);
+    }
+
+    // The auto-scan tags the same thing ("building") a moment later; two labels
+    // on one tower reads as noise. While the goal tag is up, a scan tag whose
+    // centre sits inside the goal's box steps back.
+    function shadowScanTags(box) {
+      document.querySelectorAll(".scan-tag").forEach((el) => {
+        const o = el._obj;
+        let inside = false;
+        if (box && o && typeof o.cx === "number" && typeof o.cy === "number") {
+          const px = box.w * 0.08, py = box.h * 0.08;
+          inside = o.cx >= box.x - px && o.cx <= box.x + box.w + px &&
+                   o.cy >= box.y - py && o.cy <= box.y + box.h + py;
+        }
+        el.classList.toggle("goal-shadowed", inside);
+      });
+    }
+
+    function schedule(ms) {
+      clearTimeout(timer);
+      timer = setTimeout(update, ms);
+    }
+
+    // A new picture has painted (or a sequence has come to rest on its last
+    // frame). The old tag belongs to the old picture.
+    function onScene() {
+      hide();
+      schedule(SETTLE_MS);
+    }
+
+    async function update() {
+      timer = 0;
+      const url = state.currentStillUrl || "";
+      if (!url || !playable(url)) { hide(); return; }
+      if (!inPlay()) { hide(); schedule(1500); return; }
+      if (!settled()) { hide(); schedule(450); return; }
+      if (result && result.src === url) { setHud(result); draw(); return; }
+      if (inflight === url) return;
+      inflight = url;
+      let res = null;
+      try { res = await postJSON("/api/goal/sight", { src: url }); } catch (_) { res = null; }
+      inflight = "";
+      if (!res || !res.goal) { setHud(null); hide(); return; }
+      res.src = url;
+      result = res;
+      setHud(res);
+      if (res.reached && res.name && reachedShownFor !== res.name) {
+        reachedShownFor = res.name;
+        showReached(res.name, res.reached_line || "");
+      }
+      // The player may have moved on while we asked.
+      if (url === (state.currentStillUrl || "")) draw();
+      else schedule(SETTLE_MS);
+    }
+
+    // The photo tally sits under the goal; how far under depends on whether the
+    // WHY is still showing, so the HUD reports its own height.
+    function measureHud() {
+      const hud = $("goal-hud");
+      if (!hud) return;
+      const h = hud.classList.contains("on") ? hud.offsetHeight : 0;
+      document.documentElement.style.setProperty("--goal-hud-h", h + "px");
+    }
+
+    function setHud(res) {
+      const hud = $("goal-hud");
+      if (!hud) return;
+      if (!res || !res.name) {
+        hud.classList.remove("on");
+        document.body.classList.remove("has-goal");
+        measureHud();
+        return;
+      }
+      const name = $("goal-hud-name");
+      if (name && name.textContent !== res.name) name.textContent = res.name;
+      hud.classList.toggle("reached", !!res.reached);
+      hud.classList.add("on");
+      document.body.classList.add("has-goal");
+      const why = $("goal-hud-why");
+      if (why && res.why && whyShownFor !== res.name) {
+        whyShownFor = res.name;
+        why.textContent = res.why;
+        why.classList.remove("gone");
+        clearTimeout(whyTimer);
+        whyTimer = setTimeout(() => {
+          why.classList.add("gone");
+          setTimeout(measureHud, 1500);
+        }, WHY_MS);
+        // The WHY opens over 1.4s (max-height); measured now it is still
+        // shut and the tally lands on top of it. Measure again when it is open.
+        setTimeout(measureHud, 1500);
+      }
+      measureHud();
+    }
+
+    function draw() {
+      const tag = $("goal-tag");
+      if (!tag) return;
+      const r = result;
+      if (!r || !r.found || !r.box || r.reached || !inPlay() || !settled()
+          || r.src !== (state.currentStillUrl || "")) { hide(); return; }
+      const size = natural[r.src];
+      if (!size) {
+        const img = new Image();
+        img.onload = () => { natural[r.src] = { w: img.naturalWidth, h: img.naturalHeight }; draw(); };
+        img.src = r.src;
+        return;
+      }
+      const W = window.innerWidth, H = window.innerHeight;
+      const s = mediaFitScale(W, H, size.w, size.h);
+      const dw = size.w * s, dh = size.h * s;
+      const ox = (W - dw) / 2, oy = (H - dh) / 2;
+      const b = r.box;
+      let ax = ox + (b.x + b.w / 2) * dw;
+      let ay = oy + (b.y + b.h * 0.3) * dh;
+      // The scene layer can carry an optical zoom (telephoto); follow it.
+      try {
+        const t = getSceneTransform();
+        if (t && t.scale && t.scale !== 1) {
+          ax = t.cx + (ax - t.px) * t.scale;
+          ay = t.cy + (ay - t.py) * t.scale;
+        }
+      } catch (_) {}
+      if (ax < 8 || ax > W - 8 || ay < 8 || ay > H - 8) { hide(); return; }
+
+      const nameEl = tag.querySelector(".gt-name");
+      const kindEl = tag.querySelector(".gt-kind");
+      if (nameEl.textContent !== r.name) nameEl.textContent = r.name;
+      const rise = Math.round(Math.max(34, Math.min(56, H * 0.06)));
+      const run = rise;
+      const ruleW = Math.max(96, Math.ceil(nameEl.getBoundingClientRect().width) + 14);
+      // Up and to the right, unless that would leave the screen: then up and
+      // to the left. Near the top, the tag drops below the thing instead.
+      const flip = ax + run + ruleW > W - 24;
+      const down = ay - rise - 34 < 12;
+      const ex = flip ? ax - run : ax + run;
+      const ey = down ? ay + rise : ay - rise;
+      const rx0 = flip ? ex - ruleW : ex;
+      const rx1 = flip ? ex : ex + ruleW;
+      const d0 = 6 * (flip ? -1 : 1), d1 = 6 * (down ? 1 : -1);
+
+      tag.querySelector(".gt-ring").setAttribute("cx", ax);
+      tag.querySelector(".gt-ring").setAttribute("cy", ay);
+      tag.querySelector(".gt-dot").setAttribute("cx", ax);
+      tag.querySelector(".gt-dot").setAttribute("cy", ay);
+      tag.querySelector(".gt-lead").setAttribute(
+        "d", `M${ax + d0} ${ay + d1} L${ex} ${ey} L${flip ? rx0 : rx1} ${ey}`);
+      nameEl.style.left = (flip ? rx1 - nameEl.getBoundingClientRect().width : rx0) + "px";
+      nameEl.style.top = (ey - 22) + "px";
+      kindEl.style.left = (flip ? rx1 - kindEl.getBoundingClientRect().width : rx0) + "px";
+      kindEl.style.top = (ey + 9) + "px";
+      tag.classList.add("on");
+      shadowScanTags(b);
+      lastDraw = { x: Math.round(ax), y: Math.round(ay), flip, down, name: r.name, src: r.src };
+    }
+
+    // REACHED: the picture fades down under the name and the line that got
+    // them there, and CONTINUE hands the run back.
+    function showReached(name, line) {
+      const card = $("goal-reached");
+      if (!card) return;
+      const n = $("goal-reached-name"), l = $("goal-reached-line");
+      if (n) n.textContent = name || "";
+      if (l) l.textContent = line || "";
+      card.classList.remove("hidden");
+      void card.offsetWidth;
+      card.classList.add("on");
+      hide();
+      const btn = $("goal-reached-continue");
+      if (btn && !btn._wired) {
+        btn._wired = true;
+        btn.addEventListener("click", () => {
+          card.classList.remove("on");
+          setTimeout(() => card.classList.add("hidden"), 700);
+        });
+      }
+      try { if (btn) btn.focus({ preventScroll: true }); } catch (_) {}
+    }
+
+    function reset() {
+      result = null; inflight = ""; whyShownFor = ""; reachedShownFor = "";
+      hide(); setHud(null);
+    }
+
+    window.addEventListener("resize", () => { if (result) draw(); });
+    // The auto-scan paints its tags a moment after ours; catch them as they
+    // arrive rather than on the next tick.
+    try {
+      const host = document.getElementById("scan-tags");
+      if (host && window.MutationObserver) {
+        new MutationObserver(() => {
+          if (lastDraw && result && result.box) shadowScanTags(result.box);
+        }).observe(host, { childList: true });
+      }
+    } catch (_) {}
+    // Belt and braces for everything that can change what "settled" means
+    // without painting a new picture (a Moment closing, the camera coming
+    // down, a turn ending on the same frame): look again every so often.
+    setInterval(() => {
+      if (lastDraw && result && result.box) shadowScanTags(result.box);
+      if (timer || inflight) return;
+      const url = state.currentStillUrl || "";
+      const t = $("goal-tag");
+      const showing = !!(t && t.classList.contains("on"));
+      const want = !!(result && result.found && result.src === url && inPlay() && settled());
+      if (showing !== want || (playable(url) && (!result || result.src !== url))) update();
+    }, 1200);
+
+    return {
+      onScene, hide, reset, showReached,
+      debug: () => {
+        let seq = null, cam = null;
+        try { seq = { playing: sceneSequence.playing(), atRest: sceneSequence.atRest ? sceneSequence.atRest() : null }; } catch (e) { seq = "err:" + e; }
+        try { cam = isCameraMode(); } catch (e) { cam = "err:" + e; }
+        return {
+          result, lastDraw, url: state.currentStillUrl || "", inflight, timer: !!timer,
+          gates: { inPlay: inPlay(), settled: settled(), processing: !!state.processing,
+                   moving: !!state.moving, awaiting: !!state.awaitingResolution,
+                   gameOver: !!state.gameOver, seq, cam, body: document.body.className },
+        };
+      },
+    };
+  })();
+  window.GoalTag = GoalTag;
 
   // ── OPENING BLACKOUT ──────────────────────────────────────────────────────
   // Starting a run is the moment the game has to feel like a film, and it was
@@ -3117,6 +3399,7 @@
     // pass without handing out a fresh one.
     state.autoScanDone = false;
     closeScan();
+    try { GoalTag.hide(); } catch (_) {}
     updateScanButton();
     const silent = !!(opts && opts.silent);
     const instant = !!(opts && opts.instant);
@@ -3332,7 +3615,13 @@
       return true;
     }
 
-    return { play, stop, playing: () => !!timer };
+    // playing() stays true while a non-looping beat HOLDS its last frame (the
+    // timer handle is kept so a repaint of the same key does not restart it).
+    // atRest() is the question "is the motion over": idle, or on the last frame.
+    return {
+      play, stop, playing: () => !!timer,
+      atRest: () => !timer || idx >= frames.length - 1,
+    };
   }
 
   // The frames of a scene beat, as URLs. Accepts the engine's sequence payload
@@ -3371,7 +3660,11 @@
       loop: false,
       key: key,
       // The fist waits for the motion to finish, not just for the first frame.
-      onEnd: () => { try { Fist.playbackEnded(); } catch (_) {} },
+      onEnd: () => {
+        try { Fist.playbackEnded(); } catch (_) {}
+        // The motion has come to rest on the frame the turn ends on.
+        try { GoalTag.onScene(); } catch (_) {}
+      },
     });
     // The motion has the turn's own bed under it, armed when the consequence
     // landed. Keyed on the same frames the player is keyed on, so the feed
