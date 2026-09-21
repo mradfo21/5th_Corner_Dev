@@ -11,7 +11,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 from urllib.parse import quote
 from flask import Flask, request, jsonify, send_file, make_response, render_template, redirect
 from flask_cors import CORS
@@ -3438,6 +3438,116 @@ def serve_world_studio():
     return redirect(dest, code=302)
 
 
+# ═══════════════════════════════════════════════════════════════════
+# THE EDITOR WRITES ONE WORLD, AND ONLY GENERATE REACHES THE GAME.
+#
+# The game plays from one live prompt file and a World is a snapshot bound into
+# it. The editor used to edit that live file and copy it back into "the World
+# being edited" — without ever checking the file held that World. A run that had
+# stitched into another World, a New Game that bound the start World, or an
+# identity save with no World named (which fell back to the START World) all put
+# one World's sheet into another. worlds_store.bound_slug() records which World
+# the live file holds; every editor write binds the World it names first, and a
+# persist that would copy a different World's sheet into this one is refused.
+#
+# And the run behind the editor no longer moves while you edit: the client holds
+# the run's prompts when the editor opens and puts them back when it closes
+# without a GENERATE, so an edit is saved into the World and reaches the game
+# only through GENERATE, which draws the World and restarts the run in it.
+# ═══════════════════════════════════════════════════════════════════
+
+_EDITOR_HOLD: Dict[str, Any] = {"prompts": None, "bound": ""}
+
+# The Worlds whose place the factory defaults describe.
+_SHIPPED_WORLD_SLUGS = ("somewhere", "somewhere-fp")
+
+
+def _bind_world_for_edit(world_id: Any):
+    """Make the live prompt file hold this World before the editor writes it.
+
+    Returns the World dict, or None when no World was named (the write then
+    goes to the live file only, as before). A no-op when it is already bound.
+    """
+    wid = str(world_id or "").strip()
+    if not wid:
+        return None
+    import experience_store
+    import worlds_store
+    world = experience_store.world_by_id(experience_store.get_experience(), wid)
+    if not world:
+        raise KeyError(f"World '{wid}' not found.")
+    slug = str(world.get("slug") or "")
+    was = worlds_store.bound_slug()
+    if slug and was != worlds_store._slug(slug):
+        worlds_store.load_world(slug)
+        print(f"[EDITOR] bound '{slug}' before writing to it "
+              f"(the live file held {was or 'nothing known'})", flush=True)
+    return world
+
+
+def _persist_guard(world: Dict[str, Any]):
+    """An error response when persisting would copy another World into this one."""
+    import worlds_store
+    slug = worlds_store._slug(str((world or {}).get("slug") or "")) if (world or {}).get("slug") else ""
+    bound = worlds_store.bound_slug()
+    if slug and bound and bound != slug:
+        return error_response(
+            f"The live prompt file holds '{bound}', not '{slug}'. Nothing was "
+            f"written — open '{world.get('name') or slug}' in the editor again.",
+            code=409)
+    return None
+
+
+def _live_holds(world: Dict[str, Any]) -> bool:
+    """Is this World the one bound into the live prompt file right now?"""
+    import worlds_store
+    slug = str((world or {}).get("slug") or "")
+    return bool(slug) and worlds_store.bound_slug() == worlds_store._slug(slug)
+
+
+@app.route('/api/admin/studio/session/hold', methods=['POST'])
+def admin_studio_session_hold():
+    """The editor opened: keep the run's prompts so closing can put them back."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import prompts_store
+        import worlds_store
+        if _EDITOR_HOLD.get("prompts") is None:
+            live = dict(prompts_store.PROMPTS)
+            _EDITOR_HOLD["prompts"] = {k: live.get(k) for k in prompts_store.editable_keys(live)}
+            _EDITOR_HOLD["bound"] = worlds_store.bound_slug()
+        return jsonify(success_response({"held": True, "bound": _EDITOR_HOLD["bound"]}))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to hold the run", str(e))
+
+
+@app.route('/api/admin/studio/session/release', methods=['POST'])
+def admin_studio_session_release():
+    """The editor closed. {"restore": true} puts the run's prompts back —
+    closing without GENERATE leaves the run exactly as it was left. After a
+    GENERATE the client restarts the run instead and passes restore=false."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import prompts_store
+        import worlds_store
+        body = request.get_json(silent=True) or {}
+        held = _EDITOR_HOLD.get("prompts")
+        restored = False
+        if body.get("restore") and held:
+            prompts_store.save_prompts_bulk(dict(held))
+            worlds_store._set_bound(_EDITOR_HOLD.get("bound") or "")
+            restored = True
+        _EDITOR_HOLD["prompts"] = None
+        _EDITOR_HOLD["bound"] = ""
+        return jsonify(success_response({"restored": restored}))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to release the run", str(e))
+
+
 @app.route('/api/admin/studio/content', methods=['GET'])
 def admin_studio_content():
     """Everything the World Studio UI needs in one shot: current + default
@@ -3510,6 +3620,11 @@ def admin_studio_prompts_put():
                 "Body must include either {'key','value'} for a single field "
                 "or {'data': {...}} to update several at once.", code=400)
 
+        try:
+            _bind_world_for_edit(body.get('world_id'))
+        except KeyError as e:
+            return error_response(str(e), code=404)
+
         all_warnings = {}
         for key, value in fields.items():
             ok, warnings = prompts_store.validate_prompt_value(key, value)
@@ -3545,7 +3660,21 @@ def admin_studio_prompts_reset():
         import prompts_store
         body = request.get_json(silent=True) or {}
         if body.get('all'):
+            try:
+                world = _bind_world_for_edit(body.get('world_id'))
+            except KeyError as e:
+                return error_response(str(e), code=404)
             data = prompts_store.reset_all_prompts()
+            # The shipped defaults ARE SOMEWHERE: its bible, its fence, its
+            # camera and Jason. RESET on any other World used to turn it into
+            # SOMEWHERE (and the next save wrote that into the World). The
+            # rulebook comes back as shipped; the place comes back blank.
+            import worlds_store
+            wslug = worlds_store._slug(str((world or {}).get("slug") or "")) if (world or {}).get("slug") else ""
+            if wslug and wslug not in _SHIPPED_WORLD_SLUGS:
+                place = worlds_store.blank_place()
+                if place:
+                    data = prompts_store.save_prompts_bulk(place)
             return jsonify(success_response({"prompts": data}, "All prompts reset to defaults"))
         key = body.get('key')
         if not key:
@@ -3605,15 +3734,21 @@ def admin_studio_identity_put():
             return error_response(
                 "Body must include at least one of: "
                 + ", ".join(game_identity.SPEC_KEYS) + ".", code=400)
+        wid = str(body.get("world_id") or body.get("persist_world") or "").strip()
+        try:
+            _bind_world_for_edit(wid)
+        except KeyError as e:
+            return error_response(str(e), code=404)
         spec = game_identity.save_spec(payload)
         # Play / reset reloads the bound World snapshot. If we only write the
         # live prompt file, the next reset silently throws the sheet away.
+        #
+        # Only into the World the editor NAMED. This used to fall back to the
+        # Experience's start World, so a sheet saved while any other World was
+        # open was written into the start World as well.
         persisted = None
         try:
             import experience_store
-            exp = experience_store.get_experience()
-            wid = (body.get("world_id") or body.get("persist_world")
-                   or exp.get("start_world") or "")
             if wid:
                 exp = experience_store.persist_world_snapshot(wid)
                 persisted = experience_store.world_by_id(exp, wid) or {}
@@ -4082,9 +4217,10 @@ def admin_studio_world_frames_ensure():
 
 @app.route('/api/admin/studio/worlds/frames/reset', methods=['POST'])
 def admin_studio_world_frames_reset():
-    """Snapshot this World's live design, then regenerate its first frame.
+    """GENERATE: save this World, bind it clean, draw its opening again.
 
-    The desk REDRAW uses this. Body: ``id`` (World id) or ``slug``.
+    Body: ``id`` (World id) or ``slug``. See _run_ensure: this is the only
+    request that draws a World's picture.
     """
     if not _admin_token_ok():
         return _admin_unauthorized()
@@ -4095,21 +4231,45 @@ def admin_studio_world_frames_reset():
         slug = (body.get("slug") or "").strip()
         wid = body.get("id") or body.get("world_id")
         exp = experience_store.get_experience()
+        world = None
         if wid:
-            try:
-                exp = experience_store.persist_world_snapshot(wid)
-            except KeyError:
-                pass
             world = experience_store.world_by_id(exp, wid)
+            # Saved only if the live file holds this World (see _live_holds).
+            if world and _persist_guard(world) is None and _live_holds(world):
+                try:
+                    exp = experience_store.persist_world_snapshot(wid)
+                except KeyError:
+                    pass
+                world = experience_store.world_by_id(exp, wid)
             slug = str((world or {}).get("slug") or slug)
         if not slug:
             slug = world_frames.start_world_slug(exp)
         if not slug:
             return error_response("No World to reset.", code=400)
-        rec = world_frames.force_reset(slug, wait=False)
+        import worlds_store
+        import prompts_store
+        import game_identity
+        import engine as _engine
+        # GENERATE starts clean. Bind the World's file over the live one (a
+        # replace, with the blank place for anything it lacks), so the picture
+        # and the run that follows are drawn from exactly what is saved in it —
+        # not from whatever else the live file had picked up. Then light it
+        # from its OWN palette, rolled now, not from the last run's.
+        worlds_store.load_world(slug)
+        try:
+            lighting = _engine._generate_random_starting_time()
+        except Exception:
+            lighting = ""
+        print(f"[EDITOR] GENERATE '{slug}': bound clean, drawing its opening "
+              f"({(lighting or 'no lighting line')[:60]})", flush=True)
+        rec = world_frames.force_reset(slug, wait=False, time_of_day=lighting)
         return jsonify(success_response({
             "frame": rec,
             "experience": _experience_json(),
+            "world": world or {},
+            "prompts": dict(prompts_store.PROMPTS),
+            "identity": game_identity.get_spec(),
+            "identity_preview": game_identity.preview(),
         }))
     except Exception as e:
         traceback.print_exc()
@@ -4407,6 +4567,8 @@ def admin_studio_experience_world_add():
         if added and added.get("slug"):
             try:
                 import world_frames
+                # The free fill only (placeholder / plate). A new World is
+                # drawn when somebody presses GENERATE on it.
                 world_frames.schedule_ensure(added["slug"], delay=0.4)
             except Exception:
                 pass
@@ -4555,14 +4717,15 @@ def admin_studio_experience_persist():
         wid = body.get('id') or body.get('world_id')
         if not wid:
             return error_response("Body must include 'id'.", code=400)
+        world = experience_store.world_by_id(experience_store.get_experience(), wid)
+        if not world:
+            return error_response(f"World '{wid}' not found.", code=404)
+        refused = _persist_guard(world)
+        if refused is not None:
+            return refused
         exp = experience_store.persist_world_snapshot(wid)
-        world = experience_store.world_by_id(exp, wid)
-        if world and world.get("slug"):
-            try:
-                import world_frames
-                world_frames.schedule_ensure(world["slug"], delay=0.25)
-            except Exception:
-                pass
+        # Saving does not draw. This scheduled a paid render of the World 0.25s
+        # after every save — see world_frames._run_ensure. GENERATE draws.
         return jsonify(success_response({"experience": _experience_json(exp)}, "World snapshot updated"))
     except KeyError as e:
         return error_response(str(e), code=404)

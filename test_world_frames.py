@@ -10,6 +10,7 @@ Run: python -m unittest test_world_frames -v
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -239,14 +240,20 @@ class TestEnsure(_Isolated):
         self.assertEqual(rec["source"], "placeholder")
         called = {"n": 0}
 
-        def fake_paid(slug, prompts, fp):
+        def fake_paid(slug, prompts, fp, **kwargs):
             called["n"] += 1
             return wf.install_from_file(
                 slug, rec["path"], fp, source="generated")["path"]
 
         with patch.object(wf, "_images_enabled", return_value=True), \
              patch.object(wf, "_generate_paid", side_effect=fake_paid):
-            again = wf.ensure(info["slug"], wait=True)
+            # Opening the editor, the picker, a save: none of them draw.
+            idle = wf.ensure(info["slug"], wait=True)
+            self.assertEqual(called["n"], 0,
+                             "only GENERATE draws — ensure() is the free fill")
+            self.assertEqual(idle["source"], "placeholder")
+            # GENERATE does.
+            again = wf.force_reset(info["slug"], wait=True)
         self.assertEqual(called["n"], 1)
         self.assertEqual(again["source"], "generated")
 
@@ -294,6 +301,8 @@ class TestEnsure(_Isolated):
         with patch.object(wf, "_images_enabled", return_value=True), \
              patch.object(wf, "_generate_paid", return_value=None) as paid:
             rec = wf.ensure(info["slug"], wait=True)
+            self.assertFalse(paid.called, "a save's ensure() must not draw")
+            rec = wf.force_reset(info["slug"], wait=True)
         after = Path(wf.frame_path(info["slug"])).read_bytes()
         self.assertEqual(before, after)
         self.assertNotEqual(rec["source"], "plate")
@@ -723,8 +732,8 @@ class TestTheOpeningPlateIsDrawnForThisRun(_Isolated):
             enabled=True, name=name, appearance="tall, shaved head")})
 
     def _paid_spy(self, seen):
-        def fake_paid(slug, prompts, fp, *, drawn="", source="generated"):
-            seen.append({"prompts": prompts, "fp": fp,
+        def fake_paid(slug, prompts, fp, *, drawn="", source="generated", time_of_day=""):
+            seen.append({"prompts": prompts, "fp": fp, "time_of_day": time_of_day,
                          "drawn": drawn, "source": source})
             return wf.install_from_file(
                 slug, wf.frame_path(slug), fp,
@@ -857,17 +866,70 @@ class TestForceReset(_Isolated):
         wf.ensure(info["slug"], wait=True)
         called = {"n": 0}
 
-        def fake_paid(slug, prompts, fp):
+        def fake_paid(slug, prompts, fp, time_of_day=""):
             called["n"] += 1
+            called["lighting"] = time_of_day
             return wf.install_from_file(
                 slug, wf.frame_path(slug), fp, source="generated")["path"]
 
         with patch.object(wf, "_images_enabled", return_value=True), \
              patch.object(wf, "_generate_paid", side_effect=fake_paid):
-            again = wf.force_reset(info["slug"], wait=True)
+            again = wf.force_reset(info["slug"], wait=True,
+                                   time_of_day="3:10am | weather: sodium rain")
         self.assertEqual(called["n"], 1)
+        self.assertEqual(called["lighting"], "3:10am | weather: sodium rain",
+                         "GENERATE lights the World from its own roll")
         self.assertEqual(again["status"], "ready")
         self.assertEqual(again["source"], "generated")
+
+
+class TestADrawStartsClean(unittest.TestCase):
+    """A World's picture is drawn in a private wf-<slug> session. That session
+    used to keep the world text it had the FIRST time it was ever drawn, and
+    _gen_image prefers the session's own world text over the bible it is
+    handed — so every later draw used a stale bible. And with no lighting
+    passed, _gen_image read it off the module-global run: the last run played,
+    in whatever World."""
+
+    def setUp(self):
+        import engine
+        self.engine = engine
+        self.sid = "wf-test-clean-draw"
+        stale = engine._load_state(self.sid)
+        stale["world_prompt"] = "STALE: a 1993 photojournalist at the Horizon fence."
+        stale["time_of_day"] = "golden hour, rust, red dust"
+        engine._save_state(stale, self.sid)
+        engine._VISUAL_TONE_CACHE[self.sid] = "STALE desert tone"
+
+    def tearDown(self):
+        try:
+            shutil.rmtree(self.engine._get_state_path(self.sid).parent)
+        except Exception:
+            pass
+
+    def test_the_session_holds_only_this_draw(self):
+        wf._fresh_frame_session(self.sid, "A 2088 riot street.", "3:10am")
+        st = self.engine._load_state(self.sid)
+        self.assertEqual(st["world_prompt"], "A 2088 riot street.")
+        self.assertEqual(st["time_of_day"], "3:10am")
+        self.assertNotIn(self.sid, self.engine._VISUAL_TONE_CACHE)
+
+    def test_the_render_is_never_left_to_borrow_the_runs_lighting(self):
+        captured = {}
+
+        def fake_gen(*args, **kwargs):
+            captured.update(kwargs)
+            captured["world_text"] = self.engine._load_state(
+                kwargs["session_id"]).get("world_prompt")
+            return (None, "", None)
+
+        prompts = {"world_initial_state": "A 2088 riot street, rain, robot police."}
+        with patch.object(self.engine, "_gen_image", side_effect=fake_gen):
+            wf._generate_paid("test-clean-draw", prompts, "fp")
+        self.assertIsNotNone(captured.get("time_of_day"),
+                             "None makes _gen_image read the last run's lighting")
+        self.assertIn("2088 riot street", captured["world_text"])
+        self.assertNotIn("STALE", captured["world_text"])
 
 
 if __name__ == "__main__":

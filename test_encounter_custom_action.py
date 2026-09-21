@@ -328,30 +328,39 @@ class TestTheSharedMomentChromeSupportsIt(unittest.TestCase):
 
 
 class TestTheSlateSaysWhatYouAreAboutToDo(unittest.TestCase):
-    """The rows used to read attack / flee / reason — the LANE, one word each.
+    """The rows read ATTACK / FLEE / REASON — the lane word and nothing else.
 
-    That was right while a fight ran four rounds: a vivid line the picture
-    cannot honour is a broken promise, and it had to survive being re-read every
-    round against a plate that had not moved. A fight is one exchange now, a
-    committed verb usually ends it, and the resolve plate is generated FROM that
-    verb — so the picture has to honour the line exactly once. Three identical
-    words every fight was the least dramatic thing on screen, and the model had
-    already written something far better underneath them.
+    For a while they read the written verb ("Smash his calcified skull now")
+    with the lane as an eyebrow over it. Matt, over a screenshot of that:
+    "this is a mistake. it needs to be JUST the actions, attack, reason, flee.
+    the underlying choices can be what is decided but this will make it
+    cleaner." So the row shows the word, and the written verb is still what
+    the fight resolves: it rides on the item as `text` and is what pick()
+    posts, so the roll and the play-out are written from the same sentence.
     """
 
     def _show_choices(self):
         return CLIENT_JS.split("function showChoices(", 1)[1] \
                         .split("\n    function ", 1)[0]
 
-    def test_the_row_reads_the_written_verb(self):
+    def test_the_row_reads_the_lane_word(self):
         fn = self._show_choices()
-        self.assertIn("label: text || laneWord(lane, idx)", fn,
-                      "the slate is still showing the lane instead of the verb")
+        self.assertIn("label: laneWord(lane, idx)", fn)
+        self.assertNotIn("label: text", fn, "the row is showing the sentence again")
 
-    def test_the_lane_still_rides_along(self):
-        """It is what the server rolls against: the verb tells you what you are
-        doing, not the odds you are accepting."""
-        self.assertIn("laneWord: laneWord(lane, idx)", self._show_choices())
+    def test_the_written_verb_is_what_is_played(self):
+        fn = self._show_choices()
+        self.assertIn("text: text", fn)
+        self.assertIn("lane: lane", fn)
+        pick = CLIENT_JS.split("async function pick(item) {", 1)[1][:400]
+        self.assertIn("item.text", pick)
+
+    def test_no_eyebrow_repeats_the_word(self):
+        """Moments draws any lane it is handed as an eyebrow — "confront" over
+        "attack". It is handed the words only; the index maps back."""
+        fn = self._show_choices()
+        self.assertIn("mapped.map((c) => ({ label: c.label }))", fn)
+        self.assertIn("pick(mapped[idx])", fn)
 
     def test_the_eyebrow_is_readable_by_attr(self):
         """`content: attr(data-lane)` only reads the pseudo-element's OWN
@@ -361,18 +370,12 @@ class TestTheSlateSaysWhatYouAreAboutToDo(unittest.TestCase):
         self.assertIn(".moment-choice-text[data-lane]::before", CSS)
         self.assertIn("content: attr(data-lane)", CSS)
 
-    def test_a_sentence_is_not_set_like_a_label(self):
-        """Uppercase at 0.26em tracking was right for one word. "CRUSH HIS
-        THROAT WITH CAMERA" set that way is a shout that wraps."""
+    def test_one_word_is_set_like_a_label(self):
         row = CSS.split(
             "body.moment-encounter .moment-choice:not(.moment-choice-custom) "
             ".moment-choice-text {", 1)[1].split("}", 1)[0]
-        self.assertIn("text-transform: none", row)
-        self.assertNotIn("text-transform: uppercase", row)
-        # ...and the label look moves to the eyebrow, where one word belongs.
-        brow = CSS.split(".moment-choice-text[data-lane]::before {", 1)[1] \
-                  .split("}", 1)[0]
-        self.assertIn("text-transform: uppercase", brow)
+        self.assertIn("text-transform: uppercase", row)
+        self.assertIn("white-space: nowrap", row)
 
 
 class TestItLooksLikeWatchAndNotLikeAMenu(unittest.TestCase):

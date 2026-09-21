@@ -1872,8 +1872,14 @@ def _world_transition_feed_item(info: dict) -> dict:
     )
 
 
-def apply_experience_start(state: dict, session_id: str = "default") -> dict:
+def apply_experience_start(state: dict, session_id: str = "default",
+                           world_id: str = "") -> dict:
     """Bind a fresh run to the active Experience's start World.
+
+    ``world_id`` starts the run in that World instead — the editor's GENERATE
+    restarts the run in the World it just drew, which is not always the start.
+    It skips the Experience's opening cutscene unless the cutscene lands there
+    anyway.
 
     A start World with a slug is a bound identity — Play / Watch / reset
     load that snapshot so the run cannot silently drift off the designed
@@ -1893,6 +1899,10 @@ def apply_experience_start(state: dict, session_id: str = "default") -> dict:
     start = experience_store.landing_world(exp, land_from)
     if start is None and exp.get("worlds"):
         start = exp["worlds"][0]
+    chosen = experience_store.world_by_id(exp, world_id) if world_id else None
+    if chosen is not None and chosen.get("id") != (start or {}).get("id"):
+        start = chosen
+        cut = None
     if start and start.get("slug"):
         try:
             worlds_store.load_world(start["slug"])
@@ -11407,7 +11417,11 @@ def _cached_opening_frame(new_state: dict) -> tuple:
 
     rec = {}
     try:
-        rec = world_frames.render_live_plate(slug) or {}
+        # The plate is lit by THIS run's lighting line. Without it the render
+        # read the lighting off the module-global run state, which during a
+        # reset is still the run being thrown away — often another World's.
+        rec = world_frames.render_live_plate(
+            slug, time_of_day=str((new_state or {}).get("time_of_day") or "")) or {}
     except Exception:
         logging.exception(f"[WORLD FRAMES] live plate for {slug} raised")
     if not rec:
@@ -12270,7 +12284,7 @@ def purge_run_media(session_id: str = "default") -> int:
     return removed
 
 
-def _perform_game_reset() -> List[Dict[str, Any]]:
+def _perform_game_reset(start_world_id: str = "") -> List[Dict[str, Any]]:
     global state, history, _last_image_path, _next_feed_item_id
     # Resolve THIS request's session id straight from Flask's request object
     # (see _resolve_request_session_id's docstring) rather than the shared
@@ -12310,7 +12324,7 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
         # Bind the Experience graph first so a stitched start World is live
         # before world_brief() reads the prompt file.
         import experience_store
-        _experience_seed = apply_experience_start({}, SID)
+        _experience_seed = apply_experience_start({}, SID, world_id=start_world_id)
 
         # Generate random starting time/weather/mood for this session — AFTER
         # the bind, because the roll reads the level's palette off the live
@@ -12510,7 +12524,14 @@ def api_reset():
     SID = _resolve_request_session_id()
     logging.info(f"api_reset: POST request received for session='{SID}'.")
     try:
-        initial_items = _perform_game_reset()
+        # The editor's GENERATE restarts the run in the World it drew.
+        start_world_id = ""
+        try:
+            body = request.get_json(silent=True) or {}
+            start_world_id = str(body.get("world_id") or "").strip()
+        except Exception:
+            start_world_id = ""
+        initial_items = _perform_game_reset(start_world_id)
         if not initial_items:
             logging.warning("api_reset: _perform_game_reset returned no items, but this might be okay if feed_log is now populated by it.")
             # Fallback to checking THIS session's on-disk feed_log if initial_items is empty from return

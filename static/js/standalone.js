@@ -5743,6 +5743,9 @@
     let editingWorldId = null;
     let liveWorldId = null;
     let saveState = "saved";
+    // The World a GENERATE drew while the editor was open. Closing restarts
+    // the run in it; closing without one hands the paused run back untouched.
+    let generatedWorldId = null;
     let editorSurface = "experience";
     let xpCatalog = [];
     let xpActiveSlug = "default";
@@ -6419,7 +6422,9 @@
     async function saveFields(fields) {
       clearWarns();
       if (!Object.keys(fields).length) return { ok: true, warnings: {} };
-      const { ok, data } = await weFetch("PUT", "/api/admin/studio/prompts", { data: fields });
+      const { ok, data } = await weFetch("PUT", "/api/admin/studio/prompts", {
+        data: fields, world_id: resolveEditingWorldId() || "",
+      });
       const warnings = (data && data.warnings) || (data && data.data && data.data.warnings) || {};
       if (!ok) {
         showWarns(warnings);
@@ -6433,16 +6438,10 @@
       }
       if (warnings && Object.keys(warnings).length) showWarns(warnings);
       try { persistEditingWorld(); } catch (_) {}
-      // Art direction and camera rules live in the prompt file. Reload the
-      // live contract and restage so a Harness edit is not stills-only.
-      const visual = Object.keys(fields).some((k) => FRAME_BLOCKS[k]);
-      try {
-        Promise.resolve(visual ? Camera.reload() : null).then(() => {
-          try { resteerLiveFromSheet(); } catch (_) {}
-        });
-      } catch (_) {
-        try { resteerLiveFromSheet(); } catch (_) {}
-      }
+      // Saving does not restage the live scene. It used to reload the camera
+      // contract and re-steer the running video on every prompt save, so the
+      // viewport kept changing under a half-written edit. GENERATE applies
+      // the sheet (applySheetToLiveScene).
       return { ok: true, warnings };
     }
 
@@ -6468,7 +6467,7 @@
       const { ok } = await saveFields(fields); // ok even if nothing dirty
       if (!ok) return;
       toast("Saved — restarting the world…");
-      close({ silent: true });
+      close({ silent: true, restarting: true });
       setTimeout(() => { try { resetGame(); } catch (_) {} }, 260);
     }
 
@@ -7472,7 +7471,9 @@
       // perspective and re-steered with camera-specific language, so a save
       // has to reach the renderer too or picking third person mid-run changes
       // the stills and leaves the video exactly as it was.
-      if (!(opts && opts.skipResteer)) {
+      // Only GENERATE restages (it passes resteer: true). Every sheet save used
+      // to re-steer the running video from the half-written sheet.
+      if (opts && opts.resteer && !opts.skipResteer) {
         if (data.preview && data.preview.camera) Camera.apply(data.preview.camera);
         // Character / level / camera all ride the same contract. A save that
         // only changed the cast used to leave the live video on the old seed
@@ -7490,7 +7491,12 @@
 
     async function saveIdentity(blockId, patch, opts) {
       const wasName = String(((identity[blockId] || {}).name) || "").trim();
-      const { ok, data } = await weFetch("PUT", "/api/admin/studio/identity", { [blockId]: patch });
+      const { ok, data } = await weFetch("PUT", "/api/admin/studio/identity", {
+        [blockId]: patch,
+        // The World being edited. Without it the server wrote the sheet into
+        // the Experience's START World too, whatever World was open.
+        world_id: resolveEditingWorldId() || "",
+      });
       const payload = data && (data.data || data);
       if (!ok || !payload) {
         if (!(opts && opts.quiet)) toast("Couldn't save that.", "warn");
@@ -8007,7 +8013,9 @@
       setSaveStatus("saving");
       try {
         edits = {};
-        const { ok } = await weFetch("POST", "/api/admin/studio/prompts/reset", { all: true });
+        const { ok } = await weFetch("POST", "/api/admin/studio/prompts/reset", {
+          all: true, world_id: resolveEditingWorldId() || "",
+        });
         if (!ok) {
           setSaveStatus("error");
           toast("Couldn't reset.", "warn");
@@ -8036,25 +8044,41 @@
       if (el.weReset) el.weReset.disabled = true;
       setSaveStatus("saving");
       try {
-        await flushPendingWorldEdits();
-        await persistWorld(wid);
-        // GENERATE is now the only thing that draws, so it is also the only
-        // thing that pushes the finished sheet at the live scene.
+        // Save what is being typed — into the World being edited. A GENERATE
+        // pressed on another World's card draws that World from its own file.
+        if (wid === resolveEditingWorldId()) {
+          await flushPendingWorldEdits();
+          await persistWorld(wid);
+        }
+        // The server binds this World's file over the live one (clean — the
+        // blank place for anything it lacks), forgets the last draw's private
+        // session, lights it from its own palette and draws its opening.
+        const { ok, data } = await weFetch("POST", "/api/admin/studio/worlds/frames/reset", { id: wid });
+        const payload = data && (data.data || data);
+        if (!ok || !payload) {
+          setSaveStatus("error");
+          toast((data && (data.error || data.message)) || "Couldn't generate this World.", "warn");
+          return false;
+        }
+        applyExperience(payload);
+        // The editor now shows exactly what was bound — this World.
+        editingWorldId = wid;
+        if (payload.prompts && content) content.prompts = payload.prompts;
+        if (payload.identity) identity = payload.identity;
+        if (payload.identity_preview) identityPreview = payload.identity_preview;
+        edits = {};
+        notifyGraph();
+        // GENERATE is the only thing that draws, so it is also the only thing
+        // that pushes the finished sheet at the live scene.
         await applySheetToLiveScene();
         paintViewportFromFrame._url = "";
         keepLiveExperience._url = "";
         keepLiveExperience._world = "";
         kickWorldFrame(wid);
-        const { ok, data } = await weFetch("POST", "/api/admin/studio/worlds/frames/reset", { id: wid });
-        const payload = data && (data.data || data);
-        if (ok && payload) applyExperience(payload);
         await refreshWorldFrames();
-        if (!ok) {
-          setSaveStatus("error");
-          toast("Couldn't redraw this World.", "warn");
-          return false;
-        }
-        toast(anyFrameBusy() ? "Redrawing from this World." : "This World's picture is current.");
+        // Closing the editor restarts the run in this World (resumeRun).
+        generatedWorldId = wid;
+        toast("Generating this World. Close the editor to play it from the top.");
         setSaveStatus(anyFrameBusy() ? "rendering" : "saved");
         return true;
       } catch (_) {
@@ -8103,8 +8127,16 @@
         if (!ok || !payload) return;
         applyExperience(payload);
         try { if (window.EditorGraph && window.EditorGraph.syncFrames) window.EditorGraph.syncFrames(); } catch (_) {}
-        paintViewportFromFrame();
-        keepLiveExperience();
+        // Only a CHANGED picture (a GENERATE landing) reaches the viewport and
+        // re-seeds the live video from it. The poll used to re-run
+        // keepLiveExperience on every beat, restaging the video whenever the
+        // compiled prompt had moved under an edit.
+        const seen = usableFrameUrl(currentEditingWorld());
+        if (seen && seen !== refreshWorldFrames._seen) {
+          refreshWorldFrames._seen = seen;
+          paintViewportFromFrame();
+          keepLiveExperience();
+        }
         if (anyFrameBusy()) setSaveStatus("rendering");
         else if (saveState === "saving" || saveState === "rendering") setSaveStatus("saved");
       } catch (_) {}
@@ -8127,10 +8159,13 @@
         return false;
       }
     }
+    // Busy means a picture is being DRAWN. "dirty" (the World changed since
+    // its picture) is not busy any more — nothing draws it until GENERATE,
+    // so counting it kept the status on "Redrawing…" forever.
     function anyFrameBusy() {
       return ((experience && experience.worlds) || []).some((w) => {
         const st = w.frame_status || "";
-        return st === "generating" || st === "dirty" || w.frame_generating;
+        return st === "generating" || w.frame_generating;
       });
     }
     async function ensureWorldFrames() {
@@ -8437,7 +8472,7 @@
     function worldFrameBusy(world) {
       if (!world) return false;
       const st = world.frame_status || "";
-      return st === "generating" || st === "dirty" || !!world.frame_generating;
+      return st === "generating" || !!world.frame_generating;
     }
 
     function syncViewportRenderState(forceBusy) {
@@ -8676,6 +8711,13 @@
         }
       } catch (_) {}
       open_ = true;
+      generatedWorldId = null;
+      // THE RUN STOPS WHILE YOU EDIT. Nothing of the game advances behind the
+      // editor — no feed, no auto-play, no drift, no hotspots, no narrator —
+      // and the server keeps the run's prompts so closing without GENERATE
+      // hands it back exactly as it was (see resumeRun).
+      pauseRun();
+      try { await weFetch("POST", "/api/admin/studio/session/hold", {}); } catch (_) {}
       if (el.worldEditor) {
         el.worldEditor.classList.remove("hidden");
         el.worldEditor.setAttribute("aria-hidden", "false");
@@ -8693,7 +8735,9 @@
       if (!opts || opts.viewport !== false) {
         try {
           if (typeof StartMenu !== "undefined" && StartMenu.ensurePlayViewport) {
-            await StartMenu.ensurePlayViewport({ reset: !!(opts && opts.reset) });
+            // The viewport, not a run: opening the editor used to start a New
+            // Game behind it (CREATE, and EDIT from the picker with reset).
+            await StartMenu.ensurePlayViewport({ reset: !!(opts && opts.reset), boot: false });
           }
         } catch (_) {}
       }
@@ -8705,6 +8749,11 @@
       if (!worlds.some((w) => w.id === editingWorldId)) {
         editingWorldId = landingWorldId(experience)
           || (worlds[0] && worlds[0].id) || null;
+      }
+      // Bind the World being edited into the live prompt file, so the editor
+      // shows — and writes — THAT World, not whatever the last run left loaded.
+      if (ok && editingWorldId) {
+        try { await enterWorld(editingWorldId); } catch (_) {}
       }
       if (ok) { await loadWorlds(); render(); }
       try { await refreshStatus(); } catch (_) {}
@@ -8730,7 +8779,48 @@
         el.worldEditor.setAttribute("aria-hidden", "true");
         setTimeout(() => { if (!open_) el.worldEditor.classList.add("hidden"); }, 640);
       }
+      const dest = returnTo;
       if (!(opts && opts.silent)) restoreReturn();
+      resumeRun(dest, opts || {});
+    }
+
+    function pauseRun() {
+      try { stopPolling(); } catch (_) {}
+      try { clearTurnWatchdog(); } catch (_) {}
+      try { clearTimeout(state.autoTimer); } catch (_) {}
+      try { Narrator.stop(); } catch (_) {}
+    }
+
+    // Leaving the editor. After a GENERATE the run restarts, clean, in the World
+    // that was drawn — so what you play is what you just generated. Without
+    // one, the run you left comes back exactly as it was: the server puts its
+    // prompts back, and edits reach the game only through GENERATE (or the
+    // next New Game, which binds the saved World).
+    async function resumeRun(dest, opts) {
+      const drawn = generatedWorldId;
+      generatedWorldId = null;
+      const toGame = dest !== "picker" && dest !== "watch";
+      let booted = true;
+      try { booted = StartMenu.isBooted(); } catch (_) {}
+      if (opts.restarting) {
+        // Save & Restart runs its own resetGame().
+        try { await weFetch("POST", "/api/admin/studio/session/release", { restore: false }); } catch (_) {}
+        try { StartMenu.markBooted(); } catch (_) {}
+        return;
+      }
+      if (drawn || (toGame && !booted)) {
+        try { await weFetch("POST", "/api/admin/studio/session/release", { restore: false }); } catch (_) {}
+        if (toGame) {
+          try { StartMenu.markBooted(); } catch (_) {}
+          try { resetGame(drawn ? { worldId: drawn } : undefined); } catch (_) {}
+        }
+        return;
+      }
+      try { await weFetch("POST", "/api/admin/studio/session/release", { restore: true }); } catch (_) {}
+      try { await Camera.reload(); } catch (_) {}
+      try { startPolling(); } catch (_) {}
+      try { if (state.awaitingResolution) armTurnWatchdog(); } catch (_) {}
+      try { if (state.autoPlay) scheduleAutoAdvance(1200); } catch (_) {}
     }
     function close(opts) {
       if (!open_) return;
@@ -12926,6 +13016,13 @@
 
     function ensurePlayViewport(opts) {
       const forceReset = !!(opts && opts.reset);
+      // The editor asks for the viewport WITHOUT a run (boot: false). CREATE
+      // and EDIT used to call resetGame() here, so opening the editor started
+      // a whole New Game behind it — the live plate render, the intro turn,
+      // the opening montage — and that run kept playing, stitching and
+      // rewriting the live prompt file while the author edited. The editor
+      // boots the run itself when it closes (see WorldEditor.resumeRun).
+      const boot = !(opts && opts.boot === false);
       const alreadyPlay = document.body.classList.contains("mode-play")
         && !isMenuOpen() && booted;
       try { Accounts.close({ silent: true }); } catch (_) {}
@@ -12936,12 +13033,16 @@
       try { WatchMode.leave(); } catch (_) {}
       // Same as settlePlay: the resume path below returns without rendering
       // anything, so this is the only arm a continued session ever gets.
-      try { AutoScan.arm(); } catch (_) {}
+      if (boot) { try { AutoScan.arm(); } catch (_) {} }
       if (alreadyPlay && !forceReset) return Promise.resolve();
+      if (!boot) return Promise.resolve();
       booted = true;
       try { return Promise.resolve(resetGame()); }
       catch (_) { return Promise.resolve(); }
     }
+
+    function isBooted() { return booted; }
+    function markBooted() { booted = true; }
 
     function settleWatch() {
       try { Accounts.close({ silent: true }); } catch (_) {}
@@ -13407,7 +13508,7 @@
       Accounts.init();
     }
 
-    return { init, begin, showMenu, hideMenu, returnHome, returnToPicker, ensurePlayViewport, adoptSelection, isMenuOpen, switchMode, onKey };
+    return { init, begin, showMenu, hideMenu, returnHome, returnToPicker, ensurePlayViewport, adoptSelection, isMenuOpen, switchMode, onKey, isBooted, markBooted };
   })();
 
   // ── ACCOUNT (keys + usage) ─────────────────────────────────────────────
@@ -16584,7 +16685,14 @@
       // Armed when a verb is committed: from here a real turn is running for
       // this fight, and the frame it draws belongs to the world on the other
       // side of the Moment, not to the fight.
-      arm() { holdScene = true; },
+      arm() {
+        holdScene = true;
+        // A verb committed in a fight ends the turn it interrupted, exactly as
+        // makeChoice does for the world's verbs: the pre-fight slate is over,
+        // and the world's next slate comes back behind the fist once the
+        // fight's aftermath frame has landed.
+        try { Fist.reset(); } catch (_) {}
+      },
 
       // renderItem: keep the aftermath frame out of the fight. It was already
       // being thrown away here (restaging is refused while a Moment is up);
@@ -16701,6 +16809,13 @@
         becomeReady();
       }, WAIT_MAX_MS);
     }
+    function underMoment() {
+      // An encounter owns the screen (body.moment-encounter hides the hub):
+      // the fist is out of reach, and a slate revealed now would be taken by
+      // the fight (Aftermath.holdSlate), leaving an open fist over no rows.
+      try { return !!(window.Encounter && Encounter.isActive && Encounter.isActive()); }
+      catch (_) { return false; }
+    }
     function becomeReady() {
       clearTimeout(waitTimer); waitTimer = null;
       if (phase === "ready") return;
@@ -16759,7 +16874,7 @@
 
       // The one-way trip: the fist goes, the choices come.
       open() {
-        if (phase !== "ready" || !held) return false;
+        if (phase !== "ready" || !held || underMoment()) return false;
         const item = held;
         held = null;
         phase = "open";
@@ -16771,7 +16886,7 @@
         return true;
       },
 
-      isReady() { return phase === "ready" && !!held; },
+      isReady() { return phase === "ready" && !!held && !underMoment(); },
       isWaiting() { return phase === "waiting"; },
       isOpen() { return phase === "open"; },
       phase() { return phase; },
@@ -17238,7 +17353,10 @@
   // Game actions
   // ------------------------------------------------------------------
 
-  async function resetGame() {
+  async function resetGame(opts) {
+    // {worldId}: start the run in that World rather than the Experience's
+    // start — the editor's GENERATE restarts the run in the World it drew.
+    const startWorldId = (opts && opts.worldId) || "";
     try {
       stopPolling(); // avoid a mid-reset poll racing the rebuilt feed
       clearTurnWatchdog(); // don't let a stale turn timer fire into the new run
@@ -17332,7 +17450,7 @@
       // over a black screen with no error, forever — indistinguishable from the
       // game being broken. Fail loudly instead, and let the player retry.
       const items = await withTimeout(
-        postJSON("/api/reset", {}),
+        postJSON("/api/reset", startWorldId ? { world_id: startWorldId } : {}),
         RESET_TIMEOUT_MS,
         "the server did not respond",
       );
@@ -20720,6 +20838,8 @@
   // claiming the view? (Independent of whether a scene is currently readable.)
   function ambientContextAllowed() {
     if (state.gameOver || state.touchMode || state.freeWillOpen) return false;
+    // The editor is open: the run is paused. No world drift, no hotspots.
+    if (document.body.classList.contains("world-editor-on")) return false;
     // Frozen behind the coin-op "out of credits" pause — the world isn't live.
     if (typeof CoinOp !== "undefined" && CoinOp.isPaused && CoinOp.isPaused()) return false;
     // While the camera is being driven the scene is in motion, so the OCR
@@ -26223,6 +26343,8 @@
       // lockstep).
       if (!(state.autoPlay && !state.processing && !state.gameOver &&
             !state.freeWillOpen && !tapeIsOpen() &&
+            // Paused under the editor; closing it re-arms (resumeRun).
+            !document.body.classList.contains("world-editor-on") &&
             !(window.Moments && window.Moments.isActive && window.Moments.isActive()) &&
             (el.choices.children.length || Fist.isReady()) &&
             state.currentPromptId != null &&

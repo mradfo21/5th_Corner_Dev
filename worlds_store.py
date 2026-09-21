@@ -43,6 +43,31 @@ def _ensure_dir() -> None:
     WORLDS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# WHICH WORLD THE LIVE PROMPT FILE HOLDS.
+#
+# The game plays from one live prompt file; a World is a snapshot that is bound
+# INTO it (load_world) and written back OUT of it (save_world). Nothing used to
+# record which World was in there, so the editor could write whatever the live
+# file held into whichever World it had open: a run that had stitched into World
+# B, or a New Game that bound the start World, left B's (or the start World's)
+# sheet in the live file, and the next save in the editor stamped it over the
+# World being edited. Reported as "stale worlds built from a mish mash of data
+# pollinated from other worlds". Set on every bind and every save; "" means this
+# process has not bound anything yet (a fresh boot), which callers treat as
+# "unknown", not as a match.
+_BOUND_SLUG = ""
+
+
+def bound_slug() -> str:
+    """The World whose snapshot the live prompt file currently holds, or ""."""
+    return _BOUND_SLUG
+
+
+def _set_bound(slug: str) -> None:
+    global _BOUND_SLUG
+    _BOUND_SLUG = _slug(slug) if str(slug or "").strip() else ""
+
+
 def _editable_snapshot() -> Dict[str, Any]:
     """The current LIVE values for every editable prompt key (everything the
     editor can touch), so a saved world round-trips the full prompt set — not
@@ -106,6 +131,8 @@ def save_world(name: str, note: str = "", slug: str = "") -> Dict[str, Any]:
     }
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
+    # The live file IS this World now: it was just written from it.
+    _set_bound(slug)
     return {"slug": slug, "name": payload["name"]}
 
 
@@ -163,9 +190,21 @@ def load_world(slug: str) -> Dict[str, Any]:
     missing = [k for k in known if k not in fields and k not in CAST_KEYS]
     if missing:
         factory = prompts_store.load_defaults()
+        # The factory's PLACE is SOMEWHERE — its 1993 Horizon bible, its fence,
+        # its camera. A World that carries no copy of its own place is a blank
+        # place, not the shipped one: filling world_initial_state from the
+        # factory is how an authored city-riot World came to be played as a
+        # photojournalist at the Horizon facility.
+        blank_place = {}
+        if any(k in PLACE_KEYS for k in missing):
+            try:
+                blank_place = _blank_prompts()
+            except Exception:
+                blank_place = {}
         filled = []
         for key in missing:
-            replacement = factory.get(key)
+            replacement = (blank_place.get(key) if key in PLACE_KEYS
+                           else factory.get(key))
             if replacement not in (None, ""):
                 fields[key] = replacement
                 filled.append(key)
@@ -175,6 +214,7 @@ def load_world(slug: str) -> Dict[str, Any]:
                   f"than whatever the last World left in the live file", flush=True)
     if fields:
         prompts_store.save_prompts_bulk(fields)
+    _set_bound(slug)
     return {"slug": _slug(slug), "name": data.get("name", slug),
             "applied": len(fields), "doctrine_restored": gutted}
 
@@ -194,6 +234,20 @@ def load_world(slug: str) -> Dict[str, Any]:
 # save: a World is a place, the person walking through it belongs to the run,
 # so saving the cast saves it into every room at once.
 CAST_KEYS = ("player_character",)
+
+
+# THE PLACE IS THE WORLD'S. The keys that say where you are and how it is shot —
+# as opposed to the rulebook (DOCTRINE_KEYS), which is the game's and identical
+# in every World, and the cast (CAST_KEYS), which is the run's. A World with no
+# copy of one of these gets the blank harness place, never the factory's, because
+# the factory's place is SOMEWHERE.
+PLACE_KEYS = ("world_initial_state", "setting_reference", "camera_perspective")
+
+
+def blank_place() -> Dict[str, Any]:
+    """The unauthored place a new World starts from, keyed by PLACE_KEYS."""
+    blank = _blank_prompts()
+    return {k: blank[k] for k in PLACE_KEYS if k in blank}
 
 
 # THE RULEBOOK IS THE GAME'S, NOT THE ROOM'S — AND NEVER THE TEST HARNESS'S.

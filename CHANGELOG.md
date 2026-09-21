@@ -1,5 +1,111 @@
 # 🔧 CHANGELOG - September 20, 2026
 
+## ✅ FIXED: the editor ran the game underneath you and wrote Worlds into each other
+
+Asked: *"when I'm making changes to the world I notice it's STILL trying to run
+the game, STILL trying to update the values, which makes it super muddy. I
+press generate and it seems to create stale worlds built from a mish mash of
+data pollinated from other worlds. The editor needs to be more manual so I can
+know what I'm gonna get when I run the world. Make sure the editor is driven by
+generate and that when I press generate it's going to restart / recache cleanly
+to show me the current world."*
+
+Traced on this machine's own files. Every one of these was live:
+
+**Opening the editor started a New Game.** CREATE and EDIT went through
+`StartMenu.ensurePlayViewport`, which calls `resetGame()` — the live plate
+render, the intro turn, the opening montage — and that run then kept playing
+behind the desk: the feed poll, auto-play, WorldDrift ticks, the SCAN
+hotspots. It could take turns, stitch into another World and rewrite the live
+prompt file mid-edit. Now `ensurePlayViewport({boot: false})` gives the editor
+the viewport and no run, and `WorldEditor.open` pauses whatever run there is
+(`pauseRun`: feed, watchdog, auto-play timer, narrator); `ambientContextAllowed`
+and `scheduleAutoAdvance` stand down while `world-editor-on` is set.
+
+**Saving drew.** The client stopped drawing on save weeks ago, but the persist
+route still scheduled `world_frames.schedule_ensure` 0.25 s after every save,
+which is a paid render of the sheet as it stood mid-edit. `sessions/wf-world`
+holds eight renders of one character in thirty-five seconds from 10:10 this
+morning — one per field while a name was being typed. Opening the editor did
+the same for every World (`schedule_ensure_all`) and so did the start-menu
+picker (`maybe_kick_all`). `world_frames.ensure` is the free fill now (plate or
+placeholder for a World with no picture); only `force_reset` — GENERATE — draws.
+A changed World keeps its old picture, marked dirty (yellow on the graph), and
+the save status no longer reads "Redrawing…" forever over it.
+
+**Saving restaged the live video.** Every Character / Level / Camera save
+re-applied the camera and re-steered LingBot from the half-written sheet, and
+every prompt save reloaded the camera contract; the frame poll re-ran
+`keepLiveExperience` every 0.7–2.8 s. Only GENERATE restages now
+(`applyIdentityPayload` restages only when asked; the poll re-seeds the video
+only when the World's picture actually changes).
+
+**The editor wrote whatever the live file held into whichever World was open.**
+The game plays one live prompt file; a World is a snapshot bound into it. The
+editor showed the live file without binding the World it said it was editing,
+so after a run had stitched into World B — or New Game had bound the start
+World — the first save copied that sheet into the World on screen. And an
+identity save naming no World fell back to the Experience's START World, so a
+sheet saved with any other World open was written into the start World too.
+`worlds_store.bound_slug()` now records which World the live file holds (set on
+every bind and save); the prompt, identity and RESET routes bind the World they
+name first (`_bind_world_for_edit`), the client names it on every save, the
+editor binds the World it opens on, and `/experience/persist` refuses (409)
+rather than copy one World's sheet into another.
+
+**GENERATE drew a stale World.** A World's picture renders in a private
+session, `wf-<slug>`, whose state was written ONCE — the first time it was ever
+drawn — with whatever bible the live file held then, and `_gen_image` prefers
+the session's own world text over the bible it is handed. Its tone gloss
+anchored each draw to the last. And with no lighting passed, `_gen_image` read
+the lighting off the module-global run: the last run played, in whatever World
+(Play's own opening plate had the same bug during a reset — it was lit by the
+run being thrown away). `world_frames._fresh_frame_session` clears the session,
+its caches and its old frames before every draw and writes this World's bible
+(with the Experience lore) and lighting into it. GENERATE
+(`/worlds/frames/reset`) now saves the World if the live file holds it, binds
+its file clean over the live one, rolls a lighting line off ITS palette and
+draws; `render_live_plate` takes the new run's lighting.
+
+**GENERATE is where the game picks your edits up.** The server holds the run's
+prompts when the editor opens (`/studio/session/hold`). Close without GENERATE
+and the run you left comes back exactly as it was (`release`, restore) — your
+edits are saved in the World and wait for GENERATE or the next New Game. Close
+after GENERATE and the run restarts, clean, in the World you drew
+(`resetGame({worldId})` → `/api/reset {world_id}` →
+`apply_experience_start(world_id=…)`, which skips the opening cutscene unless
+it lands there anyway). Closing from CREATE with no run starts one.
+
+**Nothing is born SOMEWHERE any more.** The factory defaults ARE SOMEWHERE — its
+1993 Horizon bible, its fence, its camera, Jason. `load_world` filled a World's
+missing keys from them, so a World with no bible of its own got that one, and
+RESET put SOMEWHERE's place into whatever World was open. Missing place keys
+(`worlds_store.PLACE_KEYS`: bible, Level sheet, camera) now come from the blank
+harness place, and RESET on any World but SOMEWHERE restores the rulebook as
+shipped and the place blank.
+
+**The SWAT World, cleaned.** `worlds/world.json` (Experience "SWAT", a 2088 riot
+under robot police) carried SOMEWHERE's bible, recast — "Simon 'Ghost' Riley is
+a photojournalist, documenting the mystery and danger of the Horizon facility"
+— and a Level `opening_shot` of "the sun dips behind the red mesa… a rusted
+chain-link perimeter fence… hot desert wind" under a summary of a rain-slicked
+city street. Its last picture shows exactly that: a riot street with a
+razor-wire fence across it. The bible is now the blank harness place (the
+Experience lore and the Level sheet carry the city), and the opening shot is
+empty, so the first frame composes from the summary, landmarks and palette.
+The previous file is in `_claude_pull/world_backup/world.json.before`.
+
+Tests: `test_editor_is_manual.py` (added with -f) — the bind/guard/refusal, the
+start-World leak, save-never-draws, a clean GENERATE lit from its own roll,
+GENERATE on another World's card, hold/restore, the blank place, RESET, the
+New Game override, and the client pause / named saves / resume. The
+`test_world_frames` ensure tests now ask GENERATE for the paid draw and assert
+the free fill does not make one; `TestADrawStartsClean` pins the fresh session
+and the lighting. Full non-browser suite: the same 30 failures as before this
+change (others' work in progress and this sandbox's missing assets), 1870 pass.
+`test_encounter_custom_action`'s slate tests are rewritten to the
+ATTACK / FLEE / REASON request above them in this log.
+
 ## ✊ The FIST: the turn releases at the picture, and the choices wait behind a button
 
 Asked: *"how much time would we save if we moved choices to a button at the

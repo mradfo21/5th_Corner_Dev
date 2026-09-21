@@ -514,8 +514,47 @@ def _images_enabled() -> bool:
         return False
 
 
+def _fresh_frame_session(session_id: str, world_prompt: str, time_of_day: str) -> None:
+    """Start this World's private render session over, holding only this World.
+
+    The plate is drawn into ``wf-<slug>``, and that session used to live
+    forever. Its state was written ONCE, the first time anything touched it,
+    with whatever ``world_initial_state`` the live prompt file held at that
+    moment — and ``_gen_image`` prefers the session's own world text over the
+    bible it is handed. So every later draw of the World used the bible it had
+    the first time it was ever drawn: on this machine ``wf-world`` held the
+    shipped 1993 Horizon bible while the World itself had become a 2088 city
+    riot. Its tone gloss (``_VISUAL_TONE_CACHE``) anchored each new draw to the
+    last one's look the same way. A draw is a new picture of the World as it
+    stands, so nothing of the previous draw may survive into it.
+    """
+    try:
+        import engine
+    except Exception:
+        return
+    for name in getattr(engine, "_RUN_CACHES_BY_SESSION", ()):
+        cache = getattr(engine, name, None)
+        if isinstance(cache, dict):
+            cache.pop(session_id, None)
+    try:
+        engine.purge_run_media(session_id)
+    except Exception as e:
+        log.warning("[WORLD FRAMES] could not clear %s's old frames: %s", session_id, e)
+    try:
+        path = engine._get_state_path(session_id)
+        if path.exists():
+            path.unlink()
+        st = engine._load_state(session_id)   # a clean default, not the old file
+        st["world_prompt"] = world_prompt or st.get("world_prompt") or ""
+        st["time_of_day"] = time_of_day or ""
+        engine._save_state(st, session_id)
+    except Exception as e:
+        log.warning("[WORLD FRAMES] could not reset %s: %s", session_id, e)
+
+
 def _generate_paid(slug: str, prompts: Dict[str, Any], fp: str, *,
-                   drawn: str = "", source: str = "generated") -> Optional[str]:
+                   drawn: str = "", source: str = "generated",
+                   time_of_day: str = "") -> Optional[str]:
     """Render an opening still into a private session. Does not touch play state.
 
     ``drawn`` is the fingerprint of the prompts this picture is actually OF, and
@@ -540,6 +579,13 @@ def _generate_paid(slug: str, prompts: Dict[str, Any], fp: str, *,
         vision = lore_vision or DEFAULT_FRAME_VISION
         prologue = "The run begins."
     session_id = f"{_GEN_SESSION_PREFIX}{_safe_slug(slug)}"[:80]
+    world_text = bible or prologue
+    try:
+        import experience_store
+        world_text = experience_store.with_lore(world_text)
+    except Exception:
+        pass
+    _fresh_frame_session(session_id, world_text, time_of_day)
     # Use this World's sheet, not whoever happens to be loaded live. The
     # plate is an img2img reference inside _gen_image, not the cached still.
     #
@@ -559,6 +605,12 @@ def _generate_paid(slug: str, prompts: Dict[str, Any], fp: str, *,
         session_id=session_id,
         history_ref=[],
         identity_spec=spec,
+        # Never None. None tells _gen_image to read the lighting off the
+        # module-global run state — whichever run happens to be loaded, in
+        # whichever World — so a World's plate was lit by the last thing
+        # played. "" is no lighting line; a GENERATE passes one rolled off
+        # this World's own palette.
+        time_of_day=time_of_day or "",
     )
     img_path = result[0] if result else None
     if img_path and Path(img_path).is_file():
@@ -570,7 +622,7 @@ def _generate_paid(slug: str, prompts: Dict[str, Any], fp: str, *,
     return None
 
 
-def render_live_plate(slug: str) -> Dict[str, Any]:
+def render_live_plate(slug: str, time_of_day: str = "") -> Dict[str, Any]:
     """Draw this World's opening plate NOW, from the prompts the run will use.
 
     Every other render path here goes through the World SNAPSHOT
@@ -621,7 +673,8 @@ def render_live_plate(slug: str) -> Dict[str, Any]:
     with _lock:
         _generating[slug] = drawn or fp
     try:
-        path = _generate_paid(slug, live, fp, drawn=drawn, source="intro")
+        path = _generate_paid(slug, live, fp, drawn=drawn, source="intro",
+                              time_of_day=time_of_day)
     except Exception as e:
         log.warning("[WORLD FRAMES] live plate for %s failed: %s", slug, e)
         path = None
@@ -668,7 +721,7 @@ def _fill_without_paid(slug: str, prompts: Dict[str, Any], fp: str) -> Dict[str,
     return _install_bytes(slug, _placeholder_png(), fp, source="placeholder", prompt=vision)
 
 
-def _run_ensure(slug: str) -> Dict[str, Any]:
+def _run_ensure(slug: str, *, paid: bool = False, time_of_day: str = "") -> Dict[str, Any]:
     slug = _safe_slug(slug)
     if not slug:
         return record("")
@@ -683,6 +736,23 @@ def _run_ensure(slug: str) -> Dict[str, Any]:
     placeholder = str(rec.get("source") or "") == "placeholder"
     if rec.get("status") == "ready" and rec.get("path"):
         return rec
+    # GENERATE IS THE ONLY THING THAT DRAWS.
+    #
+    # Every editor save persisted the World and the persist route then
+    # scheduled this, 0.25s later, which was a paid render of the sheet as it
+    # stood mid-edit: eight renders of one character in thirty-five seconds on
+    # this machine while the author typed a name. Opening the editor did the
+    # same for every World in the Experience (schedule_ensure_all), and so did
+    # the start-menu picker (maybe_kick_all). Unasked, only the free fill runs
+    # now: a World with no picture at all gets its plate or the placeholder,
+    # and a picture that is out of date stays up, marked dirty, until somebody
+    # presses GENERATE (force_reset) or plays it (render_live_plate).
+    # With no image backend everything below is free (plate copy, placeholder
+    # restamp) and runs as before.
+    if not paid and images_on:
+        if rec.get("path"):
+            return rec
+        return _fill_without_paid(slug, prompts, fp)
     # Stale generated still + no image backend: keep what is on disk.
     # Restamp the current fingerprint so a force-reset (or a prompt edit
     # in mock) does not sit on "dirty" forever.
@@ -713,7 +783,7 @@ def _run_ensure(slug: str) -> Dict[str, Any]:
 
         if _images_enabled():
             try:
-                _generate_paid(slug, prompts, fp)
+                _generate_paid(slug, prompts, fp, time_of_day=time_of_day)
             except Exception as e:
                 log.warning("[WORLD FRAMES] paid gen failed for %s: %s", slug, e)
             rec = record(slug, prompts)
@@ -745,24 +815,31 @@ def invalidate(slug: str, *, reason: str = "reset") -> Dict[str, Any]:
     return rec
 
 
-def force_reset(slug: str, *, wait: bool = False) -> Dict[str, Any]:
-    """Dirty this World's first frame and kick a regen."""
+def force_reset(slug: str, *, wait: bool = False, time_of_day: str = "") -> Dict[str, Any]:
+    """Dirty this World's first frame and draw it again. GENERATE."""
     invalidate(slug)
-    return ensure(slug, wait=wait)
+    return ensure(slug, wait=wait, paid=True, time_of_day=time_of_day)
 
 
-def ensure(slug: str, *, wait: bool = False) -> Dict[str, Any]:
-    """Make sure this World's first frame is on disk. Non-blocking by default."""
+def ensure(slug: str, *, wait: bool = False, paid: bool = False,
+           time_of_day: str = "") -> Dict[str, Any]:
+    """Make sure this World's first frame is on disk. Non-blocking by default.
+
+    ``paid`` draws a new picture; without it only the free fill runs (see
+    _run_ensure). Only GENERATE asks for a paid draw.
+    """
     slug = _safe_slug(slug)
     rec = record(slug)
     if rec.get("status") == "ready":
         return rec
+    if not paid and rec.get("path") and _images_enabled():
+        return rec
     if wait:
-        return _run_ensure(slug)
+        return _run_ensure(slug, paid=paid, time_of_day=time_of_day)
 
     def _worker():
         try:
-            _run_ensure(slug)
+            _run_ensure(slug, paid=paid, time_of_day=time_of_day)
         except Exception as e:
             log.warning("[WORLD FRAMES] ensure failed for %s: %s", slug, e)
 
