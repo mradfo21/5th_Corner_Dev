@@ -5377,7 +5377,8 @@ def api_look_book_file(session_id, name):
     import look_book
     if not re.fullmatch(r"[A-Za-z0-9_\-]{1,80}", session_id or ""):
         return jsonify({"error": "bad session"}), 400
-    path = look_book.file_path(session_id, name)
+    w = request.args.get("w")
+    path = look_book.file_path(session_id, name, w if w else None)
     if not path:
         return jsonify({"error": "not found"}), 404
     resp = send_file(str(path))

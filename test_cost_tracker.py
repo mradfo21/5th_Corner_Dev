@@ -26,6 +26,7 @@ class CostTrackerTestCase(unittest.TestCase):
         cost_tracker.ANALYTICS_DIR = tmp_root
         cost_tracker.DB_PATH = tmp_root / "usage.db"
         cost_tracker._initialized = False
+        cost_tracker._wire.pending = {}  # nothing folds in from another test
 
         self._orig_pricing_path = pricing.PRICING_PATH
         pricing.PRICING_PATH = tmp_root / "pricing.json"
@@ -175,7 +176,10 @@ class CostTrackerTestCase(unittest.TestCase):
         # time to AFTER the event that's already in the ledger.
         orig_started_at = cost_tracker._PROCESS_STARTED_AT
         try:
-            cost_tracker._PROCESS_STARTED_AT = orig_started_at + timedelta(seconds=5)
+            # "Now + 5s", not "import time + 5s": in a long test run the
+            # event above can be written more than 5s after import.
+            from datetime import datetime, timezone
+            cost_tracker._PROCESS_STARTED_AT = datetime.now(timezone.utc) + timedelta(seconds=5)
             health = cost_tracker.get_storage_health()
             self.assertTrue(health["survived_restart"])
         finally:

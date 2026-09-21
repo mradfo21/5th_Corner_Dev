@@ -3056,7 +3056,12 @@
         n.classList.add("is-live");
         return;
       }
-      if (!lb || !lb.status || lb.status === "none") { n.classList.add("hidden"); return; }
+      if (!lb || !lb.status || lb.status === "none") {
+        if (!lb || !lb.enabled) { n.classList.add("hidden"); return; }
+        text.textContent = "NO LOOK BOOK FOR THIS WORLD YET · GENERATE MAKES ONE";
+        setBar(n, -1, false);
+        return;
+      }
       if (lb.status === "ready" && !lb.stale) {
         const secs = lb.timings && lb.timings.total ? ` · SHOT IN ${lb.timings.total}s` : "";
         text.textContent = `LOOK BOOK READY · ${plateCount(lb)} PLATES${secs} · OPEN`;
@@ -3065,7 +3070,7 @@
         return;
       }
       if (lb.stale) {
-        text.textContent = `LOOK BOOK · SHOT FOR ${(lb.world_name || "ANOTHER WORLD")} · GENERATE MAKES THIS WORLD'S`;
+        text.textContent = "LOOK BOOK · SHOT BEFORE THIS WORLD'S LAST EDIT · GENERATE REMAKES IT";
         setBar(n, -1, false);
         return;
       }
@@ -3107,6 +3112,9 @@
       let lb = null;
       try { lb = await getJSON("/api/look_book"); } catch (_) { lb = null; }
       lb = lb && lb.data ? lb.data : lb;
+      // Count the build's seconds from the server's start, not from when we
+      // began looking — right after switching Worlds mid-build too.
+      if (lb && typeof lb.elapsed === "number" && isBusy(lb)) t0 = Date.now() - lb.elapsed * 1000;
       lastSeen = lb;
       const more = paint(lb);
       // Keep polling while busy; at the start, give the server a few seconds
@@ -8860,6 +8868,9 @@
       paintViewportFromFrame._url = "";
       paintViewportFromFrame();
       keepLiveExperience();
+      // Each World keeps its own look book (look_book.world_slug): the line
+      // under GENERATE follows the World you just opened.
+      try { LookBookStatus.peek(); } catch (err) { console.warn("[editor] look book peek failed:", err); }
     }
 
     async function addTransition(fromId, toId, condition) {

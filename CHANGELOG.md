@@ -1,5 +1,55 @@
 # 🔧 CHANGELOG - September 21, 2026
 
+## 🎨 FIX: Each World keeps its own look book, and the editor shows the one you're on
+
+Asked: *"im not seeing the look books change when i navigate between worlds"*.
+
+**Why.** There was one look book per run (`sessions/<sid>/look_book/`), not
+one per World. Moving between Worlds in the editor showed the same book.
+Pressing GENERATE on another World shot a new book over it, so the first
+World's book was lost.
+
+**Now.** Books are kept per World inside the run: `sessions/<sid>/look_book/<world>/`.
+- The editor shows the book for whichever World you open. Leaving a World
+  while its book is being shot, then coming back, picks the build up
+  mid-way.
+- A World with no book yet says *NO LOOK BOOK FOR THIS WORLD YET · GENERATE
+  MAKES ONE*.
+- A book shot before your last edit to that World says so.
+
+**Which World is "this World".**
+- Normally, the one the live prompt file holds, as the editor binds it.
+- Before anything has been bound since the server started, the World the
+  session's saved run is in.
+- A build keeps the World it started in, whatever the editor binds
+  afterwards.
+
+**Builds no longer block each other.** Build bookkeeping (in progress, the
+newest-build ticket, the lock) is per run and per World. A book being shot
+for THE FIFTH CORNER doesn't hold up SWAT's.
+
+**Only the current World's book is replaced.** A new run clears only its own
+World's shelf; other Worlds' books stay.
+
+**Plates are fetched by World.** Picture URLs carry the World
+(`&w=<world>`), and the file route checks it. Every World's book counts
+versions from 1, so without it one World's `plate_01.jpg?v=1` would have
+shown from the cache as another's.
+
+**The seconds count is now the server's.** The editor's count comes from the
+server (`elapsed`), not from when the page started watching. It stays right
+after you switch Worlds mid-build.
+
+Checked in a browser on a copy of this repo:
+1. SWAT: no book → GENERATE → 2/5 → 3/5 → READY in 51 s.
+2. THE FIFTH CORNER: no book → GENERATE.
+3. Back to SWAT while THE FIFTH CORNER was still shooting: SWAT's book,
+   READY, and the desk showed SWAT's plates (riot police, drones).
+4. Back to THE FIFTH CORNER: its build still under way → READY in 55 s.
+
+Tests: `EachWorldHasItsOwnBook` in `test_look_book` (56 pass). With the
+editor, cutscene, Experience and world-frame suites, 376 pass.
+
 ## 🎨 GENERATE shoots the look book too, and the editor shows it being made
 
 Asked: *"now does the look book generate when i press generate? can it show

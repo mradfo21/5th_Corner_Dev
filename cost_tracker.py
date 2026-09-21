@@ -214,10 +214,12 @@ def _wire_pending(kind: str) -> list:
 
 
 def _claim_wire_logged(service_type: str, provider: str, operation: Optional[str],
-                       output_units: Optional[float]) -> bool:
+                       output_units: Optional[float], model: Optional[str] = None) -> bool:
     if provider != "gemini" or operation == "wire" or service_type not in ("image", "text"):
         return False
-    pending = _wire_pending(service_type)
+    # Text callers name the real model, so only that model's call folds in.
+    # Picture callers name a purpose ("talk_portrait"), so any picture does.
+    pending = _wire_pending(f"text:{model}" if service_type == "text" else "image")
     if not pending:
         return False
     n = max(1, int(round(float(output_units or 1)))) if service_type == "image" else 1
@@ -278,7 +280,7 @@ def _log_wire(model: str, payload: Any, response: Any, latency_ms: int) -> None:
                          latency_ms=latency_ms, success=ok, error_message=err,
                          meta={"source": "wire"})
             if ok:
-                _wire_pending("text").append(time.time())
+                _wire_pending(f"text:{model}").append(time.time())
     except Exception as e:  # noqa: BLE001
         print(f"[COST TRACKER] wire log failed (non-fatal): {e}", flush=True)
 
@@ -325,7 +327,7 @@ def record_usage(session_id: str, service_type: str, provider: str, model: str, 
     convenience for callers/tests — nothing depends on the return value.
     """
     try:
-        if success and _claim_wire_logged(service_type, provider, operation, output_units):
+        if success and _claim_wire_logged(service_type, provider, operation, output_units, model):
             return None  # this picture was already logged from the HTTP call
         init_db()
         cost_usd = None
