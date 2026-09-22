@@ -165,5 +165,83 @@ class TheClient(unittest.TestCase):
         self.assertIn("body.has-goal #shot-tally", self.css)
 
 
+class ARunFromBeforeTheGoal(unittest.TestCase):
+    """Played in the app: a run begun before the merge had level_goal and no
+    name, and nothing was ever tagged or named."""
+
+    def setUp(self):
+        goal._ADOPTED.clear()
+        self.st = {"level_goal": "During a massive protest, the president has been kidnapped.",
+                   "turn_count": 12}
+
+    def test_it_gets_a_record_from_its_own_line(self):
+        with mock.patch.object(goal, "invent", return_value={
+                "name": "Administration Hub", "why": "They took him there.",
+                "look": "a glass tower over the square"}):
+            rec = goal.adopt(self.st)
+        self.assertEqual(rec["name"], "Administration Hub")
+        self.assertEqual(goal.record(self.st)["name"], "Administration Hub")
+        self.assertIn("Administration Hub", goal.sight_directive(self.st))
+        self.assertNotIn("goal_name", self.st)   # state.json is the turn loop's
+
+    def test_with_no_model_the_first_clause_is_the_name(self):
+        with mock.patch.object(goal, "invent", return_value={}):
+            self.assertEqual(goal.adopt(self.st)["name"], "During a massive protest")
+
+    def test_a_run_with_a_record_is_left_alone(self):
+        st = dict(self.st, goal_name="Blast Door")
+        with mock.patch.object(goal, "invent") as inv:
+            self.assertEqual(goal.adopt(st)["name"], "Blast Door")
+        inv.assert_not_called()
+
+
+class YouCanWalkThereAndArrive(unittest.TestCase):
+    """Played: the tag could not be clicked, and nothing ever completed."""
+
+    def setUp(self):
+        goal._APPROACH.clear(); goal._ADOPTED.clear(); goal._SEEN.clear()
+        self.st = {"goal_name": "Horizon Plant", "goal_look": "a refinery",
+                   "level_goal": "Horizon Plant — a refinery", "turn_count": 3}
+
+    def test_each_click_is_a_step_and_the_beat_hears_it(self):
+        self.assertEqual(goal.approach(self.st)["steps"], 1)
+        self.assertEqual(goal.approach(self.st)["steps"], 1)     # same turn, one step
+        self.assertIn("HEADING FOR HORIZON PLANT (step 1 of", goal.sight_directive(self.st))
+
+    def test_the_last_step_is_the_arrival_beat_then_it_is_reached(self):
+        for t in range(goal.APPROACH_STEPS):
+            self.st["turn_count"] = 3 + t
+            goal.approach(self.st)
+        self.assertIn("THE PLAYER ARRIVES THIS BEAT", goal.sight_directive(self.st))
+        self.assertIn("goal_reached is TRUE", goal.sight_directive(self.st))
+        self.assertFalse(goal.arrived(self.st))
+        self.st["turn_count"] += 1                                # the beat resolved
+        self.assertTrue(goal.arrived(self.st))
+        self.assertEqual(goal.sight_directive(self.st), "")
+
+    def test_reach_on_a_close_goal_is_the_arrival(self):
+        goal.approach(self.st, final=True)
+        self.assertIn("THE PLAYER ARRIVES THIS BEAT", goal.sight_directive(self.st))
+        self.st["turn_count"] += 1
+        self.assertTrue(goal.arrived(self.st))
+
+    def test_the_model_saying_so_still_counts(self):
+        self.assertTrue(goal.arrived(dict(self.st, goal_reached_turn=2)))
+
+
+class TheClientCanGo(unittest.TestCase):
+
+    def test_the_tag_and_the_hud_name_walk_you_there(self):
+        js = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
+        self.assertIn('postJSON("/api/goal/sight", { approach: true, final })', js)
+        self.assertIn('makeChoice(final ? reachFor(r.name) : actionFor(r.name), null, { source: "typed" })', js)
+        self.assertIn('card.id = "goal-begin"', js)
+        # Arriving does not pop a card: the goal glows and the click finishes.
+        self.assertIn('a.id = "goal-arrive"', js)
+        self.assertIn('postJSON("/api/goal/sight", { complete: true })', js)
+        css = (ROOT / "static/css/standalone.css").read_text(encoding="utf-8")
+        self.assertIn("#goal-tag.on .gt-name, #goal-tag.on .gt-kind, #goal-tag.on .gt-hit { pointer-events: auto", css)
+
+
 if __name__ == "__main__":
     unittest.main()

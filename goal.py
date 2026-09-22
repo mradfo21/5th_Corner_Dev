@@ -49,7 +49,48 @@ STATE_KEYS = ("goal_name", "goal_why", "goal_look")
 
 def record(state: Optional[dict]) -> Dict[str, str]:
     st = state if isinstance(state, dict) else {}
-    return {k.split("_", 1)[1]: str(st.get(k) or "").strip() for k in STATE_KEYS}
+    rec = {k.split("_", 1)[1]: str(st.get(k) or "").strip() for k in STATE_KEYS}
+    if not rec["name"]:
+        # A run that started before this module existed (or a save carried
+        # over from one) has a level_goal line and no record. It gets one on
+        # its first sighting request (adopt) and keeps it for the process.
+        got = _ADOPTED.get(str(st.get("level_goal") or "").strip())
+        if got:
+            rec = dict(got)
+    return rec
+
+
+# level_goal line -> record, for runs that never went through a reset here.
+_ADOPTED: Dict[str, Dict[str, str]] = {}
+
+
+def adopt(state: Optional[dict]) -> Dict[str, str]:
+    """Give a goal-less run a record from its own level_goal line, once.
+
+    Played in the app: a run begun before the merge kept going with its
+    authored premise ("During a massive protest, the president has been
+    kidnapped...") as level_goal and no name, so nothing was ever tagged.
+    The model labels the line the same way a reset would; with no model the
+    line's first clause is the name. Kept in memory, not written to state.json
+    (the turn loop owns that file)."""
+    st = state if isinstance(state, dict) else {}
+    line = str(st.get("level_goal") or "").strip()
+    if not line or str(st.get("goal_name") or "").strip():
+        return record(st)
+    if line in _ADOPTED:
+        return dict(_ADOPTED[line])
+    rec: Dict[str, str] = {}
+    try:
+        rec = invent(authored=line, world_prompt=str(st.get("world_prompt") or "")) or {}
+    except Exception:
+        rec = {}
+    name = _clean_name(rec.get("name")) or name_from(line)
+    if not name:
+        return record(st)
+    got = {"name": name, "why": str(rec.get("why") or "").strip(),
+           "look": str(rec.get("look") or "").strip()}
+    _ADOPTED[line] = got
+    return dict(got)
 
 
 def install(state: dict, rec: Dict[str, str], line: str = "") -> str:
@@ -306,12 +347,89 @@ def note(state: dict, found: bool) -> None:
             rec["seen"] = max(rec["seen"], turn)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# APPROACH — clicking the tag walks you there, in a few beats, and you arrive
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Played: the tag was a label you could not act on, and "reached" waited on the
+# consequence model deciding, unprompted, that a beat had arrived — which its
+# own directive ("must not hand it over for free") told it never to do. So the
+# run had a destination and no way to get there.
+#
+# Now every click on the tag (or its HUD name) is one step; the directive tells
+# each beat how close they are, and on the last step that THIS beat is the one
+# where they arrive. The first settled picture after that turn plays REACHED,
+# whether or not the model raised goal_reached. Kept in memory, like _SEEN.
+
+APPROACH_STEPS = int(os.getenv("GOAL_APPROACH_STEPS", "3"))
+_APPROACH: Dict[str, Dict[str, int]] = {}     # level_goal -> {steps, last_turn}
+_DONE: set = set()                            # level_goal lines the player walked into
+
+
+def approach(state: dict, final: bool = False) -> Dict[str, int]:
+    """One step toward the goal, taken on this turn. Returns {steps, of}.
+    ``final``: the player clicked REACH (one step out, or the thing already
+    fills the frame) — this turn is the arrival."""
+    goal = str((state or {}).get("level_goal") or "")
+    turn = int((state or {}).get("turn_count") or 0)
+    with _LOCK:
+        a = _APPROACH.setdefault(goal, {"steps": 0, "last_turn": -1})
+        if final:
+            a["steps"] = APPROACH_STEPS
+            a["last_turn"] = turn
+        elif a["last_turn"] != turn:        # one step per turn, however many clicks
+            a["steps"] = min(APPROACH_STEPS, a["steps"] + 1)
+            a["last_turn"] = turn
+        return {"steps": a["steps"], "of": APPROACH_STEPS}
+
+
+def progress(state: Optional[dict]) -> Dict[str, int]:
+    goal = str((state or {}).get("level_goal") or "")
+    with _LOCK:
+        a = dict(_APPROACH.get(goal) or {"steps": 0, "last_turn": -1})
+    return {"steps": a["steps"], "of": APPROACH_STEPS, "last_turn": a["last_turn"]}
+
+
+def arrived(state: Optional[dict]) -> bool:
+    """The arrival beat has been played: the last step was taken on an earlier
+    turn than the one on screen now."""
+    st = state if isinstance(state, dict) else {}
+    if st.get("goal_reached_turn"):
+        return True
+    p = progress(st)
+    return p["steps"] >= APPROACH_STEPS and int(st.get("turn_count") or 0) > p["last_turn"]
+
+
 def sight_directive(state: Optional[dict]) -> str:
     """One more line for the consequence prompt: keep it in view, or put it back."""
     st = state if isinstance(state, dict) else {}
     rec = record(st)
-    if not rec["name"] or st.get("goal_reached_turn"):
+    if not rec["name"] or arrived(st):
         return ""
+    p = progress(st)
+    turn_now = int(st.get("turn_count") or 0)
+    what_ = rec["name"] + (f" ({rec['look']})" if rec["look"] else "")
+    if p["steps"] >= APPROACH_STEPS and p["last_turn"] == turn_now:
+        return (
+            f"THE PLAYER ARRIVES THIS BEAT. They have walked to {what_} and this "
+            "beat is the one where they reach it: they stand at it, at its door, "
+            "or step inside. visual_scene shows them THERE, the place filling "
+            "the frame. goal_reached is TRUE for this beat.\n"
+        )
+    if p["steps"] == APPROACH_STEPS - 1 and p["last_turn"] == turn_now:
+        return (
+            f"THE PLAYER IS NOW RIGHT AT {rec['name'].upper()}. This beat brings "
+            f"them to its threshold: {what_} fills the upper frame, close enough "
+            "to touch, its way in (door, gate, hatch, opening) plainly in front "
+            "of them and lit. They have not gone in yet.\n"
+        )
+    if p["steps"] > 0 and p["last_turn"] == turn_now:
+        return (
+            f"THE PLAYER IS HEADING FOR {rec['name'].upper()} (step {p['steps']} of "
+            f"{APPROACH_STEPS}). This beat moves them plainly closer: {what_} is "
+            "bigger and nearer in visual_scene than in the last frame, still "
+            "ahead of them. Something on the way may slow them; nothing stops them.\n"
+        )
     turn = int(st.get("turn_count") or 0)
     s = sighting(st)
     seen = s.get("seen", -1)
@@ -356,10 +474,28 @@ def api_goal_sight():
         st = engine.get_state(sid) or {}
         rec = record(st)
         if not rec["name"]:
+            rec = adopt(st)
+        if not rec["name"]:
             return jsonify({"ok": True, "goal": False})
-        src = str((request.get_json(silent=True) or {}).get("src") or "")
+        body = request.get_json(silent=True) or {}
+        src = str(body.get("src") or "")
+        if body.get("complete"):
+            # Arrived, and the player clicked the glowing goal: that click is
+            # the finish, not the beat before it.
+            with _LOCK:
+                _DONE.add(str(st.get("level_goal") or ""))
+            print(f"[GOAL] completed {rec['name']}", flush=True)
+            return jsonify({"ok": True, "goal": True, "name": rec["name"],
+                            "completed": True, "reached_line": _reached_line(sid)})
+        if body.get("approach"):
+            step = approach(st, final=bool(body.get("final")))
+            print(f"[GOAL] approach {rec['name']}: step {step['steps']}/{step['of']} "
+                  f"on turn {st.get('turn_count')}", flush=True)
+            return jsonify({"ok": True, "goal": True, "name": rec["name"], **step})
+        p = progress(st)
         out = {"ok": True, "goal": True, "name": rec["name"], "why": rec["why"],
-               "reached": bool(st.get("goal_reached_turn")),
+               "reached": arrived(st), "steps": p["steps"], "of": p["of"],
+               "completed": str(st.get("level_goal") or "") in _DONE,
                "found": False, "box": None, "src": src}
         if out["reached"]:
             out["reached_line"] = _reached_line(sid)
