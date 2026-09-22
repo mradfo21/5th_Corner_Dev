@@ -2,9 +2,9 @@
   "name": "World",
   "note": "",
   "created": 1787787982.7503242,
-  "updated": 1790017091.312748,
+  "updated": 1790040884.546295,
   "prompts": {
-    "world_initial_state": "A playable place in third person. The camera follows a person through space. Each action moves the body or changes the room. Stay spatially consistent with the last frame. Do not invent exits that are not visible. Second-person narrative; the character is on screen.",
+    "world_initial_state": "The year is 2088 and you are Simon 'Ghost' Riley, a ghost in the machinery of a collapsing megalopolis. You stand in the heart of a city choking on its own decay, where the air is thick with the metallic tang of rain hitting scorching asphalt and the ozone hum of a dying power grid. The aesthetic is defined by the relentless, piercing blue strobes of robotic police units clashing against the gritty, concrete-gray backdrop of a city under siege. You are a tactical operative navigating a battlefield defined by surveillance and sudden, brutal violence. Everywhere you look, the chromatic aberration of emergency lights creates a fever dream of red-shifted chaos. The streets are a war zone; protesters are screaming for liberty while automated enforcers move with cold, calculated efficiency, their chassis reflecting the flickering neon of distant, unreachable administration towers. You are here because the president has been abducted, and the entire city has become a pressure cooker waiting to explode. You will run into desperate rioters wielding scrap metal and makeshift incendiaries, their faces hidden behind masks, and the relentless, unblinking eyes of the robotic riot squads that view every living soul as a target to be neutralized. Death here comes fast and clinical, delivered by a high-velocity projectile from an automated turret or the crushing weight of a riot suppression unit. The environment is your enemy; the wet, slick ground provides no cover, and the overhead power lines hiss with sparks, threatening to turn the entire street into a lethal trap. You are a professional, a shadow among the sparks, but even ghosts can be caught in the gears of a machine that no longer distinguishes between friend, foe, or collateral damage. As you move through the tactical labyrinth of the blockade, the weight of your mission presses against the reality of the anarchy surrounding you. You must navigate the shifting frontline, avoid the sweeping searchlights of the hovering drones, and find a way through the chaos to recover the target. The unanswered question haunting your every step is whether the president's disappearance is the catalyst for a genuine revolution or merely a calculated sacrifice to justify the total militarization of this city.\n\nA playable place in third person. The camera follows a person through space. Each action moves the body or changes the room. Stay spatially consistent with the last frame. Do not invent exits that are not visible. Second-person narrative; the character is on screen.",
     "player_character": {
       "enabled": true,
       "name": "Simon 'Ghost' Riley",
@@ -21,7 +21,7 @@
     },
     "setting_reference": {
       "enabled": true,
-      "name": "World",
+      "name": "Sector 4 Riot Zone",
       "summary": "A dense, rain-slicked city street choked by a massive protest and robot police blockade.",
       "goal": "During a massive protest, the president has been kidnapped. Crowds of rioters clash in the street against robotic police. Intense atmosphere and city chaos",
       "era": "Near-future, surveillance-heavy",
