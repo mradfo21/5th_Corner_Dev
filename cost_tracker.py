@@ -26,7 +26,8 @@ from typing import Any, Dict, Iterable, Optional
 import pricing
 
 ROOT = Path(__file__).parent.resolve()
-SESSIONS_DIR = ROOT / "sessions"
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
+SESSIONS_DIR = _paths.data_root() / "sessions"
 # SOMEWHERE_ANALYTICS_DIR: a ledger of its own (tools/film_run.py --first-launch
 # films a machine that has never spent anything).
 ANALYTICS_DIR = Path(os.environ.get("SOMEWHERE_ANALYTICS_DIR") or SESSIONS_DIR / "_analytics")

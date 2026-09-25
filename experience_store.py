@@ -38,12 +38,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import worlds_store
 
 ROOT = Path(__file__).parent.resolve()
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
 import authoring_sandbox as _sandbox
 _sandbox.guard()  # before the path below is computed — see authoring_sandbox
 # Overridable so a test run writes to a copy — see prompts_store.PROMPTS_PATH.
 EXPERIENCES_DIR = Path(os.getenv("SOMEWHERE_EXPERIENCES_DIR")
                        or (ROOT / "experiences"))
-SESSIONS_DIR = Path(os.getenv("SESSIONS_DIR") or (ROOT / "sessions"))
+SESSIONS_DIR = Path(os.getenv("SESSIONS_DIR") or (_paths.data_root() / "sessions"))
 ACTIVE_SLUG = "default"
 # The shipped Play door. worlds/somewhere.json + this Experience are the
 # Phase 0 freeze of the Horizon demo. Empty ``.active`` binds here when the

@@ -31,7 +31,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 ROOT = Path(__file__).resolve().parent
-BUGS_DIR = ROOT / "bugs"
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
+BUGS_DIR = _paths.data_root() / "bugs"
 
 # Enough server log to cover a whole turn including a retry, which is where the
 # interesting lines are ([ENCOUNTER] retrying, [FLIPBOOK] no grid came back).

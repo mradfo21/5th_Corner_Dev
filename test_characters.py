@@ -293,7 +293,9 @@ class ACharacterIsNotLostToABadWrite(unittest.TestCase):
              mock.patch.object(sys, "frozen", True, create=True), \
              mock.patch.dict(os.environ, {"APPDATA": str(tmp / "appdata")}):
             d = characters._default_dir()
-        self.assertEqual(d, tmp / "appdata" / "SOMEWHERE" / "characters")
+        # The player's folder is %APPDATA%\ABYSS since the Distribution MVP (M2).
+        import app_identity
+        self.assertEqual(d, tmp / "appdata" / app_identity.DATA_DIR_NAME / "characters")
         self.assertTrue((d / "kept-0001" / "character.json").is_file(), "an older build's roster comes along")
         shutil.rmtree(tmp, ignore_errors=True)
 

@@ -20,7 +20,6 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import app_identity
 
-TITLE = app_identity.LEGACY_DATA_DIR_NAME
 
 # Providers the live app already calls. Gemini is the default Play/Watch
 # path (text + stills + Veo). The others unlock catalogue entries or
@@ -140,7 +139,7 @@ def default_store_path() -> Path:
     raw = (os.environ.get("SOMEWHERE_KEYS_PATH") or "").strip()
     if raw:
         return Path(raw)
-    return app_identity.appdata_root() / "keys.env"
+    return app_identity.data_dir() / "keys.env"
 
 
 def store_path() -> Path:

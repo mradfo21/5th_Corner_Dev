@@ -237,6 +237,10 @@ def _client(api_key: str, base_url: str):
 
 # ───────── config & assets ──────────────────────────────────────────────────
 ROOT = Path(__file__).parent.resolve()
+# Where the game WRITES (paths.py): the repo from source, %APPDATA%\ABYSS in a
+# packaged build — an update replaces ROOT, so no save may live there (M2).
+import paths as _paths
+DATA = _paths.data_root()
 
 # Debug mode (set DEBUG_MODE=1 environment variable to enable verbose logging)
 DEBUG_MODE = os.getenv("DEBUG_MODE", "0") == "1"
@@ -938,7 +942,7 @@ def _get_session_root(session_id='default'):
             print(f"[SECURITY WARNING] Invalid session ID attempted: {session_id}")
             raise
     
-    return ROOT / "sessions" / session_id
+    return DATA / "sessions" / session_id
 
 def _get_state_path(session_id='default'):
     """Get state file path for a session"""
@@ -1088,7 +1092,7 @@ def _update_session_metadata(session_id='default', **updates):
 
 def get_all_sessions():
     """List all available sessions (like Minecraft's world list)"""
-    sessions_dir = ROOT / "sessions"
+    sessions_dir = DATA / "sessions"
     if not sessions_dir.exists():
         return []
     
@@ -2237,7 +2241,7 @@ _vision_cache = _BoundedLRUCache(_VISION_CACHE_MAX)
 # Only frames under worlds/ are written to disk. A session's turn images are
 # analysed once and never revisited, so persisting them would fill the disk
 # for no reuse.
-_VISION_DISK_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "vision"
+_VISION_DISK_CACHE_DIR = DATA / ".cache" / "vision"
 _VISION_DISK_CACHE_MAX_FILES = 64
 
 
@@ -3424,7 +3428,7 @@ def _resolve_image_path(image_path: str, session_id: str = None) -> Path:
     # lost their session hint). Only reached when the file wasn't found above,
     # so it never runs in the common path.
     try:
-        sessions_root = ROOT / "sessions"
+        sessions_root = DATA / "sessions"
         if sessions_root.exists():
             for sess in sessions_root.iterdir():
                 cand = sess / "images" / name
@@ -13184,7 +13188,7 @@ def _sweep_thread_signals() -> None:
     """
     try:
         cutoff = time.time() - _THREAD_SIGNAL_TTL_S
-        for p in ROOT.glob("thread_signal_*.tmp"):
+        for p in DATA.glob("thread_signal_*.tmp"):
             try:
                 if p.stat().st_mtime < cutoff:
                     p.unlink()
@@ -13382,7 +13386,7 @@ def api_choose():
         #
         # The signal file is still passed (the worker writes it and it is useful
         # under DEBUG_MODE), but nothing blocks on it and it's swept, not leaked.
-        temp_signal_file = ROOT / f"thread_signal_{player_action_item['id']}.tmp"
+        temp_signal_file = DATA / f"thread_signal_{player_action_item['id']}.tmp"
 
         try:
             thread = threading.Thread(
@@ -13515,7 +13519,7 @@ def _ensure_disk_headroom(force: bool = False):
     and fully best-effort: any failure is swallowed so it can never break a turn.
     """
     global _last_disk_sweep_ts
-    sessions_root = ROOT / "sessions"
+    sessions_root = DATA / "sessions"
     ok, usage, need = _disk_free_status(sessions_root)
     if ok and not force:
         return
@@ -21623,13 +21627,13 @@ def archive_session(session_id='default', reason='reset'):
     import shutil
     from datetime import datetime
     
-    session_root = ROOT / "sessions" / session_id
+    session_root = DATA / "sessions" / session_id
     if not session_root.exists():
         print(f"[ARCHIVE] Session {session_id} doesn't exist, nothing to archive")
         return None
     
     # Create archives directory
-    archives_root = ROOT / "archives"
+    archives_root = DATA / "archives"
     archives_root.mkdir(exist_ok=True)
     
     # Create timestamped archive folder

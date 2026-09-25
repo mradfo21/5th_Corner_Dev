@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).parent.resolve()
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
 
 try:
     import cost_tracker
@@ -850,7 +851,7 @@ def _session_audio_dir(session_id: str = "default", *, create: bool = True) -> P
         import engine
         audio_dir = Path(engine._get_session_root(safe)) / "audio"
     except Exception:
-        audio_dir = ROOT / "sessions" / safe / "audio"
+        audio_dir = _paths.data_root() / "sessions" / safe / "audio"
     if create:
         audio_dir.mkdir(parents=True, exist_ok=True)
     return audio_dir
@@ -888,7 +889,7 @@ _INFLIGHT = {}
 # THE CHOSEN LOOP
 # ────────────────────────────────────────────────────────────────────────────
 
-MUSIC_DIR = ROOT / "assets" / "music"
+MUSIC_DIR = _paths.data_root() / "assets" / "music"
 STOCK_DIR = MUSIC_DIR / "stock"
 _LOOP_META = MUSIC_DIR / "loop.json"
 _DIRECTION_PATH = MUSIC_DIR / "direction.json"
@@ -1544,7 +1545,7 @@ def _sessionize_url(url: str | None, session_id: str) -> str | None:
 
 
 def _find_audio_in_any_session(filename: str) -> Path | None:
-    root = ROOT / "sessions"
+    root = _paths.data_root() / "sessions"
     if not root.is_dir():
         return None
     try:

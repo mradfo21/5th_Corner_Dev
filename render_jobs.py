@@ -41,7 +41,8 @@ from typing import Any, Dict, List, Optional
 import ai_provider_manager
 
 ROOT = Path(__file__).parent.resolve()
-RENDER_ROOT = ROOT / "playtest_results" / "renders"
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
+RENDER_ROOT = _paths.data_root() / "playtest_results" / "renders"
 # Zips live under the render root so the one guarded resolver serves them too.
 # Underscore-prefixed so the history scan doesn't mistake it for a run.
 BUNDLE_DIR = RENDER_ROOT / "_bundles"

@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 ROOT = Path(__file__).parent.resolve()
-PRICING_PATH = ROOT / "pricing.json"
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
+PRICING_PATH = _paths.data_root() / "pricing.json"  # seeded from the build (paths.FACTORY_FILES)
 PRICING_LOCK = threading.Lock()
 
 _cached_pricing: Optional[Dict[str, Any]] = None

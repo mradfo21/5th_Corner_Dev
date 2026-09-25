@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).parent.resolve()
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
 
 # Best-effort cost tracking (see ADMIN_COST_ANALYTICS_DASHBOARD_PLAN.md). A
 # broken/missing analytics module must never break voice design.
@@ -96,7 +97,7 @@ DESIGN_TIMEOUT_SECONDS = _cfg_int("ELEVENLABS_DESIGN_TIMEOUT_SECONDS", 45)
 # Cache file lives at repo root so it survives `delete_session` (which wipes
 # per-session dirs) and stays authoritative across workers/restarts. Each
 # entry embeds its own session_id so cross-session sweeps/LRU can inspect it.
-CACHE_PATH = ROOT / "voice_design_cache.json"
+CACHE_PATH = _paths.data_root() / "voice_design_cache.json"
 
 # ElevenLabs endpoints. Voice Design lives under /v1/text-to-voice.
 _API_BASE = "https://api.elevenlabs.io"

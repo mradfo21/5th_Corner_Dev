@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 ROOT = Path(__file__).resolve().parent
-PLAY_LOG_DIR = ROOT / "logs" / "play"
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
+PLAY_LOG_DIR = _paths.data_root() / "logs" / "play"
 
 
 def play_log_path(session_id: str = "default") -> Path:

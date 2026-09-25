@@ -70,6 +70,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).parent.resolve()
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
 
 # Colors for the annotated frames / GIF overlay.
 BOX_COLOR = (0, 255, 170)
@@ -1578,7 +1579,7 @@ def parse_args(argv=None):
     if not args.session:
         args.session = f"{args.mode}{stamp}"
     if not args.out:
-        args.out = str(ROOT / "playtest_results" / f"{args.mode}_run_{stamp}")
+        args.out = str(_paths.data_root() / "playtest_results" / f"{args.mode}_run_{stamp}")
     return args
 
 
