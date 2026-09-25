@@ -23299,6 +23299,9 @@
         .then((d) => {
           if (d && d.ok) {
             flash("SAVED " + String(d.id || "").slice(-6), false);
+            // Opt-in, every time: show what would leave the machine, send
+            // only on OK (bug_send.py). Key-shaped text is redacted first.
+            setTimeout(() => { offerSend(d.id, note); }, 400);
             try { AgentLog.push("ok", "bug captured", d.relative_path); } catch (_) {}
             try { console.log("[bug] captured to " + d.relative_path, d.verdicts || []); } catch (_) {}
           } else {
@@ -23314,6 +23317,29 @@
           busy = false;
           if (btn) btn.disabled = false;
         });
+    }
+
+    function offerSend(id, note) {
+      if (!id) return;
+      fetch("/api/bug/preview?id=" + encodeURIComponent(id), { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((p) => {
+          if (!p || !p.ok) return;
+          const files = p.files || [];
+          const list = files.slice(0, 14)
+            .map((f) => "  " + f.name + (f.redacted ? "  (keys removed)" : "")).join("\n");
+          const more = files.length > 14 ? "\n  ...and " + (files.length - 14) + " more" : "";
+          const ok = window.confirm(
+            "Send this bug report to 5th Corner?\n\n" + list + more +
+            "\n\nAnything shaped like an API key is removed before it goes. " +
+            "Nothing is sent unless you press OK.");
+          if (!ok) return;
+          flash("SENDING", false);
+          return postJSON("/api/bug/send", { id: id, note: note || "" })
+            .then((r) => flash(r && r.ok ? "SENT - THANK YOU" : "NOT SENT", !(r && r.ok)))
+            .catch(() => flash("NOT SENT", true));
+        })
+        .catch(() => {});
     }
 
     function init() {

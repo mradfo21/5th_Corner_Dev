@@ -11,7 +11,7 @@ so it shows the new build within a couple of minutes with no Render deploy.
     --version V      default: YYYY.MM.DD-<short commit>
     --notes-file F   default: the newest section of CHANGELOG.md
     --dist PATH      default: the folder in dist/ that has the game's .exe in it
-    --repo O/N       default: $GAME_RELEASES_REPO or mradfo21/5th_Corner_Dev
+    --repo O/N       default: $GAME_RELEASES_REPO or app_identity.RELEASES_REPO
     --prerelease     publish without making it "latest" (the page skips nothing
                      either way; use this for a build you are not sure of yet)
 
@@ -49,6 +49,12 @@ SECRET_NAMES = {".env", "keys.env", "billing.json", "config.json", "render.env",
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, **kw)
+
+
+def _releases_repo() -> str:
+    sys.path.insert(0, str(ROOT))
+    import app_identity
+    return app_identity.RELEASES_REPO
 
 
 def find_dist(explicit: str | None) -> Path:
@@ -162,7 +168,7 @@ def main(argv=None) -> int:
     ap.add_argument("--dist")
     ap.add_argument("--version")
     ap.add_argument("--notes-file")
-    ap.add_argument("--repo", default=os.getenv("GAME_RELEASES_REPO") or "mradfo21/5th_Corner_Dev")
+    ap.add_argument("--repo", default=os.getenv("GAME_RELEASES_REPO") or _releases_repo())
     ap.add_argument("--title", default=os.getenv("GAME_TITLE"))
     ap.add_argument("--prerelease", action="store_true")
     ap.add_argument("--dry-run", action="store_true")

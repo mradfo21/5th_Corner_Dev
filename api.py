@@ -26,6 +26,9 @@ import keys_store
 import billing
 
 app = Flask(__name__)
+# No request body over 64 MB (a character photo, a bug frame and a studio
+# plate are all well under it): past this Flask answers 413 before reading.
+app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_MB", "64")) * 1024 * 1024
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -311,6 +314,58 @@ def api_bug_list():
         return error_response("Failed to list bug captures", str(e))
 
 
+@app.route('/api/bug/preview', methods=['GET'])
+def api_bug_preview():
+    """What SEND would upload for one capture — the client shows this list
+    and asks before anything leaves the machine (bug_send.py)."""
+    import bug_send
+    files = bug_send.manifest(request.args.get('id') or '')
+    if files is None:
+        return error_response("No such capture", code=404)
+    return jsonify({"ok": True, "files": files, "intake": bug_send.INTAKE_URL})
+
+
+@app.route('/api/bug/send', methods=['POST'])
+def api_bug_send():
+    """Send one capture to 5th Corner. Desktop only; the player pressed SEND."""
+    if not _shutdown_armed:
+        return error_response("Only the desktop app sends bug reports", code=403)
+    import bug_send
+    data = request.get_json(silent=True) or {}
+    try:
+        return jsonify(bug_send.send(str(data.get('id') or ''), str(data.get('note') or '')))
+    except FileNotFoundError:
+        return error_response("No such capture", code=404)
+    except Exception as e:  # noqa: BLE001 — offline, intake down
+        return error_response("Could not send the report", str(e)[:200], code=502)
+
+
+@app.route('/api/bug/intake', methods=['POST'])
+def api_bug_intake():
+    """Where desktop copies send their captures (hosted site only).
+
+    Size-capped, rate-limited per address, stored, and summarised to the
+    private webhook. The zip is kept, never unpacked here."""
+    import bug_send
+    if local_guard.armed():
+        return error_response("Not an intake", code=404)
+    if (request.content_length or 0) > bug_send.MAX_BYTES + 256 * 1024:
+        return error_response("Report too large", code=413)
+    ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "?").split(",")[0].strip()
+    if not bug_send.rate_ok(ip):
+        return error_response("Too many reports from here; try again in an hour", code=429)
+    upload = request.files.get("report")
+    if upload is None:
+        return error_response("No report attached", code=400)
+    data = upload.read(bug_send.MAX_BYTES + 1)
+    if len(data) > bug_send.MAX_BYTES:
+        return error_response("Report too large", code=413)
+    result = bug_send.receive(data, str(request.form.get("note") or ""),
+                              str(request.headers.get("X-ABYSS-Version") or ""), ip,
+                              engine.DATA)
+    return jsonify(result)
+
+
 # Optional flask-sock (live TALK websocket). Never let its absence break boot.
 try:
     from flask_sock import Sock
@@ -332,8 +387,12 @@ def _build_info():
     the new commit is not live no matter what the dashboard shows.
     """
     commit = (os.getenv("RENDER_GIT_COMMIT") or "").strip()
+    import app_identity
     return {
-        "commit": commit or None,
+        # The release a desktop build was cut from (the tag, stamped into
+        # _version.py by the release workflow); "0.1.0-dev" from source.
+        "version": app_identity.VERSION,
+        "commit": commit or getattr(app_identity, "COMMIT", None) or None,
         "commit_short": commit[:7] if commit else None,
         "branch": (os.getenv("RENDER_GIT_BRANCH") or "").strip() or None,
         "uptime_s": round(time.time() - _BOOTED_AT, 1),
@@ -636,8 +695,8 @@ _WALLET_FREE_PREFIXES = (
     "/api/lobby/heartbeat", "/api/lobby/leave", "/api/lobby/create", "/api/sessions",
     "/api/state/save",
     "/api/reactor/usage", "/api/talk/end", "/api/cutscene/complete",
-    "/api/bug/capture", "/api/replay/", "/api/shutdown", "/api/admin",
-    "/api/reel/",
+    "/api/bug/", "/api/replay/", "/api/shutdown", "/api/admin",
+    "/api/reel/", "/api/update",
 )
 
 
@@ -1603,7 +1662,7 @@ def _standalone_asset_version():
     latest = 0
     for path in candidates:
         try:
-            latest = max(latest, os.path.getmtime(path))
+            latest = max(latest, os.path.getmtime(Path(__file__).resolve().parent / path))
         except Exception:
             pass
     stamp = str(int(latest)) if latest else "0"
@@ -3098,7 +3157,7 @@ def _list_active_sessions():
     sweeper to decide which designed voices belong to a live story vs a
     session that's been reset/deleted."""
     try:
-        sessions_dir = Path(__file__).parent / "sessions"
+        sessions_dir = engine.DATA / "sessions"
         if not sessions_dir.exists():
             return []
         return [p.name for p in sessions_dir.iterdir() if p.is_dir()]
@@ -5995,6 +6054,39 @@ def api_shutdown():
           flush=True)
     threading.Thread(target=_quit_process, name="quit", daemon=True).start()
     return jsonify({"status": "closing", "stopped": stopped})
+
+
+# ═══════════════════════════════════════════════════════════════════
+# UPDATES (desktop app only) — updater.py, Distribution MVP M4
+# ═══════════════════════════════════════════════════════════════════
+#
+# The start menu asks GET /api/update; when an installed build has downloaded
+# a newer version it shows UPDATE READY — RESTART. Pressing it is the only way
+# an update is applied mid-session, and it leaves through the EXIT path, so a
+# render or a paid stream is released first. Hosted servers answer
+# "not-installed" and never apply anything.
+
+
+@app.route("/api/update", methods=["GET"])
+def api_update_status():
+    import updater
+    return jsonify(updater.status())
+
+
+@app.route("/api/update/apply", methods=["POST"])
+def api_update_apply():
+    if not _shutdown_armed:
+        return error_response("Updates are applied by the desktop app",
+                              "This server does not update itself.", code=403)
+    import updater
+    problem = updater.apply()
+    if problem:
+        return error_response("Could not apply the update", problem, code=409)
+    stopped = _release_compute()
+    print(f"[UPDATE] restarting into the new version; stopped: "
+          f"{', '.join(stopped) or 'nothing running'}", flush=True)
+    threading.Thread(target=_quit_process, name="quit-for-update", daemon=True).start()
+    return jsonify({"status": "restarting"})
 
 
 # ═══════════════════════════════════════════════════════════════════

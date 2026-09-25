@@ -41,20 +41,28 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import app_identity
+import updater
 
-TITLE = app_identity.LEGACY_DATA_DIR_NAME  # the %APPDATA% folder (keys, characters, account) until M2 moves it
+# First, before anything else: when the installer runs this exe to finish an
+# install or an update (--veloapp-*), Velopack does its work here and exits.
+updater.boot()
+
+import paths
+
 NAME = app_identity.APP_NAME               # what the player sees: the window, the dialogs
-
-# Directories the game writes into. Bundled builds ship them empty; stamp_factory
-# in tools/ship_layout.py creates the same set beside the exe.
-WRITABLE = ("sessions", "logs", "archives", "worlds", "experiences", "levels",
-            "lore/images", "lore/text", "assets/references", "assets/music",
-            "playtest_results")
+# Where the game writes: %APPDATA%\ABYSS in a packaged build (an update replaces
+# the install folder, so nothing of the player's may live there — M2), the repo
+# itself from source.
+DATA = paths.data_root()
 
 
 def _prepare_writable() -> None:
-    for rel in WRITABLE:
-        (ROOT / rel).mkdir(parents=True, exist_ok=True)
+    """Seed the data root, point the stores at it, and work from it: every
+    relative path in the game ("sessions", "archives", "logs") is player data,
+    so in a packaged build the working directory IS the data root."""
+    paths.prepare()
+    if DATA.resolve() != ROOT.resolve():
+        os.chdir(DATA)
 
 
 def _capture_output() -> None:
@@ -67,7 +75,7 @@ def _capture_output() -> None:
         return
     import safe_log  # rotates at 10 MB and blanks key-shaped strings (M1)
 
-    log = ROOT / "logs" / "somewhere.log"
+    log = DATA / "logs" / "somewhere.log"
     try:
         stream = safe_log.RotatingRedactingStream(log)
     except OSError:
@@ -239,7 +247,7 @@ def start_server(port: int, mock: bool, backend: str | None, token: str) -> str:
     # machine can reach the run, the keys, or the EXIT button.
     import local_guard
     local_guard.arm(token, port)
-    local_guard.write_launch_file(ROOT, token, port)
+    local_guard.write_launch_file(DATA, token, port)
 
     threading.Thread(
         target=lambda: api.app.run(host="127.0.0.1", port=port, debug=False,
@@ -300,6 +308,8 @@ def run_window(game_url: str, health: tuple, fullscreen: bool) -> int:
         window.load_url(game_url)
 
     threading.Thread(target=hand_over, daemon=True).start()
+    # Look for a newer build in the background; the start menu offers it.
+    updater.start()
     webview.start(debug=False, private_mode=True)
 
     # We only get here once the window has gone — via EXIT, or via the title
@@ -363,7 +373,7 @@ def _env_candidates() -> list[Path]:
         for parent in list(ROOT.parents)[:3]:  # the repo, when running from dist/
             add(parent / ".env")
     if os.environ.get("APPDATA"):            # where an installed copy should look
-        add(app_identity.appdata_root() / ".env")
+        add(app_identity.data_dir() / ".env")
     return out
 
 
