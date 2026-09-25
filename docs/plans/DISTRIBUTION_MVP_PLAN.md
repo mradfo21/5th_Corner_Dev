@@ -129,10 +129,11 @@ tracks) + SFX (30) $1.74 (38%), text $0.14 (3%).
 
 ## M5 — Site and feedback
 
-- [ ] `SITE_MODE=downloads` on the site service: `/` → `/get`; `/standalone`, `/play`, `/lobby`, `/studio` and gameplay `/api/*` return 404; keep `/get*`, `/api/builds/latest`, `/api/health`, bug intake, `/admin` (token)
+- [x] (code; set on Render at the sync) `SITE_MODE=downloads` on the site service: `/` → `/get`; `/standalone`, `/play`, `/lobby`, `/studio` and gameplay `/api/*` return 404; keep `/get*`, `/api/builds/latest`, `/api/health`, bug intake, `/admin` (token)
 - [ ] Remove AI provider keys from the site service (they live only on the gateway)
 - [x] /get: prefer `*-Setup.exe` in `downloads._pick_asset` (SHA-256 and system requirements still to show); system requirements (Windows 10/11 64-bit, ~1.5 GB); SHA-256
-- [ ] `/privacy`, `/terms` (EULA, 18+), `/licenses`; first-launch 18+ confirmation (Gemini API terms)
+- [x] `/licenses`; first-launch 18+ confirmation (packaged builds; `/api/consent`)
+- [ ] `/privacy`, `/terms` (EULA, 18+) — need the legal entity and contact
 - [x] `POST /api/bug/intake` (code; the private webhook and deploy wait on the Render sync): 10 MB cap, per-IP rate limit, `MAX_CONTENT_LENGTH`; store + forward a summary to a private Discord webhook held server-side
 - [x] Bug button "Send to 5th Corner": preview what's included, redact key-shaped strings, opt-in every time; startup-failure splash offers "send crash log"
 
@@ -174,3 +175,28 @@ for real API calls.
   fast-forwarded to M0. Waiting on Matt: the `workflow` scope for the push,
   RELEASES_TOKEN, Azure signing, key rotation, the Render sync (gateway,
   SITE_MODE, intake webhook, legal pages).
+
+## Where it stands: ready to try deploying (2026-09-25)
+
+Proven on this machine: a packaged build from a read-only folder; the real
+installer; an update from beta.1 to beta.2 offered on screen and applied with
+the run kept; the local server refusing web pages; /get serving the installer.
+What is left, in order:
+
+1. **Matt:** `gh auth refresh -h github.com -s workflow`, so the branch with
+   `.github/workflows/` can be pushed; then the PR `dist/m2-data-root` → `main`
+   runs CI for the first time on GitHub's runner.
+2. **Matt:** rotate the leaked OpenAI / Discord / Replicate keys (M0).
+3. **Matt:** a fine-grained PAT (Contents: read/write on `abyss-releases` only)
+   as the `RELEASES_TOKEN` secret — or publish from this machine with
+   `python tools/release_local.py v0.1.0-beta.1 --publish`.
+4. First beta: tag `v0.1.0-beta.1` on `main`; install from `/get` in Windows
+   Sandbox (the "Done means" list); send to friends. Unsigned until 5.
+5. **Matt:** Azure Artifact Signing (1–20 business days) → the six `AZURE_*`
+   secrets; the next tag is signed.
+6. **Render sync:** set `SITE_MODE=downloads` (the service becomes /get only),
+   `BUG_WEBHOOK_URL`, `GAME_RELEASES_REPO` if not the default; point
+   www.5th-corner.com/get at it; check whether the game service auto-deploys
+   `main` (it was fast-forwarded to `cd86149` on 2026-09-25).
+7. G (pay-as-you-go gateway) — the only milestone not started; everything
+   above ships a BYOK beta without it.
