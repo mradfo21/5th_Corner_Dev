@@ -343,11 +343,18 @@ def encode(ff: str, pieces: list[dict], out: Path, w: int, h: int, crf: int) -> 
         total += (p["to"] - p["from"]) / p["speed"]
     chains.append("".join(labels) + f"concat=n={len(pieces)}:v=1:a=0,"
                   f"fade=t=in:st=0:d={FADE}:color=black,"
-                  f"fade=t=out:st={max(0.0, total - FADE):.3f}:d={FADE}:color=black,format=yuv420p[out]")
+                  f"fade=t=out:st={max(0.0, total - FADE):.3f}:d={FADE}:color=black,"
+                  # Limited range, BT.709, plain yuv420p. The sources are
+                  # full-range screenshots, and format=yuv420p alone kept them
+                  # tagged full range (yuvj420p): Chrome played that, Safari
+                  # and every iPhone did not (2026-09-25).
+                  f"scale=out_range=tv:out_color_matrix=bt709,format=yuv420p[out]")
     script = out.with_suffix(".filter.txt")
     script.write_text(";\n".join(chains), encoding="utf-8")
     cmd = [ff, "-v", "error", "-y", *inputs, "-filter_complex_script", str(script), "-map", "[out]", "-an",
            "-c:v", "libx264", "-preset", "slow", "-crf", str(crf), "-profile:v", "high",
+           "-level", "4.0", "-pix_fmt", "yuv420p", "-color_range", "tv",
+           "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
            "-g", str(FPS * 2), "-movflags", "+faststart", str(out)]
     subprocess.run(cmd, check=True)
     script.unlink(missing_ok=True)

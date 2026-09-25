@@ -87,6 +87,22 @@ body.past-splash .top .ui-btn { opacity: 1; transform: none; pointer-events: aut
     radial-gradient(ellipse 50% 38% at 50% 48%, rgba(2,5,4,0.55) 0%, rgba(2,5,4,0) 75%),
     linear-gradient(180deg, rgba(2,5,4,0.6) 0%, rgba(2,5,4,0) 18%, rgba(2,5,4,0) 62%, var(--bg) 100%);
 }
+/* A phone held upright: a 16:9 film cropped to the full height of the screen
+   shows a quarter of its width — the figure's elbow, not the fight. So the
+   film takes the top of the splash at a shape that keeps the action, fades
+   to black, and the name and DOWNLOAD sit in that fade; the reel below then
+   carries on in the same black (Matt, 2026-09-25: "this crop on mobile is
+   killer, you dont see the action"). */
+@media (max-aspect-ratio: 4/5) {
+  .splash { --film-h: 75svh; place-items: end center; padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 84px); }
+  .splash .film { bottom: auto; height: var(--film-h); }
+  .splash .film video { transform: none; }
+  .splash .film::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(180deg, rgba(2,5,4,0.35) 0%, rgba(2,5,4,0) 22%, rgba(2,5,4,0) 55%, var(--bg) 100%);
+  }
+  .splash::after { background: none; }
+}
 .hero { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 0 var(--gutter); }
 .brand {
   margin: 0; font-family: var(--font-display); font-weight: 400;
