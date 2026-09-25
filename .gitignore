@@ -130,3 +130,6 @@ MERGE_AND_RUN.bat
 
 # Stamped by the release workflow from the tag (tools/stamp_version.py); never committed.
 _version.py
+
+# Velopack output (tools/release_local.py, the release workflow).
+/Releases/

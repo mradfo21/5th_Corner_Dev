@@ -21,7 +21,7 @@ python play.py --mock     # fully offline, no API keys needed
 To build a standalone app you can move to another machine:
 
 ```bash
-python tools/build_exe.py --clean --run   # -> dist/SOMEWHERE/
+python tools/build_exe.py --clean --run   # -> dist/ABYSS/
 ```
 
 Full setup, keys and troubleshooting: **[QUICKSTART.md](QUICKSTART.md)**.
@@ -90,14 +90,14 @@ you can save but that changes nothing cannot accumulate again.
 
 ## Layout
 
-What a **player** gets is `dist/SOMEWHERE/` — the folder `tools/build_exe.py`
+What a **player** gets is `dist/ABYSS/` — the folder `tools/build_exe.py`
 writes. What this **repo** is is that game plus the studio that made it.
 
 ```
 # Product (double-click, then ship the folder)
 play.py  PLAY.bat        the game
 RUN.bat                  windowed + console, for looking at logs
-tools/build_exe.py       -> dist/SOMEWHERE/
+tools/build_exe.py       -> dist/ABYSS/
 tools/ship_layout.py     the only list of what may go in that folder
 worlds/somewhere.json    the shipped Horizon World
 experiences/somewhere.json

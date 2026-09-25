@@ -72,6 +72,15 @@ jobs:
       - name: Stamp the version
         run: python tools/stamp_version.py ${{ steps.v.outputs.tag }}
 
+      - name: Release notes (the tag's annotation)
+        shell: pwsh
+        run: |
+          # checkout can leave an annotated tag lightweight; fetch it whole.
+          git fetch --force origin "refs/tags/${{ steps.v.outputs.tag }}:refs/tags/${{ steps.v.outputs.tag }}"
+          $notes = git for-each-ref "refs/tags/${{ steps.v.outputs.tag }}" --format='%(contents)'
+          if (-not $notes) { $notes = "ABYSS ${{ steps.v.outputs.version }}" }
+          Set-Content -Encoding utf8 notes.md $notes
+
       - name: Build
         run: python tools/build_exe.py --clean
 
@@ -117,7 +126,7 @@ jobs:
           --packDir dist/ABYSS --mainExe ABYSS.exe --packTitle ABYSS --packAuthors "5th Corner"
           --icon assets/icon/abyss.ico --channel ${{ steps.v.outputs.channel }}
           --framework webview2 --shortcuts StartMenuRoot,Desktop
-          --outputDir Releases ${{ steps.sign.outputs.args }}
+          --releaseNotes notes.md --outputDir Releases ${{ steps.sign.outputs.args }}
 
       - name: Keep the build
         uses: actions/upload-artifact@v4
