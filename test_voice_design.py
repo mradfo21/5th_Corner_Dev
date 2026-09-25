@@ -151,6 +151,15 @@ class TestDesignPipeline(unittest.TestCase):
       - release_session_voices deletes voices tagged to that session only.
     """
 
+    @classmethod
+    def setUpClass(cls):
+        # A design records its cost through cost_tracker, whose first call
+        # imports the whole engine — seconds on a cold CI runner, longer than
+        # the wait=1.5 these tests allow. Pay it once, here, not inside a
+        # timed assertion ("'generating' != 'ready'" on #162's run).
+        import cost_tracker  # noqa: F401
+        import engine  # noqa: F401
+
     def setUp(self):
         # Fresh module + fresh cache file per test.
         self.vd = _reload_with_env(
@@ -189,7 +198,28 @@ class TestDesignPipeline(unittest.TestCase):
         self.vd._post_save = fake_save
         self.vd._delete_voice = fake_delete
 
+    def _drain(self, seconds: float = 10.0) -> None:
+        """Wait until every background design has finished (no sleeps that
+        guess: a worker's first job imports the engine, which on a cold or
+        busy machine takes longer than any fixed pause)."""
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            with self.vd._INFLIGHT_LOCK:
+                pending = list(self.vd._INFLIGHT_EVENTS.values())
+            if not pending:
+                return
+            for ev in pending:
+                ev.wait(timeout=max(0.0, deadline - time.time()))
+            time.sleep(0.01)
+
     def tearDown(self):
+        # Drain the designs a test started and did not wait for (wait=0).
+        # _reload_with_env reloads this module IN PLACE, so a worker left
+        # running outlives its test: it calls the NEXT test's fake designer
+        # (a third design where two were expected) and holds that cache key in
+        # flight, so the next test's request coalesces onto it and reads
+        # "generating". It only showed on a slow CI runner (2026-09-25, #162).
+        self._drain()
         if self.vd.CACHE_PATH.exists():
             self.vd.CACHE_PATH.unlink()
 
@@ -208,7 +238,7 @@ class TestDesignPipeline(unittest.TestCase):
                                          "s1", wait=0)
         # Second caller must NOT trigger a duplicate design call.
         self.assertEqual(r1["cache_key"], r2["cache_key"])
-        time.sleep(0.6)  # let the worker finish
+        self._drain()  # let the worker finish, however long its first import takes
         designs = [c for c in self.call_log if c[0] == "design"]
         self.assertEqual(len(designs), 1)
 
