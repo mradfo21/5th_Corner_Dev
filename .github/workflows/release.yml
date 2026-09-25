@@ -1,0 +1,135 @@
+# A tag makes a release: v0.1.0 → stable, v0.2.0-beta.1 → beta.
+# (docs/plans/DISTRIBUTION_MVP_PLAN.md, M3/M4; docs/operations/RELEASING.md)
+#
+#   gate → stamp → build → smoke (install folder read-only) → pack (Velopack:
+#   Setup.exe, portable zip, full + delta update packages) → sign → publish to
+#   the public releases repo, where /get and every installed copy look.
+#
+# Secrets (repository settings → Secrets and variables → Actions):
+#   RELEASES_TOKEN     fine-grained PAT, Contents: read/write on
+#                      mradfo21/abyss-releases only. Without it the build is
+#                      kept as a workflow artifact and nothing is published.
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+#   AZURE_SIGN_ENDPOINT, AZURE_SIGN_ACCOUNT, AZURE_SIGN_PROFILE
+#                      Azure Artifact Signing. Without them the build ships
+#                      unsigned (SmartScreen warns "unknown publisher").
+# No game API key exists here: the gate and the smoke run in mock mode.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to build (e.g. v0.1.0-beta.1); must already exist"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  PACK_ID: 5thCorner.ABYSS
+  RELEASES_URL: https://github.com/mradfo21/abyss-releases
+  VPK_VERSION: 1.2.158
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      HAS_TOKEN: ${{ secrets.RELEASES_TOKEN != '' }}
+    steps:
+      - name: Resolve the tag
+        id: v
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag }}"
+          if (-not $tag) { $tag = "${{ github.ref_name }}" }
+          $ver = $tag.TrimStart("v")
+          $channel = if ($ver -match "-") { "beta" } else { "stable" }
+          "tag=$tag"         >> $env:GITHUB_OUTPUT
+          "version=$ver"     >> $env:GITHUB_OUTPUT
+          "channel=$channel" >> $env:GITHUB_OUTPUT
+          Write-Host "ABYSS $ver on $channel"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.v.outputs.tag }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Install from the lock
+        run: python -m pip install -r requirements.lock
+
+      - name: Gate
+        run: python tools/ci_suite.py
+
+      - name: Stamp the version
+        run: python tools/stamp_version.py ${{ steps.v.outputs.tag }}
+
+      - name: Build
+        run: python tools/build_exe.py --clean
+
+      - name: Smoke (install folder read-only)
+        run: python tools/smoke_exe.py
+
+      - name: Third-party notices
+        run: python tools/third_party_notices.py dist/ABYSS
+
+      - name: Velopack
+        run: dotnet tool install -g vpk --version ${{ env.VPK_VERSION }}
+
+      - name: Previous release (for delta updates)
+        if: ${{ env.HAS_TOKEN == 'true' }}
+        continue-on-error: true
+        run: vpk download github --repoUrl ${{ env.RELEASES_URL }} --channel ${{ steps.v.outputs.channel }} --token ${{ secrets.RELEASES_TOKEN }} --outputDir Releases ${{ steps.v.outputs.channel == 'beta' && '--pre' || '' }}
+
+      - name: Signing metadata
+        id: sign
+        shell: pwsh
+        env:
+          EP: ${{ secrets.AZURE_SIGN_ENDPOINT }}
+          ACC: ${{ secrets.AZURE_SIGN_ACCOUNT }}
+          PROF: ${{ secrets.AZURE_SIGN_PROFILE }}
+        run: |
+          if ($env:EP -and $env:ACC -and $env:PROF) {
+            @{ Endpoint = $env:EP; CodeSigningAccountName = $env:ACC; CertificateProfileName = $env:PROF } |
+              ConvertTo-Json | Set-Content -Encoding utf8 sign.json
+            "args=--azureTrustedSignFile sign.json" >> $env:GITHUB_OUTPUT
+            Write-Host "signing with Azure Artifact Signing"
+          } else {
+            "args=" >> $env:GITHUB_OUTPUT
+            Write-Host "::warning::no signing secrets - this build is UNSIGNED"
+          }
+
+      - name: Pack
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: >
+          vpk pack --packId ${{ env.PACK_ID }} --packVersion ${{ steps.v.outputs.version }}
+          --packDir dist/ABYSS --mainExe ABYSS.exe --packTitle ABYSS --packAuthors "5th Corner"
+          --icon assets/icon/abyss.ico --channel ${{ steps.v.outputs.channel }}
+          --framework webview2 --shortcuts StartMenuRoot,Desktop
+          --outputDir Releases ${{ steps.sign.outputs.args }}
+
+      - name: Keep the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ABYSS-${{ steps.v.outputs.version }}
+          path: Releases/*
+          retention-days: 30
+
+      - name: Publish
+        if: ${{ env.HAS_TOKEN == 'true' }}
+        run: >
+          vpk upload github --repoUrl ${{ env.RELEASES_URL }} --token ${{ secrets.RELEASES_TOKEN }}
+          --outputDir Releases --channel ${{ steps.v.outputs.channel }}
+          --tag ${{ steps.v.outputs.tag }} --releaseName "ABYSS ${{ steps.v.outputs.version }}"
+          --publish --merge ${{ steps.v.outputs.channel == 'beta' && '--pre' || '' }}

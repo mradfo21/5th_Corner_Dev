@@ -20,3 +20,6 @@ stripe>=15,<16
 # two coexist as long as pip resolves them to the SAME version — which it does,
 # since both are released in lockstep. Listed after opencv-python deliberately.
 mediapipe>=0.10
+# Installer + in-place updates (updater.py, Distribution MVP M4). Must match
+# the vpk CLI that packs the release (dotnet tool install -g vpk --version ...).
+velopack==1.2.158
