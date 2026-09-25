@@ -590,6 +590,10 @@ it. Keep that; it is the reason the codebase is navigable at this size.
   accuracy first — the ledger is wrong both ways today — then showing players
   what they pay for, then taking money; tracked in its §2 tables),
   `FATE_ROLL_VISUAL_PLAN.md`,
+  `ONE_KEY_AUDIO_PLAN.md` (every sound on one Gemini or OpenAI key; its A0 —
+  a keyless install talks to a public ElevenLabs agent — blocks release),
+  `TRADING_PLAN.md` (characters and worlds shared as PNG cards and codes;
+  design pass first),
   `PROMPT_TRIM_PROPOSAL.md` (see above — the tests assumed it), and the "fully
   local models" arc at the end of `DESKTOP_APP_ROADMAP.md`.
   `GAME_DESIGN_LAYERS_PLAN.md` is worth reading as a cautionary tale.
