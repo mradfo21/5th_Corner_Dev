@@ -19,6 +19,10 @@ archives/*
 # Uploaded character/setting reference plates (Cast & Camera) — runtime user data
 assets/references/*
 !assets/references/.gitkeep
+# The player's characters (characters.py) — runtime user data, like sessions.
+# The shipped starter lives in assets/characters/ and IS tracked.
+characters/*
+!characters/.gitkeep
 # Saved "worlds" (named prompt-set snapshots) — this machine's authoring.
 # The shipped SOMEWHERE demo is the only World that goes in a build.
 worlds/*
@@ -48,76 +52,11 @@ lore/images/*
 *.env
 render.env
 RENDER_SETUP.txt
-test_*.py
-# Keep the curated test suites in version control
-!test_experience_mode.py
-!test_experience_graph.py
-!test_detect_filter.py
-!test_local_vision.py
-!test_local_vision_e2e.py
-!test_outbound_dns.py
-!test_providers.py
-!test_standalone_e2e.py
-!test_realtime_e2e.py
-!test_conversation_moments.py
-!test_movement_mode_e2e.py
-!test_feed_engine.py
-!test_choices_robustness.py
-!test_krea_provider.py
-!test_fal_provider.py
-!test_voice_design.py
-!test_pricing.py
-!test_cost_tracker.py
-!test_analytics_api.py
-!test_prompts_store.py
-!test_game_identity.py
-!test_world_authoring.py
-!test_world_drift.py
-!test_concurrent_sessions.py
-!test_talk_voice.py
-!test_camp_companions.py
-!test_editor_graph_e2e.py
-!test_object_permanence.py
-!test_narrator_grounding.py
-!test_danger_simulation.py
-!test_playtest_interactive.py
-!test_render_mode.py
-!test_scene_objects.py
-!test_simulation_pacing.py
-!test_keys_store.py
-!test_scene_audio.py
-!test_usage_limits.py
-!test_billing.py
-!test_world_frames.py
-!test_somewhere_snapshot.py
-!test_encounter.py
-!test_bug_report.py
-!test_interact_dive_options.py
-!test_interact_plate_handoff.py
-!test_replay_cache.py
-# Sixteen curated suites were never added to this allowlist, so the `test_*.py`
-# rule above was silently ignoring them: test_cutscene.py alone is 50 tests
-# encoding what two days of live renders taught us about the opening montage, and
-# none of it could be committed. Found when `git show <sha>:test_cutscene.py` came
-# back "exists on disk, but not in <sha>". They run and they belong in the repo.
-!test_ceremony_hud.py
-!test_coinop.py
-!test_cutscene.py
-!test_editor_lands_e2e.py
-!test_editor_responsiveness.py
-!test_editor_wiring.py
-!test_encounter_custom_action.py
-!test_encounter_roster.py
-!test_exit_button.py
-!test_flipbook.py
-!test_move_moves_the_camera.py
-!test_run_isolation.py
-!test_third_person_orbit.py
-!test_transition_types.py
-!test_turn_memory.py
-!test_viewfinder.py
-!test_watch_overlay.py
-!test_world_regen.py
+# Test suites are source, every one of them. This used to be `test_*.py` plus
+# an allowlist, and the allowlist silently dropped suites twice (sixteen the
+# first time, test_cutscene.py's 50 tests among them; eight more on 2026-09-25,
+# test_combat / test_run_tape / test_provider_bridge among them, which CLAUDE.md
+# names as the invariants). A scratch probe goes in _claude_* or the scratchpad.
 
 # Turn-thread scratch markers (swept at runtime; see _sweep_thread_signals)
 thread_signal_*.tmp
@@ -168,3 +107,23 @@ bugs/
 # replay ledger. Reproducible by paying for the run again, so not source — but
 # do not delete these casually, they are what makes a replay run free.
 .cache/
+
+# /get shows short recordings of the game (tools/cut_clips.py), ~100 MB a shoot
+# and re-shot whenever the game changes. That is not something to put in git
+# history over and over: the posters and clips.json are tracked, the mp4s are
+# published beside the builds (Distribution MVP, M5), not committed.
+
+# Agent-session scratch and screenshot evidence (CLAUDE.md, section 3). Never
+# source; kept out of `git status` so real changes are visible.
+_claude_*
+_claude_*/
+_menushots_*/
+_playthrough/
+/_*.png
+/the
+thread_signal_*.tmp
+_pt_out.txt
+_pt_err.txt
+# Local launchers for the retired agent command runner (_claude_runner.py).
+START_CLAUDE*.bat
+MERGE_AND_RUN.bat
