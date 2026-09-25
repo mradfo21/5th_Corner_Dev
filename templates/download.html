@@ -95,10 +95,11 @@ body.past-splash .top .ui-btn { opacity: 1; transform: none; pointer-events: aut
    killer, you dont see the action"). */
 @media (max-aspect-ratio: 4/5) {
   /* Full-bleed at the top, but not so tall that it crops the action away:
-     about 1.1x the width shows ~half the 16:9 frame (the full height of the
-     screen showed a quarter). The name and DOWNLOAD sit in its fade. */
+     0.84x the width shows two thirds of the 16:9 frame (the whole frame was
+     too small, 1.12x too tight, the full screen height a quarter). The name
+     and DOWNLOAD sit in its fade. */
   .splash { height: auto; min-height: 0; display: flex; flex-direction: column; align-items: stretch; padding: 0 0 36px; }
-  .splash .film { position: relative; inset: auto; width: 100%; height: min(75svh, 112vw); }
+  .splash .film { position: relative; inset: auto; width: 100%; height: min(75svh, 84vw); }
   .splash .film video { transform: none; }
   .splash .film::after {
     content: ""; position: absolute; inset: 0; pointer-events: none;
@@ -107,6 +108,15 @@ body.past-splash .top .ui-btn { opacity: 1; transform: none; pointer-events: aut
   .splash::after { background: none; }
   .hero { margin-top: -88px; }
   .splash .cue { display: none; }
+  /* While the splash is all there is, the first clip below stays under a
+     black gradient; the first scroll lifts it, so the reel is something you
+     reveal rather than something already showing. */
+  .reel .clip:first-child .frame::before {
+    content: ""; position: absolute; inset: 0; z-index: 3; pointer-events: none;
+    background: linear-gradient(180deg, var(--bg) 0%, var(--bg) 30%, rgba(2,5,4,0.88) 100%);
+    transition: opacity 0.9s var(--ease);
+  }
+  body.scrolled .reel .clip:first-child .frame::before { opacity: 0; }
 }
 .hero { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 0 var(--gutter); }
 .brand {
@@ -392,6 +402,7 @@ details.news li span.alt { color: var(--dim); }
   const onScroll = () => {
     document.body.classList.toggle("scrolled", scrollY > 40);
     document.body.classList.toggle("past-splash", ok && scrollY > innerHeight * 0.6);
+    document.body.classList.toggle("scrolled", scrollY > 24);
   };
   addEventListener("scroll", onScroll, { passive: true }); onScroll();
 
