@@ -212,20 +212,6 @@
               title="Restart into the new version — your runs, characters and keys stay">UPDATE READY — RESTART</button>
       <span id="start-build" class="start-build" aria-hidden="true">Build 0.1</span>
     </div>
-    <!-- Asked once, on a packaged build's first launch (age_gate.js). -->
-    <div id="age-gate" class="age-gate" role="dialog" aria-modal="true"
-         aria-labelledby="age-q" hidden>
-      <div class="age-card">
-        <p class="age-kicker">Before you go in</p>
-        <h2 id="age-q" class="age-q">ABYSS is for players 18 and over.</h2>
-        <p class="age-note">It is a horror game, and it plays on your own AI key,
-          which the providers only issue to adults.</p>
-        <div class="age-actions">
-          <button id="age-yes" class="age-btn age-yes" type="button">I'M 18 OR OLDER</button>
-          <button id="age-no" class="age-btn" type="button">LEAVE</button>
-        </div>
-      </div>
-    </div>
     <div id="xp-picker" class="xp-picker" hidden>
       <div class="xp-nav">
         <button id="xp-back" class="keys-back" type="button">BACK</button>
@@ -1583,6 +1569,5 @@
   <!-- The pack: the backpack beside the fist, the find card, the slots. -->
   <script src="{{ url_for('static', filename='js/pack.js') }}?v={{ asset_version }}"></script>
   <script src="{{ url_for('static', filename='js/update_notice.js') }}?v={{ asset_version }}"></script>
-  <script src="{{ url_for('static', filename='js/age_gate.js') }}?v={{ asset_version }}"></script>
 </body>
 </html>

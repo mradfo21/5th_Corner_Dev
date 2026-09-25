@@ -132,7 +132,12 @@ tracks) + SFX (30) $1.74 (38%), text $0.14 (3%).
 - [x] (code; set on Render at the sync) `SITE_MODE=downloads` on the site service: `/` → `/get`; `/standalone`, `/play`, `/lobby`, `/studio` and gameplay `/api/*` return 404; keep `/get*`, `/api/builds/latest`, `/api/health`, bug intake, `/admin` (token)
 - [ ] Remove AI provider keys from the site service (they live only on the gateway)
 - [x] /get: prefer `*-Setup.exe` in `downloads._pick_asset` (SHA-256 and system requirements still to show); system requirements (Windows 10/11 64-bit, ~1.5 GB); SHA-256
-- [x] `/licenses`; first-launch 18+ confirmation (packaged builds; `/api/consent`)
+- [x] `/licenses`
+- Dropped: a first-launch 18+ click-through. Built on 2026-09-25 and removed
+  the same day. With BYOK the age requirement binds the key holder, whom
+  Google/OpenAI already checked; a self-declared click verifies nothing and
+  put a second gate in front of a first launch. The 18+ question belongs in
+  the gateway's signup (G), where it becomes ours, and in the Terms.
 - [ ] `/privacy`, `/terms` (EULA, 18+) — need the legal entity and contact
 - [x] `POST /api/bug/intake` (code; the private webhook and deploy wait on the Render sync): 10 MB cap, per-IP rate limit, `MAX_CONTENT_LENGTH`; store + forward a summary to a private Discord webhook held server-side
 - [x] Bug button "Send to 5th Corner": preview what's included, redact key-shaped strings, opt-in every time; startup-failure splash offers "send crash log"

@@ -84,8 +84,6 @@ def _button_on_screen(shot: Path) -> str:
             # behind it (visibility: hidden). Close it the way a player does:
             # "not [hidden]" is not "on screen" — the first version of this
             # check passed while the screenshot showed only ACCOUNT.
-            if page.is_visible("#age-yes"):     # a packaged build's first launch asks 18+
-                page.click("#age-yes")
             if page.is_visible("#acct-close"):
                 page.click("#acct-close")
             page.wait_for_selector("#start-update", state="visible", timeout=30000)
