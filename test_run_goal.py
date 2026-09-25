@@ -187,9 +187,16 @@ class TestAFightRollsWithTheTurnsLuck(unittest.TestCase):
         self.assertEqual(engine._load_state(self.SID).get("fate"), dyn["fate"])
 
     def test_the_resolver_reads_that_key(self):
+        # Every exchange is rolled through roll_exchange, which reads the
+        # fight's context — fate included — in one place (fight_context).
+        import encounter
+        self.assertEqual(encounter.fight_context({"fate": "LUCKY"}, {})["fate"], "LUCKY")
         src = (ROOT / "encounter.py").read_text(encoding="utf-8")
-        body = src.split("def api_resolve", 1)[1]
-        self.assertIn('st.get("fate")', body)
+        body = src.split("def api_resolve", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("roll_exchange(st, enc, verb, lane)", body)
+        # ...and it reaches the dice: LUCKY is +2 on every roll you make.
+        self.assertEqual(encounter.fight_context({"fate": "LUCKY"}, {})["you"]["luck"], 2)
+        self.assertEqual(encounter.fight_context({"fate": "UNLUCKY"}, {})["you"]["luck"], -2)
 
 
 class TestTheContractCannotLoseRelocated(unittest.TestCase):

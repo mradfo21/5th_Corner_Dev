@@ -91,7 +91,7 @@ class TestStandaloneE2E(unittest.TestCase):
                                    / "experience_store" / "experiences_dir")
         for var in ("SOMEWHERE_PROMPTS_PATH", "SOMEWHERE_PROMPTS_DEFAULTS_PATH",
                     "SOMEWHERE_WORLDS_DIR", "SOMEWHERE_EXPERIENCES_DIR",
-                    "SOMEWHERE_TUNABLES_PATH"):
+                    "SOMEWHERE_TUNABLES_PATH", "SOMEWHERE_CHARACTERS_DIR"):
             env[var] = os.environ[var]
         # And play the SHIPPED experience, whatever this machine has selected.
         # In mock mode the run can only open on a World's cached first frame —

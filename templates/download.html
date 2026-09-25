@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{{ title }}</title>
+<meta name="description" content="When you stare into the abyss, the abyss stares back. A generative adventure game with unlimited possibility.">
+<meta name="theme-color" content="#020504">
+<meta property="og:type" content="website">
+<meta property="og:title" content="{{ title }}">
+<meta property="og:description" content="When you stare into the abyss, the abyss stares back.">
+<meta property="og:url" content="{{ page_url }}">
+<meta property="og:image" content="{{ og_image }}">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="{{ url_for('static', filename='img/get/mark.jpg') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Instrument+Sans:wght@400;500&family=Share+Tech+Mono&display=swap">
+{% if hero and hero.poster %}<link rel="preload" as="image" href="{{ hero.poster }}">{% endif %}
+<style>
+/* /get — the game, playing. Every moving picture on this page is a recording
+   of the real app (tools/cut_clips.py); the words are only what a button or
+   a title needs. Tokens are standalone.css's. */
+:root {
+  --font-display: "Bebas Neue", "Arial Narrow", Impact, sans-serif;
+  --font-ui: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Share Tech Mono", ui-monospace, Consolas, monospace;
+  --bg: #020504;
+  --ink: rgba(216, 240, 228, 0.92);
+  --text: rgba(232, 244, 238, 0.90);
+  --dim: rgba(216, 240, 228, 0.55);
+  --faint: rgba(216, 240, 228, 0.34);
+  --hair: rgba(216, 240, 228, 0.08);
+  --accent: #8effc1;
+  --accent-muted: rgba(142, 255, 193, 0.10);
+  --accent-soft: rgba(142, 255, 193, 0.16);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --gutter: clamp(16px, 4vw, 48px);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-ui); font-size: 16px; line-height: 1.5; overflow-x: hidden; -webkit-font-smoothing: antialiased; }
+a { color: inherit; }
+button { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
+::selection { background: rgba(142, 255, 193, 0.28); color: #fff; }
+
+/* ---------- top bar ---------- */
+.top {
+  position: fixed; inset: 0 0 auto 0; z-index: 60;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: calc(env(safe-area-inset-top, 0px) + 14px) var(--gutter) 14px;
+  transition: background 0.4s var(--ease);
+}
+body.scrolled .top { background: linear-gradient(180deg, rgba(2,5,4,0.8), rgba(2,5,4,0)); }
+.studio { display: inline-flex; align-items: center; gap: 10px; white-space: nowrap; text-decoration: none; font-family: var(--font-display); font-size: 17px; letter-spacing: 0.14em; color: var(--dim); transition: color 0.22s var(--ease); }
+.studio:hover { color: var(--text); }
+.studio img { width: 26px; height: 26px; border-radius: 4px; display: block; box-shadow: 0 0 18px rgba(142,255,193,0.18); }
+.ui-btn {
+  display: inline-block; font-family: var(--font-display); font-size: 17px; letter-spacing: 0.08em; line-height: 1;
+  color: var(--text); background: var(--accent-muted); border: none; border-radius: 8px; padding: 10px 16px 9px;
+  cursor: pointer; text-decoration: none; transition: background 0.22s var(--ease), color 0.22s var(--ease), box-shadow 0.22s var(--ease), opacity 0.4s var(--ease), transform 0.4s var(--ease);
+}
+.ui-btn:hover { background: var(--accent-soft); color: #fff; box-shadow: 0 0 24px rgba(142,255,193,0.18); }
+.ui-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(142,255,193,0.22); }
+.top .ui-btn { opacity: 0; transform: translateY(-6px); pointer-events: none; }
+body.past-splash .top .ui-btn { opacity: 1; transform: none; pointer-events: auto; }
+
+/* ---------- film: a real recording, filling its frame ---------- */
+.film { position: absolute; inset: 0; overflow: hidden; background: #050a08; }
+.film video, .film img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* ---------- splash ---------- */
+.splash { position: relative; isolation: isolate; height: 100svh; min-height: 560px; display: grid; place-items: center; overflow: hidden; }
+.splash .film { z-index: -2; }
+/* scaled past the game's own corner HUD, which would sit under this page's bar */
+.splash .film video { filter: saturate(0.95) brightness(0.8); transform: scale(1.1); }
+.splash::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(ellipse 50% 38% at 50% 48%, rgba(2,5,4,0.55) 0%, rgba(2,5,4,0) 75%),
+    linear-gradient(180deg, rgba(2,5,4,0.6) 0%, rgba(2,5,4,0) 18%, rgba(2,5,4,0) 62%, var(--bg) 100%);
+}
+.hero { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 0 var(--gutter); }
+.brand {
+  margin: 0; font-family: var(--font-display); font-weight: 400;
+  font-size: clamp(76px, 17vw, 230px); line-height: 0.9;
+  letter-spacing: 0.22em; text-indent: 0.22em;
+  color: var(--ink); text-shadow: 0 2px 28px rgba(0,0,0,0.55), 0 0 42px rgba(2,5,4,0.45);
+  animation: settle 2s var(--ease) both;
+}
+/* The line under the name, the game's own mono, quiet. */
+.tagline {
+  margin: clamp(10px, 1.6vw, 20px) 0 0; max-width: 34em;
+  font-family: var(--font-mono); font-size: clamp(11px, 1.15vw, 15px); line-height: 1.5;
+  letter-spacing: 0.26em; text-indent: 0.26em; text-transform: uppercase;
+  color: rgba(216,240,228,0.78); text-shadow: 0 1px 14px rgba(0,0,0,0.9);
+}
+@keyframes settle { from { letter-spacing: 0.5em; text-indent: 0.5em; filter: blur(9px); opacity: 0; } 30% { opacity: 1; } to { letter-spacing: 0.22em; text-indent: 0.22em; filter: blur(0); } }
+.rise { animation: rise 0.9s var(--ease) both; animation-delay: var(--d, 0.6s); }
+@keyframes rise { from { opacity: 0; transform: translateY(14px); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
+
+/* DOWNLOAD is the game's PLAY */
+.get {
+  position: relative; isolation: isolate; display: inline-block; margin-top: 18px; padding: 8px 24px;
+  font-family: var(--font-display); font-size: clamp(44px, 6vw, 68px);
+  letter-spacing: 0.16em; text-indent: 0.16em; line-height: 0.9;
+  color: rgba(216,240,228,0.82); text-decoration: none; text-shadow: 0 2px 16px rgba(2,5,4,0.9);
+  transition: color 0.22s var(--ease);
+}
+.get::before {
+  content: ""; position: absolute; inset: -18px -40px; z-index: -1; pointer-events: none; border-radius: 60px;
+  background: radial-gradient(ellipse at 50% 50%, rgba(142,255,193,0.3) 0%, rgba(142,255,193,0.08) 38%, transparent 72%);
+  filter: blur(14px); opacity: 0.5; transition: opacity 0.4s var(--ease);
+}
+.get:hover, .get:focus-visible { color: var(--accent); outline: none; animation: glow 2.8s ease-in-out infinite; }
+.get:hover::before, .get:focus-visible::before { opacity: 1; }
+@keyframes glow {
+  0%, 100% { text-shadow: 0 0 18px rgba(142,255,193,0.75), 0 0 48px rgba(142,255,193,0.32), 0 0 110px rgba(142,255,193,0.16); }
+  50% { text-shadow: 0 0 28px rgba(142,255,193,0.95), 0 0 72px rgba(142,255,193,0.5), 0 0 140px rgba(142,255,193,0.28); }
+}
+.get[aria-disabled="true"] { pointer-events: none; color: var(--faint); font-size: clamp(30px, 4vw, 44px); }
+.get[aria-disabled="true"]::before { display: none; }
+.meta { margin-top: 12px; font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.06em; color: rgba(216,240,228,0.5); text-shadow: 0 1px 8px rgba(0,0,0,0.85); display: flex; flex-wrap: wrap; justify-content: center; gap: 2px 12px; }
+.meta b { font-weight: 400; color: rgba(216,240,228,0.8); }
+.meta i { font-style: normal; opacity: 0.4; }
+.elsewhere { margin: 12px 0 0; font-size: 14px; color: rgba(216,240,228,0.6); text-shadow: 0 1px 10px rgba(0,0,0,0.9); }
+.lnk { font-family: var(--font-display); font-size: 16px; letter-spacing: 0.2em; color: rgba(216,240,228,0.5); background: none; border: none; padding: 4px 6px; cursor: pointer; text-decoration: none; transition: color 0.22s var(--ease); }
+.lnk:hover, .lnk:focus-visible { color: var(--accent); outline: none; }
+.cue { position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); transform: translateX(-50%); width: 1px; height: 44px; overflow: hidden; }
+.cue::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, transparent, rgba(142,255,193,0.75)); animation: cue 2.4s var(--ease) infinite; transform-origin: top; }
+@keyframes cue { 0% { transform: scaleY(0); opacity: 1; } 60% { transform: scaleY(1); opacity: 1; } 100% { transform: scaleY(1); opacity: 0; } }
+
+/* ---------- the clips: one word, then the game doing it ---------- */
+.reel { display: flex; flex-direction: column; gap: clamp(56px, 10vh, 120px); padding: clamp(56px, 10vh, 110px) 0 0; }
+.clip { position: relative; margin: 0; }
+.clip .frame { position: relative; width: min(100%, 1600px, calc(88svh * 16 / 9)); margin: 0 auto; aspect-ratio: 16 / 9; overflow: hidden; }
+@media (min-width: 900px) { .clip .frame { border-radius: 6px; box-shadow: 0 0 0 1px var(--hair), 0 40px 120px -40px rgba(0,0,0,0.9); } }
+.clip .word {
+  position: absolute; left: clamp(16px, 3vw, 40px); bottom: clamp(10px, 2.4vw, 32px); z-index: 2; margin: 0;
+  font-family: var(--font-display); font-weight: 400; font-size: clamp(44px, 8vw, 120px); line-height: 0.9; letter-spacing: 0.04em;
+  color: var(--ink); text-shadow: 0 2px 30px rgba(0,0,0,0.75), 0 0 60px rgba(2,5,4,0.6);
+  opacity: 0; transform: translateY(14px); filter: blur(6px);
+  transition: opacity 0.9s var(--ease), transform 0.9s var(--ease), filter 0.9s var(--ease);
+  pointer-events: none;
+}
+.clip .frame::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(0deg, rgba(2,5,4,0.7) 0%, rgba(2,5,4,0) 38%); }
+.clip.in .word { opacity: 1; transform: none; filter: none; }
+.clip.odd .word { left: auto; right: clamp(16px, 3vw, 40px); text-align: right; }
+/* Which world, and who: under the word, so the page reads as many games. */
+.clip .word .sub { display: block; margin-top: clamp(8px, 1vw, 14px); font-family: var(--font-mono); font-size: clamp(10px, 1.05vw, 13px); line-height: 1.3; letter-spacing: 0.22em; text-transform: uppercase; color: rgba(216,240,228,0.72); text-shadow: 0 1px 12px rgba(0,0,0,0.9); }
+
+/* ---------- get it ---------- */
+.getit { text-align: center; padding: clamp(96px, 16vh, 180px) var(--gutter) 0; display: flex; flex-direction: column; align-items: center; }
+.getit .get { margin-top: 0; }
+.steps { list-style: none; margin: 34px 0 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 12px 34px; font-family: var(--font-display); font-size: 22px; letter-spacing: 0.08em; color: var(--ink); }
+.steps li span { font-family: var(--font-mono); font-size: 12px; color: var(--accent); margin-right: 10px; letter-spacing: 0.1em; vertical-align: 3px; }
+.steps code { font-family: var(--font-mono); font-size: 14px; letter-spacing: 0; color: var(--text); background: rgba(216,240,228,0.07); padding: 2px 7px; border-radius: 4px; vertical-align: 2px; }
+.steps li.lit { color: var(--accent); }
+.fine { margin: 18px 0 0; max-width: 36em; font-size: 13px; color: var(--faint); }
+.fine b { color: var(--dim); font-weight: 500; }
+.fine a { color: var(--dim); text-decoration: underline; text-decoration-color: rgba(216,240,228,0.3); text-underline-offset: 3px; }
+.fine a:hover, .fine a:focus-visible { color: var(--accent); outline: none; }
+.fine + .fine { margin-top: 6px; }
+details.news { margin: 30px auto 0; width: min(100%, 640px); text-align: left; }
+details.news summary { list-style: none; cursor: pointer; text-align: center; }
+details.news summary::-webkit-details-marker { display: none; }
+details.news summary .lnk { pointer-events: none; }
+details.news summary:hover .lnk { color: var(--accent); }
+details.news ul { list-style: none; margin: 16px 0 0; padding: 0; border-top: 1px solid var(--hair); }
+details.news li { display: grid; grid-template-columns: 76px 1fr; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--hair); font-size: 15px; color: rgba(232,244,238,0.8); }
+details.news li span { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--accent); padding-top: 3px; }
+details.news li span.alt { color: var(--dim); }
+
+.sign { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; max-width: 1120px; margin: clamp(90px, 14vh, 160px) auto 0; padding: 28px var(--gutter) calc(env(safe-area-inset-bottom, 0px) + 28px); border-top: 1px solid var(--hair); font-family: var(--font-mono); font-size: 12px; color: var(--faint); }
+.sign .who { display: flex; align-items: center; gap: 14px; }
+.sign img { width: 46px; height: auto; display: block; }
+.sign a { color: var(--dim); text-decoration: none; }
+.sign a:hover { color: var(--accent); }
+
+.toast {
+  position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 22px); z-index: 80;
+  transform: translate(-50%, 20px); opacity: 0; pointer-events: none; width: min(92vw, 420px);
+  padding: 14px 18px 16px; border-radius: 12px; background: rgba(6,16,12,0.94);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 0 0 1px rgba(142,255,193,0.22), 0 20px 60px rgba(0,0,0,0.6);
+  font-size: 15px; transition: opacity 0.4s var(--ease), transform 0.4s var(--ease);
+}
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+.toast b { display: block; font-family: var(--font-display); font-weight: 400; font-size: 20px; letter-spacing: 0.08em; color: var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .brand, .rise, .cue::after { animation: none !important; }
+  .clip .word { opacity: 1; transform: none; filter: none; transition: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <a class="studio" href="https://5th-corner.com" rel="noopener"><img src="{{ url_for('static', filename='img/get/mark.jpg') }}" alt="" width="26" height="26">5TH CORNER</a>
+  <a class="ui-btn js-get" id="top-get" href="/get/latest">DOWNLOAD</a>
+</header>
+
+<main>
+  <section class="splash" aria-label="{{ title }}">
+    <div class="film" aria-hidden="true">
+      {% if hero %}<video id="hero-video" data-src="{{ hero.src }}" data-src720="{{ hero.src720 }}" poster="{{ hero.poster }}" muted loop playsinline preload="auto"></video>{% endif %}
+    </div>
+    <div class="hero">
+      <h1 class="brand">{{ title }}</h1>
+      <p class="tagline rise" style="--d:0.45s">When you stare into the abyss, the abyss stares back.</p>
+      <a class="get rise js-get" id="hero-get" href="/get/latest" style="--d:0.6s">DOWNLOAD</a>
+      <div class="meta rise" id="meta" style="--d:0.8s"></div>
+      <p class="elsewhere rise" id="elsewhere" style="--d:0.9s" hidden></p>
+    </div>
+    <div class="cue" aria-hidden="true"></div>
+  </section>
+
+  <section class="reel" aria-label="The game, playing">
+    {% for c in clips %}
+    <figure class="clip{% if loop.index is even %} odd{% endif %}">
+      <div class="frame film">
+        <video data-src="{{ c.src }}" data-src720="{{ c.src720 }}" poster="{{ c.poster }}" muted loop playsinline preload="none" aria-label="{{ c.label or c.name }} — recorded in the game"></video>
+        {% if c.label %}<figcaption class="word">{{ c.label }}{% if c.sub %}<small class="sub">{{ c.sub }}</small>{% endif %}</figcaption>{% endif %}
+      </div>
+    </figure>
+    {% endfor %}
+  </section>
+
+  <section class="getit" id="get" aria-label="Get it">
+    <a class="get js-get" id="end-get" href="/get/latest">DOWNLOAD</a>
+    <div class="meta" id="meta-end"></div>
+    <ol class="steps" id="steps">
+      <li id="s1"><span>01</span>Unzip</li>
+      <li id="s2"><span>02</span>Run <code>{{ title }}.exe</code></li>
+      <li id="s3"><span>03</span>Paste a Gemini or OpenAI key</li>
+    </ol>
+    <p class="fine">Your own key draws the story and the pictures, and stays on your PC. Get one at
+      <a href="https://aistudio.google.com/apikey" rel="noopener" target="_blank">aistudio.google.com</a> or
+      <a href="https://platform.openai.com/api-keys" rel="noopener" target="_blank">platform.openai.com</a>.</p>
+    <p class="fine">Windows may warn you: <b>More info → Run anyway</b>.</p>
+    <details class="news" id="news-box" hidden>
+      <summary><span class="lnk">what's new</span></summary>
+      <ul id="news"></ul>
+    </details>
+  </section>
+</main>
+
+<footer class="sign">
+  <div class="who"><img src="{{ url_for('static', filename='img/get/lockup.jpg') }}" alt="5th Corner" width="46" height="54"><div>&copy; <span id="yr">2026</span> Art Almost LLC<br><a href="https://5th-corner.com" rel="noopener">5th-corner.com</a></div></div>
+  <div><button class="lnk" type="button" id="share">send to a friend</button> · <a href="mailto:matt@5th-corner.com?subject={{ title }}%20build">matt@5th-corner.com</a></div>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite"><b id="toast-t"></b><span id="toast-b"></span></div>
+
+<script>
+(() => {
+  "use strict";
+  const BUILD = {{ build_json|safe }};
+  const TITLE = {{ title|tojson }};
+  const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  // ── the build ────────────────────────────────────────────────────────
+  const ok = !!BUILD.ok, dl = BUILD.download || {};
+  const mb = (b) => (b ? (b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : Math.round(b / 1e6) + " MB") : "");
+  const ago = (iso) => {
+    if (!iso) return "";
+    const h = (Date.now() - new Date(iso)) / 36e5;
+    if (h < 1) return "just now";
+    if (h < 24) return Math.round(h) === 1 ? "an hour ago" : `${Math.round(h)} hours ago`;
+    if (h < 48) return "yesterday";
+    if (h < 24 * 30) return `${Math.round(h / 24)} days ago`;
+    return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  };
+  const ua = navigator.userAgent || "";
+  const onWindows = /Windows/.test(ua) && !/Phone/.test(ua);
+  const onMobile = /Android|iPhone|iPad|iPod/.test(ua) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(ua));
+
+  if (!ok) {
+    $$(".js-get").forEach((a) => { a.setAttribute("aria-disabled", "true"); a.removeAttribute("href"); });
+    $("#hero-get").textContent = "SOON";
+    $("#end-get").textContent = "SOON";
+    $("#top-get").hidden = true;
+    $("#steps").hidden = true;
+    $$(".fine").forEach((n) => { n.hidden = true; });
+  } else {
+    // "2026.09.21-c6d8e7f": the date is what a person reads; the commit is a detail.
+    const vm = String(BUILD.version || "").match(/^(\d{4}\.\d{2}\.\d{2})-?(.*)$/);
+    const bits = [`<b>BUILD ${esc(vm ? vm[1] : BUILD.version)}</b>`, "WINDOWS"];
+    if (dl.size_bytes) bits.push(mb(dl.size_bytes));
+    if (BUILD.published_at) bits.push(ago(BUILD.published_at).toUpperCase());
+    $("#meta").innerHTML = $("#meta-end").innerHTML = bits.join("<i>·</i>");
+    const hl = BUILD.highlights || [];
+    if (hl.length) {
+      $("#news").innerHTML = hl.map((h) => {
+        const m = h.match(/^([A-Z][A-Z ]{1,14}):\s*(.+)$/);
+        const tag = m ? m[1] : "", text = m ? m[2] : h;
+        return `<li><span class="${tag === "FIXED" ? "" : "alt"}">${esc(tag)}</span><div>${esc(text.charAt(0).toUpperCase() + text.slice(1))}</div></li>`;
+      }).join("");
+      $("#news-box").hidden = false;
+    }
+    if (!onWindows) {
+      const el = $("#elsewhere");
+      el.hidden = false;
+      el.innerHTML = `Windows only${onMobile ? " — " : ". "}<button class="lnk" type="button" id="copy" style="padding:0 4px">copy the link</button> for your PC.`;
+      $("#copy").addEventListener("click", () => copy(location.origin + "/get", "Open it on your PC."));
+    }
+  }
+
+  // ── the clips: load when near, play only while on screen ─────────────
+  const hero = $("#hero-video");
+  const clips = $$(".clip");
+  // Attach the file before asking it to play. Both watchers can fire in the
+  // same frame when a clip arrives in one jump (a tap on a link, a fast
+  // fling); a load() that lands after play() resets the video to paused.
+  // Phones and data-saver get the 720p cut; everything else the 1080p one.
+  const small = matchMedia("(max-width: 900px)").matches || !!(navigator.connection && navigator.connection.saveData);
+  const attach = (v) => { if (!v.getAttribute("src")) v.src = (small && v.dataset.src720) || v.dataset.src; };
+  const loadIO = new IntersectionObserver((es) => es.forEach((e) => {
+    if (!e.isIntersecting) return;
+    attach($("video", e.target));
+    loadIO.unobserve(e.target);
+  }), { rootMargin: "600px 0px" });
+  const playIO = new IntersectionObserver((es) => es.forEach((e) => {
+    const v = $("video", e.target);
+    e.target.classList.toggle("in", e.isIntersecting);
+    if (e.isIntersecting && !REDUCED) { attach(v); v.play().catch(() => {}); } else { v.pause(); }
+  }), { threshold: 0.45 });
+  clips.forEach((c) => {
+    const v = $("video", c);
+    // A clip still loading when it came into view plays once it can.
+    v.addEventListener("canplay", () => { if (c.classList.contains("in") && v.paused && !REDUCED) v.play().catch(() => {}); });
+    loadIO.observe(c); playIO.observe(c);
+  });
+  if (hero) {
+    attach(hero);
+    new IntersectionObserver(([e]) => { if (e.isIntersecting && !REDUCED) hero.play().catch(() => {}); else hero.pause(); }, { threshold: 0.1 }).observe(hero);
+    if (REDUCED) hero.removeAttribute("autoplay");
+  }
+
+  // ── chrome ───────────────────────────────────────────────────────────
+  const onScroll = () => {
+    document.body.classList.toggle("scrolled", scrollY > 40);
+    document.body.classList.toggle("past-splash", ok && scrollY > innerHeight * 0.6);
+  };
+  addEventListener("scroll", onScroll, { passive: true }); onScroll();
+
+  // ── download, share ──────────────────────────────────────────────────
+  let tt;
+  const say = (t, b, ms = 6500) => { $("#toast-t").textContent = t; $("#toast-b").textContent = b; $("#toast").classList.add("on"); clearTimeout(tt); tt = setTimeout(() => $("#toast").classList.remove("on"), ms); };
+  $$(".js-get").forEach((a) => a.addEventListener("click", () => {
+    if (!ok) return;
+    say("DOWNLOADING", `${TITLE}${dl.size_bytes ? ", " + mb(dl.size_bytes) : ""}. Unzip it, then run ${TITLE}.exe.`);
+    $("#s1").classList.add("lit"); setTimeout(() => $("#s1").classList.remove("lit"), 12000);
+  }));
+  async function copy(text, msg) {
+    try { await navigator.clipboard.writeText(text); say("COPIED", msg, 3000); } catch { prompt("Copy this link:", text); }
+  }
+  $("#share").addEventListener("click", async () => {
+    const url = location.origin + "/get";
+    if (navigator.share && onMobile) { try { await navigator.share({ title: TITLE, url }); return; } catch { /* dismissed */ } }
+    copy(url, "Send it to someone.");
+  });
+  $("#yr").textContent = new Date().getFullYear();
+})();
+</script>
+</body>
+</html>

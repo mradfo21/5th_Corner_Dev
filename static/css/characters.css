@@ -1,0 +1,386 @@
+/* ==========================================================================
+   CHARACTERS (static/js/characters.js) — the screen PLAY opens on. Designed on
+   the canvas "GOD — Characters": black, a studio light (it was drawn smoke
+   until 2026-09-24), the character framed on
+   the right, the controls on the left, typography over the figure, no panels.
+   Laid out on the canvas's 1280x720 and scaled with the window.
+   ========================================================================== */
+
+.char-screen {
+  --cs-ink: #E8E6DF;
+  --cs-dim: rgba(232, 230, 223, 0.62);
+  --cs-quiet: rgba(232, 230, 223, 0.42);
+  --cs-line: rgba(232, 230, 223, 0.14);
+  --cs-mint: #8effc1;
+  --cs-base: #0B0B0A;
+  --cs-mono: var(--font-mono, 'JetBrains Mono', ui-monospace, monospace);
+  --cs-ui: var(--font-ui, 'Manrope', system-ui, sans-serif);
+  --cs-left: clamp(28px, 7.5vw, 140px);
+  position: fixed;
+  inset: 0;
+  z-index: 95;              /* over the title (90), under the transition veil (240) */
+  background: var(--cs-base);
+  color: var(--cs-ink);
+  font-family: var(--cs-ui);
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  user-select: none;
+}
+.char-screen[hidden] { display: none; }
+.char-screen.on { opacity: 1; }
+.char-screen button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+.char-screen button:disabled { opacity: 0.35; cursor: default; }
+.char-screen .cs-sr { position: absolute; left: -9999px; }
+/* The title underneath stays put, out of sight: the veil covers the hop. */
+body.char-open .start-menu-inner,
+body.char-open #xp-picker { visibility: hidden; }
+
+/* ── the backdrop: a studio, not weather (characters.js backdrop()) ───────
+   It was drawn smoke; "extremely cheesy" (Matt, 2026-09-24). Now one soft
+   pool of key light on a near-black wall behind where the figure stands, a
+   faint pool on the floor under their feet, the left side kept darker for the
+   words, and a fine static grain so the long gradients never band. Nothing
+   moves. Shared with the pack (pack.js), which sets it over the dimmed game. */
+.cs-bg {
+  position: absolute; inset: 0; pointer-events: none; overflow: hidden;
+  background:
+    /* the words' side, a shade darker */
+    linear-gradient(90deg, rgba(0, 0, 0, 0.38) 0%, rgba(0, 0, 0, 0.12) 34%, rgba(0, 0, 0, 0) 52%),
+    /* the floor: the wall's light falls off toward the bottom edge */
+    linear-gradient(180deg, rgba(0, 0, 0, 0) 62%, rgba(0, 0, 0, 0.32) 100%),
+    linear-gradient(180deg, #121211 0%, #0C0C0B 55%, #090908 100%);
+}
+.cs-bg i { position: absolute; inset: 0; }
+.cs-bg-key {
+  background:
+    radial-gradient(ellipse 34% 50% at 70.5% 44%, rgba(236, 231, 220, 0.13) 0%,
+                    rgba(236, 231, 220, 0.06) 38%, rgba(236, 231, 220, 0.018) 64%, rgba(236, 231, 220, 0) 82%),
+    radial-gradient(ellipse 62% 78% at 68% 48%, rgba(236, 231, 220, 0.03) 0%, rgba(236, 231, 220, 0) 70%);
+}
+.cs-bg-floor {
+  background: radial-gradient(ellipse 19% 5.5% at 70.5% 95%, rgba(236, 231, 220, 0.09) 0%,
+                              rgba(236, 231, 220, 0.025) 55%, rgba(236, 231, 220, 0) 100%);
+}
+.cs-bg-grain {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 0.9 0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+  opacity: 0.07;
+  mix-blend-mode: overlay;
+}
+.cs-fade {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 26%;
+  background: linear-gradient(to top, #0B0B0A 0%, rgba(11,11,10,0.85) 35%, rgba(11,11,10,0) 100%);
+  pointer-events: none;
+}
+
+/* ── the figure ─────────────────────────────────────────────────────────── */
+.cs-figure {
+  position: absolute;
+  left: 47%; right: 3%;
+  top: 9.7%; bottom: 4.2%;
+  perspective: 1400px;
+  pointer-events: none;
+}
+.cs-figure-in {
+  position: relative;
+  width: 100%; height: 100%;
+  transform: rotateY(var(--cs-tilt-x, 0deg)) rotateX(var(--cs-tilt-y, 0deg));
+  transition: transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1);
+  transform-origin: 50% 100%;
+}
+.cs-figure-in img {
+  position: absolute;
+  left: 50%; bottom: 0;
+  max-height: 100%; max-width: 100%;
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: opacity 0.9s ease, filter 0.9s ease;
+  filter: drop-shadow(0 24px 30px rgba(0, 0, 0, 0.55));
+}
+.cs-figure-in img.on { opacity: 1; }
+/* The two figure slots (characters.js Fig): the incoming one fades up over
+   the outgoing one; moving through the roster, both drift a few pixels the
+   way the list moved. --cs-fade is 1.4 s for the same person in a better
+   picture (the stand-in becoming the hero pose), 0.8 s otherwise. */
+.cs-fig {
+  translate: var(--cs-move, 0px) 0;
+  transition: opacity var(--cs-fade, 0.8s) ease var(--cs-delay, 0s), filter 0.9s ease,
+              translate var(--cs-fade, 0.8s) cubic-bezier(0.2, 0.7, 0.2, 1) var(--cs-delay, 0s) !important;
+  will-change: opacity, translate;
+}
+.cs-fig.on { animation: cs-breathe 6.5s ease-in-out infinite; transform-origin: 50% 100%; }
+@keyframes cs-breathe {
+  0%, 100% { transform: translateX(-50%) scale(1); }
+  50%      { transform: translateX(-50%) scale(1.01); }
+}
+/* A character carried over from the old cast sheet, not drawn yet: their
+   picture, dim, in a frame — clearly a reference, not the character. */
+.cs-source.on {
+  max-height: 62%; max-width: 70%; bottom: 14%;
+  opacity: 0.5;
+  outline: 1px solid var(--cs-line); outline-offset: 10px;
+  filter: grayscale(0.5);
+}
+/* While they are drawn there is no figure but theirs: a first drawing has an
+   empty stage; a redraw shows the pose they had as a black shape with a
+   faint rim of light (a drawn stand-in outline was "cheesy", 2026-09-24). */
+/* The filter is on the class, not on .on: tied to .on, a shadow that was
+   fading out turned back into the full-colour old pose for its last second
+   (filmed in the pack, 2026-09-24). */
+.cs-fig.cs-ghost {
+  filter: brightness(0) drop-shadow(0 0 1px rgba(232, 230, 223, 0.5)) drop-shadow(0 0 14px rgba(232, 230, 223, 0.08));
+}
+.cs-fig.cs-ghost.on { opacity: 0.62; }
+.cs-fig.cs-dev-in { animation: cs-develop 1.6s ease-out both; }
+/* The four-view strip keeps its framing while it fades out, too. */
+.cs-fig.cs-strip { max-height: 46%; bottom: 22%; }
+.cs-fig.cs-strip.on { opacity: 0.8; }
+@keyframes cs-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@keyframes cs-develop {
+  from { opacity: 0; filter: brightness(2.2) blur(6px); }
+  to   { opacity: 1; filter: brightness(1) blur(0) drop-shadow(0 24px 30px rgba(0,0,0,0.55)); }
+}
+.char-screen.cs-drop { box-shadow: inset 0 0 0 2px rgba(142, 255, 193, 0.5); }
+
+/* ── top-left ───────────────────────────────────────────────────────────── */
+.cs-back {
+  position: absolute; left: 28px; top: 24px;
+  font: 300 11px/1 var(--cs-mono) !important;
+  letter-spacing: 0.4em;
+  color: var(--cs-dim) !important;
+  padding: 14px 4px !important;
+  z-index: 2;
+}
+.cs-back:hover, .cs-back:focus-visible { color: #fff !important; outline: none; }
+
+/* ── the controls, left ─────────────────────────────────────────────────── */
+.cs-left {
+  position: absolute;
+  left: var(--cs-left);
+  top: 15.3%;
+  width: min(420px, 40vw);
+  bottom: 19%;
+  display: flex; flex-direction: column;
+  z-index: 2;
+}
+.cs-head { display: flex; flex-direction: column; gap: 14px; position: relative; }
+.cs-eyebrow { font: 300 10px/1 var(--cs-mono); letter-spacing: 0.4em; color: var(--cs-dim); }
+.cs-eyebrow.cs-mint { color: var(--cs-mint); }
+.cs-name {
+  font: 200 clamp(30px, 3.45vw, 52px)/1.05 var(--cs-ui);
+  letter-spacing: 0.24em;
+  color: var(--cs-ink);
+  white-space: pre-line;
+  word-break: break-word;
+}
+.cs-name.cs-pending { color: var(--cs-dim); animation: cs-note-breathe 2.8s ease-in-out infinite; }
+.cs-name.cs-long { font-size: clamp(24px, 2.7vw, 40px); letter-spacing: 0.2em; }
+.cs-name.cs-longer { font-size: clamp(20px, 2.1vw, 32px); letter-spacing: 0.16em; }
+.cs-tag { font: 300 15px/1.5 var(--cs-ui); color: var(--cs-dim); min-height: 1em; }
+.cs-error { font: 300 13px/1.45 var(--cs-ui); color: #ffb4a2; }
+.cs-error:empty { display: none; }
+/* Sits in the gap above the roster, out of the flow, so the list does not
+   jump when the hero pose lands and the note goes. */
+.cs-note {
+  position: absolute; left: 0; right: 0; top: calc(100% + 10px);
+  font: 300 9px/1.6 var(--cs-mono); letter-spacing: 0.3em; color: var(--cs-mint);
+  opacity: 0.8; animation: cs-note-breathe 2.4s ease-in-out infinite;
+}
+.cs-note:empty { display: none; }
+@keyframes cs-note-breathe { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.9; } }
+
+/* ── STYLE, under the name (characters.js openStyle) ───────────────────── */
+.cs-style-line {
+  display: inline-flex !important; align-items: baseline; gap: 12px; align-self: flex-start;
+  margin-top: 2px; padding: 6px 0 !important;
+  font: 300 9px/1 var(--cs-mono) !important; letter-spacing: 0.3em; color: var(--cs-quiet) !important;
+  transition: color 0.2s ease;
+}
+.cs-style-line[hidden] { display: none !important; }
+.cs-style-line:hover, .cs-style-line:focus-visible, .char-screen.cs-style-open .cs-style-line { color: var(--cs-ink) !important; outline: none; }
+.cs-style-k { color: var(--cs-dim); }
+.cs-style-caret {
+  width: 5px; height: 5px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor;
+  transform: translateY(-2px) rotate(45deg); transition: transform 0.25s ease; align-self: center;
+}
+.char-screen.cs-style-open .cs-style-caret { transform: translateY(1px) rotate(225deg); }
+.cs-style { display: none; flex-direction: column; gap: 10px; margin-top: 22px; order: 3; }
+.char-screen.cs-style-open .cs-style { display: flex; animation: cs-textin 0.4s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.char-screen.cs-style-open[data-mode="select"] .cs-roster { display: none; }
+.char-screen[data-mode="developing"] .cs-style { display: none !important; }
+.cs-style-in {
+  font: 300 13px/1.6 var(--cs-ui); color: var(--cs-dim); overflow-y: auto;
+  background: none; border: 0; outline: none; resize: none;
+  padding: 8px 0 12px; border-bottom: 1px solid var(--cs-quiet);
+  user-select: text; scrollbar-width: none;
+}
+.cs-style-in:focus { color: var(--cs-ink); border-bottom-color: var(--cs-ink); }
+.cs-style-hint { font: 300 9px/1 var(--cs-mono); letter-spacing: 0.3em; color: var(--cs-quiet); align-self: center; }
+.cs-style-reset[hidden] { display: none; }
+.cs-head { order: 1; }
+.cs-roster, .cs-create, .cs-dev { order: 2; }
+
+.cs-roster {
+  margin-top: 36px;
+  padding-bottom: 18px;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+  display: flex; flex-direction: column; gap: 10px;
+  overflow-y: auto; min-height: 0;
+  padding-left: 18px; margin-left: -18px;   /* room for the selection bar */
+  scrollbar-width: none;
+}
+.cs-roster::-webkit-scrollbar { display: none; }
+.cs-item { position: relative; display: flex !important; align-items: center; gap: 16px; padding: 4px 0 !important; flex-shrink: 0; }
+.cs-item::before {
+  content: ""; position: absolute; left: -16px; top: 12px; width: 2px; height: 36px;
+  background: var(--cs-mint); opacity: 0; transition: opacity 0.2s ease;
+}
+.cs-item.sel::before { opacity: 1; }
+.cs-item:focus-visible { outline: none; }
+.cs-thumb {
+  width: 56px; height: 56px; flex-shrink: 0;
+  background: #161614; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+}
+.cs-thumb img { width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 0.25s ease; }
+.cs-thumb img.in { opacity: 0.45; }
+.cs-item.sel .cs-thumb img.in, .cs-item:hover .cs-thumb img.in { opacity: 1; }
+.cs-item-name, .cs-item-meta { transition: color 0.2s ease; }
+.cs-new[hidden] { display: none; }
+.cs-plus {
+  background: none; outline: 1px dashed rgba(232, 230, 223, 0.3); outline-offset: -1px;
+  font: 200 26px/1 var(--cs-ui); color: var(--cs-dim);
+}
+.cs-item-tx { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cs-item-name { font: 300 17px/1 var(--cs-ui); color: var(--cs-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cs-item.sel .cs-item-name, .cs-item:hover .cs-item-name { color: var(--cs-ink); }
+.cs-item-meta { font: 300 9px/1 var(--cs-mono); letter-spacing: 0.3em; color: var(--cs-quiet); }
+.cs-new { margin-left: 10px; font: 300 9px/1 var(--cs-mono); letter-spacing: 0.3em; color: var(--cs-mint); vertical-align: middle; }
+
+/* create */
+.cs-create { display: none; flex-direction: column; gap: 12px; margin-top: 18px; }
+.cs-who {
+  font: 300 17px/1.55 var(--cs-ui); color: var(--cs-ink);
+  background: none; border: 0; outline: none; resize: none;
+  padding: 8px 0 12px; border-bottom: 1px solid var(--cs-quiet);
+  user-select: text;
+}
+.cs-who::placeholder { color: rgba(232, 230, 223, 0.28); }
+.cs-who:focus { border-bottom-color: var(--cs-ink); }
+.cs-tools { display: flex; gap: 28px; }
+.cs-tool { font: 300 10px/1 var(--cs-mono) !important; letter-spacing: 0.4em; color: var(--cs-quiet) !important; padding: 14px 0 !important; }
+.cs-tool:hover { color: var(--cs-ink) !important; }
+.cs-pics { display: flex; gap: 10px; }
+.cs-pics:empty { display: none; }
+.cs-pic { position: relative; margin: 0; width: 64px; height: 64px; background: #161614; }
+.cs-pic img { width: 100%; height: 100%; object-fit: cover; }
+.cs-pic-x { position: absolute !important; top: -8px; right: -8px; width: 20px; height: 20px; border-radius: 50%;
+  background: #0B0B0A !important; outline: 1px solid var(--cs-quiet); text-align: center !important; font-size: 13px !important; line-height: 20px !important; }
+
+/* developing */
+.cs-dev { display: none; flex-direction: column; gap: 14px; margin-top: 18px; flex: 1; }
+.cs-dev-prompt {
+  font: 300 17px/1.55 var(--cs-ui); color: var(--cs-quiet);
+  padding: 8px 0 12px; border-bottom: 1px solid var(--cs-line);
+}
+.cs-dev-prompt:empty { display: none; }
+.cs-dev-line { margin-top: auto; font: 300 17px/1 var(--cs-ui); color: var(--cs-ink); }
+.cs-bar { position: relative; width: 240px; height: 1px; background: rgba(232, 230, 223, 0.16); }
+.cs-bar i {
+  position: absolute; left: 0; top: 0; height: 1px; width: 100%;
+  background: var(--cs-ink);
+  transform-origin: 0 50%; transform: scaleX(var(--cs-p, 0));
+  box-shadow: 0 0 8px rgba(232, 230, 223, 0.35);
+}
+.cs-dev-eta { font: 300 9px/1 var(--cs-mono); letter-spacing: 0.3em; color: var(--cs-quiet); }
+
+/* ── moving between modes (characters.js swapTo) and setting in ───────── */
+.cs-left, .cs-actions { transition: opacity 0.32s ease, transform 0.32s cubic-bezier(0.2, 0.7, 0.2, 1); }
+.char-screen.cs-swapping .cs-left,
+.char-screen.cs-swapping .cs-actions { opacity: 0; transform: translateY(6px); transition-duration: 0.18s; }
+.cs-textin { animation: cs-textin 0.42s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+@keyframes cs-textin { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+/* The screen comes up out of the black: the figure rises into place, the
+   column follows it down, the verbs last. */
+.char-screen.cs-enter .cs-figure { animation: cs-rise 1.3s cubic-bezier(0.2, 0.7, 0.2, 1) 0.1s both; will-change: transform, opacity; }
+.char-screen.cs-enter .cs-back { animation: cs-textin 0.6s ease 0.2s both; }
+.char-screen.cs-enter .cs-head > * { animation: cs-textin 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.char-screen.cs-enter .cs-head > :nth-child(1) { animation-delay: 0.25s; }
+.char-screen.cs-enter .cs-head > :nth-child(2) { animation-delay: 0.33s; }
+.char-screen.cs-enter .cs-head > :nth-child(3) { animation-delay: 0.41s; }
+.char-screen.cs-enter .cs-head > :nth-child(4) { animation-delay: 0.47s; }
+.char-screen.cs-enter .cs-roster > * { animation: cs-textin 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.char-screen.cs-enter .cs-roster > :nth-child(1) { animation-delay: 0.45s; }
+.char-screen.cs-enter .cs-roster > :nth-child(2) { animation-delay: 0.51s; }
+.char-screen.cs-enter .cs-roster > :nth-child(3) { animation-delay: 0.57s; }
+.char-screen.cs-enter .cs-roster > :nth-child(4) { animation-delay: 0.63s; }
+.char-screen.cs-enter .cs-roster > :nth-child(n+5) { animation-delay: 0.69s; }
+.char-screen.cs-enter .cs-create, .char-screen.cs-enter .cs-actions { animation: cs-textin 0.7s ease 0.6s both; }
+@keyframes cs-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+.char-screen[data-mode="create"] .cs-roster,
+.char-screen[data-mode="developing"] .cs-roster { display: none; }
+.char-screen[data-mode="create"] .cs-create { display: flex; }
+.char-screen[data-mode="developing"] .cs-dev { display: flex; }
+
+/* ── the verbs, bottom-left ─────────────────────────────────────────────── */
+.cs-actions {
+  position: absolute;
+  left: var(--cs-left);
+  bottom: 9%;
+  width: min(560px, 44vw);
+  display: flex; flex-direction: column; gap: 14px;
+  z-index: 2;
+}
+.cs-buttons { display: flex; align-items: center; gap: 36px; flex-wrap: wrap; }
+.cs-primary {
+  font: 300 15px/1 var(--cs-mono) !important;
+  letter-spacing: 0.4em; color: #fff !important;
+  padding: 16px 0 !important; border-bottom: 1px solid var(--cs-ink) !important;
+}
+.cs-primary[hidden], .cs-second[hidden] { display: none; }
+/* PLAY appears mid-drawing, the moment they are playable: it sets in. */
+.char-screen[data-mode="developing"] .cs-primary { animation: cs-textin 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.cs-primary:not(:disabled):hover { text-shadow: 0 0 18px rgba(255, 255, 255, 0.45); }
+.cs-second { font: 300 10px/1 var(--cs-mono) !important; letter-spacing: 0.4em; color: var(--cs-quiet) !important; padding: 14px 0 !important; }
+.cs-second:hover { color: var(--cs-ink) !important; }
+.cs-change { display: none; }
+.cs-change.on { display: block; animation: cs-textin 0.35s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.cs-change-in {
+  width: 100%; box-sizing: border-box;
+  font: 300 16px/1.4 var(--cs-ui); color: var(--cs-ink);
+  background: none; border: 0; outline: none;
+  padding: 8px 0 10px; border-bottom: 1px solid var(--cs-quiet);
+  user-select: text;
+}
+.cs-change-in::placeholder { color: rgba(232, 230, 223, 0.3); }
+
+@media (max-width: 900px) {
+  .cs-figure { left: 40%; opacity: 0.55; }
+  .cs-left { width: min(420px, 60vw); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cs-fig.on, .cs-note, .cs-name.cs-pending { animation: none !important; }
+  .cs-fig { translate: none; }
+}
+
+/* ── the editors' character card (World Editor's Character block) ───────── */
+#world-editor .we-char-card {
+  display: flex; gap: 18px; align-items: stretch;
+  padding: 16px; min-height: 180px;
+  background: radial-gradient(circle at 25% 60%, rgba(232,230,223,0.07), rgba(11,11,10,0) 65%), #0B0B0A;
+}
+#world-editor .we-char-fig { width: 120px; flex-shrink: 0; display: flex; align-items: flex-end; justify-content: center; }
+#world-editor .we-char-fig img { max-width: 100%; max-height: 200px; object-fit: contain; filter: drop-shadow(0 10px 14px rgba(0,0,0,0.6)); }
+#world-editor .we-char-tx { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+#world-editor .we-char-eyebrow { font: 300 9px/1 var(--font-mono, 'JetBrains Mono', monospace); letter-spacing: 0.4em; color: rgba(232,230,223,0.62); }
+#world-editor .we-char-name { font: 200 24px/1.1 var(--font-ui, 'Manrope', sans-serif); letter-spacing: 0.12em; color: #E8E6DF; text-transform: uppercase; }
+#world-editor .we-char-tag { font: 300 13px/1.4 var(--font-ui, 'Manrope', sans-serif); color: rgba(232,230,223,0.62); }
+#world-editor .we-char-note { font: 300 12px/1.5 var(--font-ui, 'Manrope', sans-serif); color: rgba(232,230,223,0.42); margin-top: auto; }
+#world-editor .we-char-change {
+  align-self: flex-start; margin-top: 6px;
+  font: 300 10px/1 var(--font-mono, 'JetBrains Mono', monospace); letter-spacing: 0.3em; text-transform: uppercase;
+  color: #fff; background: none; border: 0; border-bottom: 1px solid #E8E6DF; padding: 10px 0; cursor: pointer;
+}

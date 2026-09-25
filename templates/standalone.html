@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SOMEWHERE // Standalone</title>
+<title>ABYSS</title>
 <link rel="icon" href="{{ url_for('static', filename='Logo.jpg') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -13,6 +13,8 @@
      screen and a fallback-font flash there is the one place it would show. -->
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@200;300;400;500&family=JetBrains+Mono:wght@300;400&display=swap">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/standalone.css') }}?v={{ asset_version }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pack.css') }}?v={{ asset_version }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/characters.css') }}?v={{ asset_version }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/account.css') }}?v={{ asset_version }}">
 </head>
 <body class="start-menu-on awaiting-first-scene">
@@ -190,8 +192,9 @@
     <div class="start-menu-inner">
       <header class="start-wordmark">
         <div class="start-brand" id="start-brand">
-          <span class="start-brand-type">GOD</span>
+          <span class="start-brand-type">ABYSS</span>
         </div>
+        <p class="start-tagline">When you stare into the abyss, the abyss stares back.</p>
       </header>
       <nav class="start-nav" aria-label="Main">
         <div class="start-tiles">
@@ -221,9 +224,23 @@
         <button id="xp-play" class="xp-play" type="button" hidden>
           <span>PLAY</span>
         </button>
-        <button id="xp-watch" class="xp-watch" type="button" hidden
-                title="Watch this Experience">
-          watch
+        <div class="xp-subrow">
+          <button id="xp-watch" class="xp-watch" type="button" hidden
+                  title="Watch this Experience">
+            watch
+          </button>
+          <!-- THE TAPE: your last run of this Experience (Reel.pickerHint). -->
+          <button id="xp-tape" class="xp-watch xp-tape" type="button" hidden
+                  title="Watch your last run of this Experience">
+            the tape
+          </button>
+        </div>
+        <button id="xp-lastrun" class="xp-lastrun" type="button" hidden>
+          <img id="xp-lastrun-img" alt="">
+          <span class="xp-lastrun-text">
+            <span id="xp-lastrun-kind" class="xp-lastrun-kind"></span>
+            <span id="xp-lastrun-line" class="xp-lastrun-line"></span>
+          </span>
         </button>
       </div>
       <div class="xp-dock">
@@ -284,6 +301,7 @@
       <button id="btn-resume" class="pause-item" type="button">RESUME</button>
       <button id="btn-story" class="pause-item" type="button" hidden title="Story log (J)">STORY</button>
       <button id="btn-objectives" class="pause-item" type="button" title="The case (O)">CASE</button>
+      <button id="btn-tape" class="pause-item" type="button" title="Watch this run so far (T)">TAPE</button>
       <button id="btn-reset" class="pause-item" type="button" hidden title="Restart this run (R)">NEW</button>
       <button id="btn-leave" class="pause-item" type="button" title="Back to the start menu">EXIT</button>
       <button id="btn-exit" class="pause-item pause-item-quit" type="button" hidden title="Close the app and stop the server">QUIT</button>
@@ -478,7 +496,7 @@
       <div class="watch-tv" id="watch-tv">
         <div id="watch-tv-idle" class="watch-tv-idle" aria-hidden="false">
           <div id="watch-tv-ghost" class="watch-tv-ghost" aria-hidden="true"></div>
-          <span class="watch-tv-word">SOMEWHERE</span>
+          <span class="watch-tv-word">ABYSS</span>
           <button id="watch-tv-play" class="watch-tv-play" type="button" hidden>WATCH</button>
         </div>
         <div id="watch-generate-mount" class="watch-generate-mount"></div>
@@ -530,24 +548,10 @@
     </div>
   </div>
 
-  <!-- Tape playback overlay: plays this run's frames back in sequence -->
-  <div id="tape-overlay" class="hidden">
-    <div id="tape-frameA" class="tape-frame tape-frame-active"></div>
-    <div id="tape-frameB" class="tape-frame"></div>
-    <div id="tape-scanlines"></div>
-    <div id="tape-hud">
-      <span id="tape-rec">▶ PLAY</span>
-      <span id="tape-counter">FRAME 0 / 0</span>
-      <span id="tape-time">00:00:00</span>
-    </div>
-    <div id="tape-empty" class="hidden">NO FOOTAGE ON TAPE YET</div>
-    <div id="tape-controls">
-      <button id="tape-prev" class="tape-ctl" title="Previous frame">⏮</button>
-      <button id="tape-playpause" class="tape-ctl" title="Play / pause">⏸</button>
-      <button id="tape-next" class="tape-ctl" title="Next frame">⏭</button>
-      <button id="tape-eject" class="tape-ctl tape-eject" title="Eject (Esc)">⏏ EJECT</button>
-    </div>
-  </div>
+  <!-- THE TAPE (Reel in standalone.js, run_tape.py): the run played back,
+       fullscreen, and exported. Built by Reel.build() on first open; it
+       replaced the old VHS frame-stepper that lived here. -->
+  <div id="reel" class="reel hidden" role="dialog" aria-label="The tape" aria-hidden="true"></div>
 
   <!-- Inventory HUD (hidden until the player picks something up) -->
   <aside id="inventory-hud" class="hidden">
@@ -819,6 +823,9 @@
       <span id="opening-title" class="opening-title"></span>
       <span class="opening-rule"><i></i></span>
     </div>
+    <!-- The level waits for its look book: stage, seconds, five segments.
+         Filled by LookBookStatus.gate. -->
+    <div id="opening-lookbook" class="opening-lookbook" role="status" aria-live="polite"></div>
   </div>
   <!-- Bug capture. Unlike the ENCOUNTER button this deliberately stays visible
        through moments, encounters and death: those are exactly when the screen
@@ -1435,6 +1442,8 @@
   <div id="death-overlay" class="hidden">
     <div class="death-inner">
       <div class="death-static"></div>
+      <!-- What killed you, when a fight did (standalone.js setDeathCause). -->
+      <div id="death-cause" class="death-cause hidden"></div>
       <h1 class="death-title">YOU DIED</h1>
       <p id="death-message">The transmission ends.</p>
 
@@ -1459,8 +1468,13 @@
         <div class="death-hint coinop-hint">press <b>C</b> to insert coin</div>
       </div>
 
-      <button id="death-restart" type="button">▶ RESTART SIMULATION</button>
-      <div class="death-hint">press <b>R</b> to restart</div>
+      <!-- THE TAPE (Reel in standalone.js): the run you just died in, played
+           back. Shown when the run has anything on tape. -->
+      <div class="death-actions">
+        <button id="death-tape" type="button" hidden>WATCH THE TAPE</button>
+        <button id="death-restart" type="button">▶ RESTART SIMULATION</button>
+      </div>
+      <div class="death-hint">press <b>T</b> to watch · <b>R</b> to restart</div>
     </div>
 
     <!-- Return ceremony veil: a quick CRT flash + phosphor pulse over the
@@ -1534,7 +1548,7 @@
        has to say so rather than leaving a dead page behind. -->
   <div id="exit-veil" class="exit-veil hidden" aria-hidden="true">
     <div class="exit-card">
-      <div class="exit-title">SOMEWHERE</div>
+      <div class="exit-title">ABYSS</div>
       <div id="exit-state" class="exit-state" aria-live="polite">closing down</div>
       <div id="exit-note" class="exit-note"></div>
     </div>
@@ -1545,6 +1559,10 @@
   <script src="{{ url_for('static', filename='js/moments.js') }}?v={{ asset_version }}"></script>
   <script src="{{ url_for('static', filename='js/editor_graph.js') }}?v={{ asset_version }}"></script>
   <script src="{{ url_for('static', filename='js/account.js') }}?v={{ asset_version }}"></script>
+  <!-- Characters: the screen PLAY opens on (select / create / draw). -->
+  <script src="{{ url_for('static', filename='js/characters.js') }}?v={{ asset_version }}"></script>
   <script src="{{ url_for('static', filename='js/standalone.js') }}?v={{ asset_version }}"></script>
+  <!-- The pack: the backpack beside the fist, the find card, the slots. -->
+  <script src="{{ url_for('static', filename='js/pack.js') }}?v={{ asset_version }}"></script>
 </body>
 </html>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SOMEWHERE - play it.
+"""ABYSS (SOMEWHERE in the code) - play it.
 
     python play.py                 # borderless fullscreen, real backends
     python play.py --windowed      # a normal resizable window instead
@@ -40,7 +40,8 @@ os.chdir(ROOT)
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-TITLE = "SOMEWHERE"
+TITLE = "SOMEWHERE"   # the folder in %APPDATA% (keys, characters, account): never renamed
+NAME = "ABYSS"        # what the player sees: the window, the dialogs
 
 # Directories the game writes into. Bundled builds ship them empty; stamp_factory
 # in tools/ship_layout.py creates the same set beside the exe.
@@ -72,11 +73,11 @@ def _capture_output() -> None:
     stream.write(f"\n{'=' * 60}\n{time.strftime('%Y-%m-%d %H:%M:%S')}  SOMEWHERE\n")
 
 # Shown while the engine imports. Dark screen + the mint bar — no wordmark.
-# The start menu is where SOMEWHERE appears, once. The status phrase
+# The start menu is where ABYSS appears, once. The status phrase
 # "warming the engine" is load-bearing: the error path replaces that exact
 # string and unhides #s.
 SPLASH = """
-<!doctype html><meta charset="utf-8"><title>SOMEWHERE</title>
+<!doctype html><meta charset="utf-8"><title>ABYSS</title>
 <style>
   html,body{height:100%;margin:0;overflow:hidden;background:#020504}
   body{display:flex;align-items:center;justify-content:center}
@@ -253,7 +254,7 @@ def run_window(game_url: str, health_url: str, fullscreen: bool) -> int:
 
     bridge = Api()
     window = webview.create_window(
-        TITLE, html=SPLASH, js_api=bridge,
+        NAME, html=SPLASH, js_api=bridge,
         fullscreen=fullscreen, frameless=fullscreen,
         width=1600, height=900, min_size=(1024, 640),
         background_color="#020504", easy_drag=False,
@@ -370,22 +371,26 @@ def _warn_no_keys() -> None:
     """
     where = "\n".join(f"  {p}" for p in _env_candidates())
     message = (
-        "No API key found, so SOMEWHERE is starting in OFFLINE MODE.\n\n"
+        "No API key found, so ABYSS is starting in OFFLINE MODE.\n\n"
         "The game is fully playable but the text and images are canned "
         "placeholders rather than generated.\n\n"
-        "To play for real, open ACCOUNT on the start menu and paste a Gemini "
-        "key — or put a file called .env in any of these places:\n\n"
+        "To play for real, open ACCOUNT on the start menu, choose Gemini or "
+        "OpenAI and paste that key — or put a file called .env in any of "
+        "these places:\n\n"
         f"{where}\n\n"
         "containing a line like:\n\n"
         "  GEMINI_API_KEY=your-key-here\n\n"
-        "Then start SOMEWHERE again."
+        "Then start ABYSS again."
     )
     print(f"[play] no API key found; falling back to offline mode\n{message}")
-    if FROZEN:
+    # The start menu opens ACCOUNT by itself when there is no key (provider
+    # dropdown + paste field), so a first launch no longer stops on a dialog.
+    # SOMEWHERE_KEY_DIALOG=1 brings the old box back.
+    if FROZEN and os.environ.get("SOMEWHERE_KEY_DIALOG") == "1":
         try:
             import ctypes
 
-            ctypes.windll.user32.MessageBoxW(None, message, TITLE, 0x40)
+            ctypes.windll.user32.MessageBoxW(None, message, NAME, 0x40)
         except Exception:
             pass
 
@@ -395,7 +400,7 @@ def _fatal(message: str) -> None:
     try:
         import ctypes
 
-        ctypes.windll.user32.MessageBoxW(None, message, TITLE, 0x10)
+        ctypes.windll.user32.MessageBoxW(None, message, NAME, 0x10)
     except Exception:
         pass
 
@@ -434,7 +439,7 @@ class Api:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Play SOMEWHERE.")
+    ap = argparse.ArgumentParser(description="Play ABYSS.")
     ap.add_argument("--windowed", action="store_true",
                     help="Open a normal resizable window instead of fullscreen.")
     ap.add_argument("--browser", action="store_true",
@@ -481,7 +486,7 @@ def main(argv=None) -> int:
     game_url = f"http://127.0.0.1:{port}/standalone?fresh={boot}"
     health_url = f"http://127.0.0.1:{port}/api/health"
 
-    print(f"{TITLE}  |  backend {backend}  |  {game_url}")
+    print(f"{NAME}  |  backend {backend}  |  {game_url}")
 
     if args.browser:
         return run_browser(game_url, health_url)

@@ -637,7 +637,7 @@
         menu.insertBefore(host, menu.firstChild);
       }
       if (b.querySelector(".start-brand-knockout")) {
-        var word = ((b.querySelector(".start-brand-type") || b).textContent || "").trim() || "SOMEWHERE";
+        var word = ((b.querySelector(".start-brand-type") || b).textContent || "").trim() || "ABYSS";
         b.innerHTML = '<span class="start-brand-type"></span>';
         var type = b.querySelector(".start-brand-type");
         if (type) type.textContent = word;

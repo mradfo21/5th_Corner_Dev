@@ -2,6 +2,18 @@
 
 **Who you play as, the level you play it in, and where the camera sits.**
 
+> **Since 2026-09-24, WHO YOU PLAY is a Character, not this sheet.** A run
+> started from the PLAY screen is bound to a character (`characters.py`,
+> `state.character_id` / `state.look_id`), and `game_identity.get_spec()` lays
+> that character over the sheet's character block: the name, the words READ
+> OFF the character's turnaround, and the turnaround itself as the only
+> character plate (`character_reference_paths`), labelled as a four-view
+> A-pose TURNAROUND. `raw_spec()` is the sheet as the file holds it, and it is
+> what the editors read and write — the World Editor's Character block is now a
+> card with "Change character". Everything below still describes the level and
+> the camera, and the character block for a run that is not a character (an
+> older save, a harness session). See `docs/plans/CHARACTER_SYSTEM_PLAN.md`.
+
 Everything in this document is implemented by `game_identity.py` and edited from
 either **World Studio** (`/studio`) or the in-game **World Editor** (backtick,
 or the EDIT rail button, while playing).

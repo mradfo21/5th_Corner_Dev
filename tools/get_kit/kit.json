@@ -1,0 +1,48 @@
+[
+  {
+    "name": "Vulcanized Enforcer Brigandine",
+    "kind": "armor",
+    "tier": "treasure",
+    "power": "Deflects close-range pistol rounds and blunts severe crushing impacts to the chest.",
+    "worth": "Salvaged from an elite sector sergeant, it turns aside the standard shotgun pellets common in tunnel ambushes.",
+    "use": "Strap the thick rubber-and-steel chassis across your torso over your undershirt.",
+    "look": "A sleeveless waist-length vest of overlapping blackened steel plates sandwiched inside thick industrial conveyor belting, fastened by three rusted brass trunk latches.",
+    "from": "the /get kit",
+    "source": "encounter",
+    "plate": "tools/get_kit/brigandine.png"
+  },
+  {
+    "name": "Lead-Lined Patrol Gorget",
+    "kind": "armor",
+    "tier": "spoil",
+    "power": "Protects the throat and jugular from direct bladed slashes.",
+    "worth": "Scavengers routinely target the exposed throats of officers, making neck protection priceless in tunnel scraps.",
+    "use": "Buckle the crescent plate firmly under the chin resting on the collarbone.",
+    "look": "A curved crescent collar of beat-hammered iron lined with flexible sheet lead, fitted with an oxidized leather neck strap and rusted roller buckle.",
+    "from": "the /get kit",
+    "source": "encounter",
+    "plate": "tools/get_kit/gorget.png"
+  },
+  {
+    "name": "Riot Helmet",
+    "kind": "armor",
+    "tier": "spoil",
+    "power": "Survives one killing blow.",
+    "look": "a black police riot helmet with a clear perspex visor raised, the visor cracked",
+    "from": "the /get kit",
+    "source": "encounter",
+    "plate": "tools/get_kit/helmet.png"
+  },
+  {
+    "name": "Slag Trench Cleaver",
+    "kind": "weapon",
+    "tier": "treasure",
+    "power": "Shears through heavy padlocks and calcified biome tissue in one stroke",
+    "worth": "Forged by desperate miners when standard pickaxes shattered against biome bone.",
+    "use": "Swung two-handed to cleave barricades or sever mutating organic limbs.",
+    "look": "A thirty-inch slab of industrial high-carbon extraction saw steel ground into an oversized falchion, bolted to a leather-wrapped iron pipe grip with heat scorch marks along the spine.",
+    "from": "the /get kit",
+    "source": "encounter",
+    "plate": "tools/get_kit/cleaver.png"
+  }
+]

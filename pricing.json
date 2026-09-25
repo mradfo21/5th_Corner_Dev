@@ -1,6 +1,6 @@
 {
-  "last_updated": "2026-09-21T18:30:00+00:00",
-  "notes": "Every rate is the provider's own list price, read on the date in `checked` from the page in `source`. Token rates are dollars per MILLION tokens (input_per_1m / output_per_1m) — per-thousand token fields are refused by pricing.py, because that is how text ended up priced ~150x too high. Image rates may carry `sizes` (1K/2K/4K); an event that logs its size is priced at that size. A null rate means unpriced: shown as such, never charged as $0 silently. An unknown model only falls back to a provider default of the SAME unit type. Editable from the admin dashboard's Analytics > Pricing panel.",
+  "last_updated": "2026-09-24T18:00:00+00:00",
+  "notes": "Every rate is the provider's own list price, read on the date in `checked` from the page in `source`. Token rates are dollars per MILLION tokens (input_per_1m / output_per_1m) \u2014 per-thousand token fields are refused by pricing.py, because that is how text ended up priced ~150x too high. Image rates may carry `sizes` (1K/2K/4K); an event that logs its size is priced at that size. A null rate means unpriced: shown as such, never charged as $0 silently. An unknown model only falls back to a provider default of the SAME unit type. Editable from the admin dashboard's Analytics > Pricing panel.",
   "rates": {
     "gemini:gemini-3.1-flash-lite": {
       "unit_type": "tokens",
@@ -114,6 +114,22 @@
       "source": "https://developers.openai.com/api/docs/models/gpt-image-1",
       "checked": "2026-09-21",
       "note": "Medium quality 1024x1024. Model is marked Deprecated."
+    },
+    "openai:gpt-6-luna": {
+      "unit_type": "tokens",
+      "input_per_1m": 0.1,
+      "output_per_1m": 0.5,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-09-24",
+      "note": "The story model ACCOUNT picks for an OpenAI key (provider_bridge.OPENAI_TEXT_PREFS)."
+    },
+    "openai:gpt-image-2.5-flare": {
+      "unit_type": "tokens",
+      "input_per_1m": 5.0,
+      "output_per_1m": 30.0,
+      "source": "https://developers.openai.com/api/docs/models/gpt-image-2.5-flare",
+      "checked": "2026-09-24",
+      "note": "Billed by tokens: text in $5, image in $8, image out $30 per 1M. provider_bridge logs input as text-rate-equivalent tokens (image-input tokens x 8/5) so this one rate prices both."
     },
     "anthropic:claude-sonnet-4-5": {
       "unit_type": "tokens",

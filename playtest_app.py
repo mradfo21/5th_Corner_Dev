@@ -24,6 +24,9 @@ SHOTS = "_playthrough"
 os.makedirs(SHOTS, exist_ok=True)
 TURNS = int(os.environ.get("PT_TURNS", "8"))
 TURN_TIMEOUT = int(os.environ.get("PT_TURN_TIMEOUT", "90"))
+# The first turn waits on the look book (up to its build budget, 240s) plus the
+# opening montage, so the start gets its own, longer ceiling.
+START_TIMEOUT = max(TURN_TIMEOUT, int(os.environ.get("PT_START_TIMEOUT", "480")))
 
 
 def a(s):
@@ -304,7 +307,17 @@ def analyse(png):
 
 
 def snap(page, name):
-    png = page.screenshot()
+    # A screenshot that times out (a machine busy filming several runs) is a
+    # missing picture, not a dead run: retry once, then carry on without it.
+    png = None
+    for _ in range(2):
+        try:
+            png = page.screenshot(timeout=45000)
+            break
+        except Exception as e:  # noqa: BLE001
+            print(f"    (screenshot {name} failed: {str(e)[:80]})", flush=True)
+    if png is None:
+        return 128.0, 0.0
     with open(os.path.join(SHOTS, name), "wb") as f:
         f.write(png)
     return analyse(png)
@@ -350,7 +363,346 @@ CAMERA = r"""
 # raise — usually landed while the camera was up, which is why every photo turn
 # "resolved in 1.5s" (one poll) and why moving the photo from turn 2 to turn 4
 # turned it into a 153s STUCK on a run that was perfectly alive.
-READ_ONLY_ACTIONS = {"photo"}
+READ_ONLY_ACTIONS = {"photo", "wear"}
+
+# ── CHARACTERS (characters.py, static/js/characters.js) ─────────────────────
+# PLAY opens the character screen now, and the run is whoever is picked there.
+# PT_CHARACTER picks by id or by a piece of the name; unset, the one selected
+# (the last played) plays. The run's character is checked against the pick.
+CHARACTER_STATE = """async () => {
+  const r = await fetch('/api/character?session_id=' + (window.__SOMEWHERE_SESSION__ || 'default'));
+  const d = await r.json();
+  return {character: d.character, run_look: d.run_look || '', pack: d.pack || []};
+}"""
+
+
+def pick_character(page, log, findings=None):
+    """On the character screen: choose PT_CHARACTER (or keep the selection),
+    check it is drawn, and press its PLAY. Returns the picked name."""
+    want = (os.environ.get("PT_CHARACTER") or "").strip().lower()
+    for _ in range(30):
+        time.sleep(0.4)
+        dbg = page.evaluate("() => window.Characters ? Characters.debug() : null")
+        if dbg and dbg.get("open") and dbg.get("list"):
+            break
+    else:
+        log("!! the character screen never showed a roster")
+        if findings is not None:
+            findings.append("PLAY did not open the character screen with a roster")
+        return ""
+    names = [f"{c['name']} ({c['status']})" for c in dbg["list"]]
+    log(f"    character screen: {', '.join(names)}")
+    # PT_CREATE="<one line>": make a new character through the screen (N, the
+    # line, Enter), watch it develop, and play as whoever comes back.
+    # PT_CREATE="<line> || <line> || <line>" makes each in turn (the /get
+    # page's "Anyone." shows several being drawn) and plays the last.
+    lines = [x.strip() for x in (os.environ.get("PT_CREATE") or "").split("||") if x.strip()]
+    for n_made, make in enumerate(lines, 1):
+        if n_made > 1:
+            log(f"    making character {n_made} of {len(lines)}")
+        page.keyboard.press("n")
+        time.sleep(0.8)
+        # Typed key by key: a film of this screen shows the line being written.
+        page.click(".cs-who")
+        page.type(".cs-who", make, delay=26)
+        time.sleep(0.6)
+        snap(page, "character_create.png")
+        page.keyboard.press("Enter")
+        t0 = time.time()
+        # The /get finder times each character's drawing from this line.
+        log(f"    CREATE: submitted {n_made} of {len(lines)}")
+        shot_dev = False
+        early = os.environ.get("PT_CREATE_EARLY") == "1"
+        while time.time() - t0 < 180:
+            time.sleep(0.5)
+            d = page.evaluate("() => Characters.debug()")
+            # PT_CREATE_EARLY=1: press PLAY the moment it appears on the
+            # drawing screen (playable, the portrait still being posed).
+            if early and d.get("mode") == "developing" and "PLAY" in (d.get("primary") or ""):
+                w = next((c for c in d["list"] if c["id"] == d.get("watching")), {})
+                log(f"    PLAY offered at {time.time() - t0:.0f}s while the portrait draws "
+                    f"({w.get('name')!r}); taking it")
+                snap(page, "character_play_early.png")
+                page.keyboard.press("Enter")
+                return w.get("name") or ""
+            if d.get("mode") == "developing" and not shot_dev and time.time() - t0 > 20:
+                snap(page, "character_developing.png")
+                shot_dev = True
+            if d.get("fresh") and d.get("mode") == "select":
+                break
+        else:
+            log("!! the new character never finished drawing")
+            if findings is not None:
+                findings.append("PT_CREATE: the new character never finished drawing")
+            return ""
+        t_play = time.time() - t0
+        time.sleep(2.5)
+        snap(page, "character_reveal.png")
+        d = page.evaluate("() => Characters.debug()")
+        new = next((c for c in d["list"] if c["id"] == d["fresh"]), {})
+        log(f"    created {new.get('name')!r} ({new.get('status')}) — playable in {t_play:.0f}s"
+            + (f", note {d.get('note')!r}" if d.get("note") else ""))
+        # PT_CREATE_LINGER=<secs>: stay on the screen while the hero pose
+        # finishes and film the cross-fade (0: press PLAY at once, as a
+        # player in a hurry would, while it is still finishing).
+        linger = float(os.environ.get("PT_CREATE_LINGER") or 0)
+        if linger and new.get("finishing"):
+            first = d.get("idleSrc")
+            t1 = time.time()
+            while time.time() - t1 < linger:
+                time.sleep(0.5)
+                d = page.evaluate("() => Characters.debug()")
+                now = next((c for c in d["list"] if c["id"] == new.get("id")), {})
+                if not now.get("finishing") and d.get("idleSrc") != first:
+                    time.sleep(1.2)
+                    snap(page, "character_hero.png")
+                    log(f"    the hero pose crossfaded in at {time.time() - t0:.0f}s")
+                    break
+            else:
+                log(f"!! the hero pose had not landed {linger:.0f}s after the reveal")
+        want = ""
+        if n_made < len(lines):
+            dbg = page.evaluate("() => Characters.debug()")
+    if want:
+        idx = next((i for i, c in enumerate(dbg["list"])
+                    if want == c["id"].lower() or want in (c["name"] or "").lower()), -1)
+        if idx < 0:
+            log(f"!! PT_CHARACTER={want!r} is not on the roster")
+            if findings is not None:
+                findings.append(f"PT_CHARACTER {want!r} not on the roster")
+        else:
+            for _ in range(len(dbg["list"])):
+                if page.evaluate("() => Characters.debug().sel") == idx:
+                    break
+                page.keyboard.press("ArrowDown")
+                time.sleep(0.25)
+    dbg = page.evaluate("() => Characters.debug()")
+    cur = dbg["list"][dbg["sel"]]
+    if cur["status"] != "ready":
+        log(f"!! {cur['name']} is {cur['status']}, not ready to play")
+        if findings is not None:
+            findings.append(f"character {cur['name']} not ready ({cur['status']})")
+    if not dbg.get("idlePainted"):
+        time.sleep(1.5)
+        if not page.evaluate("() => Characters.debug().idlePainted"):
+            log("!! the character's idle never painted on the character screen")
+            if findings is not None:
+                findings.append("the character screen showed no figure")
+    snap(page, "character_screen.png")
+    log(f">>> character screen: PLAY as {cur['name']}")
+    page.keyboard.press("Enter")
+    return cur["name"]
+
+
+def check_run_character(page, log, findings, picked):
+    try:
+        st = page.evaluate(CHARACTER_STATE)
+    except Exception as e:
+        log(f"    (could not read the run's character: {a(str(e))[:80]})")
+        return None
+    ch = st.get("character")
+    if picked and not ch:
+        findings.append(f"the run is not a character, though {picked} was picked")
+        log("!! the run has no character bound")
+    elif ch and picked and ch.get("name") != picked:
+        findings.append(f"the run is {ch.get('name')}, not the picked {picked}")
+        log(f"!! the run is {ch.get('name')}, not {picked}")
+    elif ch:
+        log(f"    the run is {ch.get('name')} (look {ch.get('look')}), carrying {len(st.get('pack') or [])}")
+    return st
+
+
+def do_wear(page, log, findings=None):
+    """WEAR: open the pack (B), put the first wearable thing on (or take one
+    off), wait for the fitting, look at the figure, close. The next turn is
+    checked for the new look (see the turn loop)."""
+    st = page.evaluate(CHARACTER_STATE)
+    ch = st.get("character")
+    if not ch:
+        log("    WEAR: this run is not a character")
+        if findings is not None:
+            findings.append("WEAR: the run has no character")
+        return None
+    pack = st.get("pack") or []
+    idx = next((i for i, g in enumerate(pack) if g.get("wearable") and not g.get("worn")), -1)
+    if idx < 0:
+        idx = next((i for i, g in enumerate(pack) if g.get("wearable")), -1)
+    if idx < 0:
+        log(f"    WEAR: nothing wearable in the pack ({[g.get('name') for g in pack]})")
+        return None
+    item = pack[idx]
+    on = not item.get("worn")
+    page.keyboard.press("b")
+    time.sleep(1.2)
+    if not page.evaluate("() => window.Pack && Pack.isOpen()"):
+        log("    WEAR: B did not open the pack")
+        if findings is not None:
+            findings.append("WEAR: B did not open the pack")
+        return None
+    order = page.evaluate("() => Pack.items().map(g => g.name)")
+    page.evaluate(f"() => Pack.pick({order.index(item['name']) if item['name'] in order else idx})")
+    time.sleep(0.8)
+    dbg = page.evaluate("() => Pack.debug()")
+    snap(page, "wear_1_open.png")
+    if not dbg.get("figurePainted"):
+        log("!! the pack's figure never painted")
+        if findings is not None:
+            findings.append("WEAR: the character did not show in the pack")
+    before = ch.get("look")
+    log(f"    WEAR: {'putting on' if on else 'taking off'} {item['name']} ({item.get('slot')}) — verb {dbg.get('verb')!r}")
+    page.keyboard.press("Enter")
+    t0 = time.time()
+    after = before
+    while time.time() - t0 < 150:
+        time.sleep(2.5)
+        st2 = page.evaluate(CHARACTER_STATE)
+        c2 = st2.get("character") or {}
+        if not c2.get("fitting"):
+            after = c2.get("look")
+            break
+    else:
+        log("!! the fitting never finished")
+        if findings is not None:
+            findings.append(f"WEAR: fitting {item['name']} never finished in 150s")
+    time.sleep(1.5)
+    dbg = page.evaluate("() => Pack.debug()")
+    snap(page, "wear_2_fitted.png")
+    el_ = time.time() - t0
+    log(f"    WEAR: fitted in {el_:.0f}s — look {before} -> {after}; worn now {dbg.get('worn')}; note {dbg.get('note')!r}")
+    if after == before:
+        if findings is not None:
+            findings.append(f"WEAR: {item['name']} did not change the look")
+    if on and item["name"] not in (dbg.get("worn") or []):
+        if findings is not None:
+            findings.append(f"WEAR: {item['name']} is not marked worn")
+    # PT_WEAR_PORTRAIT=1: stay in the pack until the new pose is drawn — the
+    # shadow of the old one, the clock, the new one developing in — and check
+    # the figure is the new look's own portrait, never the sheet.
+    if os.environ.get("PT_WEAR_PORTRAIT") == "1":
+        t1 = time.time()
+        while time.time() - t1 < 90:
+            d = page.evaluate("() => Pack.debug()")
+            if not d.get("fittingShown") and f"/looks/{after}/idle.png" in (d.get("figureSrc") or ""):
+                time.sleep(2.0)
+                snap(page, "wear_3_portrait.png")
+                log(f"    WEAR: the new pose developed in {time.time() - t0:.0f}s after the press")
+                break
+            time.sleep(0.5)
+        else:
+            log("!! the new pose never came into the pack")
+            if findings is not None:
+                findings.append(f"WEAR: {item['name']}'s pose never reached the pack")
+    page.keyboard.press("b")
+    time.sleep(0.8)
+    return f"WEAR: {'on' if on else 'off'} {item['name']} (look {after})"
+
+# ── THE GOAL (goal.py, GoalTag in standalone.js) ─────────────────────────────
+# "goal" in PT_PLAN plays one lap the way a player does: take the goal tag's GO
+# (walking to it, one turn a step, fighting whoever steps out), ENTER at the
+# glowing way in, sit through the reward, and TAKE the thing inside. Ported
+# from _claude_goal_loop.py, which proved the loop three laps running. The
+# GOAL: lines are what tools/refresh_get.py finds the /get page's goal clip by.
+GOAL_STATE = r"""() => {
+  const q = (id) => document.getElementById(id);
+  let d = null; try { d = window.GoalTag ? window.GoalTag.debug() : null; } catch (e) { d = null; }
+  const vis = (el) => !!(el && el.classList.contains('on') && getComputedStyle(el).opacity > 0.5);
+  const tag = q('goal-tag');
+  const r = (d && d.result) || {};
+  return { answered: !!(d && r && (d.url || '').includes('/images/') && r.src === d.url),
+    name: r.name || '', reached: !!r.reached, phase: r.phase || '', steps: r.steps,
+    tagOn: !!(tag && tag.classList.contains('on')), go: !!(tag && tag.querySelector('.gt-go')),
+    arrive: vis(q('goal-arrive')),
+    inEncounter: !!(window.Encounter && Encounter.isActive && Encounter.isActive()),
+    inCutscene: !!(window.Cutscene && Cutscene.isActive && Cutscene.isActive()),
+    findOn: !!(window.Pack && Pack.debug && Pack.debug().findOn),
+    findName: (window.Pack && Pack.debug) ? (Pack.debug().findName || '') : '' };
+}"""
+
+
+def _goal(page):
+    try:
+        return page.evaluate(GOAL_STATE) or {}
+    except Exception:
+        return {}
+
+
+def _goal_wait(page, pred, secs, every=0.7):
+    t0 = time.time()
+    last = {}
+    while time.time() - t0 < secs:
+        last = _goal(page)
+        if pred(last):
+            return last, time.time() - t0
+        time.sleep(every)
+    return last, None
+
+
+def _goal_fights(page, log, findings):
+    for _ in range(4):
+        if not _goal(page).get("inEncounter"):
+            return
+        log("  GOAL: someone stands in the way — playing it out")
+        play_out_encounter(page, log, findings)
+        time.sleep(2)
+
+
+def do_goal(page, log, findings=None):
+    s, t = _goal_wait(page, lambda x: x.get("answered") and x.get("name"), 150)
+    if t is None:
+        log("    GOAL: the run has no goal in view")
+        if findings is not None:
+            findings.append("GOAL: no goal answered on the picture")
+        return None
+    name = s["name"]
+    log(f"  GOAL: walking to {name!r}")
+    for step in range(1, 9):
+        _goal_fights(page, log, findings)
+        if _goal(page).get("reached"):
+            break
+        _, tg = _goal_wait(page, lambda x: x.get("tagOn") and x.get("go"), 30)
+        before = page.evaluate(STATE)["prose"]
+        try:
+            page.click("#goal-tag .gt-go" if tg is not None else "#goal-hud-name", timeout=6000)
+        except Exception as e:
+            log(f"    GOAL: the walk click did not land: {a(str(e))[:100]}")
+            return None
+        log(f"  GOAL: step {step}")
+        wait_advance(page, before, TURN_TIMEOUT, log, findings=findings)
+        _goal_fights(page, log, findings)
+        s, _ = _goal_wait(page, lambda x: x.get("answered"), 60)
+        if s.get("reached"):
+            break
+    s, t = _goal_wait(page, lambda x: x.get("arrive"), 60)
+    if t is None:
+        log(f"    GOAL: never reached the way into {name!r}")
+        if findings is not None:
+            findings.append(f"GOAL: never reached {name!r}")
+        return None
+    log("  GOAL: at the way in")
+    time.sleep(1.5)
+    page.click("#goal-arrive", timeout=6000)
+    _, tc = _goal_wait(page, lambda x: x.get("inCutscene"), 120)
+    if tc is not None:
+        log("  GOAL: reward cutscene")
+        _goal_wait(page, lambda x: not x.get("inCutscene"), 300, 2.0)
+        log("  GOAL: reward over")
+    time.sleep(6)
+    took = ""
+    s = _goal(page)
+    if s.get("phase") == "prize":
+        _, tg = _goal_wait(page, lambda x: x.get("tagOn") and x.get("go"), 60)
+        before = page.evaluate(STATE)["prose"]
+        try:
+            page.click("#goal-tag .gt-go", timeout=6000)
+            f, _ = _goal_wait(page, lambda x: x.get("findOn"), 20, 0.3)
+            took = f.get("findName") or s.get("name") or ""
+            log(f"  GOAL: took {took!r}")
+            wait_advance(page, before, TURN_TIMEOUT, log, findings=findings)
+            time.sleep(4)
+        except Exception as e:
+            log(f"    GOAL: the take did not land: {a(str(e))[:100]}")
+    return f"GOAL: reached {name!r}" + (f", took {took!r}" if took else "")
+
 
 # How long ONE exchange of a confrontation is allowed to take. A round is a
 # roll, a resolve plate and an aftermath beat, so it costs about what a turn
@@ -497,14 +849,117 @@ def _one_photo(page, log, wider=False):
     return said
 
 
-def start_run(page, log):
+PICKED_CHARACTER = ""
+ACCOUNT_RESULT = {}
+ACT_TYPED = [0]
+
+_ACCOUNT_KEY_ENVS = {"gemini": "GEMINI_API_KEY", "openai": "OPENAI_API_KEY"}
+
+
+def set_up_account(page, log, findings):
+    """PT_ACCOUNT=gemini|openai: a friend's first launch, before PLAY.
+
+    ACCOUNT opens by itself on a machine with no key; otherwise it is opened
+    from the menu. Pick the provider in the dropdown, type that provider's
+    key (from PT_ACCOUNT_KEY_ENV, default GEMINI_API_KEY / OPENAI_API_KEY in
+    the harness's own environment — typed into the password field, never
+    logged), SAVE, and wait for the sheet's verdict: the line a real call
+    to the provider produced. PT_ACCOUNT_LINGER=<secs> holds on the result
+    for a film. The verdict goes into findings when it is not "Works".
+    """
+    want = (os.environ.get("PT_ACCOUNT") or "").strip().lower()
+    if not want:
+        return
+    env_name = os.environ.get("PT_ACCOUNT_KEY_ENV") or _ACCOUNT_KEY_ENVS.get(want, "")
+    key = (os.environ.get(env_name) or "").strip()
+    log(f">>> ACCOUNT: play on {want} (key from {env_name}: {'present' if key else 'MISSING'})")
+    opened_itself = False
+    for _ in range(16):
+        if "keys-open" in page.evaluate("() => document.body.className"):
+            opened_itself = True
+            break
+        time.sleep(0.5)
+    if not opened_itself:
+        page.click("#start-account", timeout=10000)
+    log(f"    sheet {'opened by itself (no key on this machine)' if opened_itself else 'opened from the menu'}")
+    sel = "#acct-body .acct-ai select"
+    page.wait_for_selector(sel, timeout=20000)
+    time.sleep(1.2)
+    # The stored key's last four are blurred in anything the harness keeps.
+    page.add_style_tag(content=".acct-dots { filter: blur(6px); }")
+
+    def shot(name):
+        try:
+            os.makedirs(SHOTS, exist_ok=True)
+            page.screenshot(path=os.path.join(SHOTS, f"account_{name}.png"))
+        except Exception:
+            pass
+    shot("1_opened")
+    # The /get finder starts the key clip here: the screenshot above can take
+    # seconds while a film is recording, and the sheet just sits there.
+    log("    ACCOUNT: choosing the provider")
+    # PT_ACCOUNT_TOUR=1 (a film): show the other provider in the dropdown
+    # first, so the choice is seen to be a choice.
+    if os.environ.get("PT_ACCOUNT_TOUR") == "1":
+        other = "openai" if want == "gemini" else "gemini"
+        page.select_option(sel, other)
+        time.sleep(2.2)
+    if page.evaluate(f"() => document.querySelector('{sel}').value") != want:
+        page.select_option(sel, want)
+        time.sleep(1.5)
+    field = "#acct-body .acct-ai input[type=password]"
+    if page.query_selector(field) is None:
+        # A key is already stored for this provider: CHANGE to type ours.
+        change = page.query_selector("#acct-body .acct-ai .acct-word:text-is('CHANGE')")
+        if change:
+            change.click()
+            time.sleep(0.6)
+    if not key:
+        findings.append(f"PT_ACCOUNT: no {env_name} in the harness environment")
+        return
+    page.click(field)
+    page.type(field, key, delay=18)
+    time.sleep(0.6)
+    page.click("#acct-body .acct-ai .acct-word.is-go")
+    verdict = ""
+    for _ in range(120):
+        time.sleep(0.5)
+        verdict = page.evaluate("""() => {
+            const s = document.querySelector('#acct-body .acct-ai .acct-status');
+            if (!s || !(s.classList.contains('is-ok') || s.classList.contains('is-bad'))) return '';
+            return (s.classList.contains('is-ok') ? 'OK ' : 'BAD ') + s.textContent.replace(/CHECK$/, '').trim();
+        }""")
+        if verdict:
+            break
+    msg = page.evaluate("() => (document.getElementById('acct-msg') || {}).textContent || ''")
+    log(f"    verdict: {verdict or '(none within 60s)'}  | sheet says: {msg.strip()}")
+    ACCOUNT_RESULT.update(provider=want, verdict=verdict, message=msg.strip())
+    shot("2_verdict")
+    if not verdict.startswith("OK "):
+        findings.append(f"PT_ACCOUNT {want}: {verdict or msg or 'no verdict'}")
+    linger = float(os.environ.get("PT_ACCOUNT_LINGER") or 0)
+    if linger:
+        time.sleep(linger)
+    page.click("#acct-close", timeout=5000)
+    time.sleep(1.0)
+
+
+def start_run(page, log, findings=None):
     s = page.evaluate(STATE)
     if "mode-play" in s["cls"] and s["prose"]:
         log("already in a live run")
         return True
+    picked = ""
     if "xp-open" not in s["cls"]:
+        if findings is not None:
+            set_up_account(page, log, findings)
         log(">>> start menu: pressing PLAY")
         page.click("#start-play", timeout=10000)
+        # PLAY opens the character screen first (static/js/characters.js).
+        if page.evaluate("() => !!window.Characters"):
+            picked = pick_character(page, log)
+            global PICKED_CHARACTER
+            PICKED_CHARACTER = picked
         for _ in range(30):
             time.sleep(0.5)
             if "xp-ready" in page.evaluate("() => document.body.className"):
@@ -522,7 +977,7 @@ def start_run(page, log):
     t0 = time.time()
     black = 0
     held = 0
-    while time.time() - t0 < TURN_TIMEOUT:
+    while time.time() - t0 < START_TIMEOUT:
         time.sleep(1.5)
         s = page.evaluate(STATE)
         # "Playable" has to mean the player can SEE something. Prose arriving is
@@ -539,7 +994,12 @@ def start_run(page, log):
         # window reported "black picture on an idle, playable turn" on runs whose
         # frames were measured healthy on disk (luma 78-105) — a false alarm
         # about the harness's own timing.
-        if s["prose"] and not s["gated"] and not blacked_out and not is_black(m, d):
+        # And the montage has handed over. The boot gate lifts as soon as the
+        # first turn has landed BEHIND the montage (it is rendered while the
+        # montage plays), so turn_01_view.png on both harness runs of 09-21
+        # was a montage shot, not the first playable frame.
+        in_montage = "moment-active" in (s.get("cls") or "")
+        if s["prose"] and not s["gated"] and not blacked_out and not in_montage and not is_black(m, d):
             log(f">>> turn 1 playable after {time.time() - t0:.1f}s"
                 + (f" ({black} black samples while loading)" if black else "")
                 + (f" [{held} of them the opening blackout, by design]" if held else ""))
@@ -552,7 +1012,7 @@ def start_run(page, log):
             # harness that cries wolf about its own feature gets ignored.
             if blacked_out:
                 held += 1
-    log(f"!! no playable turn after {TURN_TIMEOUT}s")
+    log(f"!! no playable turn after {START_TIMEOUT}s")
     snap(page, "start_FAILED.png")
     return False
 
@@ -728,6 +1188,102 @@ ENCOUNTER_STATE = r"""
 """
 
 
+# THE BATTLE (combat.py / Battle in standalone.js). A fight is two health bars
+# and a die each now, and the dice are thrown BEFORE the picture is drawn so the
+# numbers play during the wait. This tap records every exchange the client
+# plays — when it started relative to the click, what it said, and where the
+# bars ended — so the harness can hold it to three things: the bars are up on
+# the slate with odds on every row, the numbers start within seconds of
+# committing (not when the picture lands), and the bars end where the server
+# says they are.
+BATTLE_TAP = r"""
+() => {
+  if (window.__ptBattle) return true;
+  const B = window.Battle;
+  if (!B || typeof B.play !== "function") return false;
+  const rec = window.__ptBattle = { plays: [], clicks: [] };
+  const orig = B.play;
+  B.play = async function (ex) {
+    const row = {
+      at: Date.now(), id: ex && ex.id, lane: ex && ex.lane, end: ex && ex.end,
+      you: ex && ex.you, foe: ex && ex.foe,
+      beats: ((ex && ex.beats) || []).map((b) => ({
+        side: b.side, result: b.result, text: b.text,
+        face: b.roll && b.roll.face, need: b.roll && b.roll.need, damage: b.damage })),
+    };
+    rec.plays.push(row);
+    try { return await orig.apply(this, arguments); }
+    finally { row.done = Date.now(); try { row.after = B.state(); } catch (_) {} }
+  };
+  return true;
+}
+"""
+
+BATTLE_STATE = r"""
+() => {
+  const b = document.getElementById("battle");
+  const txt = (sel) => { const n = document.querySelector(sel); return n ? (n.textContent || "").trim() : ""; };
+  return {
+    on: !!(b && !b.classList.contains("hidden")),
+    you: txt("#battle .bt-you .bt-name") + " " + txt("#battle .bt-you .bt-num"),
+    foe: txt("#battle .bt-foe .bt-name") + " " + txt("#battle .bt-foe .bt-num"),
+    odds: Array.from(document.querySelectorAll("#moment-choices .moment-choice-odds"))
+      .map((n) => (n.textContent || "").trim()),
+    line: txt("#battle .bt-line:not(.hidden) .bt-text"),
+  };
+}
+"""
+
+
+def check_battle_round(page, log, findings, click_ms, round_no):
+    """What the player watched for one committed exchange, held to the
+    battle's promises. Called once the round is over (next slate, or gone)."""
+    try:
+        rec = page.evaluate("() => window.__ptBattle || null")
+    except Exception:
+        rec = None
+    if not rec:
+        return
+    plays = [p for p in (rec.get("plays") or []) if (p.get("at") or 0) >= click_ms]
+    if not plays:
+        msg = f"encounter round {round_no}: no exchange was played — no dice, no bars moved"
+        if findings is not None and msg not in findings:
+            findings.append(msg)
+        log(f"    !! {msg}")
+        return
+    p = plays[0]
+    lag = ((p.get("at") or click_ms) - click_ms) / 1000.0
+    took = (((p.get("done") or p.get("at") or 0) - (p.get("at") or 0)) / 1000.0)
+    you, foe = p.get("you") or {}, p.get("foe") or {}
+    log(f"    battle r{round_no}: {p.get('lane')} -> {p.get('end') or 'fight goes on'}; "
+        f"dice {lag:.1f}s after the click, played for {took:.1f}s; "
+        f"you {you.get('hp_before')}->{you.get('hp')} them {foe.get('hp_before')}->{foe.get('hp')}")
+    if (os.environ.get("PT_ENC_TYPE") or "").strip() and p.get("lane") not in ("confront", "attack"):
+        msg = (f"encounter round {round_no}: the typed attack "
+               f"{os.environ.get('PT_ENC_TYPE')!r} was rolled as {p.get('lane')!r}, not ATTACK")
+        if findings is not None and msg not in findings:
+            findings.append(msg)
+        log(f"    !! {msg}")
+    for b in p.get("beats") or []:
+        roll = f" [{b.get('face')}/{b.get('need')}]" if b.get("face") is not None else ""
+        log(f"      {b.get('side')}: {a(str(b.get('text') or ''))[:110]}{roll}")
+    # Five seconds is generous: the throw is a state-file read. Anything
+    # slower means the numbers waited for the picture again.
+    if lag > 5.0:
+        msg = (f"encounter round {round_no}: the dice played {lag:.1f}s after the "
+               f"click — they are meant to fill the wait, not follow it")
+        if findings is not None and msg not in findings:
+            findings.append(msg)
+    after = p.get("after") or {}
+    for side, ex in (("you", you), ("foe", foe)):
+        shown = (after.get(side) or {}).get("hp")
+        if ex.get("hp") is not None and shown is not None and int(shown) != int(ex["hp"]):
+            msg = (f"encounter round {round_no}: the {side} bar ended at {shown}, "
+                   f"the server said {ex['hp']}")
+            if findings is not None and msg not in findings:
+                findings.append(msg)
+
+
 def do_encounter(page, log, findings=None):
     """Force an encounter (Shift+N) and play it to a resolution.
 
@@ -815,6 +1371,11 @@ def play_out_encounter(page, log, findings=None):
     rounds = []  # the full slate offered each round, to catch a stale one
     last_frame = ""  # the plate this round must replace before we choose again
     t0 = time.time()
+    click_ms = 0     # when the last verb was committed, in page time
+    try:
+        page.evaluate(BATTLE_TAP)
+    except Exception:
+        pass
     # Budget per ROUND, not per fight. Every exchange is a real generation
     # (~35s on the stills path) and a fight is not guaranteed to end in one:
     # the enemy has to be worn down, and the odds of settling only climb with
@@ -826,6 +1387,9 @@ def play_out_encounter(page, log, findings=None):
         mean, dark = analyse(page.screenshot())
         if is_black(mean, dark):
             black += 1
+        if committed and click_ms and (enc["dead"] or not enc["inEncounter"] or enc["choices"]):
+            check_battle_round(page, log, findings, click_ms, committed)
+            click_ms = 0
         if enc["dead"]:
             log(f"    encounter ended in DEATH after {committed} choice(s)"
                 f"{f' — {black} black samples' if black else ''}")
@@ -853,12 +1417,27 @@ def play_out_encounter(page, log, findings=None):
             if not committed:
                 snap(page, "encounter_ui.png")
                 log(f"    encounter chrome: body={a(enc['body'])[:110]}")
+            try:
+                bs = page.evaluate(BATTLE_STATE)
+            except Exception:
+                bs = {}
+            log(f"    bars: {a(bs.get('you') or '')} | {a(bs.get('foe') or '')} · odds {bs.get('odds')}")
+            if not bs.get("on"):
+                msg = "encounter slate is up with no health bars on screen"
+                if findings is not None and msg not in findings:
+                    findings.append(msg)
+            elif len(bs.get("odds") or []) < 3:
+                msg = f"encounter slate shows {len(bs.get('odds') or [])} odds for 3 verbs"
+                if findings is not None and msg not in findings:
+                    findings.append(msg)
             # Rotate lanes. Always taking choice 1 took the confront lane every
             # single beat, which is the most lethal option available — the
             # harness died in two rounds and reported that as the encounter
             # system's behaviour. The lanes are meant to be a real decision, so
             # sample them rather than one of them.
-            pick = committed % len(enc["choices"])
+            # PT_ENC_OFFSET starts the rotation elsewhere (2 = reason first),
+            # so a run can be pointed at the lanes that do not end it in one.
+            pick = (committed + int(os.environ.get("PT_ENC_OFFSET") or 0)) % len(enc["choices"])
             if pick == len(enc["choices"]) - 1:
                 pick = 0  # last row is "do something else - type it"
             # Record the WHOLE slate, not just the row taken. A fight is only a
@@ -878,11 +1457,49 @@ def play_out_encounter(page, log, findings=None):
             # PLATE each round, which wait_plate already requires.
             log(f"    encounter choice: {a(enc['choices'][pick])}")
             try:
-                page.click(f".moment-choice >> nth={pick}", timeout=6000)
-                committed += 1
+                click_ms = page.evaluate("() => Date.now()")
             except Exception:
-                pass
-            time.sleep(4.0)
+                click_ms = 0
+            typed = (os.environ.get("PT_ENC_TYPE") or "").strip()
+            try:
+                if typed:
+                    # PT_ENC_TYPE="shoot him with a gun": the player's own
+                    # words in the last row, every round. It is ATTACK and it
+                    # has to be able to hurt him ("plays the action but doesn't
+                    # hurt him", 2026-09-24); check_battle_round logs the lane
+                    # and both bars.
+                    log(f"    typed action: {typed!r}")
+                    page.click(".moment-choice-custom", timeout=6000)
+                    time.sleep(0.4)
+                    page.fill(".moment-custom-input", typed)
+                    page.press(".moment-custom-input", "Enter")
+                else:
+                    page.click(f".moment-choice >> nth={pick}", timeout=6000)
+                committed += 1
+            except Exception as exc:
+                # The click can land and still raise: the slate is torn down
+                # the instant the choice is taken, and Playwright reports the
+                # detached element as a failure. Counting that as "not
+                # committed" left the loop waiting for a round that had
+                # already resolved (seen live: "0 round(s) and 75s" on a fight
+                # the server had finished). Judge by what the screen did.
+                time.sleep(1.0)
+                try:
+                    after = page.evaluate(ENCOUNTER_STATE)
+                except Exception:
+                    after = {}
+                if not after.get("inEncounter") or after.get("choices") != enc["choices"]:
+                    committed += 1
+                    log("    (the click landed; the slate went with it)")
+                else:
+                    log(f"    the choice would not press: {a(str(exc))[:100]}")
+                    click_ms = 0
+            # A frame of the dice while they play: the picture of this
+            # exchange cannot exist yet, so this is what the wait looks like.
+            time.sleep(2.6)
+            if click_ms:
+                snap(page, f"encounter_beats_r{committed}.png")
+            time.sleep(1.4)
             continue
         time.sleep(2.0)
 
@@ -1471,10 +2088,19 @@ def do_scan_action(page, log, prefer="move"):
         # scan per scene) while re-painting its tags. Bailing here reported
         # "SCAN not available" on turns that were about to be perfectly
         # playable. Wait for either road in.
-        for _ in range(14):
+        # A turn in flight holds SCAN off too: an encounter the sighting opened
+        # hands back to the world with a turn of its own (a FLEE moves the
+        # player), and that turn runs as long as any other. 21s was measured
+        # short of it on SWAT and filed "SCAN never re-armed" against a game
+        # that was simply still drawing.
+        t_wait = time.time()
+        while True:
             time.sleep(1.5)
             s = page.evaluate(STATE)
             if s["tags"] or s["scanReady"]:
+                break
+            limit = TURN_TIMEOUT if s["turnActive"] else 21
+            if time.time() - t_wait > limit:
                 break
         if not s["tags"] and not s["scanReady"]:
             log("    no tags and SCAN never re-armed")
@@ -1503,8 +2129,15 @@ def do_scan_action(page, log, prefer="move"):
     # out of main() and ended a run at turn 5 with no SUMMARY. Aim only at
     # tags that are staying, and if the one we wanted has gone, re-read the
     # frame and take whatever is actually on screen now.
+    # A tag under the GOAL marker is hidden on purpose (.goal-shadowed:
+    # opacity 0, pointer-events none — the goal's own tag stands there), so it
+    # can never take a click; aiming at one timed out and ended the run.
+    live = ".scan-tag:not(.leaving):not(.goal-shadowed)"
+    n_live = page.evaluate(f"() => document.querySelectorAll('{live}').length") or 0
+    if n_live:
+        idx = idx % n_live
     try:
-        page.click(f".scan-tag:not(.leaving) >> nth={idx}", timeout=8000)
+        page.click(f"{live} >> nth={idx}", timeout=8000)
     except Exception as exc:
         log(f"    tag {idx} ({a(labels[idx])}) left before it could be clicked "
             f"({a(str(exc))[:60]}); re-reading the frame")
@@ -1514,8 +2147,16 @@ def do_scan_action(page, log, prefer="move"):
             log("    no tags left to click")
             return None
         labels = [t["label"] for t in s["tags"]]
-        idx = idx % len(labels)
-        page.click(f".scan-tag:not(.leaving) >> nth={idx}", timeout=8000)
+        n_live = page.evaluate(f"() => document.querySelectorAll('{live}').length") or 0
+        if not n_live:
+            log("    no clickable tags left")
+            return None
+        idx = idx % n_live
+        try:
+            page.click(f"{live} >> nth={idx}", timeout=8000)
+        except Exception as exc2:
+            log(f"    the tag would not take a click: {a(str(exc2))[:80]}")
+            return None
 
     # The tag has to actually open before its sub-actions can be committed.
     for _ in range(8):
@@ -1547,7 +2188,10 @@ def main():
         lines.append(msg)
 
     with sync_playwright() as pw:
-        b = pw.chromium.connect_over_cdp("http://127.0.0.1:9333")
+        # PT_CDP: attach somewhere other than the native app's port — a
+        # headless browser on a server of its own, so a harness run does not
+        # take over the desktop someone is using.
+        b = pw.chromium.connect_over_cdp(os.environ.get("PT_CDP") or "http://127.0.0.1:9333")
         pages = [p for p in b.contexts[0].pages if "standalone" in p.url]
         if not pages:
             log("no standalone page")
@@ -1595,9 +2239,24 @@ def main():
             log(">>> LOOP TRACE on: every turn's state, lead, dials and encounter go to "
                 f"{SHOTS}/loop_trace.json")
 
-        if not start_run(page, log):
+        if not start_run(page, log, findings):
             log("!! could not start a run")
             return
+        # The bottom-left tag names the provider actually answering. With
+        # PT_ACCOUNT it has to be the one just chosen.
+        try:
+            tag = ""
+            for _ in range(24):
+                tag = page.evaluate("() => ((document.getElementById('backend-name') || {}).textContent || '').trim()")
+                if tag and tag != "\u2014":
+                    break
+                time.sleep(0.5)
+            log(f"    backend tag: {tag!r}")
+            want = (os.environ.get("PT_ACCOUNT") or "").strip().lower()
+            if want and tag != want:
+                findings.append(f"backend tag says {tag!r}, ACCOUNT chose {want!r}")
+        except Exception:
+            pass
         if trace:
             trace.snapshot(page, "start", log)
 
@@ -1624,7 +2283,7 @@ def main():
         # well as early, which the fixed rotation never does.
         if os.environ.get("PT_PLAN"):
             wanted = [v.strip() for v in os.environ["PT_PLAN"].split(",") if v.strip()]
-            known = {"choice", "scan_move", "scan_interact", "photo", "encounter", "act", "custom"}
+            known = {"choice", "scan_move", "scan_interact", "photo", "encounter", "act", "custom", "wear", "goal"}
             bad = [v for v in wanted if v not in known]
             if bad:
                 log(f"!! PT_PLAN has unknown verbs {bad}; using the rotation")
@@ -1633,7 +2292,21 @@ def main():
                 log(f">>> PT_PLAN: {plan}")
 
         sightings_played = 0
+        wore_before_turn = 0
+        run_char = check_run_character(page, log, findings, PICKED_CHARACTER)
         for turn in range(1, TURNS + 1):
+            # A fitting done in the pack is the run's look from the next move:
+            # the turn after a WEAR must have taken it.
+            if wore_before_turn and turn > wore_before_turn + 1:
+                st_c = check_run_character(page, log, findings, PICKED_CHARACTER) or {}
+                c_ = st_c.get("character") or {}
+                if c_ and st_c.get("run_look") != c_.get("look"):
+                    findings.append(f"turn {turn}: the run is still on look {st_c.get('run_look')} "
+                                    f"after the fitting made {c_.get('look')}")
+                    log("!! the run did not take the new look at the turn boundary")
+                else:
+                    log(f"    the run took the new look {c_.get('look')} at the turn boundary")
+                wore_before_turn = 0
             s = page.evaluate(STATE)
             if s["gameOver"]:
                 log(f"\n--- turn {turn}: GAME OVER — stopping")
@@ -1704,6 +2377,17 @@ def main():
                 did = do_photo(page, log, findings)
             elif action == "encounter":
                 did = do_encounter(page, log, findings)
+            elif action == "wear":
+                did = do_wear(page, log, findings)
+                if did:
+                    wore_before_turn = turn
+            elif action == "goal":
+                # A whole lap: it plays its own turns (the walk), the reward and
+                # the take, so the loop below has nothing left to wait for.
+                did = do_goal(page, log, findings)
+                if did:
+                    log(f"  >>> committed: {did}")
+                    continue
             elif action == "act":
                 # ACT is not a hub button any more. The hub reduction made the
                 # choice stack the entire turn interface: the last row, labelled
@@ -1715,13 +2399,49 @@ def main():
                     open_fist(page, log)
                     page.click(".choice-btn-custom", timeout=8000)
                     page.wait_for_selector("#custom-input", state="visible", timeout=8000)
-                    typed = "Search the ground for tracks"
-                    page.fill("#custom-input", typed, timeout=8000)
+                    # PT_ACT_LINES="a | b | c": the typed actions, in order,
+                    # one per "act" turn (the /get page's "Anything." films
+                    # the wildest ones). Typed key by key so a film shows it.
+                    acts = [x.strip() for x in (os.environ.get("PT_ACT_LINES") or "").split("|") if x.strip()]
+                    if acts:
+                        typed = acts[ACT_TYPED[0] % len(acts)]
+                        ACT_TYPED[0] += 1
+                        log(f"  ACT: typing {typed!r}")
+                        page.click("#custom-input", timeout=8000)
+                        page.type("#custom-input", typed, delay=38)
+                        time.sleep(0.7)
+                    else:
+                        typed = "Search the ground for tracks"
+                        page.fill("#custom-input", typed, timeout=8000)
                     page.click("#custom-submit", timeout=8000)
                     did = f"ACT (typed): {typed}"
                 except Exception as e:
                     log(f"    ACT failed: {a(str(e))[:120]}")
 
+            if not did:
+                # A sighting can open its encounter AFTER the pre-turn check —
+                # the frame's auto-scan lands, the server rolls the figure, and
+                # the confrontation takes the screen a beat later, while the
+                # rows behind the fist were opening. That is the game working;
+                # play the fight out, then take the turn.
+                try:
+                    late = page.evaluate(ENCOUNTER_STATE)["inEncounter"]
+                except Exception:
+                    late = False
+                if late:
+                    log(f"  a sighting opened an encounter during turn {turn} — playing it out")
+                    played = play_out_encounter(page, log, findings)
+                    log(f"    sighting encounter: {played or 'never resolved'}")
+                    sightings_played += 1
+                    if page.evaluate(STATE)["gameOver"]:
+                        log(f"\n--- turn {turn}: GAME OVER in the sighting — stopping")
+                        break
+                    if action == "choice":
+                        did = do_choice(page, log, turn)
+                    elif action == "scan_move":
+                        did = do_scan_action(page, log, prefer="move")
+                    elif action == "scan_interact":
+                        did = do_scan_action(page, log, prefer="interact")
             if not did:
                 findings.append(f"turn {turn}: could not commit a '{action}' action")
                 log(f"  !! no action committed for '{action}'")
@@ -1911,7 +2631,10 @@ def main():
             for e in env[:4]:
                 log(f"  {a(e)[:200]}")
 
-        if os.environ.get("PT_SESSION"):
+        # Only when the page is somebody's: a PT_CDP browser is the harness's
+        # own, and "putting it back" loaded the `default` run on the harness's
+        # server, which then wrote sessions/default under the player.
+        if os.environ.get("PT_SESSION") and not os.environ.get("PT_CDP"):
             try:
                 page.goto(home_url, wait_until="load")
                 log(f">>> page put back on {home_url}")

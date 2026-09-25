@@ -1,0 +1,565 @@
+/* ==========================================================================
+   THE PACK (static/js/pack.js) — designed on the canvas "GOD — The Goal",
+   row 4. A backpack beside the fist, the find card that puts a thing in it,
+   and the pack itself: slots on the left, the thing on the right. The plates
+   are cut-outs (look_book._cut_out) — item art on nothing, never a photo of
+   a table — so they sit on the dark straight, with a drop shadow to stand on.
+   ========================================================================== */
+
+/* The button: the fist's sibling, same ring, same size, one slot to its
+   right. An empty pack is not a button. */
+#pack-btn {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  --pk-shift: 64px;
+  transform: translateX(calc(-50% + var(--pk-shift)));
+  width: 51px;
+  height: 51px;
+  padding: 0;
+  border-radius: 50%;
+  background: none;
+  border: 1px solid rgba(232, 230, 223, 0.42);
+  color: rgba(232, 230, 223, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.5);
+  transition: opacity 0.34s ease, transform 0.34s ease, border-color 0.45s ease,
+              color 0.45s ease, box-shadow 0.45s ease, background-color 0.3s ease;
+}
+#pack-btn .pack-icon { width: 22px; height: 22px; display: block; }
+#pack-btn:hover { border-color: #E8E6DF; color: #fff; transform: translateX(calc(-50% + var(--pk-shift))) scale(1.06); }
+#pack-btn:active { transform: translateX(calc(-50% + var(--pk-shift))) scale(0.94); }
+#pack-btn:focus-visible { outline: 1px solid #fff; outline-offset: 3px; }
+#pack-btn.empty { opacity: 0; pointer-events: none; }
+#pack-btn .pack-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 17px;
+  height: 17px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: #E8E6DF;
+  color: #07090c;
+  font: 400 9px/17px var(--font-mono, 'JetBrains Mono', ui-monospace, monospace);
+  text-align: center;
+  pointer-events: none;
+}
+#pack-btn .pack-badge:empty { display: none; }
+/* A fitting under way with the pack shut: a thin ring round the button
+   fills with the character screen's clock. */
+#pack-btn .pack-ring {
+  position: absolute; inset: -5px; width: calc(100% + 10px); height: calc(100% + 10px);
+  transform: rotate(-90deg); pointer-events: none; opacity: 0;
+  transition: opacity 0.4s ease;
+}
+#pack-btn .pack-ring circle { fill: none; stroke-width: 1.5; }
+#pack-btn .pack-ring-bg { stroke: rgba(142, 255, 193, 0.14); }
+#pack-btn .pack-ring-p {
+  stroke: #b6ffd6; stroke-linecap: round; stroke-dasharray: 100;
+  stroke-dashoffset: calc(100 - 100 * var(--pk-p, 0));
+  filter: drop-shadow(0 0 3px rgba(142, 255, 193, 0.7));
+}
+#pack-btn.fitting .pack-ring { opacity: 1; }
+#pack-btn.fitting:not(.open) { color: #b6ffd6; border-color: rgba(142, 255, 193, 0.5); }
+/* NEW: something went in and has not been looked at — the fist's green. */
+#pack-btn.has-new {
+  border-color: rgba(142, 255, 193, 0.95);
+  color: #b6ffd6;
+  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.5), 0 0 22px rgba(142, 255, 193, 0.45);
+  animation: pack-new-glow 2.8s ease-in-out infinite;
+}
+#pack-btn.has-new .pack-badge { background: #b6ffd6; }
+#pack-btn.got { animation: pack-got 0.9s cubic-bezier(0.2, 0.9, 0.25, 1.2); }
+#pack-btn.open {
+  border-color: #E8E6DF;
+  background: rgba(232, 230, 223, 0.12);
+  color: #fff;
+  animation: none;
+}
+@keyframes pack-got {
+  0%   { transform: translateX(calc(-50% + var(--pk-shift))) scale(1); }
+  35%  { transform: translateX(calc(-50% + var(--pk-shift))) scale(1.24); }
+  100% { transform: translateX(calc(-50% + var(--pk-shift))) scale(1); }
+}
+@keyframes pack-new-glow {
+  0%, 100% { box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 14px rgba(142,255,193,0.28); }
+  50%      { box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 26px rgba(142,255,193,0.6); }
+}
+/* Out of the way with the rest of the hub. */
+body.start-menu-on #pack-btn,
+body.mode-watch #pack-btn,
+body.world-editor-on #pack-btn,
+body.moment-active #pack-btn,
+body.camera-mode #pack-btn,
+body.awaiting-first-scene #pack-btn,
+body.opening-blackout #pack-btn {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  animation: none;
+}
+@media (max-width: 720px) {
+  #pack-btn { width: 48px; height: 48px; --pk-shift: 60px; }
+  #pack-btn .pack-icon { width: 21px; height: 21px; }
+}
+@media (max-width: 560px) {
+  #pack-btn { width: 42px; height: 42px; --pk-shift: 52px; }
+  #pack-btn .pack-icon { width: 19px; height: 19px; }
+}
+
+/* What this replaces: the strip of plates along the bottom, and the emoji
+   list of pickups in the corner — both are in the pack now. */
+#goal-pack { display: none !important; }
+#inventory-hud { display: none !important; }
+
+/* ── THE PACK — the character's frame ─────────────────────────────────────
+   Canvas "GOD — Characters", Inventory: the game dimmed and blurred behind,
+   the studio light, the character framed right, the pack and the verb on the left.
+   The same language as the character screen (characters.css). */
+#pack-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 63;
+  background: transparent;
+  opacity: 0;
+}
+#pack-scrim.on { opacity: 1; }
+#pack-scrim.hidden, #pack-panel.hidden { display: none; }
+#pack-panel {
+  --pk-ink: #E8E6DF;
+  --pk-dim: rgba(232, 230, 223, 0.62);
+  --pk-quiet: rgba(232, 230, 223, 0.42);
+  --pk-mint: #8effc1;
+  --pk-mono: var(--font-mono, 'JetBrains Mono', ui-monospace, monospace);
+  --pk-ui: var(--font-ui, 'Manrope', system-ui, sans-serif);
+  --pk-left: clamp(28px, 7.5vw, 140px);
+  position: fixed;
+  inset: 0;
+  z-index: 64;
+  color: var(--pk-ink);
+  font-family: var(--pk-ui);
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 0.26s ease;
+}
+#pack-panel.on { opacity: 1; }
+#pack-panel button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+#pack-panel .pk-veil {
+  position: absolute; inset: 0;
+  background: rgba(11, 11, 10, 0.86);
+  -webkit-backdrop-filter: blur(6px) brightness(0.5) saturate(0.6);
+  backdrop-filter: blur(6px) brightness(0.5) saturate(0.6);
+}
+/* The studio backdrop (characters.css .cs-bg), over the dimmed game. The
+   drawn smoke used to hide the game's HUD behind the veil; with a clean
+   gradient the goal line and the corner chrome read through it, crossing
+   INVENTORY and CLOSE (filmed 2026-09-24). So the wall here is most of the
+   way opaque: the game is a faint shape far behind, not a second layer of
+   words. */
+#pack-panel .cs-bg {
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.2) 40%, rgba(0, 0, 0, 0) 58%),
+    linear-gradient(180deg, rgba(18, 18, 17, 0.74) 0%, rgba(12, 12, 11, 0.8) 55%, rgba(9, 9, 8, 0.86) 100%);
+}
+#pack-panel .pk-fade {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 26%;
+  background: linear-gradient(to top, #0B0B0A 0%, rgba(11,11,10,0.85) 35%, rgba(11,11,10,0) 100%);
+  pointer-events: none;
+}
+#pack-panel .pk-figure { position: absolute; left: 47%; right: 3%; top: 9.7%; bottom: 4.2%; pointer-events: none; }
+#pack-panel .pk-figure-in { position: relative; width: 100%; height: 100%; }
+#pack-panel .pk-figure-in img {
+  position: absolute; left: 50%; bottom: 0;
+  max-height: 100%; max-width: 100%;
+  transform: translateX(-50%);
+  opacity: 0; transition: opacity 0.9s ease, filter 0.9s ease;
+  filter: drop-shadow(0 24px 30px rgba(0, 0, 0, 0.55));
+}
+#pack-panel .pk-figure-in img.on { opacity: 1; }
+/* A fitting (pack.js renderFigure): the old pose as a black shape with a
+   rim of light — characters.css .cs-fig.cs-ghost — and the new pose
+   developing in over it; the bar runs under the verb. No drawn stand-in
+   figure. (Restated here: the id rule above outweighs the class.) */
+#pack-panel .pk-figure-in img.cs-fig.cs-ghost {
+  filter: brightness(0) drop-shadow(0 0 1px rgba(232, 230, 223, 0.5)) drop-shadow(0 0 14px rgba(232, 230, 223, 0.08));
+}
+#pack-panel .pk-figure-in img.cs-fig.cs-ghost.on { opacity: 0.62; }
+/* ...and while it is drawn the shadow breathes, so a wait of half a minute
+   never reads as a frozen screen. */
+#pack-panel.pk-fitting .pk-figure-in img.cs-fig.cs-ghost.on {
+  animation: pk-breathe 2.8s ease-in-out infinite;
+  will-change: opacity;
+}
+/* opacity only: it runs on the compositor, where an animated drop-shadow
+   repaints the whole figure every frame. */
+@keyframes pk-breathe {
+  0%, 100% { opacity: 0.48; }
+  50%      { opacity: 0.76; }
+}
+
+#pack-panel .pk-close {
+  position: absolute; left: 28px; top: 24px; z-index: 2;
+  font: 300 11px/1 var(--pk-mono); letter-spacing: 0.4em; color: var(--pk-dim);
+  padding: 14px 4px;
+}
+#pack-panel .pk-close span { color: var(--pk-quiet); }
+#pack-panel .pk-close:hover { color: #fff; }
+#pack-panel .pk-left {
+  position: absolute; left: var(--pk-left); top: 13.9%;
+  width: min(420px, 40vw); bottom: 24%;
+  display: flex; flex-direction: column; gap: 16px; z-index: 2;
+  min-height: 0;
+}
+#pack-panel .pk-eyebrow {
+  display: flex; gap: 14px; align-items: baseline;
+  font: 300 10px/1 var(--pk-mono); letter-spacing: 0.4em; color: var(--pk-dim);
+}
+#pack-panel .pk-count { color: var(--pk-quiet); letter-spacing: 0.2em; }
+#pack-panel .pk-grid {
+  display: grid; gap: 8px; width: min(372px, 38vw);
+  overflow-y: auto; max-height: 42vh; flex-shrink: 0;
+  scrollbar-width: none;
+}
+#pack-panel .pk-grid::-webkit-scrollbar { display: none; }
+#pack-panel .pk-cell {
+  position: relative;
+  height: min(84px, 11.6vh);
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(232, 230, 223, 0.06);
+  outline: 1px solid transparent; outline-offset: 2px;
+  transition: outline-color 0.15s ease, background-color 0.15s ease;
+}
+#pack-panel .pk-cell.empty { background: rgba(232, 230, 223, 0.03); cursor: default; }
+#pack-panel .pk-cell:not(.empty):hover { background: rgba(232, 230, 223, 0.1); }
+#pack-panel .pk-cell.sel { outline-color: rgba(142, 255, 193, 0.8); }
+#pack-panel .pk-cell.empty.sel { outline-color: rgba(232, 230, 223, 0.2); }
+#pack-panel .pk-cell:focus-visible { outline-color: rgba(142, 255, 193, 1); }
+#pack-panel .pk-plate {
+  width: 83%; height: 83%; object-fit: contain;
+  filter: drop-shadow(0 5px 7px rgba(0, 0, 0, 0.6));
+  pointer-events: none;
+}
+#pack-panel .pk-cell.worn .pk-plate { opacity: 0.5; }
+#pack-panel .pk-cell .pk-mono { font: 200 28px/1 var(--pk-ui); color: var(--pk-dim); }
+#pack-panel .pk-kind, #pack-panel .pk-worn {
+  position: absolute; left: 0; right: 0; bottom: 6px; text-align: center;
+  font: 300 7.5px/1 var(--pk-mono); letter-spacing: 0.26em; text-transform: uppercase;
+  color: var(--pk-quiet); pointer-events: none;
+}
+#pack-panel .pk-worn { color: var(--pk-mint); font-size: 8px; letter-spacing: 0.3em; }
+#pack-panel .pk-cell:not(.sel) .pk-kind { opacity: 0; }
+#pack-panel .pk-new {
+  position: absolute; top: 7px; right: 7px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--pk-mint); box-shadow: 0 0 8px rgba(142, 255, 193, 0.9);
+}
+#pack-panel .pk-detail { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow: hidden; margin-top: 10px; }
+#pack-panel .pk-d-kind { font: 300 10px/1 var(--pk-mono); letter-spacing: 0.4em; color: var(--pk-quiet); }
+#pack-panel .pk-d-kind.worn { color: var(--pk-mint); }
+#pack-panel .pk-d-name { font: 200 clamp(22px, 2.2vw, 30px)/1.1 var(--pk-ui); letter-spacing: 0.04em; color: var(--pk-ink); }
+#pack-panel .pk-d-tag { font: 300 9px/1 var(--pk-mono); letter-spacing: 0.3em; color: #b6ffd6; text-transform: uppercase; }
+#pack-panel .pk-d-power { font: 300 15px/1.5 var(--pk-ui); color: var(--pk-dim); }
+#pack-panel .pk-d-power.quiet { color: var(--pk-quiet); }
+#pack-panel .pk-d-worth { font: italic 300 13px/1.5 var(--pk-ui); color: var(--pk-quiet); }
+#pack-panel .pk-d-edge,
+#pack-find .pf-edge {
+  font: 300 9px/1.5 var(--font-mono, 'JetBrains Mono', monospace);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #b6ffd6;
+}
+#pack-find .pf-edge { margin-top: 12px; }
+#pack-find .pf-edge:empty { display: none; }
+#pack-panel .pk-d-from { font: 300 15px/1.5 var(--pk-ui); color: var(--pk-quiet); }
+#pack-panel .pk-verb {
+  position: absolute; left: var(--pk-left); bottom: 9%; z-index: 2;
+  display: flex; flex-direction: column; gap: 10px; align-items: flex-start;
+}
+#pack-panel .pk-wear {
+  font: 300 15px/1 var(--pk-mono); letter-spacing: 0.4em; color: #fff;
+  padding: 16px 0; border-bottom: 1px solid var(--pk-ink);
+}
+#pack-panel .pk-wear[hidden] { display: none; }
+#pack-panel .pk-wear:disabled { opacity: 0.4; cursor: default; }
+#pack-panel .pk-wear:not(:disabled):hover { text-shadow: 0 0 18px rgba(255, 255, 255, 0.45); }
+#pack-panel .pk-note { font: 300 9px/1 var(--pk-mono); letter-spacing: 0.3em; color: var(--pk-quiet); min-height: 9px; }
+/* The fitting's clock, under the note: the character screen's bar. */
+/* The fitting's clock, under the verb — the character screen's, at its size:
+   a sentence saying what is happening, the bar, the time left. */
+#pack-panel .pk-prog { display: none; flex-direction: column; gap: 12px; margin-top: 4px; }
+#pack-panel.pk-fitting .pk-prog { display: flex; animation: cs-textin 0.5s ease both; }
+#pack-panel .pk-status { font: 300 17px/1.3 var(--pk-ui); color: #E8E6DF; min-height: 22px; max-width: 360px; }
+#pack-panel .pk-status.pk-set { animation: cs-textin 0.42s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+#pack-panel .pk-prog .cs-bar { width: 280px; height: 2px; overflow: hidden; background: rgba(232, 230, 223, 0.22); }
+#pack-panel .pk-prog .cs-bar i { height: 2px; box-shadow: 0 0 10px rgba(232, 230, 223, 0.5); }
+/* a sheen runs along the track the whole time, so it is alive between steps */
+#pack-panel .pk-prog .cs-bar::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 60px; left: -60px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  animation: pk-sheen 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes pk-sheen { to { transform: translateX(400px); } }
+#pack-panel .pk-eta { font: 300 9px/1 var(--pk-mono); letter-spacing: 0.3em; color: var(--pk-quiet); }
+/* What they have on, under them. */
+#pack-panel .pk-wearing {
+  position: absolute; right: 3%; bottom: calc(4% + 26px); z-index: 2;
+  font: 300 9px/1 var(--pk-mono); letter-spacing: 0.3em; color: rgba(142, 255, 193, 0.75);
+  text-align: right; max-width: 44vw;
+}
+#pack-panel .pk-wearing:empty { display: none; }
+/* Things change in place and set in: the detail when the selection moves,
+   a cell's WORN, the WEARING line. */
+#pack-panel .pk-set { animation: cs-textin 0.38s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+#pack-panel .pk-cell .pk-kind.pk-worn { opacity: 1 !important; }
+#pack-panel .pk-cell.fitting { animation: pk-fit-pulse 1.6s ease-in-out infinite; }
+@keyframes pk-fit-pulse {
+  0%, 100% { outline-color: rgba(142, 255, 193, 0.35); background-color: rgba(142, 255, 193, 0.04); }
+  50%      { outline-color: rgba(142, 255, 193, 0.95); background-color: rgba(142, 255, 193, 0.1); }
+}
+#pack-panel .pk-cell { transition: outline-color 0.2s ease, background-color 0.2s ease; }
+/* Opening sets in like the character screen: the figure rises into place,
+   the pack follows it down, the verb last. */
+#pack-panel.pk-enter .pk-figure { animation: cs-rise 1.1s cubic-bezier(0.2, 0.7, 0.2, 1) 0.04s both; }
+#pack-panel.pk-enter .pk-left > * { animation: cs-textin 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+#pack-panel.pk-enter .pk-left > :nth-child(1) { animation-delay: 0.08s; }
+#pack-panel.pk-enter .pk-left > :nth-child(2) { animation-delay: 0.14s; }
+#pack-panel.pk-enter .pk-left > :nth-child(3) { animation-delay: 0.22s; }
+#pack-panel.pk-enter .pk-verb, #pack-panel.pk-enter .pk-wearing,
+#pack-panel.pk-enter .pk-world, #pack-panel.pk-enter .pk-close { animation: cs-textin 0.6s ease 0.3s both; }
+@media (prefers-reduced-motion: reduce) {
+  #pack-panel .pk-cell.fitting, #pack-panel .pk-set, #pack-panel .pk-prog .cs-bar::after,
+  #pack-panel.pk-fitting .pk-figure-in img.cs-fig.cs-ghost.on { animation: none !important; }
+}
+#pack-panel .pk-world {
+  position: absolute; right: 3%; bottom: 4%; z-index: 2;
+  display: flex; align-items: center; gap: 14px;
+  font: 300 9px/1 var(--pk-mono); letter-spacing: 0.3em; color: var(--pk-quiet); text-transform: uppercase;
+}
+#pack-panel .pk-dots { display: flex; gap: 5px; }
+#pack-panel .pk-dots i { width: 6px; height: 6px; border-radius: 50%; border: 1px solid rgba(232, 230, 223, 0.42); }
+#pack-panel .pk-dots i.on { background: #E8E6DF; border-color: #E8E6DF; }
+@media (max-width: 860px) {
+  #pack-panel .pk-figure { left: 40%; opacity: 0.45; }
+  #pack-panel .pk-left { width: min(420px, 70vw); }
+  #pack-panel .pk-grid { width: min(372px, 70vw); }
+}
+/* characters.css owns these keyframes; pack.css must work without it. */
+@keyframes cs-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@keyframes cs-develop {
+  from { opacity: 0; filter: brightness(2.2) blur(6px); }
+  to   { opacity: 1; filter: brightness(1) blur(0) drop-shadow(0 24px 30px rgba(0,0,0,0.55)); }
+}
+
+#pack-find {
+  position: fixed;
+  inset: 0;
+  z-index: 66;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+#pack-find.hidden { display: none; }
+#pack-find .pf-dim {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 60% 55% at 50% 46%, rgba(0, 0, 0, 0.6) 0%, rgba(0, 0, 0, 0.9) 100%);
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+#pack-find.on .pf-dim { opacity: 1; }
+#pack-find.flying .pf-dim { opacity: 0; transition-duration: 0.7s; }
+#pack-find .pf-card {
+  position: relative;
+  pointer-events: auto;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  max-width: min(560px, calc(100vw - 32px));
+  margin-top: -40px;
+  opacity: 0;
+  transform: translateY(16px) scale(0.98);
+  transition: opacity 0.45s ease, transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+#pack-find.on .pf-card { opacity: 1; transform: none; }
+#pack-find .pf-eyebrow {
+  font: 300 10px/1 var(--font-mono, 'JetBrains Mono', monospace);
+  letter-spacing: 0.44em;
+  margin-right: -0.44em;
+  text-transform: uppercase;
+  color: rgba(232, 230, 223, 0.62);
+}
+#pack-find.spoils .pf-eyebrow { color: #b6ffd6; }
+#pack-find .pf-plate {
+  position: relative;
+  width: 280px;
+  height: 280px;
+  margin: 10px 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#pack-find .pf-plate::before {
+  content: "";
+  position: absolute;
+  inset: 8%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(232, 230, 223, 0.16) 0%, rgba(232, 230, 223, 0) 68%);
+}
+#pack-find .pf-img,
+.pack-ghost .pf-img {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 18px 26px rgba(0, 0, 0, 0.75)) drop-shadow(0 0 1px rgba(0, 0, 0, 0.9));
+}
+#pack-find.on .pf-img { animation: pf-float 4.2s ease-in-out infinite; }
+#pack-find .pf-plate .pk-mono {
+  position: relative;
+  font: 200 96px/1 var(--font-mono, 'JetBrains Mono', monospace);
+  color: rgba(232, 230, 223, 0.62);
+}
+@keyframes pf-float {
+  0%, 100% { transform: translateY(0) rotate(-0.6deg); }
+  50%      { transform: translateY(-6px) rotate(0.6deg); }
+}
+#pack-find .pf-kind {
+  font: 300 9px/1 var(--font-mono, 'JetBrains Mono', monospace);
+  letter-spacing: 0.34em;
+  margin-right: -0.34em;
+  text-transform: uppercase;
+  color: rgba(232, 230, 223, 0.62);
+}
+#pack-find .pf-name {
+  margin-top: 12px;
+  font: 200 clamp(22px, 2.4vw, 32px)/1.15 var(--font-mono, 'JetBrains Mono', monospace);
+  letter-spacing: 0.24em;
+  margin-right: -0.24em;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.8);
+}
+#pack-find .pf-power {
+  margin-top: 14px;
+  font: 300 15px/1.55 var(--font-ui, 'Manrope', sans-serif);
+  color: rgba(232, 230, 223, 0.9);
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.8);
+}
+#pack-find .pf-worth {
+  margin-top: 8px;
+  font: italic 300 13px/1.5 var(--font-ui, 'Manrope', sans-serif);
+  color: rgba(232, 230, 223, 0.5);
+}
+#pack-find .pf-power:empty, #pack-find .pf-worth:empty, #pack-find .pf-from:empty { display: none; }
+#pack-find .pf-from {
+  margin-top: 18px;
+  font: 300 9px/1 var(--font-mono, 'JetBrains Mono', monospace);
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: rgba(232, 230, 223, 0.42);
+}
+#pack-find .pf-hint {
+  margin-top: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font: 300 9px/1 var(--font-mono, 'JetBrains Mono', monospace);
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: rgba(142, 255, 193, 0.85);
+}
+#pack-find .pf-hint::before {
+  content: "";
+  width: 28px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(142, 255, 193, 0), rgba(142, 255, 193, 0.85));
+}
+#pack-find.flying .pf-card > :not(.pf-plate) { opacity: 0; transition: opacity 0.25s ease; }
+#pack-find.flying .pf-plate { visibility: hidden; }
+.pack-ghost {
+  position: fixed !important;
+  z-index: 67;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 !important;
+  pointer-events: none;
+  transform-origin: 50% 50%;
+}
+.pack-ghost::before { display: none; }
+@media (max-width: 720px) {
+  #pack-find .pf-plate { width: 200px; height: 200px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #pack-btn.has-new, #pack-btn.got, #pack-find.on .pf-img { animation: none; }
+}
+
+/* ── THE HAUL — on the card that says the run is won ──────────────────── */
+#goal-reached .pk-haul {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  margin-top: 6px;
+  max-width: min(900px, calc(100vw - 48px));
+}
+#goal-reached .pk-haul-kind {
+  font: 300 10px/1 var(--font-mono, 'JetBrains Mono', monospace);
+  letter-spacing: 0.4em;
+  margin-right: -0.4em;
+  text-transform: uppercase;
+  color: rgba(142, 255, 193, 0.85);
+}
+#goal-reached .pk-haul-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 14px 18px;
+}
+#goal-reached .pk-haul-item { width: 112px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+#goal-reached .pk-haul-plate {
+  width: 100px;
+  height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  background: radial-gradient(circle at 50% 45%, rgba(232, 230, 223, 0.1) 0%, rgba(232, 230, 223, 0) 70%);
+}
+#goal-reached .pk-haul-img {
+  max-width: 92px;
+  max-height: 92px;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.75));
+}
+#goal-reached .pk-haul-plate .pk-mono {
+  font: 200 34px/1 var(--font-mono, 'JetBrains Mono', monospace);
+  color: rgba(232, 230, 223, 0.62);
+}
+#goal-reached .pk-haul-name {
+  width: 100%;
+  font: 300 8px/1.35 var(--font-mono, 'JetBrains Mono', monospace);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(232, 230, 223, 0.62);
+  text-align: center;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Nothing else talks over a card that holds the screen: the scene's scan
+   tags were reading "glowing doorway" through the middle of RUN COMPLETE. */
+body:has(#goal-reached.on) #scan-layer,
+body:has(#pack-find.on) #scan-layer,
+body.pack-open #scan-layer {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}

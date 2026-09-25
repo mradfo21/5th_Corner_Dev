@@ -991,7 +991,7 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None,
                 "currency": currency,
                 "recurring": {"interval": "month"},
                 "unit_amount": int(plan["price_cents"]),
-                "product_data": {"name": "SOMEWHERE Play", "tax_code": _tax_code()},
+                "product_data": {"name": "ABYSS Play", "tax_code": _tax_code()},
             },
         }]
         mode = "subscription"
@@ -1003,7 +1003,7 @@ def create_checkout(kind: str, request, pack_id: Optional[str] = None,
             "price_data": {
                 "currency": currency,
                 "unit_amount": int(pack["price_cents"]),
-                "product_data": {"name": f"GOD wallet top-up · {pack['label']}",
+                "product_data": {"name": f"ABYSS wallet top-up · {pack['label']}",
                                  "tax_code": _tax_code()},
             },
         }]

@@ -1203,6 +1203,38 @@ class TestThePlaybackPolicies(unittest.TestCase):
                          "the 4x4-hardcoded GIF builder is superseded by flipbook.py")
 
 
+class AStillStandingInIsPanelSized(unittest.TestCase):
+    """"i also saw random frames appearing at 2k resolution when i ended an
+    encounter" (2026-09-23): the last blow's grid did not come back, the round
+    fell back to a still, and the still was 1376x768 among 672x376 panels."""
+
+    def test_a_full_render_is_shrunk_to_one_panel_and_a_panel_is_left_alone(self):
+        import tempfile
+        from PIL import Image
+        import flipbook
+        d = Path(tempfile.mkdtemp())
+        still = d / "still.png"
+        Image.new("RGB", (1376, 768), (40, 40, 40)).save(still)
+        panel = d / "panel.png"
+        Image.new("RGB", (672, 376), (40, 40, 40)).save(panel)
+        self.assertTrue(flipbook.match_panel_size(still, 4, like=panel))
+        self.assertEqual(Image.open(still).size, (672, 376))
+        self.assertFalse(flipbook.match_panel_size(still, 4, like=panel))
+        # no panel to go by: only an obviously full render is touched
+        big = d / "big.png"
+        Image.new("RGB", (1376, 768)).save(big)
+        self.assertTrue(flipbook.match_panel_size(big, 4))
+        self.assertEqual(Image.open(big).size, (688, 384))
+        self.assertFalse(flipbook.match_panel_size(big, 4))
+
+    def test_every_fallback_calls_it(self):
+        root = Path(__file__).resolve().parent
+        eng = (root / "engine.py").read_text(encoding="utf-8")
+        enc = (root / "encounter.py").read_text(encoding="utf-8")
+        self.assertIn("flipbook.match_panel_size(", eng)
+        self.assertEqual(enc.count("_still_as_panel(session_id, image_path)"), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1285,3 +1317,134 @@ class TestARefusedFlipbookDoesNotRewindTheRun(unittest.TestCase):
         # and the descriptor helper still reads that key, so the wiring holds
         self.assertIn("prev_last = st.get('flipbook_last_frame')",
                       (Path(engine.__file__)).read_text(encoding="utf-8"))
+
+
+class TheCharacterIsTheSpatialAnchor(unittest.TestCase):
+    """Watched back, a beat "transitions from the start frame to the end frame
+    really painfully with lots of popping". Two grids from a run show why: the
+    character is large on the left in panel 1, small in the centre in panel 2,
+    left again in panel 3 and centre-right in panel 4 — and faces the lens for
+    the first half, away for the second. The rig rules locked the lens, height,
+    side and distance; nothing ever said where the PERSON sits in the picture,
+    which in a third-person camera is the one thing the eye holds on to."""
+
+    def _prompt(self, **kw):
+        return flipbook.grid_prompt(4, **kw)
+
+    def test_the_subject_holds_its_place_and_its_size(self):
+        p = self._prompt()
+        self.assertIn("THE SUBJECT IS THE ANCHOR", p)
+        self.assertIn("SAME PLACE IN THE FRAME in every panel", p)
+        self.assertIn("SAME SIZE on screen", p)
+        self.assertIn("It is the WORLD that moves past them", p)
+
+    def test_the_camera_may_not_change_sides(self):
+        p = self._prompt()
+        self.assertIn("THE CAMERA STAYS ON THE SAME SIDE OF THEM", p)
+        self.assertIn("they do not turn to face the lens", p)
+
+    def test_the_last_panel_inherits_the_framing(self):
+        # The end keyframe is the only panel the render instruction describes,
+        # so it is the one the model composes fresh — and the one that moved.
+        p = self._prompt()
+        self.assertIn("It is NOT a new shot", p)
+        self.assertIn("same place in the frame, same size, same side of them", p)
+        self.assertIn("FAILED panel — including the last one", p)
+
+    def test_a_travelling_beat_keeps_the_framing_too(self):
+        p = self._prompt(cut=True)
+        self.assertIn("THE SUBJECT IS THE ANCHOR", p)
+        self.assertIn("New place, same shot", p)
+
+    def test_every_grid_shape_gets_the_anchor(self):
+        for n in (2, 4, 6, 9):
+            with self.subTest(frames=n):
+                self.assertIn("THE SUBJECT IS THE ANCHOR", flipbook.grid_prompt(n))
+                self.assertIn("THE SUBJECT IS THE ANCHOR",
+                              flipbook.grid_prompt(n, cut=True))
+
+    def test_the_establishing_beat_still_places_its_own_character(self):
+        # keyframe_subject=False has no pose to inherit; the anchor is about
+        # the panels agreeing with EACH OTHER, so it still applies.
+        p = self._prompt(keyframe_subject=False)
+        self.assertNotIn("the subject in the SAME SPOT and the SAME POSE", p)
+        self.assertIn("THE SUBJECT IS THE ANCHOR", p)
+
+
+class TheFramesDissolveRatherThanCut(unittest.TestCase):
+    """Four generated stills swapped instantly a second apart makes the eye
+    read every difference between them as a cut. The two scene layers were
+    already there; they were just told not to transition."""
+
+    def setUp(self):
+        self.js = (Path(__file__).resolve().parent
+                   / "static" / "js" / "standalone.js").read_text(encoding="utf-8")
+
+    def test_a_frame_blends_into_the_one_before_it(self):
+        self.assertIn("const FRAME_BLEND = 0.34;", self.js)
+        self.assertIn("function blendMsFor(frameMs)", self.js)
+        self.assertIn("incoming.style.transition = `opacity ${ms}ms linear`;", self.js)
+
+    def test_the_blend_is_a_fraction_of_the_frame_it_belongs_to(self):
+        self.assertIn("paint(frames[idx], { ms: ms });", self.js)
+        self.assertIn("paintSequenceFrame(url, blendMsFor(info && info.ms))", self.js)
+
+    def test_reduced_motion_gets_no_dissolve(self):
+        fn = self.js.split("function paintSequenceFrame(imageUrl, blendMs) {", 1)[1]
+        fn = fn.split("\n  }", 1)[0]
+        self.assertIn("prefersReducedMotion() ? 0", fn)
+
+    def test_the_next_frame_is_committed_before_anything_fades(self):
+        # Otherwise the hidden layer animates from the frame it last showed and
+        # the dissolve carries a ghost two frames old.
+        fn = self.js.split("function paintSequenceFrame(imageUrl, blendMs) {", 1)[1]
+        fn = fn.split("\n  }", 1)[0]
+        i_none = fn.index('incoming.style.transition = "none";')
+        i_img = fn.index("incoming.style.backgroundImage")
+        i_reflow = fn.index("void incoming.offsetWidth;")
+        i_fade = fn.index("`opacity ${ms}ms linear`")
+        self.assertLess(i_none, i_img)
+        self.assertLess(i_img, i_reflow)
+        self.assertLess(i_reflow, i_fade)
+
+
+class TheEngineSaysItToo(unittest.TestCase):
+    """The keyframe contract lives in engine._flipbook_keyframes, closest to
+    the turn's own scene text. It already fixed which SIDE the camera is on;
+    it never said where in the frame the character sits.
+
+    These build the real strings rather than grepping the source: the prompt
+    is assembled from f-strings split across lines, so a phrase that is in the
+    OUTPUT is not in the FILE, and a source grep fails on text that is
+    perfectly present."""
+
+    def _kf(self, **kw):
+        import engine
+        return engine._flipbook_keyframes("Isaac", "He reaches the hatch.", 4, **kw)
+
+    def test_the_start_panel_inherits_the_framing(self):
+        self.assertIn("Isaac in the same part of the picture, at the same size "
+                      "on screen", self._kf())
+
+    def test_the_end_panel_inherits_it_as_well(self):
+        t = self._kf()
+        self.assertIn("AND THE SAME FRAMING:", t)
+        self.assertIn("The place around them has changed; the shot has not.", t)
+        self.assertIn("it never crossed to their front on the way", t)
+
+    def test_the_in_betweens_hold_it(self):
+        t = self._kf()
+        self.assertIn("stays in the same part of the frame at the same size", t)
+        self.assertIn("it is the WORLD that slides past them", t)
+
+    def test_a_travelling_beat_keeps_it_too(self):
+        t = self._kf(travels=True)
+        self.assertIn("AND THE SAME FRAMING:", t)
+        self.assertIn("the camera travelling behind them the whole way", t)
+
+    def test_a_body_cam_anchors_on_its_horizon_instead(self):
+        # There is no body on screen to hold, so the horizon is the anchor.
+        import engine
+        self.assertIn("The horizon sits at the same height in the frame in "
+                      "every panel",
+                      engine._flipbook_fps_keyframes("The hatch swings open.", 4))

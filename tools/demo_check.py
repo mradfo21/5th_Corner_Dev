@@ -128,6 +128,11 @@ def check_level():
     for field in ("name", "summary"):
         if str(setting.get(field) or "").strip():
             ok(f"level {field}: {str(setting[field])[:56]}")
+        elif field == "name":
+            # The montage and the HUD fall back to the World's own name
+            # (THE FIFTH CORNER ships without one and opens as "SOMEWHERE"), so
+            # a blank name is an authoring gap, not a demo blocker.
+            note("no level name authored — the World's name stands in")
         else:
             bad(f"level {field} is empty")
     goal = str(gi.level_goal(fallback=False) or "").strip()
@@ -329,6 +334,14 @@ def boot_and_watch(port: int = 9333, timeout: int = 260) -> bool:
             else:
                 bad("no prose on the first turn")
 
+            # The rows wait behind the FIST now (see playtest_app.open_fist):
+            # press it the way a player does before counting them. Counting
+            # without pressing reported "no choices" on every healthy run.
+            from playtest_app import open_fist
+            try:
+                open_fist(page, note)
+            except Exception as err:
+                note(f"the fist could not be pressed: {err}")
             choices = page.evaluate(
                 "() => document.querySelectorAll('.choice-btn:not(.choice-btn-custom)')"
                 ".length")

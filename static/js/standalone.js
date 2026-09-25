@@ -475,18 +475,6 @@
     pauseRestart: document.getElementById("pause-restart"),
     pausePackBlurb: document.getElementById("pause-pack-blurb"),
     tapeBtn: document.getElementById("tape-btn"),
-    tapeOverlay: document.getElementById("tape-overlay"),
-    tapeFrameA: document.getElementById("tape-frameA"),
-    tapeFrameB: document.getElementById("tape-frameB"),
-    tapeHud: document.getElementById("tape-hud"),
-    tapeRec: document.getElementById("tape-rec"),
-    tapeCounter: document.getElementById("tape-counter"),
-    tapeTime: document.getElementById("tape-time"),
-    tapeEmpty: document.getElementById("tape-empty"),
-    tapePrev: document.getElementById("tape-prev"),
-    tapePlayPause: document.getElementById("tape-playpause"),
-    tapeNext: document.getElementById("tape-next"),
-    tapeEject: document.getElementById("tape-eject"),
     autoplayBtn: document.getElementById("autoplay-btn"),
     autoplayLabel: document.getElementById("autoplay-label"),
   };
@@ -753,7 +741,10 @@
         cues: ["encounterHitch", "encounterTitle", "encounterEnter",
                "encounterStance", "encounterLock", "encounterChoiceHover",
                "encounterChoiceSelect", "encounterResolve", "encounterSurvive",
-               "encounterDie", "encounterExit", "encounterVerdict"],
+               "encounterDie", "encounterExit", "encounterVerdict",
+               "encounterRoll", "encounterLand", "encounterMissed", "encounterStrike",
+               "encounterHurt", "encounterCrit", "encounterKo", "encounterVictory",
+               "encounterWhiff", "encounterNat20", "encounterNat1"],
       },
     };
     const FAMILY_OF = Object.create(null);
@@ -765,7 +756,9 @@
     const QUIET = new Set(["glitch", "death", "hit", "hurting", "warning", "error",
                            "shutter", "cameraOn", "cameraOff", "miss", "stamp",
                            "encounterHitch", "encounterTitle", "encounterResolve",
-                           "encounterSurvive", "encounterDie"]);
+                           "encounterSurvive", "encounterDie",
+                           "encounterStrike", "encounterHurt", "encounterCrit", "encounterKo",
+                           "encounterWhiff"]);
     const CUE_HELP = {
       hover: "Pointer enters a control",
       focusTick: "Keyboard focus lands",
@@ -833,6 +826,17 @@
       encounterDie: "The encounter kills you",
       encounterExit: "The encounter overlay releases",
       encounterVerdict: "SURVIVED / HURT / CLEAR / DEAD flares over the action",
+      encounterRoll: "A fight's die ticks over",
+      encounterLand: "The die lands under the line",
+      encounterMissed: "The die lands over the line",
+      encounterStrike: "Your blow lands on them",
+      encounterHurt: "Their blow lands on you",
+      encounterCrit: "A critical hit",
+      encounterKo: "They go down",
+      encounterVictory: "The fight is won",
+      encounterWhiff: "A swing finds nothing",
+      encounterNat20: "A natural 20",
+      encounterNat1: "A natural 1",
       portraitReveal: "A portrait lands",
       choiceSelect: "A dialogue choice is taken",
       notify: "A notice appears",
@@ -910,6 +914,122 @@
       src.connect(bp); bp.connect(gain); gain.connect(c.destination);
       src.start(t0);
       src.stop(t0 + (dur || 0.22) + 0.02);
+    }
+
+    // ── Impact kit (the fight) ───────────────────────────────────────
+    // A blow is three sounds at once, the way a film mixes one: a transient
+    // (the CRACK of contact, bright, a few ms), a BODY (a sub sine falling in
+    // pitch through a soft clipper — the weight), and sometimes a TAIL (a
+    // ring, a rumble, a swell). The first cut of these was one sine glide
+    // each at a few percent volume, and a landed blow sounded like a menu
+    // click. All of it is synthesized here; nothing is fetched.
+    let _curve = null;
+    function softClip() {
+      if (_curve) return _curve;
+      const n = 1024;
+      _curve = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const x = (i / (n - 1)) * 2 - 1;
+        _curve[i] = Math.tanh(2.6 * x);
+      }
+      return _curve;
+    }
+    function noiseBuf(c, dur) {
+      const len = Math.max(1, Math.floor(c.sampleRate * dur));
+      const buf = c.createBuffer(1, len, c.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      return buf;
+    }
+    // The weight: a sine that drops from `from` to `to` Hz, driven into a
+    // soft clipper so it has harmonics a laptop speaker can reproduce.
+    function thump(from, to, dur, vol, delay) {
+      if (!state.soundEnabled) return;
+      const c = ensure();
+      if (!c) return;
+      const t0 = c.currentTime + (delay || 0);
+      const osc = c.createOscillator();
+      const shaper = c.createWaveShaper();
+      const lp = c.createBiquadFilter();
+      const g = c.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(from, t0);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(20, to), t0 + dur * 0.7);
+      shaper.curve = softClip();
+      lp.type = "lowpass";
+      lp.frequency.value = 900;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(volOf(vol), t0 + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      osc.connect(shaper); shaper.connect(lp); lp.connect(g); g.connect(c.destination);
+      osc.start(t0);
+      osc.stop(t0 + dur + 0.03);
+    }
+    // The contact: a very short burst of filtered noise.
+    function crack(dur, vol, hz, delay, type) {
+      if (!state.soundEnabled) return;
+      const c = ensure();
+      if (!c) return;
+      const t0 = c.currentTime + (delay || 0);
+      const src = c.createBufferSource();
+      src.buffer = noiseBuf(c, dur + 0.02);
+      const f = c.createBiquadFilter();
+      f.type = type || "highpass";
+      f.frequency.value = hz || 2400;
+      f.Q.value = 0.7;
+      const g = c.createGain();
+      g.gain.setValueAtTime(volOf(vol), t0);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      src.connect(f); f.connect(g); g.connect(c.destination);
+      src.start(t0);
+      src.stop(t0 + dur + 0.02);
+    }
+    // Air moving: noise through a band-pass that sweeps `from` → `to` Hz.
+    function whoosh(dur, vol, from, to, delay) {
+      if (!state.soundEnabled) return;
+      const c = ensure();
+      if (!c) return;
+      const t0 = c.currentTime + (delay || 0);
+      const src = c.createBufferSource();
+      src.buffer = noiseBuf(c, dur + 0.02);
+      const bp = c.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.Q.value = 1.4;
+      bp.frequency.setValueAtTime(from, t0);
+      bp.frequency.exponentialRampToValueAtTime(Math.max(40, to), t0 + dur);
+      const g = c.createGain();
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(volOf(vol), t0 + dur * 0.35);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      src.connect(bp); bp.connect(g); g.connect(c.destination);
+      src.start(t0);
+      src.stop(t0 + dur + 0.02);
+    }
+    // Metal: two inharmonic partials, a long exponential decay.
+    function ring(freq, dur, vol, delay) {
+      [1, 2.76].forEach((k, i) => {
+        tone(freq * k, dur * (i ? 0.6 : 1), "triangle", vol * (i ? 0.45 : 1), delay || 0);
+      });
+    }
+    // The in-breath before a big one: noise rising into the blow.
+    function swell(dur, vol) {
+      if (!state.soundEnabled) return;
+      const c = ensure();
+      if (!c) return;
+      const t0 = c.currentTime;
+      const src = c.createBufferSource();
+      src.buffer = noiseBuf(c, dur + 0.02);
+      const lp = c.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.setValueAtTime(300, t0);
+      lp.frequency.exponentialRampToValueAtTime(5000, t0 + dur);
+      const g = c.createGain();
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(volOf(vol), t0 + dur);
+      g.gain.linearRampToValueAtTime(0.0001, t0 + dur + 0.01);
+      src.connect(lp); lp.connect(g); g.connect(c.destination);
+      src.start(t0);
+      src.stop(t0 + dur + 0.03);
     }
 
     // ── Heartbeat loop ────────────────────────────────────────────────
@@ -1320,6 +1440,78 @@
       encounterExit: play("encounterExit", () => {
         tone([160, 80], 0.28, "sine", 0.03);
         noise(0.06, 0.016);
+      }),
+      // The fight's die and what it lands (Battle). Short and dry, so a
+      // rolling die reads as a mechanism ticking over, not as music.
+      // A tick as the die turns over: a dry click, never the same pitch twice.
+      encounterRoll: play("encounterRoll", () => {
+        crack(0.008, 0.03, 3200);
+        tone(230 + Math.random() * 90, 0.016, "triangle", 0.012);
+      }),
+      // The die comes down. The clack is the same either way; what follows
+      // says which side of the line it landed on.
+      encounterLand: play("encounterLand", () => {
+        crack(0.02, 0.07, 900, 0, "bandpass");
+        thump(180, 110, 0.09, 0.07);
+        tone(392, 0.12, "sine", 0.022, 0.06);
+        tone(587, 0.2, "sine", 0.016, 0.12);
+      }),
+      encounterMissed: play("encounterMissed", () => {
+        crack(0.02, 0.07, 900, 0, "bandpass");
+        thump(160, 70, 0.14, 0.07);
+        tone([196, 130], 0.24, "triangle", 0.018, 0.05);
+      }),
+      // Your blow lands on them.
+      encounterStrike: play("encounterStrike", () => {
+        crack(0.025, 0.14, 2600);
+        thump(120, 42, 0.3, 0.22);
+        crack(0.1, 0.05, 600, 0.01, "lowpass");
+        thump(60, 35, 0.4, 0.07, 0.05);
+      }),
+      // Theirs lands on you — heavier, duller, and it rings in your ears.
+      encounterHurt: play("encounterHurt", () => {
+        crack(0.03, 0.12, 1800);
+        thump(95, 30, 0.42, 0.26);
+        crack(0.14, 0.07, 420, 0.01, "bandpass");
+        tone(3700, 0.9, "sine", 0.006, 0.05);
+      }),
+      // A natural 20: the in-breath, then everything at once, then metal.
+      encounterCrit: play("encounterCrit", () => {
+        swell(0.12, 0.05);
+        crack(0.035, 0.2, 2200, 0.12);
+        thump(150, 28, 0.6, 0.3, 0.12);
+        crack(0.18, 0.08, 500, 0.13, "lowpass");
+        ring(740, 1.1, 0.02, 0.13);
+        thump(45, 24, 0.9, 0.08, 0.2);
+      }),
+      // A swing that finds nothing: air past the lens, a scrape.
+      encounterWhiff: play("encounterWhiff", () => {
+        whoosh(0.3, 0.2, 2400, 420);
+        whoosh(0.22, 0.08, 900, 260, 0.03);
+        crack(0.05, 0.04, 5200, 0.2);
+      }),
+      // Down: the fall, the bounce, and the ground.
+      encounterKo: play("encounterKo", () => {
+        thump(110, 34, 0.5, 0.28);
+        crack(0.12, 0.08, 500, 0, "lowpass");
+        thump(80, 30, 0.3, 0.14, 0.2);
+        thump(40, 22, 1.4, 0.1, 0.05);
+      }),
+      encounterNat20: play("encounterNat20", () => {
+        crack(0.02, 0.1, 2400);
+        thump(140, 60, 0.3, 0.12);
+        [523, 659, 784, 1046].forEach((f, i) => tone(f, 1.0, "triangle", 0.032, 0.02 + i * 0.035));
+        crack(0.3, 0.035, 7000, 0.04);
+      }),
+      encounterNat1: play("encounterNat1", () => {
+        tone([220, 92], 0.6, "sawtooth", 0.02);
+        tone([233, 97], 0.6, "sawtooth", 0.014);
+        thump(70, 30, 0.5, 0.1);
+      }),
+      encounterVictory: play("encounterVictory", () => {
+        thump(90, 45, 0.5, 0.12);
+        [220, 330, 440].forEach((f, i) => tone(f, 1.2, "triangle", 0.022, 0.08 + i * 0.09));
+        tone(660, 1.4, "sine", 0.012, 0.36);
       }),
       prefetchEncounter,
       ingestEncounterStingers,
@@ -2510,10 +2702,20 @@
     const natural = Object.create(null);
     let lastDraw = null;        // for the harness: where the tag was put
     let reachedShownFor = "";   // the REACHED card plays once per goal
+    let bossFightFor = "";      // ENTER opened the boss fight for this goal
+    let climaxRunning = false;  // the fight, then the reward, own the screen
+    let victoryShownFor = 0;    // the run's last card plays once
+    let beganFor = "";          // the GOAL card opens once per goal
+    let beginTimer = 0;
+    let reachedTimer = 0;    // no card covers the picture for longer than it has to
+    let findTimer = 0;       // ...and the find card hands the game back too
+    let pendingBoss = null;  // staged on the way in, not out of the dark yet
+    let bossFor = "";        // ...and which goal he is standing in the way of
 
     function $(id) { return document.getElementById(id); }
 
     function inPlay() {
+      if (climaxRunning) return false;
       const c = document.body.classList;
       if (c.contains("start-menu-on") || c.contains("mode-watch")) return false;
       if (c.contains("world-editor-on") || c.contains("moment-active")) return false;
@@ -2542,6 +2744,7 @@
     function hide() {
       const t = $("goal-tag");
       if (t) t.classList.remove("on");
+      hideArrive();
       lastDraw = null;
       shadowScanTags(null);
     }
@@ -2570,7 +2773,11 @@
     // A new picture has painted (or a sequence has come to rest on its last
     // frame). The old tag belongs to the old picture.
     function onScene() {
-      hide();
+      // The thing they came for is in this room and is not going anywhere, so
+      // its tag survives the repaint — update() re-places it a moment later.
+      // Taking it down here left the pill unclickable at the exact moment the
+      // player was reaching for it.
+      if (!(result && result.phase === "prize")) hide();
       schedule(SETTLE_MS);
     }
 
@@ -2586,14 +2793,35 @@
       let res = null;
       try { res = await postJSON("/api/goal/sight", { src: url }); } catch (_) { res = null; }
       inflight = "";
-      if (!res || !res.goal) { setHud(null); hide(); return; }
+      if (!res || !res.goal) {
+        if (res && Array.isArray(res.pack)) setPack(res.pack, res.world_gear);
+        // The run being WON comes back with no goal on it — there is no fourth
+        // one. The card is the whole of it, and it holds (nothing behind it is
+        // waiting to be played).
+        if (res && res.victory && res.board && victoryShownFor !== res.board.done) {
+          victoryShownFor = res.board.done;
+          showVictory(res.board);
+        }
+        setHud(null); hide(); return;
+      }
       res.src = url;
       result = res;
       setHud(res);
-      if (res.reached && res.name && reachedShownFor !== res.name) {
-        reachedShownFor = res.name;
-        showReached(res.name, res.reached_line || "");
+      setPack(res.pack, res.world_gear);
+      if (res.victory && res.board && victoryShownFor !== res.board.done) {
+        victoryShownFor = res.board.done;
+        showVictory(res.board);
       }
+      // Arrived: nothing pops up by itself. The goal glows on the picture
+      // and ENTER plays the reward (draw -> drawArrive).
+      // The boss going down is NOT the goal being done any more — the reward
+      // puts the player in the room and TAKING the thing is what finishes it.
+      // A card on `completed` was the old shape, and at z-index 70 it sat on
+      // top of the prize tag with nothing to dismiss it, so the run could not
+      // go on: "i think its stuck, unable to progress on the goal when it
+      // clicks" (2026-09-22, and the loop playtest, where the take click hit
+      // #goal-reached instead of .gt-go).
+      if (res.phase === "prize" || res.found) dismissReached();
       // The player may have moved on while we asked.
       if (url === (state.currentStillUrl || "")) draw();
       else schedule(SETTLE_MS);
@@ -2617,11 +2845,39 @@
         measureHud();
         return;
       }
+      const board = res.board || null;
+      const kindEl3 = document.querySelector("#goal-hud .goal-hud-kind");
+      if (kindEl3) {
+        const want = board && board.of > 1
+          ? `Goal ${Math.min(board.index, board.of)}/${board.of}` : "Goal";
+        if (kindEl3.textContent !== want) kindEl3.textContent = want;
+      }
       const name = $("goal-hud-name");
       if (name && name.textContent !== res.name) name.textContent = res.name;
+      if (name && !name._wired) {
+        name._wired = true;
+        name.addEventListener("click", (e) => { e.preventDefault(); go(); });
+      }
+      if (name) name.title = res.reached ? "" : "Go to " + res.name;
       hud.classList.toggle("reached", !!res.reached);
       hud.classList.add("on");
       document.body.classList.add("has-goal");
+      if (beganFor !== res.name && !res.reached) {
+        beganFor = res.name;
+        // The same card opens the goal and, at the end of it, the thing in the
+        // room — so it has to say the right thing for each. "Click the tag to
+        // go" over a case the player is already standing in front of read as
+        // another errand rather than the payoff.
+        const atIt = res.phase === "prize";
+        showBegin(res.name,
+                  atIt ? ((res.gear && res.gear.power) || res.why || "")
+                       : (res.why || ""),
+                  atIt ? ((res.gear && res.gear.kind)
+                          ? String(res.gear.kind).toUpperCase() : "What you came for")
+                       : "Goal",
+                  atIt ? `Click it to ${String(res.verb || "take").toLowerCase()} it`
+                       : "Click the tag to go");
+      }
       const why = $("goal-hud-why");
       if (why && res.why && whyShownFor !== res.name) {
         whyShownFor = res.name;
@@ -2643,8 +2899,23 @@
       const tag = $("goal-tag");
       if (!tag) return;
       const r = result;
-      if (!r || !r.found || !r.box || r.reached || !inPlay() || !settled()
+      if (r && r.reached && !r.completed && reachedShownFor !== r.name
+          && !(window.Encounter && Encounter.isActive && Encounter.isActive())
+          && inPlay() && settled() && r.src === (state.currentStillUrl || "")) {
+        const t0 = $("goal-tag");
+        if (t0) t0.classList.remove("on");
+        drawArrive(r);
+        return;
+      }
+      hideArrive();
+      const inRoom = !!(r && r.phase === "prize");
+      if (!r || r.reached || !inPlay() || !settled()
           || r.src !== (state.currentStillUrl || "")) { hide(); return; }
+      // The thing they came for IS in this room — the server put it there and
+      // the cutscene ended on a shot of it. When vision cannot box it in the
+      // deposited frame, the tag still has to be there to be clicked, so it
+      // goes where the payoff shot left it: the middle of the picture.
+      if ((!r.found || !r.box) && !inRoom) { hide(); return; }
       const size = natural[r.src];
       if (!size) {
         const img = new Image();
@@ -2656,7 +2927,7 @@
       const s = mediaFitScale(W, H, size.w, size.h);
       const dw = size.w * s, dh = size.h * s;
       const ox = (W - dw) / 2, oy = (H - dh) / 2;
-      const b = r.box;
+      const b = (r.found && r.box) ? r.box : { x: 0.42, y: 0.34, w: 0.16, h: 0.3 };
       let ax = ox + (b.x + b.w / 2) * dw;
       let ay = oy + (b.y + b.h * 0.3) * dh;
       // The scene layer can carry an optical zoom (telephoto); follow it.
@@ -2672,6 +2943,42 @@
       const nameEl = tag.querySelector(".gt-name");
       const kindEl = tag.querySelector(".gt-kind");
       if (nameEl.textContent !== r.name) nameEl.textContent = r.name;
+      // One step out, the goal is right there: it glows and says REACH, and
+      // that click is the beat where they arrive.
+      // Never on the opening view: at least one step first, then REACH when one
+      // step out or when it plainly fills the frame.
+      const ready = r.steps >= 1 && ((r.of > 0 && r.steps >= r.of - 1) || (b.h >= 0.6 && b.w >= 0.4));
+      r.ready = ready;
+      tag.classList.toggle("ready", ready);
+      // The tag says how far, in words; the top-left says which goal this is
+      // of the run's three. Both saying "1/3" meant two different numbers in
+      // the same shape on one screen.
+      // In the room, the tag says WHAT the thing is — a weapon reads
+      // differently from a relic, and that is the whole point of drawing it
+      // from the world's gear rather than inventing a noun.
+      const kindText = r.phase === "prize"
+        ? ((r.gear && r.gear.kind) ? String(r.gear.kind).toUpperCase() : "Take it")
+        : (ready ? "At it" : (r.steps > 0 ? "Closer" : "Goal"));
+      if (kindEl.textContent !== kindText) kindEl.textContent = kindText;
+      let hit = tag.querySelector(".gt-hit");
+      if (!hit) {
+        hit = document.createElement("button");
+        hit.type = "button";
+        hit.className = "gt-hit";
+        tag.appendChild(hit);
+        const goBtn = document.createElement("button");
+        goBtn.type = "button";
+        goBtn.className = "gt-go";
+        goBtn.innerHTML = '<span class="gt-go-arrow">\u25B8</span><span class="gt-go-text">Head there</span>';
+        tag.appendChild(goBtn);
+        tag.querySelectorAll(".gt-hit, .gt-name, .gt-kind, .gt-go").forEach((el) => {
+          el.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); go(); });
+          el.addEventListener("mouseenter", () => tag.classList.add("hover"));
+          el.addEventListener("mouseleave", () => tag.classList.remove("hover"));
+        });
+      }
+      hit.setAttribute("aria-label", "Go to " + r.name);
+      hit.title = "Go to " + r.name;
       const rise = Math.round(Math.max(34, Math.min(56, H * 0.06)));
       const run = rise;
       const ruleW = Math.max(96, Math.ceil(nameEl.getBoundingClientRect().width) + 14);
@@ -2685,6 +2992,8 @@
       const rx1 = flip ? ex : ex + ruleW;
       const d0 = 6 * (flip ? -1 : 1), d1 = 6 * (down ? 1 : -1);
 
+      hit.style.left = ax + "px";
+      hit.style.top = ay + "px";
       tag.querySelector(".gt-ring").setAttribute("cx", ax);
       tag.querySelector(".gt-ring").setAttribute("cy", ay);
       tag.querySelector(".gt-dot").setAttribute("cx", ax);
@@ -2695,19 +3004,430 @@
       nameEl.style.top = (ey - 22) + "px";
       kindEl.style.left = (flip ? rx1 - kindEl.getBoundingClientRect().width : rx0) + "px";
       kindEl.style.top = (ey + 9) + "px";
+      const goEl = tag.querySelector(".gt-go");
+      if (goEl) {
+        const gt = goEl.querySelector(".gt-go-text");
+        // In the room with it, the tag stops being a direction and becomes the
+        // interaction: the prize's own verb, on the object itself.
+        const want = r.phase === "prize" ? (r.verb || "Take")
+          : (ready ? "Reach" : (r.steps > 0 ? "Move closer" : "Head there"));
+        if (gt && gt.textContent !== want) gt.textContent = want;
+        const kw = kindEl.getBoundingClientRect().width;
+        goEl.style.top = (ey + 1) + "px";
+        goEl.style.left = (flip ? rx1 - kw - 14 - goEl.getBoundingClientRect().width : rx0 + kw + 14) + "px";
+      }
       tag.classList.add("on");
       shadowScanTags(b);
       lastDraw = { x: Math.round(ax), y: Math.round(ay), flip, down, name: r.name, src: r.src };
     }
 
+    // ARRIVE: the beat put them at it. The thing itself glows — its box when
+    // the picture was read, else a target low in the middle of the frame —
+    // and clicking it is the finish: REACHED plays and the run carries on.
+    function hideArrive() {
+      const a = $("goal-arrive");
+      if (a) a.classList.remove("on");
+    }
+    function drawArrive(r) {
+      let a = $("goal-arrive");
+      if (!a) {
+        a = document.createElement("button");
+        a.type = "button";
+        a.id = "goal-arrive";
+        a.innerHTML = '<span class="ga-label"><span class="ga-name"></span>' +
+          '<span class="ga-kind">Enter</span></span>';
+        a.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); complete(); });
+        document.body.appendChild(a);
+      }
+      a.querySelector(".ga-name").textContent = r.name;
+      const bossName = (r.boss && r.boss.name) || "";
+      a.querySelector(".ga-kind").textContent = bossName ? ("Enter \u00b7 " + bossName + " is inside") : "Enter";
+      a.setAttribute("aria-label", "Enter " + r.name);
+      const W = window.innerWidth, H = window.innerHeight;
+      let x = W * 0.38, y = H * 0.34, w = W * 0.24, h = H * 0.34;
+      const size = natural[r.src];
+      if (r.found && r.box && size) {
+        const s = mediaFitScale(W, H, size.w, size.h);
+        const dw = size.w * s, dh = size.h * s;
+        const ox = (W - dw) / 2, oy = (H - dh) / 2;
+        x = ox + r.box.x * dw; y = oy + r.box.y * dh;
+        w = r.box.w * dw; h = r.box.h * dh;
+        const minW = 90, minH = 90;
+        if (w < minW) { x -= (minW - w) / 2; w = minW; }
+        if (h < minH) { y -= (minH - h) / 2; h = minH; }
+      } else if (r.found && r.box && !size) {
+        const img = new Image();
+        img.onload = () => { natural[r.src] = { w: img.naturalWidth, h: img.naturalHeight }; draw(); };
+        img.src = r.src;
+      }
+      x = Math.max(12, Math.min(W - w - 12, x));
+      y = Math.max(12, Math.min(H - h - 60, y));
+      a.style.left = x + "px"; a.style.top = y + "px";
+      a.style.width = w + "px"; a.style.height = h + "px";
+      a.classList.add("on");
+    }
+    // ENTER: the REWARD. Reaching what the whole run walked toward is the
+    // payoff, so it plays as an in-game cutscene at the game's own resolution
+    // (cutscene.MOODS["reward"]): the place whole and at its best, the way in,
+    // through it, and the other side — and that last shot is where the run
+    // carries on from, with the player now INSIDE it
+    // (engine.api_cutscene_complete -> goal.finish_reward). A fight here was
+    // the wrong shape: "the idea of clicking on a goal and it triggering an
+    // encounter is incorrect … if we reach the goal, we need a reward".
+    // ENTER opens the fight with whoever holds the place; beating them is what
+    // earns the REWARD — the in-game cutscene that shows the place and puts
+    // the player down inside it (playReward). Running from the fight leaves
+    // the goal glowing at the door for another go; dying is dying.
+    async function complete() {
+      const r = result;
+      if (!r || !r.name || reachedShownFor === r.name || climaxRunning) return;
+      hideArrive();
+      // Clicking the goal is REACHING it, and reaching it pays out: "clicking
+      // the goal triggers an encounter. this is wrong, it should be triggering
+      // a reward" (2026-09-22). The boss belongs on the way in — staged by the
+      // world as the player closes on the place — not behind this click.
+      // He gets his moment on the WAY IN and nowhere else: staged one step
+      // out, he steps out on the beat that click asked for, and the arrival is
+      // a beat of its own after that. Still waiting when the player is through
+      // the door, he has missed it — the alternative was a fight behind ENTER,
+      // which is the shape that was called wrong.
+      pendingBoss = null; bossFor = "";
+      if (await playReward(r.name)) return;
+      reachedShownFor = r.name;
+      let line = r.reached_line || "";
+      try {
+        const res = await postJSON("/api/goal/sight", { complete: true });
+        if (res && res.reached_line) line = res.reached_line;
+        if (result) result.completed = true;
+      } catch (_) {}
+      try { Sound.submit(); } catch (_) {}
+      showReached(r.name, line);
+    }
+
+    // The fight is the player's; the moment it is over and the server says the
+    // boss is dealt with, the reward plays. Nothing else ends this wait: a
+    // fight they ran from leaves the goal where it was.
+    function watchBossFight(goalName) {
+      let sawFight = false;
+      const t = setInterval(async () => {
+        let live = false;
+        try { live = !!(Encounter.isActive() || Encounter.isResolving()); } catch (_) {}
+        if (live) { sawFight = true; return; }
+        if (!sawFight) return;
+        clearInterval(t);
+        if (state.gameOver) { climaxRunning = false; return; }
+        let res = null;
+        try { res = await postJSON("/api/goal/sight", {}); } catch (_) {}
+        climaxRunning = false;
+        if (res && (res.boss_won || res.completed)) {
+          await playReward(goalName);
+        } else {
+          result = null;                   // still theirs to take: look again
+        }
+      }, 900);
+      setTimeout(() => { clearInterval(t); climaxRunning = false; }, 300000);
+    }
+
+    // The one who holds the place, stepping out on the beat the player just
+    // asked for — once per goal (goal._MET), and only when the beat has landed
+    // so the fight interrupts a picture rather than a loading screen.
+    function stageBoss(who) {
+      pendingBoss = who;
+      bossFor = (result && result.name) || "";
+      const mine = bossFor;
+      const t = setInterval(async () => {
+        // The moment the place has been entered, he has missed his chance.
+        // Arriving inside the room AFTER the reward — with the thing the
+        // player came for already in their hands — is the incoherence.
+        if (pendingBoss !== who || reachedShownFor === mine ||
+            (result && result.phase === "prize")) { clearInterval(t); pendingBoss = null; return; }
+        if (state.processing || state.moving || state.gameOver) return;
+        let busy = false;
+        try { busy = !!(Encounter.isActive() || Encounter.isResolving()); } catch (_) {}
+        if (busy) { clearInterval(t); return; }
+        if (!inPlay()) return;
+        clearInterval(t);
+        pendingBoss = null;
+        try {
+          await Encounter.start({ subject: { label: who.label, kind: who.kind || "", source: "boss" } });
+        } catch (e) { console.warn("[goal] the one who holds it did not arrive", e); }
+      }, 900);
+      setTimeout(() => { clearInterval(t); if (pendingBoss === who) pendingBoss = null; }, 180000);
+    }
+
+    // TAKING IT. The reward put them in the room facing the thing they came
+    // for; this click is the hand on it. The server ends the goal there and
+    // hands the run its next one (goal.take_prize -> goal.advance).
+    async function takeIt(r) {
+      if (!inPlay() || climaxRunning) return;
+      if (state.processing || state.gameOver) {
+        try { showRendererToast("The world is still moving \u2014 one moment"); } catch (_) {}
+        return;
+      }
+      climaxRunning = true;
+      hide();
+      let res = null;
+      try { res = await postJSON("/api/goal/sight", { take: true }); } catch (_) {}
+      climaxRunning = false;
+      const verb = String(r.verb || "Take");
+      const said = `${verb.charAt(0).toUpperCase()}${verb.slice(1).toLowerCase()} the ` +
+        String(r.name || "").replace(/^the\s+/i, "");
+      result = null;
+      try { Sound.submit(); } catch (_) {}
+      try { makeChoice(said, null, { source: "typed" }); } catch (e) {
+        console.error("[goal] take failed", e);
+      }
+      const won = !!(res && res.board && res.board.victory);
+      // The sight answer for the next picture must not put the win up over
+      // the find: the last prize is shown, THEN the run is won.
+      if (won) victoryShownFor = res.board.done;
+      // The goal is done HERE — hands on the thing — so this is the beat that
+      // says so, and says what the run has left. It gets out of the way by
+      // itself; the next goal is already on the horizon behind it.
+      if (res && res.gear && res.gear.name) {
+        // It is a real thing with a picture — show the thing.
+        setPack(res.pack, res.world_gear);
+        const shown = showFind(res.gear, res.board);
+        if (won) {
+          try { if (shown && typeof shown.then === "function") await shown; } catch (_) {}
+          showVictory(res.board);
+        }
+        return;
+      }
+      if (won) { showVictory(res.board); return; }
+      if (res && res.board) {
+        const took = String(res.took || r.name || "");
+        const place = String(res.of_place || "");
+        const b = res.board;
+        showReached(took, [place ? `Taken out of ${place}.` : "",
+                           `${b.done} of ${b.of}.`].filter(Boolean).join(" "),
+                    "Goal complete");
+      }
+    }
+
+    // ── THE FIND ───────────────────────────────────────────────────────────
+    // The thing was designed by the look book, shot on the props sheet, and
+    // stood lit in the room the reward walked them into. This is the moment it
+    // becomes theirs, so it gets the screen: the plate, what it is, and what
+    // it does — the payoff the whole lap was for. A name on a board was what
+    // this replaced.
+    let packShownFor = "";
+    function showFind(gear, board) {
+      if (!gear || !gear.name) return false;
+      // The pack owns the find now: the thing, then into the backpack.
+      if (window.Pack && typeof window.Pack.found === "function") {
+        return window.Pack.found(gear, { board: board || null });
+      }
+      let card = $("goal-find");
+      if (!card) {
+        card = document.createElement("div");
+        card.id = "goal-find";
+        card.className = "hidden";
+        card.setAttribute("role", "status");
+        card.innerHTML =
+          '<div class="gf-inner">' +
+          '<img class="gf-plate" alt="" />' +
+          '<div class="gf-text">' +
+          '<div class="gf-kind"></div>' +
+          '<div class="gf-name"></div>' +
+          '<div class="gf-power"></div>' +
+          '<div class="gf-from"></div>' +
+          '</div></div>';
+        document.body.appendChild(card);
+        card.addEventListener("pointerdown", () => dismissFind());
+      }
+      const img = card.querySelector(".gf-plate");
+      const plate = String(gear.plate || "");
+      if (plate) {
+        img.src = plate;
+        img.classList.remove("gone");
+      } else {
+        img.removeAttribute("src");
+        img.classList.add("gone");
+      }
+      card.querySelector(".gf-kind").textContent =
+        (String(gear.kind || "") || "found").toUpperCase();
+      card.querySelector(".gf-name").textContent = gear.name || "";
+      card.querySelector(".gf-power").textContent = gear.power || "";
+      const b = board || null;
+      card.querySelector(".gf-from").textContent =
+        [gear.from ? `Out of ${gear.from}` : "", b ? `${b.done} of ${b.of}` : ""]
+          .filter(Boolean).join("   ·   ");
+      card.classList.remove("hidden");
+      void card.offsetWidth;
+      card.classList.add("on");
+      try { Sound.submit(); } catch (_) {}
+      clearTimeout(findTimer);
+      findTimer = setTimeout(dismissFind, 5200);
+      return true;
+    }
+    function dismissFind() {
+      clearTimeout(findTimer);
+      const card = $("goal-find");
+      if (!card || card.classList.contains("hidden")) return;
+      card.classList.remove("on");
+      setTimeout(() => card.classList.add("hidden"), 600);
+    }
+
+    // ── THE PACK ───────────────────────────────────────────────────────────
+    // What they are carrying, along the bottom: the plates themselves, because
+    // the point of generating them was that you get to look at them.
+    function setPack(pack, world) {
+      if (window.Pack && typeof window.Pack.sync === "function") {
+        try { window.Pack.sync(pack || [], world || null); } catch (_) {}
+        return;
+      }
+      let host = $("goal-pack");
+      if (!host) {
+        host = document.createElement("div");
+        host.id = "goal-pack";
+        host.setAttribute("aria-label", "What you are carrying");
+        document.body.appendChild(host);
+      }
+      const list = (pack || []).filter((g) => g && g.name);
+      const key = list.map((g) => g.name).join("|");
+      if (key === packShownFor) return;
+      packShownFor = key;
+      host.innerHTML = "";
+      if (!list.length) { host.classList.remove("on"); return; }
+      list.forEach((g) => {
+        const cell = document.createElement("div");
+        cell.className = "gp-item";
+        cell.title = [g.name, g.power].filter(Boolean).join(" — ");
+        if (g.plate) {
+          const im = document.createElement("img");
+          im.src = g.plate;
+          im.alt = g.name;
+          cell.appendChild(im);
+        }
+        const lab = document.createElement("div");
+        lab.className = "gp-name";
+        lab.textContent = g.name;
+        cell.appendChild(lab);
+        host.appendChild(cell);
+      });
+      host.classList.add("on");
+    }
+
+    // THE REWARD: the goal, shown whole and then walked into. The server puts
+    // the player down on the other side and hands the run its next goal
+    // (goal.finish_reward -> goal.advance).
+    async function playReward(goalName) {
+      reachedShownFor = goalName;
+      if (result) result.completed = true;
+      try { Sound.submit(); } catch (_) {}
+      let played = false;
+      try {
+        played = await Cutscene.play({ mood: "reward", name: goalName, graph: true });
+      } catch (e) { console.warn("[goal] reward cutscene failed", e); }
+      if (played === false) { reachedShownFor = ""; return false; }
+      result = null;                       // the next goal is a new tag
+      return true;
+    }
+
+    // PAYOFF: kept for the old shape only — the boss being down used to end
+    // the goal. It does not any more (the reward plays, and taking the thing
+    // in the room is what ends it), so nothing calls this.
+    function showPayoff(res) {
+      const bossName = (res.boss && res.boss.name) || "";
+      const how = String(res.boss_won || "");
+      const head = bossName
+        ? (how === "standing_down" ? `${bossName} stood aside.` : `${bossName} is down.`)
+        : "";
+      const line = [head, res.reached_line || ""].filter(Boolean).join(" ");
+      try { Sound.submit(); } catch (_) {}
+      showReached(res.name, line, "Goal complete");
+      try { postJSON("/api/goal/sight", { payoff_seen: true }); } catch (_) {}
+    }
+
+    // VICTORY: three places walked to, fought for and taken. The run is won,
+    // which until now nothing but dying could end.
+    function showVictory(board) {
+      const names = (board && board.names) || [];
+      const line = names.length
+        ? names.join("  \u00b7  ") + "." : "";
+      try { Sound.submit(); } catch (_) {}
+      showReached(`${board.done} of ${board.of}`, line, "Run complete", true);
+      // There is no goal left: the corner said "Goal 3/3 Foundry Blast Apron"
+      // behind RUN COMPLETE — the last thing taken, named as if still wanted.
+      setHud(null);
+      // ...and what they walked out with, as the things themselves.
+      try { if (window.Pack && window.Pack.haul) window.Pack.haul($("goal-reached")); } catch (_) {}
+    }
+
+    // GO: the tag is the thing you want to walk to, so it is the way to walk
+    // there. One click is one step (the server counts it and tells the beat
+    // how close they are); the last step is the beat where they arrive.
+    function actionFor(name) {
+      return "Head for the " + String(name || "").replace(/^the\s+/i, "");
+    }
+    function reachFor(name) {
+      return "Reach the " + String(name || "").replace(/^the\s+/i, "") + " and go in";
+    }
+    async function go() {
+      const r = result;
+      if (r && r.phase === "prize") { takeIt(r); return; }
+      if (!r || !r.name || r.reached) return;
+      if (!inPlay()) return;
+      if (state.processing || state.gameOver) {
+        try { showRendererToast("The world is still moving \u2014 one moment"); } catch (_) {}
+        return;
+      }
+      const final = !!r.ready;
+      let step = null;
+      try { step = await postJSON("/api/goal/sight", { approach: true, final }); } catch (_) {}
+      hide();
+      dismissBegin();
+      // One step out, whoever holds the place comes out to meet them: the
+      // fight lands on the beat this click just asked for, so it reads as
+      // being intercepted on the way in rather than as a menu behind ENTER.
+      if (step && step.stage_boss && step.stage_boss.label) stageBoss(step.stage_boss);
+      try { makeChoice(final ? reachFor(r.name) : actionFor(r.name), null, { source: "typed" }); } catch (e) {
+        console.error("[goal] go failed", e);
+      }
+    }
+
+    // GOAL: the level opens on the view of it, and says what it is. The card
+    // sits low over the vista so the thing itself stays in sight above it,
+    // and gets out of the way on its own (or on a click).
+    function showBegin(name, why, kind, hint) {
+      let card = $("goal-begin");
+      if (!card) {
+        card = document.createElement("div");
+        card.id = "goal-begin";
+        card.setAttribute("role", "status");
+        card.innerHTML = '<div class="gb-kind">Goal</div><div class="gb-name"></div>' +
+          '<div class="gb-why"></div><div class="gb-hint"></div>';
+        document.body.appendChild(card);
+        // Any click anywhere takes it down — it cannot take the click itself
+        // (see the CSS), so the game hears it and the card gets out of the way.
+        document.addEventListener("pointerdown", () => dismissBegin(), true);
+      }
+      card.querySelector(".gb-kind").textContent = kind || "Goal";
+      card.querySelector(".gb-name").textContent = name || "";
+      card.querySelector(".gb-why").textContent = why || "";
+      card.querySelector(".gb-hint").textContent = hint || "Click the tag to go";
+      void card.offsetWidth;
+      card.classList.add("on");
+      clearTimeout(beginTimer);
+      beginTimer = setTimeout(dismissBegin, 6500);
+    }
+    function dismissBegin() {
+      clearTimeout(beginTimer);
+      const card = $("goal-begin");
+      if (card) card.classList.remove("on");
+    }
+
     // REACHED: the picture fades down under the name and the line that got
     // them there, and CONTINUE hands the run back.
-    function showReached(name, line) {
+    function showReached(name, line, kind, hold) {
       const card = $("goal-reached");
       if (!card) return;
       const n = $("goal-reached-name"), l = $("goal-reached-line");
       if (n) n.textContent = name || "";
       if (l) l.textContent = line || "";
+      const k = card.querySelector(".gr-kind");
+      if (k) k.textContent = kind || "Reached";
       card.classList.remove("hidden");
       void card.offsetWidth;
       card.classList.add("on");
@@ -2721,10 +3441,36 @@
         });
       }
       try { if (btn) btn.focus({ preventScroll: true }); } catch (_) {}
+      // Nothing that covers the whole picture is allowed to stay there on its
+      // own. The end of the run holds (there is nothing behind it to play);
+      // every other card says its piece and hands the game back, on a click
+      // anywhere or on its own after a few seconds.
+      clearTimeout(reachedTimer);
+      if (!hold) {
+        reachedTimer = setTimeout(dismissReached, 4200);
+        if (!card._wiredAway) {
+          card._wiredAway = true;
+          card.addEventListener("pointerdown", (e) => {
+            if (e.target && e.target.id === "goal-reached-continue") return;
+            dismissReached();
+          });
+        }
+      }
+    }
+    function dismissReached() {
+      clearTimeout(reachedTimer);
+      const card = $("goal-reached");
+      if (!card || card.classList.contains("hidden")) return;
+      card.classList.remove("on");
+      setTimeout(() => card.classList.add("hidden"), 700);
     }
 
     function reset() {
-      result = null; inflight = ""; whyShownFor = ""; reachedShownFor = "";
+      result = null; inflight = ""; whyShownFor = ""; reachedShownFor = ""; beganFor = "";
+      pendingBoss = null; bossFor = ""; packShownFor = "";
+      dismissFind(); setPack([]);
+      dismissBegin();
+      dismissReached();
       hide(); setHud(null);
     }
 
@@ -2753,7 +3499,8 @@
     }, 1200);
 
     return {
-      onScene, hide, reset, showReached,
+      onScene, hide, reset, showReached, dismissReached, showBegin, go, complete,
+      showFind, setPack,
       debug: () => {
         let seq = null, cam = null;
         try { seq = { playing: sceneSequence.playing(), atRest: sceneSequence.atRest ? sceneSequence.atRest() : null }; } catch (e) { seq = "err:" + e; }
@@ -2840,6 +3587,9 @@
     // no-ops, because the fade up must happen once.
     function ready(reason) {
       if (!holding) return;
+      // The level is waiting on its look book (LookBookStatus.gate); nothing
+      // painted now belongs to the run about to start.
+      if (document.body.classList.contains("lookbook-gate") && reason !== "timeout") return;
       holding = false;
       clearTimeout(ceiling);
       try { console.log("[opening] fading up on " + (reason || "?")); } catch (_) {}
@@ -2862,7 +3612,21 @@
 
     function isHolding() { return holding; }
 
-    return { begin: begin, ready: ready, isHolding: isHolding, arm: arm };
+    // Something the level genuinely waits on (the look book, see
+    // LookBookStatus.gate) is still working and reporting progress: push the
+    // "nothing painted, lift the black" ceiling out again.
+    function extend() {
+      if (!holding) return;
+      clearTimeout(ceiling);
+      ceiling = setTimeout(() => {
+        if (holding) {
+          try { console.warn("[opening] nothing painted in time; lifting the black"); } catch (_) {}
+          ready("timeout");
+        }
+      }, CEILING_MS);
+    }
+
+    return { begin: begin, ready: ready, isHolding: isHolding, arm: arm, extend: extend };
   })();
 
   // One-shot subscribers for "the next scene image is actually painted".
@@ -3131,7 +3895,80 @@
       });
     }
 
+    // The level waits for its book (asked: "make sure the look book generation
+    // is completed BEFORE starting the level. Even if it adds to the wait
+    // times"). Shown on the opening black, under the overture's title: stage,
+    // seconds, five segments.
+    function openingNode() {
+      const n = document.getElementById("opening-lookbook");
+      if (n && !n.querySelector(".lbs-bar")) {
+        n.innerHTML = '<span class="lbs-text"></span>' +
+          '<span class="lbs-bar" aria-hidden="true">' + STAGES.map(() => "<i></i>").join("") + "</span>";
+      }
+      return n;
+    }
+
+    function paintOpening(lb) {
+      const n = openingNode();
+      if (!n) return;
+      const text = n.querySelector(".lbs-text");
+      n.classList.remove("is-ready", "is-bad", "is-live");
+      if (isBusy(lb)) {
+        const { idx } = stageOf(lb);
+        const secs = Math.round((Date.now() - t0) / 1000);
+        text.textContent = `BUILDING THE LOOK BOOK · ${idx + 1}/${STAGES.length} · ${STAGES[idx].label} · ${secs}s`;
+        setBar(n, idx, false);
+        n.classList.add("is-live");
+        return;
+      }
+      const ok = lb && lb.status === "ready" && !lb.stale;
+      text.textContent = ok
+        ? `LOOK BOOK READY · ${plateCount(lb)} PLATES · STARTING`
+        : "LOOK BOOK FAILED · STARTING WITHOUT IT";
+      setBar(n, -1, !!ok);
+      n.classList.add(ok ? "is-ready" : "is-bad");
+    }
+
+    // Resolves once the book is finished (or failed, or past the cap). Throws
+    // only a 402 — the wallet refusal the reset would have hit anyway.
+    async function gate(worldId) {
+      let lb = null;
+      try {
+        const r = await postJSON("/api/look_book/prepare", withCharacter(worldId ? { world_id: worldId } : {}));
+        lb = r && r.data ? r.data : r;
+      } catch (err) {
+        if (err && err.status === 402) throw err;
+        console.warn("[look book] prepare failed; the level starts without waiting:", err);
+        return;
+      }
+      if (!lb || lb.enabled === false) return;
+      openingNode();
+      t0 = Date.now();
+      document.body.classList.add("lookbook-gate");
+      const cap = Date.now() + 320000;
+      try {
+        for (;;) {
+          if (lb && typeof lb.elapsed === "number" && isBusy(lb)) t0 = Date.now() - lb.elapsed * 1000;
+          paintOpening(lb);
+          if (!isBusy(lb) || Date.now() > cap) break;
+          try { OpeningFade.extend(); } catch (_) {}
+          await new Promise((r) => setTimeout(r, 1000));
+          try {
+            const r = await getJSON("/api/look_book");
+            lb = r && r.data ? r.data : r;
+          } catch (_) {}
+        }
+      } finally {
+        // The gate lifts now (OpeningFade.ready listens again); the READY line
+        // lingers a moment on its own class.
+        document.body.classList.remove("lookbook-gate");
+        document.body.classList.add("lookbook-gate-done");
+        setTimeout(() => document.body.classList.remove("lookbook-gate-done"), 1600);
+      }
+    }
+
     return {
+      gate,
       watch() {
         wire();
         t0 = Date.now();
@@ -3479,6 +4316,15 @@
     return Promise.race([promise, bail]).finally(() => clearTimeout(timer));
   }
 
+  // Every new run is a character (characters.py): the one picked on the
+  // character screen, else the one played last on this machine. The server
+  // binds it for the look book and the reset; absent, the run is the cast sheet.
+  function withCharacter(body) {
+    let id = "";
+    try { id = (window.Characters && window.Characters.selectedId && window.Characters.selectedId()) || ""; } catch (_) {}
+    return id ? Object.assign({}, body || {}, { character_id: id }) : (body || {});
+  }
+
   async function postJSON(url, body) {
     const payload = Object.assign({}, body || {});
     // Also embed it in the JSON body for endpoints (like /api/choose) that
@@ -3694,21 +4540,49 @@
   // Deliberately does NOT call markScenePainted(): that is the boot gate and
   // the interact dive's hand-off signal, and must fire once per SCENE, not
   // once per frame.
-  function paintSequenceFrame(imageUrl) {
+  // How long one flipbook frame takes to replace the one before it. Hard
+  // swaps are what the motion used to be: four generated stills exchanged
+  // instantly a second apart, and the eye reads every difference between them
+  // — a shoulder an inch left, a light a shade warmer — as a CUT. Played back
+  // that is "we transition from the start frame to the end frame really
+  // painfully with lots of popping". A dissolve of roughly a third of the
+  // frame's own time turns the same four pictures into one move: the two
+  // panels overlap long enough for the eye to carry the subject across, and
+  // short enough that each frame still holds as a drawing.
+  const FRAME_BLEND = 0.34;
+  function blendMsFor(frameMs) {
+    const ms = Number(frameMs) || 0;
+    if (!ms) return 0;
+    return Math.max(110, Math.min(400, Math.round(ms * FRAME_BLEND)));
+  }
+
+  function paintSequenceFrame(imageUrl, blendMs) {
     if (!imageUrl) return;
     const incoming = state.activeScene === "A" ? el.sceneB : el.sceneA;
     const outgoing = state.activeScene === "A" ? el.sceneA : el.sceneB;
     if (!incoming || !outgoing) { paintActiveScene(imageUrl); return; }
+    const ms = prefersReducedMotion() ? 0 : Math.max(0, Math.round(Number(blendMs) || 0));
     const prevIn = incoming.style.transition;
     const prevOut = outgoing.style.transition;
+    // Put the next frame on the hidden layer with NO transition, and let the
+    // browser commit it there before anything fades — otherwise the layer
+    // animates from the frame it was last showing and the dissolve carries a
+    // ghost of a picture two frames old.
     incoming.style.transition = "none";
     outgoing.style.transition = "none";
     incoming.style.backgroundImage = `url('${imageUrl}')`;
+    void incoming.offsetWidth;
+    if (ms) {
+      incoming.style.transition = `opacity ${ms}ms linear`;
+      outgoing.style.transition = `opacity ${ms}ms linear`;
+    }
     incoming.classList.add("scene-active");
     outgoing.classList.remove("scene-active");
-    void incoming.offsetWidth;
-    incoming.style.transition = prevIn || "";
-    outgoing.style.transition = prevOut || "";
+    if (!ms) {
+      void incoming.offsetWidth;
+      incoming.style.transition = prevIn || "";
+      outgoing.style.transition = prevOut || "";
+    }
     state.activeScene = state.activeScene === "A" ? "B" : "A";
   }
 
@@ -3761,7 +4635,7 @@
           }
           idx = 0;
         }
-        paint(frames[idx]);
+        paint(frames[idx], { ms: ms });
         step(mine, ms, loop, onEnd);
       }, ms);
     }
@@ -3825,7 +4699,7 @@
   // never has to jump when playback finishes.
   const sceneSequence = createSequencePlayer(function (url, info) {
     if (info && info.first) setScene(url, { fromSequence: true });
-    else paintSequenceFrame(url);
+    else paintSequenceFrame(url, blendMsFor(info && info.ms));
   });
 
   function playSceneSequence(sequence, stillUrl) {
@@ -7926,7 +8800,9 @@
       const wanted = only && only.length
         ? identitySchema.filter((b) => only.indexOf(b.id) !== -1)
         : identitySchema;
-      wanted.forEach((block) => host.appendChild(makeCastBlock(block, opts)));
+      wanted.forEach((block) => host.appendChild(
+        block.id === "player_character" && window.Characters
+          ? makeCharacterCard() : makeCastBlock(block, opts)));
       // "Reset Cast & Camera" clears every block at once, so it belongs to the
       // whole scroll — not to a window showing one sheet.
       if (target) return;
@@ -7935,6 +8811,55 @@
         if (reach) host.appendChild(reach);
       }
       host.appendChild(makeCastReset());
+    }
+
+    // WHO YOU ARE is not a World's any more (characters.py): the player's
+    // Character is chosen on the PLAY screen and owned by the player, and this
+    // block is its card — the figure, the name, and "Change character", which
+    // opens that same screen. Nobody edits a character in two places.
+    function makeCharacterCard() {
+      const card = document.createElement("div");
+      card.className = "we-block we-char-card";
+      card.dataset.block = "player_character";
+      card.innerHTML =
+        '<div class="we-char-fig"></div>' +
+        '<div class="we-char-tx"><div class="we-char-eyebrow">CHARACTER</div>' +
+        '<div class="we-char-name">\u2014</div><div class="we-char-tag"></div>' +
+        '<div class="we-char-note">Who you play is chosen on the PLAY screen and goes with you into every World. ' +
+        'The World sets the camera and the place.</div>' +
+        '<button type="button" class="we-char-change">Change character \u2192</button></div>';
+      const paint = (c) => {
+        const fig = card.querySelector(".we-char-fig");
+        fig.innerHTML = "";
+        if (c && (c.thumb || c.idle)) {
+          const im = new Image(); im.alt = ""; im.src = c.idle || c.thumb; fig.appendChild(im);
+        }
+        card.querySelector(".we-char-name").textContent = (c && c.name) || "No character yet";
+        card.querySelector(".we-char-tag").textContent = (c && c.tagline) || "";
+      };
+      (async () => {
+        try {
+          const run = await getJSON("/api/character");
+          if (run && run.character) { paint(run.character); return; }
+          const all = await getJSON("/api/characters");
+          const want = (window.Characters && window.Characters.selectedId()) || all.last;
+          paint((all.characters || []).find((c) => c.id === want) || (all.characters || [])[0]);
+        } catch (_) { paint(null); }
+      })();
+      card.querySelector(".we-char-change").addEventListener("click", () => {
+        window.Characters.show({
+          inRun: true,
+          onPlay: async (id) => {
+            try {
+              const res = await postJSON("/api/character/bind", { character_id: id });
+              paint(res && res.character);
+            } catch (_) {}
+            window.Characters.hide();
+          },
+          onBack: () => window.Characters.hide(),
+        });
+      });
+      return card;
     }
 
     function applyIdentityPayload(data, opts) {
@@ -12928,7 +13853,7 @@
         menu.insertBefore(host, menu.firstChild);
       }
       if (brand.querySelector(".start-brand-knockout")) {
-        const word = ((brand.querySelector(".start-brand-type") || brand).textContent || "").trim() || "GOD";
+        const word = ((brand.querySelector(".start-brand-type") || brand).textContent || "").trim() || "ABYSS";
         brand.innerHTML = '<span class="start-brand-type"></span>';
         const type = brand.querySelector(".start-brand-type");
         if (type) type.textContent = word;
@@ -13722,6 +14647,8 @@
       paintStage(item && item.preview_url ? item.preview_url : "");
       setHeroVisible(true);
       markCells();
+      // The last run of this Experience, under PLAY (THE TAPE).
+      try { Reel.pickerHint(item && item.id); } catch (_) {}
     }
 
     function renderPicker() {
@@ -13805,6 +14732,8 @@
 
     function openPicker() {
       if (isPickerOpen()) return;
+      // A run may have ended since the last visit: re-ask for "the tape".
+      try { Reel.forgetHints(); } catch (_) {}
       if (Buck.isBusy()) { Buck.whenFree(openPicker); return; }
       // Leaving the title screen: the loop and its music fade down to black
       // together, a breath of black, then the picker comes up out of it.
@@ -13822,12 +14751,80 @@
     function closePicker() {
       if (!isPickerOpen()) return;
       if (Buck.isBusy()) { Buck.whenFree(closePicker); return; }
+      // Back from the picker is back to the character screen it came from.
+      if (pickerFromCharacters && window.Characters) {
+        try { window.Characters.prefetch(); } catch (_) {}
+        Buck.play(() => {
+          document.body.classList.remove("xp-open", "xp-ready");
+          closePickerChrome();
+          pickerFromCharacters = false;
+          showCharacters();
+        }, { soft: true });
+        return;
+      }
       Buck.play(applyPickerClose, { soft: true });
+    }
+
+    // ── CHARACTERS: PLAY opens on who you are, before where you go ─────────
+    // "play->character screen, select or create, -> create = a simple prompt
+    // based character -> to play aka normal start mode" (Matt, 2026-09-23).
+    // The screen is static/js/characters.js; this is its place in the menu:
+    // PLAY → it (the same black hop the picker used to take) → its PLAY → the
+    // picker, which PLAY starts the run from with the character's id.
+    let pickerFromCharacters = false;
+    function isCharactersOpen() {
+      return !!(window.Characters && window.Characters.isOpen && window.Characters.isOpen());
+    }
+    function showCharacters() {
+      try {
+        window.Characters.show({
+          onPlay: () => charactersToPicker(),
+          onBack: () => closeCharacters(),
+        });
+      } catch (_) {}
+    }
+    function openCharacters() {
+      if (!window.Characters) { openPicker(); return; }
+      if (isCharactersOpen() || isPickerOpen()) return;
+      try { Reel.forgetHints(); } catch (_) {}
+      if (Buck.isBusy()) { Buck.whenFree(openCharacters); return; }
+      let fadeMs = 0;
+      try { fadeMs = Buck.blackCoverMs(); } catch (_) {}
+      let reduce = false;
+      try { reduce = prefersReducedMotion(); } catch (_) {}
+      try { SceneAudio.fadeMenu(reduce ? 0.35 : fadeMs / 1000); } catch (_) {}
+      try { Signal.fadeSound(reduce ? 350 : fadeMs); } catch (_) {}
+      // The roster and the figure load under the black, so the screen comes
+      // up whole instead of filling in after the veil has lifted.
+      try { window.Characters.prefetch(); } catch (_) {}
+      Buck.play(() => {
+        try { Accounts.close({ silent: true }); } catch (_) {}
+        try { Machine.close({ silent: true }); } catch (_) {}
+        showCharacters();
+      }, { black: true });
+    }
+    function charactersToPicker() {
+      if (Buck.isBusy()) { Buck.whenFree(charactersToPicker); return; }
+      Buck.play(() => {
+        try { window.Characters.hide(); } catch (_) {}
+        pickerFromCharacters = true;
+        applyPickerOpen();
+      }, { soft: true });
+    }
+    function closeCharacters() {
+      if (Buck.isBusy()) { Buck.whenFree(closeCharacters); return; }
+      Buck.play(() => {
+        try { window.Characters.hide(); } catch (_) {}
+        try { SceneAudio.enterMenu(); } catch (_) {}
+        try { Signal.restoreSound(900); } catch (_) {}
+      }, { soft: true });
     }
 
     function settlePlayFromPicker() {
       document.body.classList.remove("xp-open", "xp-ready", "keys-open", "coin-open");
       closePickerChrome();
+      pickerFromCharacters = false;
+      try { if (window.Characters) window.Characters.hide(); } catch (_) {}
       try { Accounts.close({ silent: true }); } catch (_) {}
       try { Machine.close({ silent: true }); } catch (_) {}
       document.body.classList.remove("mode-watch");
@@ -13914,6 +14911,7 @@
 
     function onKey(e) {
       if (!isMenuOpen()) return false;
+      if (isCharactersOpen()) return window.Characters.onKey(e);
       if (document.body.classList.contains("keys-open")) {
         if (e.key === "Escape") { e.preventDefault(); if (!Accounts.escape()) Accounts.close(); return true; }
         return false;
@@ -13941,6 +14939,20 @@
       if (e.key === "ArrowRight") { e.preventDefault(); selectXp(xpIndex + 1); return true; }
       if (e.key === "Enter") { e.preventDefault(); confirmPlay(); return true; }
       return false;
+    }
+
+    // A friend's first launch: no key on this machine yet. The game would run
+    // on canned text and blank pictures, so ACCOUNT opens by itself, on the
+    // provider dropdown and the paste field. Once per launch, desktop app
+    // only (a hosted server's /api/keys is not editable).
+    let askedForKey = false;
+    function askForKeyOnFirstRun() {
+      if (askedForKey) return;
+      askedForKey = true;
+      fetch("/api/keys", { cache: "no-store" }).then((r) => r.json()).then((k) => {
+        if (!k || !k.editable || k.play_ready) return;
+        setTimeout(() => { try { Accounts.open(); } catch (_) {} }, 900);
+      }).catch(() => {});
     }
 
     function begin() {
@@ -13971,6 +14983,7 @@
       showMenu();
       if (openMachine) revealMenu();
       else scheduleReveal();
+      if (!openMachine) askForKeyOnFirstRun();
       if (openMachine) {
         try { Accounts.open({ tab: "usage", instant: true }); } catch (_) {}
         try {
@@ -13991,7 +15004,7 @@
     }
 
     function init() {
-      if (el.startPlay) el.startPlay.addEventListener("click", () => openPicker());
+      if (el.startPlay) el.startPlay.addEventListener("click", () => openCharacters());
       if (el.startCreate) el.startCreate.addEventListener("click", () => {
         hideMenu();
         document.body.classList.add("mode-create");
@@ -14013,6 +15026,11 @@
 
     return { init, begin, showMenu, hideMenu, returnHome, returnToPicker, ensurePlayViewport, adoptSelection, isMenuOpen, switchMode, onKey, isBooted, markBooted };
   })();
+  // Four callers ask `window.StartMenu` (the Cutscene's menu check among
+  // them) and it was never set, so "is the menu open?" answered no for the
+  // life of the page: a saved run's opening montage was generated at launch,
+  // behind the menu, for a run the player was about to replace.
+  try { window.StartMenu = StartMenu; } catch (_) {}
 
   // ── ACCOUNT ────────────────────────────────────────────────────────────
   // A sheet on the right of the start menu; the menu and its film stay live
@@ -16808,6 +17826,44 @@
     } catch (_) {}
   }
 
+  // The one way into the death screen from a game_over item — the feed's, or
+  // the one a fight's death reel held back. `cause` is the fight that did it
+  // ("Killed by the FREELANCER · HIDDEN BLADE · round 3"); none for a death
+  // outside a fight.
+  function handleGameOver(item, cause) {
+    const content = (item && item.content) || "";
+    if (state.gameOver) {
+      // Already on the death screen (a reel that finished before the engine
+      // wrote the epitaph): the words arrive late and take their place.
+      if (content) {
+        try { appendProse(item); } catch (_) {}
+        el.deathMessage.innerHTML = renderInline(content);
+      }
+      return;
+    }
+    if (content) appendProse(item);
+    Sound.death();
+    try { Haptics.strong(); } catch (_) {}
+    Ceremony.abort();
+    setAutoPlay(false); // stop the world advancing once you're dead
+    setDeathCause(cause);
+    enterGameOver(content);
+  }
+
+  function setDeathCause(cause) {
+    const box = document.getElementById("death-cause");
+    if (!box) return;
+    if (!cause || !cause.foe) {
+      box.textContent = "";
+      box.classList.add("hidden");
+      return;
+    }
+    const name = String(cause.foe || "").toUpperCase();
+    box.textContent = `Killed by the ${name}` + (cause.move ? ` · ${cause.move}` : "")
+      + (cause.round ? ` · round ${cause.round}` : "");
+    box.classList.remove("hidden");
+  }
+
   function enterGameOver(message) {
     state.gameOver = true;
     state.awaitingResolution = false;
@@ -16823,6 +17879,8 @@
     el.choices.innerHTML = "";
     if (message) el.deathMessage.innerHTML = renderInline(message);
     el.deathOverlay.classList.remove("hidden");
+    // WATCH THE TAPE: the run you just died in (THE TAPE, Reel).
+    try { Reel.offerOnDeath(); } catch (_) {}
     // Stop the realtime model generating behind the death overlay (cost + it
     // would keep drifting the world while the run is over).
     if (Renderer.mode === "reactor" && Renderer.reactorAvailable()) {
@@ -17003,12 +18061,10 @@
         return;
 
       case "game_over":
-        appendProse(item);
-        Sound.death();
-        try { Haptics.strong(); } catch (_) {}
-        Ceremony.abort();
-        setAutoPlay(false); // stop the world advancing once you're dead
-        enterGameOver(item.content);
+        // A fight's death plays its own reel first (Encounter.playDeath),
+        // which holds this item and shows the death screen when it is done.
+        if (window.Encounter && Encounter.isDying && Encounter.isDying()) return;
+        handleGameOver(item);
         return;
 
       case "player_choice_prompt":
@@ -17020,8 +18076,19 @@
         markBootTurnLanded();
         state.lastTurnTs = Date.now(); // post-turn cooldown for pre-warm counts from here
         if (state.gameOver || (item.content || "").toUpperCase() === "GAME OVER") {
-          state.gameOver = true;
-          el.deathOverlay.classList.remove("hidden");
+          // A fight's death reel owns the screen until it has played; its
+          // exit shows the death screen (with what killed you). This prompt
+          // used to put the overlay up underneath the reel and flag the run
+          // dead, which made that exit's handleGameOver a no-op: no cause
+          // line, and no WATCH THE TAPE (seen live, 2026-09-23).
+          if (window.Encounter && Encounter.isDying && Encounter.isDying()) return;
+          // One way onto the death screen, so everything it offers is there
+          // however the death arrived — the game_over item or this prompt.
+          if (!state.gameOver) handleGameOver({ type: "game_over", content: "" });
+          else {
+            el.deathOverlay.classList.remove("hidden");
+            try { Reel.offerOnDeath(); } catch (_) {}
+          }
           hideVeil();
           return;
         }
@@ -17274,6 +18341,7 @@
       // prose arriving before the picture — happens behind this now.
       OpeningFade.begin();
       Ceremony.abort(); // cancel any mid-turn pipeline from the prior run
+      try { Cutscene.abandon(); } catch (_) {} // ...and any montage it left playing
       cancelMoveTransition(); // drop any pending MOVE TO fade so a restart during a trip doesn't dim the fresh run
       // Restart runs the SAME gamified generation pipeline as a normal turn: the
       // progress bar takes over the play button's spot at the bottom and parks on
@@ -17300,8 +18368,12 @@
       // a proxy holding the socket) leaves the loader parked on its first step
       // over a black screen with no error, forever — indistinguishable from the
       // game being broken. Fail loudly instead, and let the player retry.
+      // The level does not start until its look book is finished: the server
+      // binds the World and shoots the book, this holds the opening black and
+      // shows the stages. The reset then claims that book.
+      await LookBookStatus.gate(startWorldId);
       const items = await withTimeout(
-        postJSON("/api/reset", startWorldId ? { world_id: startWorldId } : {}),
+        postJSON("/api/reset", withCharacter(startWorldId ? { world_id: startWorldId } : {})),
         RESET_TIMEOUT_MS,
         "the server did not respond",
       );
@@ -23866,6 +24938,601 @@
   }
 
   // ------------------------------------------------------------------
+  // Battle — the fight as two health bars and a die each (combat.py).
+  //
+  // "i like the idea that you both have health bars, lean into that. think
+  // pokemon battle system" … "did i get hit? did he get hit? can we show the
+  // random number generator rolling and thinking, and giving us stimulation
+  // throughout this slow encounter" (Matt, 2026-09-23).
+  //
+  // Everything here PLAYS what the server already decided (combat.py — d20
+  // rules: initiative, attack rolls against armour class, damage dice, skill
+  // checks, morale, death saves). A round arrives as a list of beats — who
+  // acted, the d20 they rolled, the face it needed, what it cost whom — thrown
+  // by /api/encounter/exchange in the time it takes to read a file, while the
+  // picture of it takes ten to twenty seconds.
+  // So the numbers are what the player watches during the wait, and the
+  // picture lands afterwards as the payoff. No outcome is invented or rerolled
+  // on this side: a face under the line is a hit because the server's draw
+  // was one.
+  //
+  // Minimal on purpose: two bars in the top letterbox (you on the left, what
+  // you are fighting on the right), one battle line where the slate sits, and
+  // reactions carried by the picture itself — it shakes, it flashes — rather
+  // than by more chrome.
+  // ------------------------------------------------------------------
+  const Battle = (function () {
+    let root = null;
+    let sides = {};
+    let lineEl = null;
+    let textEl = null;
+    let subEl = null;
+    let dieEl = null;
+    let victoryEl = null;
+    let playToken = 0;
+    const HP = { you: { hp: 0, max: 1 }, foe: { hp: 0, max: 1 } };
+
+    function reduce() {
+      return (typeof prefersReducedMotion === "function" && prefersReducedMotion());
+    }
+    function wait(ms) { return new Promise((r) => setTimeout(r, reduce() ? Math.min(ms, 120) : ms)); }
+    function el(tag, cls, text) {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text != null) e.textContent = text;
+      return e;
+    }
+    // **bold** only; everything else is text.
+    function setRich(node, text) {
+      node.innerHTML = "";
+      String(text || "").split(/(\*\*[^*]+\*\*)/).forEach((part) => {
+        if (!part) return;
+        if (part.startsWith("**") && part.endsWith("**")) node.appendChild(el("b", "", part.slice(2, -2)));
+        else node.appendChild(document.createTextNode(part));
+      });
+    }
+
+    function side(which) {
+      const s = el("div", `bt-side bt-${which}`);
+      const head = el("div", "bt-head");
+      const name = el("span", "bt-name", "");
+      const num = el("span", "bt-num", "");
+      head.appendChild(name);
+      head.appendChild(num);
+      const bar = el("div", "bt-bar");
+      const fill = el("i", "bt-fill");
+      const lost = el("i", "bt-lost");
+      bar.appendChild(lost);
+      bar.appendChild(fill);
+      const pop = el("div", "bt-pop");
+      s.appendChild(head);
+      s.appendChild(bar);
+      s.appendChild(pop);
+      return { root: s, name, num, bar, fill, lost, pop };
+    }
+
+    function build() {
+      if (root) return root;
+      const host = document.getElementById("moment-overlay");
+      if (!host) return null;
+      root = el("div", "battle hidden");
+      root.id = "battle";
+      root.setAttribute("aria-live", "polite");
+      sides = { you: side("you"), foe: side("foe") };
+      root.appendChild(sides.you.root);
+      root.appendChild(sides.foe.root);
+      lineEl = el("div", "bt-line hidden");
+      textEl = el("div", "bt-text");
+      subEl = el("div", "bt-sub");
+      dieEl = el("div", "bt-die");
+      dieEl.innerHTML = '<i class="bt-die-need"></i><i class="bt-die-mark2"></i><i class="bt-die-mark"></i><b class="bt-die-face"></b>';
+      lineEl.appendChild(textEl);
+      lineEl.appendChild(dieEl);
+      lineEl.appendChild(subEl);
+      root.appendChild(lineEl);
+      root.appendChild(el("div", "bt-flash"));
+      victoryEl = el("div", "bt-victory hidden");
+      root.appendChild(victoryEl);
+      host.appendChild(root);
+      return root;
+    }
+
+    function tone(which, hp, max) {
+      const f = max > 0 ? hp / max : 0;
+      const s = sides[which];
+      if (!s) return;
+      s.root.classList.toggle("is-amber", f <= 0.5 && f > 0.2);
+      s.root.classList.toggle("is-red", f <= 0.2);
+      s.root.classList.toggle("is-out", hp <= 0);
+    }
+
+    function paint(which, hp, max, instant) {
+      const s = sides[which];
+      if (!s) return;
+      const pct = Math.max(0, Math.min(100, (hp / Math.max(1, max)) * 100));
+      if (instant) s.fill.style.transition = "none";
+      s.fill.style.width = `${pct}%`;
+      if (instant) { void s.fill.offsetWidth; s.fill.style.transition = ""; }
+      s.num.textContent = `${Math.max(0, Math.round(hp))}/${max}`;
+      tone(which, hp, max);
+    }
+
+    function countTo(which, from, to, max, ms) {
+      const s = sides[which];
+      if (!s) return;
+      const t0 = performance.now();
+      const step = (now) => {
+        const k = Math.min(1, (now - t0) / Math.max(1, ms));
+        const v = Math.round(from + (to - from) * k);
+        s.num.textContent = `${Math.max(0, v)}/${max}`;
+        if (k < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    }
+
+    // Open a fight: both bars fill from empty, the way a battle screen
+    // introduces its two sides, then the fight's opening line.
+    async function open(hud) {
+      if (!build() || !hud) return;
+      const you = hud.you || {};
+      const foe = hud.foe || {};
+      HP.you = { hp: Number(you.hp) || 0, max: Number(you.max) || 1 };
+      HP.foe = { hp: Number(foe.hp) || 0, max: Number(foe.max) || 1 };
+      sides.you.name.textContent = String(you.name || "YOU");
+      sides.foe.name.textContent = String(foe.name || "");
+      sides.you.root.classList.remove("is-out", "is-dim");
+      sides.foe.root.classList.remove("is-out", "is-dim");
+      victoryEl.classList.add("hidden");
+      paint("you", 0, HP.you.max, true);
+      paint("foe", 0, HP.foe.max, true);
+      // The fill grows in the colour it will end on, not red-to-green.
+      tone("you", HP.you.hp, HP.you.max);
+      tone("foe", HP.foe.hp, HP.foe.max);
+      sides.you.lost.style.width = "0";
+      sides.foe.lost.style.width = "0";
+      root.classList.remove("hidden");
+      document.body.classList.add("battle-on");
+      void root.offsetWidth;
+      root.classList.add("on");
+      await wait(160);
+      paint("you", HP.you.hp, HP.you.max);
+      countTo("you", 0, HP.you.hp, HP.you.max, 520);
+      await wait(140);
+      paint("foe", HP.foe.hp, HP.foe.max);
+      countTo("foe", 0, HP.foe.hp, HP.foe.max, 520);
+      try { Sound.encounterRoll && Sound.encounterRoll(); } catch (_) {}
+      if (hud.opening) {
+        await say(hud.opening, "");
+        await wait(1100);
+      }
+      // Who moves first — rolled once, when the fight opened (combat.
+      // roll_initiative), or decided by what the world knew of you.
+      if (hud.initiative && hud.initiative.text) {
+        await say(hud.initiative.text, hud.initiative.sub || "");
+        try { Sound.encounterLand && Sound.encounterLand(); } catch (_) {}
+        await wait(1500);
+      }
+    }
+
+    // Bars only — a fight that resumes (the next slate) or a response that
+    // carries them.
+    function sync(hud) {
+      if (!build() || !hud) return;
+      if (hud.you) { HP.you = { hp: Number(hud.you.hp) || 0, max: Number(hud.you.max) || 1 }; paint("you", HP.you.hp, HP.you.max); }
+      if (hud.foe) { HP.foe = { hp: Number(hud.foe.hp) || 0, max: Number(hud.foe.max) || 1 }; paint("foe", HP.foe.hp, HP.foe.max); }
+    }
+
+    function hideLine() {
+      if (lineEl) lineEl.classList.add("hidden");
+    }
+
+    // The battle line types itself in. Short: a line is read, not studied.
+    async function say(text, sub) {
+      if (!build()) return;
+      const mine = playToken;
+      lineEl.classList.remove("hidden", "is-hit", "is-miss", "is-crit", "is-waiting");
+      dieEl.classList.remove("on", "rolling", "hit", "miss");
+      subEl.textContent = sub || "";
+      const plain = String(text || "");
+      if (reduce()) { setRich(textEl, plain); return; }
+      // Type the plain letters, then swap in the bold markup at the end.
+      const bare = plain.replace(/\*\*/g, "");
+      textEl.textContent = "";
+      const per = Math.max(10, Math.min(22, 900 / Math.max(1, bare.length)));
+      for (let i = 1; i <= bare.length; i += 2) {
+        if (mine !== playToken) return;
+        textEl.textContent = bare.slice(0, i);
+        await new Promise((r) => setTimeout(r, per * 2));
+      }
+      setRich(textEl, plain);
+    }
+
+    // THE DIE — a d20. A track of twenty faces, the faces that succeed shaded
+    // in on the right, a tick that spins, slows and lands on the face the
+    // server rolled. With advantage (or disadvantage) the second die lands
+    // too, faded: you see the one you kept and the one you didn't. High is
+    // good for whoever is rolling; a 20 always succeeds, a 1 always fails.
+    async function roll(r, label, isYou = true) {
+      if (!build() || !r) return;
+      const need = Math.max(2, Math.min(20, Number(r.need) || 20));
+      const face = Math.max(1, Math.min(20, Number(r.face) || 1));
+      const faces = Array.isArray(r.faces) ? r.faces : [face];
+      const pos = (f) => `${((Math.max(1, Math.min(20, f)) - 0.5) / 20) * 100}%`;
+      const needEl = dieEl.querySelector(".bt-die-need");
+      const mark = dieEl.querySelector(".bt-die-mark");
+      const mark2 = dieEl.querySelector(".bt-die-mark2");
+      const faceEl = dieEl.querySelector(".bt-die-face");
+      needEl.style.left = `${((need - 1) / 20) * 100}%`;
+      dieEl.classList.remove("hit", "miss", "two", "nat20", "nat1");
+      if (faces.length > 1) dieEl.classList.add("two");
+      dieEl.classList.add("on", "rolling");
+      const head = [label, r.adv > 0 ? "ADVANTAGE" : r.adv < 0 ? "DISADVANTAGE" : "",
+                    `needs ${need}+`].filter(Boolean).join(" · ");
+      const mine = playToken;
+      const total = reduce() ? 0 : 1000;
+      const t0 = performance.now();
+      let last = 0;
+      while (!reduce()) {
+        const now = performance.now();
+        const k = (now - t0) / total;
+        if (k >= 1 || mine !== playToken) break;
+        // decelerating ticks: fast, then slow
+        const gap = 40 + 200 * k * k;
+        if (now - last >= gap) {
+          last = now;
+          const n = 1 + Math.floor(Math.random() * 20);
+          mark.style.left = pos(n);
+          if (faces.length > 1) mark2.style.left = pos(1 + Math.floor(Math.random() * 20));
+          faceEl.textContent = String(n);
+          faceEl.style.left = pos(n);
+          subEl.textContent = `${head} · rolling ${n}`;
+          try { Sound.encounterRoll && Sound.encounterRoll(); } catch (_) {}
+        }
+        await new Promise((res) => requestAnimationFrame(res));
+      }
+      const other = faces.length > 1 ? (faces[0] === face ? faces[1] : faces[0]) : null;
+      mark.style.left = pos(face);
+      if (other != null) mark2.style.left = pos(other);
+      faceEl.textContent = String(face);
+      faceEl.style.left = pos(face);
+      dieEl.classList.remove("rolling");
+      const ok = !!r.ok;
+      dieEl.classList.add(ok ? "hit" : "miss");
+      if (face === 20) dieEl.classList.add("nat20");
+      if (face === 1) dieEl.classList.add("nat1");
+      subEl.textContent = `${head} · rolled ${face}${Number(r.mod) ? (r.mod > 0 ? "+" : "") + r.mod + " = " + r.total : ""}`;
+      // The landing: the face slams down onto the track and the line it had
+      // to beat answers — the shaded faces pulse on a success, the tick cracks
+      // on a failure.
+      dieEl.classList.remove("slam");
+      void dieEl.offsetWidth;
+      dieEl.classList.add("slam");
+      // Heard by what it means for YOU, like the line's colour: his hit
+      // lands with the falling tone, his miss with the rising one — and
+      // HIS natural 20 is the sick one, his natural 1 the bright one.
+      const goodForYou = isYou ? ok : !ok;
+      try { (goodForYou ? Sound.encounterLand : Sound.encounterMissed)(); } catch (_) {}
+      try { if (Haptics && Haptics.tick) Haptics.tick(); } catch (_) {}
+      if (face === 20 || face === 1) {
+        const blessed = (face === 20) === !!isYou;
+        flash(blessed ? "nat20" : "hurt");
+        impact(blessed ? "nat20" : "nat1");
+        try { (blessed ? Sound.encounterNat20 : Sound.encounterNat1)(); } catch (_) {}
+        await wait(380);
+      }
+      await wait(280);
+    }
+
+    function shake(strength) {
+      if (reduce()) return;
+      const sc = document.getElementById("moment-scene");
+      if (!sc) return;
+      const cls = strength === "hard" ? "bt-shake-hard" : "bt-shake";
+      sc.classList.remove("bt-shake", "bt-shake-hard");
+      void sc.offsetWidth;
+      sc.classList.add(cls);
+      setTimeout(() => sc.classList.remove(cls), strength === "hard" ? 560 : 360);
+    }
+
+    // IMPACT: what a blow does to the picture. The tape's own vocabulary —
+    // a punch-in on the frame, a colour split where the heads lose sync, a
+    // tracking tear across a band of it — rather than anything drawn over it.
+    //   strike      your blow lands   punch-in, a tear
+    //   strike-crit                   punch-in hard, colour split, two tears
+    //   hurt        theirs lands      the frame knocked back, drained, a tear
+    //   hurt-crit                     knocked back hard, split, drained, tears
+    //   whiff       a miss            the frame smears sideways and drifts
+    //   ko          they go down      the frame dips and holds
+    //   nat20/nat1  a natural         a clean flare (yours, or his 1) / a sick
+    //                                 split (his 20, or your 1)
+    // The RGB split the crit / nat-1 keyframes point at (url(#bt-rgb-a|b)):
+    // red shoved one way, green+blue the other, screened back together.
+    function fxDefs() {
+      if (document.getElementById("bt-fx-defs")) return;
+      const split = (id, r, gb) =>
+        `<filter id="${id}" x="-4%" y="0" width="108%" height="100%" color-interpolation-filters="sRGB">` +
+        `<feColorMatrix in="SourceGraphic" type="matrix" values="1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0" result="r"/>` +
+        `<feOffset in="r" dx="${r}" dy="0" result="r2"/>` +
+        `<feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 1 0" result="gb"/>` +
+        `<feOffset in="gb" dx="${gb}" dy="0" result="gb2"/>` +
+        `<feBlend in="r2" in2="gb2" mode="screen"/></filter>`;
+      const holder = document.createElement("div");
+      holder.innerHTML = `<svg id="bt-fx-defs" width="0" height="0" aria-hidden="true" ` +
+        `style="position:absolute;width:0;height:0;overflow:hidden">` +
+        `${split("bt-rgb-a", 9, -6)}${split("bt-rgb-b", -6, 5)}</svg>`;
+      document.body.appendChild(holder.firstChild);
+    }
+    function impact(kind) {
+      if (reduce()) return;
+      fxDefs();
+      // The still, and the live world-model video when that is what the
+      // fight is being shown on.
+      ["moment-scene-img", "reactor-video"].forEach((id) => {
+        const node = document.getElementById(id);
+        if (!node) return;
+        const cls = `bt-fx-${kind}`;
+        node.classList.remove(...Array.from(node.classList).filter((c) => c.startsWith("bt-fx-")));
+        void node.offsetWidth;
+        node.classList.add(cls);
+        setTimeout(() => node.classList.remove(cls), 900);
+      });
+      const tears = { strike: 1, "strike-crit": 2, hurt: 1, "hurt-crit": 3, nat1: 2 }[kind] || 0;
+      for (let i = 0; i < tears; i++) setTimeout(() => tear(kind), i * 70);
+    }
+    function tear(kind) {
+      if (!root) return;
+      const t = el("i", `bt-tear${/hurt|nat1/.test(kind) ? " is-red" : ""}`);
+      t.style.top = `${8 + Math.random() * 78}%`;
+      t.style.height = `${2 + Math.random() * 9}%`;
+      t.style.setProperty("--tear-x", `${(Math.random() < 0.5 ? -1 : 1) * (10 + Math.random() * 26)}px`);
+      root.appendChild(t);
+      setTimeout(() => { try { t.remove(); } catch (_) {} }, 260);
+    }
+
+    function flash(kind) {
+      const f = root && root.querySelector(".bt-flash");
+      if (!f) return;
+      f.className = "bt-flash";
+      void f.offsetWidth;
+      f.classList.add(`on-${kind}`);
+    }
+
+    function popNumber(which, dmg, crit) {
+      const s = sides[which];
+      if (!s || !(dmg > 0)) return;
+      const p = el("span", crit ? "bt-dmg crit" : "bt-dmg", `−${dmg}`);
+      s.pop.appendChild(p);
+      setTimeout(() => { try { p.remove(); } catch (_) {} }, 1400);
+    }
+
+    // A bar takes a hit: the fill drops at once, the chunk it lost glows red
+    // where it was and then drains after it — you see how much it was.
+    async function damage(which, to, dmg, crit) {
+      const s = sides[which];
+      const cur = HP[which];
+      if (!s || !cur) return;
+      const from = cur.hp;
+      const max = cur.max;
+      to = Math.max(0, Math.min(max, Number(to)));
+      if (!(from > to)) return;
+      const a = (to / max) * 100;
+      const b = (from / max) * 100;
+      s.lost.style.transition = "none";
+      s.lost.style.width = `${b}%`;
+      void s.lost.offsetWidth;
+      s.lost.style.transition = "";
+      s.root.classList.remove("is-struck");
+      void s.root.offsetWidth;
+      s.root.classList.add("is-struck");
+      cur.hp = to;
+      // HIT-STOP: everything holds on the blow for a beat before the bar
+      // moves — the pause is what makes it read as weight. A crit holds longer.
+      await wait(crit ? 190 : 80);
+      paint(which, to, max);
+      countTo(which, from, to, max, 520);
+      popNumber(which, dmg || (from - to), crit);
+      setTimeout(() => { s.lost.style.width = `${a}%`; }, reduce() ? 0 : 420);
+      setTimeout(() => s.root.classList.remove("is-struck"), 700);
+    }
+
+    // Play one round (combat.play_round). Resolves when the last beat has
+    // landed and been held long enough to read.
+    const GOOD = new Set(["hit", "crit", "ko", "settled", "away", "saved", "armor"]);
+    const BAD = new Set(["miss", "caught", "listening", "holds", "dead"]);
+    async function play(ex) {
+      if (!build() || !ex || !Array.isArray(ex.beats)) return;
+      const mine = ++playToken;
+      for (const beat of ex.beats) {
+        if (mine !== playToken) return;
+        const isYou = beat.side === "you";
+        if (beat.kind === "end" || beat.kind === "note") {
+          await say(beat.text || "", beat.sub || "");
+          if (beat.result === "ko") {
+            if (sides.foe) sides.foe.root.classList.add("is-dim");
+            try { Sound.encounterKo && Sound.encounterKo(); } catch (_) {}
+            impact("ko");
+            shake("hard");
+          } else if (beat.result === "routed") {
+            if (sides.foe) sides.foe.root.classList.add("is-dim");
+            try { Sound.encounterVictory && Sound.encounterVictory(); } catch (_) {}
+          }
+          await wait(beat.text ? 1200 : 200);
+          continue;
+        }
+        // The line says what is being tried; the die decides it; then the
+        // line says what happened.
+        if (beat.edge) {
+          // A typed action that used the scene well (encounter.
+          // judge_custom_action): the one place skill buys dice.
+          const why = String(beat.edge || "").replace(/[.!\s]+$/, "");
+          await say(`${why.charAt(0).toUpperCase()}${why.slice(1)}.`,
+                    "ADVANTAGE · YOUR IDEA · two d20, keep the higher");
+          try { Sound.encounterLand && Sound.encounterLand(); } catch (_) {}
+          await wait(1100);
+        }
+        const lead = isYou ? (beat.lane_word || ex.lane_word || "")
+          : beat.kind === "morale" ? "MORALE" : beat.kind === "save" ? "DEATH SAVE" : (beat.move || "");
+        const text = beat.text || "";
+        await say(beat.intro || text, "");
+        if (beat.kind === "save") {
+          // The die for your life: slower, and the world holds its breath.
+          try { if (Sound.heartbeatSetBpm) Sound.heartbeatSetBpm(52); } catch (_) {}
+          await wait(700);
+        }
+        if (beat.roll) await roll(beat.roll, lead, isYou);
+        if (mine !== playToken) return;
+        setRich(textEl, text);
+        if (beat.sub) subEl.textContent = beat.sub;
+        const r = beat.result || "";
+        const hurt = beat.target === "you" && beat.damage > 0;
+        const struck = beat.target === "foe" && beat.damage > 0;
+        lineEl.classList.toggle("is-crit", !!beat.crit);
+        // Coloured by what it means for YOU: his miss is good news.
+        const good = isYou ? GOOD.has(r) : (r === "miss" || r === "flat" || r === "routed");
+        lineEl.classList.toggle("is-hit", good);
+        lineEl.classList.toggle("is-miss", !good);
+        if (hurt) {
+          flash(beat.crit ? "hurt-crit" : "hurt");
+          impact(beat.crit ? "hurt-crit" : "hurt");
+          shake(beat.crit ? "hard" : "soft");
+          try { (beat.crit ? Sound.encounterCrit : Sound.encounterHurt)(); } catch (_) {}
+          try { if (Haptics && Haptics.encounterDie && beat.crit) Haptics.encounterDie(); else if (Haptics && Haptics.tick) Haptics.tick(); } catch (_) {}
+          await damage("you", beat.hp_after, beat.damage, beat.crit);
+        } else if (struck) {
+          flash(beat.crit ? "strike-crit" : "strike");
+          impact(beat.crit ? "strike-crit" : "strike");
+          shake(beat.crit ? "hard" : "soft");
+          try { (beat.crit ? Sound.encounterCrit : Sound.encounterStrike)(); } catch (_) {}
+          try { if (Haptics && Haptics.encounterResolve) Haptics.encounterResolve(); } catch (_) {}
+          await damage("foe", beat.hp_after, beat.damage, beat.crit);
+        } else if (r === "armor" || r === "saved") {
+          // Back from nothing: the bar refills to its last point.
+          flash("nat20");
+          const s = sides.you;
+          if (s) { HP.you.hp = 1; paint("you", 1, HP.you.max); }
+          try { Sound.encounterLand && Sound.encounterLand(); } catch (_) {}
+          try { if (Sound.heartbeatSetBpm) Sound.heartbeatSetBpm(120); } catch (_) {}
+        } else if (r === "dead") {
+          // No reaction here: the death is its own sequence (dying()).
+          if (mine !== playToken) return;
+          return;
+        } else if (r === "miss" && (beat.kind === "attack" || beat.kind === "strike")) {
+          // A swing — yours or his — that finds nothing: air, not a thud.
+          impact("whiff");
+          try { Sound.encounterWhiff && Sound.encounterWhiff(); } catch (_) {}
+        } else if (!good) {
+          try { Sound.encounterMissed && Sound.encounterMissed(); } catch (_) {}
+        }
+        await wait(beat.crit ? 1500 : beat.kind === "save" ? 1500 : 1250);
+      }
+      // Whatever the beats did, the bars end where the server says they are.
+      if (ex.you) { HP.you.hp = Number(ex.you.hp); paint("you", HP.you.hp, HP.you.max); }
+      if (ex.foe) { HP.foe.hp = Number(ex.foe.hp); paint("foe", HP.foe.hp, HP.foe.max); }
+    }
+
+    // THE DEATH, part one: the suspense. The killing blow has landed, the
+    // death save has failed, and the picture of what happened is still being
+    // drawn — so the world holds its breath instead of cutting to a card. The
+    // colour drains, the heartbeat slows to nothing, the bars go, and the one
+    // line left on screen is the one that just said you are down.
+    function dying() {
+      if (!build()) return;
+      playToken += 1;
+      document.body.classList.add("bt-dying");
+      if (lineEl) {
+        lineEl.classList.remove("is-hit", "is-crit");
+        lineEl.classList.add("is-miss", "is-waiting");
+        subEl.textContent = "";
+        dieEl.classList.remove("on");
+      }
+      try { if (Sound.heartbeatSetBpm) Sound.heartbeatSetBpm(44); } catch (_) {}
+      setTimeout(() => { try { if (Sound.heartbeatSetBpm) Sound.heartbeatSetBpm(30); } catch (_) {} }, 3500);
+      try { Sound.tinnitusStart && Sound.tinnitusStart(); } catch (_) {}
+    }
+
+    // Part two: the picture is here. The line steps away and the death is
+    // shown the way it was drawn — slowly, the camera pushing in, the dark
+    // closing at the edges.
+    function deathReel() {
+      document.body.classList.add("bt-death-reel");
+      hideLine();
+      if (root) root.classList.add("bt-dead");
+      try { if (Sound.heartbeatStop) Sound.heartbeatStop(); } catch (_) {}
+      try { Sound.encounterDie && Sound.encounterDie(); } catch (_) {}
+    }
+
+    function endDeath() {
+      document.body.classList.remove("bt-dying", "bt-death-reel");
+      try { Sound.tinnitusStop && Sound.tinnitusStop(); } catch (_) {}
+    }
+
+    // The fight is still being drawn: the line stays, and says so quietly.
+    function holding() {
+      if (!lineEl || lineEl.classList.contains("hidden")) return;
+      subEl.textContent = "";
+      dieEl.classList.remove("on");
+      lineEl.classList.add("is-waiting");
+    }
+
+    async function victory(opts) {
+      if (!build()) return;
+      const o = opts || {};
+      hideLine();
+      victoryEl.innerHTML = "";
+      // Set like the wordmark, and said the way the game would say it: what
+      // happened, not a scoreboard's VICTORY.
+      const rounds = o.turns || 1;
+      victoryEl.appendChild(el("div", "bt-v-meta",
+        `${rounds} round${rounds === 1 ? "" : "s"} · ${Math.max(0, Math.round(HP.you.hp))} / ${HP.you.max} left`));
+      victoryEl.appendChild(el("div", "bt-v-word",
+        o.how === "settled" ? "Talked down" : o.how === "routed" ? "Driven off" : "Survived"));
+      if (o.loot && o.loot.name) {
+        const spoil = el("div", "bt-v-spoil");
+        spoil.appendChild(el("span", "bt-v-eyebrow", `Spoils${o.loot.kind ? " · " + o.loot.kind : ""}`));
+        spoil.appendChild(el("span", "bt-v-name", o.loot.name));
+        if (o.loot.power) spoil.appendChild(el("span", "bt-v-power", o.loot.power));
+        victoryEl.appendChild(spoil);
+      }
+      if (o.gearLine) victoryEl.appendChild(el("div", "bt-v-gear", o.gearLine));
+      victoryEl.classList.remove("hidden");
+      void victoryEl.offsetWidth;
+      victoryEl.classList.add("on");
+      try { Sound.encounterVictory && Sound.encounterVictory(); } catch (_) {}
+      await new Promise((resolve) => {
+        let done = false;
+        const go = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(t);
+          document.removeEventListener("pointerdown", go, true);
+          resolve();
+        };
+        const t = setTimeout(go, reduce() ? 900 : 2600);
+        document.addEventListener("pointerdown", go, true);
+      });
+      victoryEl.classList.remove("on");
+    }
+
+    function hide() {
+      playToken += 1;
+      document.body.classList.remove("battle-on");
+      if (root) root.classList.remove("bt-dead");
+      if (!root) return;
+      root.classList.remove("on");
+      root.classList.add("hidden");
+      hideLine();
+      if (victoryEl) { victoryEl.classList.add("hidden"); victoryEl.classList.remove("on"); }
+    }
+
+    function stop() { playToken += 1; }
+
+    return { open, sync, play, say, roll, holding, hideLine, victory, hide, stop,
+             dying, deathReel, endDeath,
+             state: () => ({ you: Object.assign({}, HP.you), foe: Object.assign({}, HP.foe) }) };
+  })();
+  try { window.Battle = Battle; } catch (_) {}
+
+  // ------------------------------------------------------------------
   // Encounter — generated character + danger interrupt.
   // Hitch the live world, develop a confrontation plate of THIS place, offer
   // three laned verbs, then POST /api/encounter/resolve so the play-out
@@ -23989,7 +25656,7 @@
       });
     }
 
-    function playVerdict(outcome, wordOverride) {
+    function playVerdict(outcome, wordOverride, gearLine) {
       const reduce = (typeof prefersReducedMotion === "function" && prefersReducedMotion());
       const el = document.getElementById("encounter-verdict");
       const wordEl = el && el.querySelector(".encounter-verdict-word");
@@ -24010,7 +25677,10 @@
       // SETTLED) because it is the side that knows the enemy's state.
       const word = wordOverride || labels[outcome] || "SURVIVED";
       if (wordEl) wordEl.textContent = word;
-      if (subEl) subEl.textContent = "";
+      // The one line allowed under the word is a rule the player can use: the
+      // gear from the pack that decided it (the weapon's dice, the armour
+      // save). Never the play-out prose.
+      if (subEl) subEl.textContent = gearLine || "";
       if (el) {
         el.classList.remove("is-dead", "is-hurt", "is-clear");
         if (outcome === "die") el.classList.add("is-dead");
@@ -24150,14 +25820,14 @@
       ]);
     }
 
-    function playPlateFrames(sequence, stillUrl) {
+    function playPlateFrames(sequence, stillUrl, msOverride) {
       stopPlateFrames();
       const frames = (typeof sequenceFrames === "function") ? sequenceFrames(sequence) : [];
       if (frames.length < 2) {
         if (stillUrl) { try { window.Moments.setScene(stillUrl); } catch (_) {} }
         return false;
       }
-      const ms = (typeof sequenceFrameMs === "function") ? sequenceFrameMs(sequence) : 1000;
+      const ms = msOverride || ((typeof sequenceFrameMs === "function") ? sequenceFrameMs(sequence) : 1000);
       // Frame 1 goes through setScene (it owns the develop-in reveal). The rest
       // set the src directly: setScene re-runs the developing→ready shimmer and
       // its cue every call, which strobed the plate once per frame.
@@ -24248,9 +25918,8 @@
     // reasoning was sound while a fight ran four rounds, since the promise had
     // to survive being re-read every round against a plate that had not moved.
     //
-    // A fight is now one exchange (ENCOUNTER_MAX_ROUNDS), a committed verb
-    // usually ends it where it stands, and the resolve plate is generated FROM
-    // that verb — so the picture has to honour the line exactly once, which is
+    // A fight is a few short rounds (combat.py), and the resolve plate is
+    // generated FROM that round's verb — so the picture has to honour the line exactly once, which is
     // the case it was always best at. Reported as "aren't dramatic enough":
     // three identical words every fight is the least dramatic thing on screen,
     // and the model had already written something far better underneath them.
@@ -24278,23 +25947,46 @@
       const mapped = choices.map((c, idx) => {
         const text = typeof c === "string" ? c : (c && (c.text || c.label)) || "";
         const lane = (typeof c === "object" && c && c.lane) || "";
+        const odds = (c && typeof c === "object" && Number.isFinite(Number(c.odds)))
+          ? Number(c.odds) : null;
         // The row READS the lane word and nothing else — ATTACK / FLEE /
         // REASON. The written verb ("Smash his calcified skull now") is still
         // what gets played: it rides on the item as `text` and is what pick()
         // sends, so the resolve and the play-out are written from it exactly
         // as before. Matt: "it needs to be JUST the actions, attack, reason,
-        // flee. the underlying choices can be what is decided."
+        // flee. the underlying choices can be what is decided." — and again
+        // on 2026-09-23: "i actually liked the way it looked before with
+        // Attack / Reason / Flee". The written verb is read out afterwards,
+        // on the battle line, as what you did.
+        //
+        // The one addition is the odds after the word (encounter.slate_odds):
+        // "a % of success", the same line the die will be thrown against.
         return {
           label: laneWord(lane, idx),
           text: text,
           lane: lane,
+          odds: odds,
         };
       }).filter((c) => c.text);
       // Moments gets the words only. The lane stays off what it is handed:
       // setChoices draws any `lane` / `laneWord` as an eyebrow, which would
       // put "confront" over "attack". The row index maps back to the full item.
-      const rows = mapped.map((c) => ({ label: c.label }));
-      window.Moments.setChoices(rows, (_row, idx) => pick(mapped[idx]));
+      const rows = mapped.map((c) => ({ label: c.label, odds: c.odds }));
+      try { Battle.hideLine(); } catch (_) {}
+      window.Moments.setChoices(rows, (_row, idx) => pick(mapped[idx]), {
+        // The fourth answer is the player's own words. A typed action goes to
+        // the same dice as the other three: the server reads which lane it is
+        // (encounter.classify_custom_lane) and rolls it there.
+        custom: {
+          key: String(rows.length + 1),
+          label: "Do something else — type it",
+          placeholder: "type what you do…",
+          onSubmit: (typed) => {
+            try { window.Moments.closeCustomChoice(true); } catch (_) {}
+            pick({ text: typed, custom: true });
+          },
+        },
+      });
       armAutoPick(mapped);
     }
 
@@ -24378,6 +26070,52 @@
       stayLocked(choices);
     }
 
+    // THE DEATH (Matt, 2026-09-23): "instead of just putting up a screen: YOU
+    // DIED, can we instead hold suspense, render a new DEATH FLIPBOOK … all
+    // focused on your painful death, THEN show the YOU DIED". The dice say
+    // you are dead long before the picture exists (Battle.dying holds that
+    // moment); the resolve draws the death itself as a flipbook
+    // (encounter.build_encounter_resolve_prompt, outcome "die"); this plays it
+    // slowly, holds its last frame, and only then hands the run to the death
+    // screen — over that frame, not over black.
+    const DEATH_FRAME_MS = 1150;
+    const DEATH_HOLD_MS = 1800;
+    let dyingSeq = null;          // { exchange, gameOver?: feed item }
+
+    function isDying() { return !!dyingSeq; }
+
+    function deathCause(ex) {
+      if (!ex) return null;
+      const blow = (ex.beats || []).filter((b) => b && b.kind === "strike" && b.damage > 0).pop();
+      return {
+        foe: (ex.foe && ex.foe.name) || "",
+        move: (blow && blow.move) || (ex.foe && ex.foe.move) || "",
+        round: ex.round || 1,
+      };
+    }
+
+    async function playDeath(res) {
+      if (plateLive) {
+        plateLive = false;
+        try { window.Moments.setSceneLive(false); } catch (_) {}
+      }
+      const frames = (typeof sequenceFrames === "function" ? sequenceFrames(res.sequence) : []) || [];
+      await decodeBeforePaint(frames.concat([res.resolve_url]), 8000);
+      if (!active) return;
+      Battle.deathReel();
+      if (!playPlateFrames(res.sequence, res.resolve_url, DEATH_FRAME_MS)) {
+        try { window.Moments.setScene(res.resolve_url); } catch (_) {}
+      }
+      await waitSceneReady();
+      await waitPlateFrames(frames.length * DEATH_FRAME_MS + 4000);
+      try { Ceremony.settle(); } catch (_) {}
+      await waitMs(DEATH_HOLD_MS);
+      if (!active) return;
+      const last = frames.length ? frames[frames.length - 1] : res.resolve_url;
+      resolveShown = true;
+      finish({ survived: false, death: true, image_url: last, prompt: res.prompt || "" });
+    }
+
     async function pick(item) {
       if (!active || resolving || state.processing || state.gameOver) return;
       const text = (item && (item.text || item.label)) || "";
@@ -24423,31 +26161,73 @@
       // is the truest picture available until the play-out exists, so leave it
       // on screen and swap when the new one has actually decoded (see the
       // decode gate before playPlateFrames below).
-      await playCeremony("COMMIT");
-      if (!active || !resolving) return;
       state.awaitingResolution = true;
       state.lastTurnTs = Date.now();
       try { armTurnWatchdog(); } catch (_) {}
-      let res = null;
+      // 1. THE DICE. Thrown by the server before anything is drawn
+      // (encounter.api_exchange) — the result of a turn is two draws and
+      // takes milliseconds; it is the picture that takes twenty seconds. The
+      // "COMMIT" title card that used to fill this gap is gone: the die is
+      // the beat now.
+      const throwBody = {
+        choice: text,
+        lane: (item && item.lane) || "",
+        custom: !!(item && item.custom),
+      };
+      let thrown = null;
       try {
-        res = await postJSON("/api/encounter/resolve", {
-          choice: text,
-          lane: (item && item.lane) || "",
-          // Typed: no lane to send, and the server must not fall back to the
-          // index-0 lane (confront) for a line it does not recognise.
-          custom: !!(item && item.custom),
-        });
-        try { CoinOp.onTurnCompleted(); } catch (_) {}
-        try { beginFastPolling(); } catch (_) {}
+        thrown = await postJSON("/api/encounter/exchange", throwBody);
       } catch (err) {
-        failResolve(err);
+        if (err && err.status === 402) { failResolve(err); return; }
+        // An older server, or a hiccup: the resolve throws them itself and
+        // hands the exchange back with the picture.
+        thrown = null;
+      }
+      if (!active || !resolving) return;
+      // 2. THE PICTURE starts drawing now, while the numbers play.
+      const drawing = postJSON("/api/encounter/resolve", {
+        choice: text,
+        lane: (item && item.lane) || "",
+        // Typed: no lane to send, and the server must not fall back to the
+        // index-0 lane (confront) for a line it does not recognise.
+        custom: !!(item && item.custom),
+      }).then((r) => ({ r }), (e) => ({ e }));
+      let played = false;
+      if (thrown && thrown.exchange) {
+        await Battle.play(thrown.exchange);
+        played = true;
+        if (!active || !resolving) return;
+        // A killing blow is known the instant the dice land; the picture of
+        // it is not. Hold the suspense instead of cutting to a card.
+        if (thrown.exchange.end === "dead") { dyingSeq = { exchange: thrown.exchange }; Battle.dying(); }
+        else Battle.holding();
+      }
+      const got = await drawing;
+      if (got.e) {
+        failResolve(got.e);
         return;
       }
+      const res = got.r;
+      try { CoinOp.onTurnCompleted(); } catch (_) {}
+      try { beginFastPolling(); } catch (_) {}
       if (!active || !resolving) return;
       if (!res || res.error || !res.resolve_url) {
         failResolve(res);
         return;
       }
+      if (!played && res.exchange) {
+        await Battle.play(res.exchange);
+        if (!active || !resolving) return;
+        if (res.exchange.end === "dead") { dyingSeq = { exchange: res.exchange }; Battle.dying(); }
+      }
+      if (dyingSeq || res.outcome === "die") {
+        if (!dyingSeq) { dyingSeq = { exchange: res.exchange || null }; Battle.dying(); }
+        await playDeath(res);
+        return;
+      }
+      if (res.combat) Battle.sync(res.combat);
+      // The picture is the payoff: the line steps aside for it.
+      Battle.hideLine();
       // The plate is back and about to paint. reach() is monotonic, so this
       // walks the circle through the intervening steps rather than jumping.
       try { Ceremony.reach("guide_image"); } catch (_) {}
@@ -24502,7 +26282,32 @@
       // restages it as a breathing standoff and recasts the people.
       const outcome = res.outcome || "";
       const released = res.released === true || outcome === "escape" || outcome === "die";
-      await playVerdict(outcome, res.verdict_word || "");
+      const gearLine = res.armor_saved ? `The ${res.armor_saved} took it`
+        : (res.weapon && res.enemy_state === "down") ? `The ${res.weapon} did the work` : "";
+      // A round that goes on has already said everything in its beats. A
+      // fight that ENDS gets its card: VICTORY for a win (put down or talked
+      // down — the spoils named on it), the old word card for getting clear
+      // or going down.
+      if (res.won) {
+        await Battle.victory({
+          turns: (res.combat && res.combat.turns) || 1,
+          loot: res.loot || null,
+          how: (res.exchange && res.exchange.end === "routed") ? "routed"
+            : res.enemy_state === "standing_down" ? "settled" : "down",
+          gearLine: gearLine,
+        });
+      } else if (released || outcome === "die") {
+        await playVerdict(outcome, res.verdict_word || "", gearLine);
+      }
+      // SPOILS. A won fight drops one piece of this world's gear
+      // (goal.award_spoil). The pack holds its card until the fight has left
+      // the screen, so it lands on the world, not on the letterbox.
+      if (window.Pack) {
+        try {
+          if (res.loot && res.loot.name) window.Pack.found(res.loot, { source: "encounter" });
+          if (Array.isArray(res.pack)) window.Pack.sync(res.pack);
+        } catch (_) {}
+      }
       if (!active || !resolving) return;
       resolveShown = true;
       if (!released) {
@@ -24589,6 +26394,9 @@
       // A SIGHTING carries the figure's box and says so: the server matches
       // it to the close-up it staged from the detect frame, or cuts a fresh
       // one from the frame posted below. See engine.api_detect / api_begin.
+      // The boss at the goal (GoalTag ENTER): the server reads who it is off
+      // the run; the client only says that this is that fight.
+      if (forcedSubject && opts.subject.source === "boss") forcedSubject.source = "boss";
       if (forcedSubject && (opts.sighting || opts.subject.source === "sighting")) {
         forcedSubject.source = "sighting";
         for (const k of ["cx", "cy", "w", "h"]) {
@@ -24643,8 +26451,10 @@
         }
       } catch (_) {}
       try {
-        window.Moments.setNameplate("…",
-          (forcedSubject && forcedSubject.source === "sighting") ? "someone is here" : "something is here");
+        window.Moments.setNameplate(
+          (forcedSubject && forcedSubject.source === "boss") ? forcedSubject.label : "…",
+          (forcedSubject && forcedSubject.source === "boss") ? "is waiting for you"
+            : (forcedSubject && forcedSubject.source === "sighting") ? "someone is here" : "something is here");
       } catch (_) {}
 
       // The LONGEST dead wait in the whole game: the standoff plate is a full
@@ -24715,6 +26525,12 @@
         : stance === "opportunistic" ? 68
         : 84;
       try { if (Sound.heartbeatSetBpm) Sound.heartbeatSetBpm(pulse); } catch (_) {}
+      // Both bars fill, the fight names itself ("An **investigative
+      // freelancer** blocks your way!"), then the slate.
+      if (res.combat) {
+        try { await Battle.open(res.combat); } catch (_) {}
+        if (entry && entry.aborted) return false;
+      }
       showChoices(choices);
       try {
         if (res.stingers && Sound.ingestEncounterStingers) {
@@ -24767,6 +26583,9 @@
         return;
       }
       if (item.type === "game_over") {
+        // The death reel owns the screen until it has played; the death
+        // screen comes after it (playDeath -> exit -> showDeath).
+        if (dyingSeq) { dyingSeq.gameOver = item; return; }
         releasePending = true;
         requestFinish({ survived: false });
         return;
@@ -24813,6 +26632,9 @@
     }
 
     function resetLocal(opts) {
+      try { Battle.hide(); } catch (_) {}
+      if (dyingSeq) { try { Battle.endDeath(); } catch (_) {} }
+      dyingSeq = null;
       active = false;
       resolving = false;
       finishing = false;
@@ -24983,7 +26805,8 @@
               try { SceneAudio.score(nextPrompt); } catch (_) {}
             }
           }
-          if (survived && !aborted && result.image_url) {
+          const death = !!(result && result.death);
+          if ((survived || death) && !aborted && result.image_url) {
             try {
               const meta = Object.assign({}, result.metadata || {}, {
                 hard_transition: true,
@@ -25001,7 +26824,16 @@
           if (survived && !aborted) {
             try { Aftermath.release(); } catch (_) {}
           }
+          const dead = death ? dyingSeq : null;
           resetLocal({ restore: aborted || !survived });
+          if (dead) {
+            // The death frame is the world now; the death screen goes over it.
+            try { Battle.endDeath(); } catch (_) {}
+            const over = dead.gameOver || { type: "game_over", content: "" };
+            try { handleGameOver(over, deathCause(dead.exchange)); } catch (e) {
+              console.warn("[encounter] death screen failed:", e);
+            }
+          }
           return true;
         },
         onEsc() {
@@ -25014,7 +26846,7 @@
 
     return {
       start, abort, finish, isActive, isResolving, onFeedItem, onKey, onEsc,
-      reportTravel,
+      reportTravel, isDying,
     };
   })();
   try { window.Encounter = Encounter; } catch (_) {}
@@ -25048,6 +26880,21 @@
     function menuOpen() {
       try {
         return !!(window.StartMenu && StartMenu.isMenuOpen && StartMenu.isMenuOpen());
+      } catch (_) { return false; }
+    }
+
+    // Nothing has been started yet this launch: every way into play from here
+    // resets the run (settlePlay -> bootstrap -> resetGame), so a cutscene in
+    // the SAVED session's feed can only ever be thrown away. It used to be
+    // played the moment the feed was read at launch — behind the splash, before
+    // the menu counted as open — which generated a whole montage for a run the
+    // player was about to replace, and the level-start wait then had it
+    // competing with the look book. Watch mode is the exception (it can carry
+    // on the saved run), so it still gets the held cutscene.
+    function beforeBoot() {
+      try {
+        if (document.body.classList.contains("mode-watch")) return false;
+        return !!(window.StartMenu && StartMenu.isBooted && !StartMenu.isBooted());
       } catch (_) { return false; }
     }
 
@@ -25087,6 +26934,17 @@
       const held = heldByEditor;
       heldByEditor = "";
       return held;
+    }
+
+    // A new run is starting: whatever montage is up belongs to the run being
+    // replaced (typically the saved session's unfinished opening, replayed on
+    // launch). Take it down without completing it. The level now waits on its
+    // look book before the reset, and that montage kept playing through the
+    // wait, lifted the opening black with its first shot, then completed onto
+    // the OLD run.
+    function abandon() {
+      holdForEditor();
+      heldByEditor = "";
     }
 
     function plateUrl() {
@@ -25252,6 +27110,9 @@
       graph = false;
       let hop = { nextCut: null, destUrl: "", destWorld: "", choicesItem: null };
       if (wasGraph) {
+        // An arrival in another World waits server-side for that World's look
+        // book; the corner strip says so while the last shot holds.
+        try { LookBookStatus.watch(); } catch (_) {}
         try {
           hop = readHop(await postJSON("/api/cutscene/complete", {}));
         } catch (err) {
@@ -25438,6 +27299,9 @@
         if (opts.graph) await unstickGraph();
         return false;
       }
+      // abandon() (a new run starting) bumps seq; a montage abandoned while it
+      // was still generating must not then be completed onto the old run.
+      const pushedAt = seq;
       try {
         const pushed = await window.Moments.push("cutscene", {
           name: opts.name || "CUTSCENE",
@@ -25453,7 +27317,7 @@
           label: opts.name || "CUTSCENE",
           sub: opts.mood || "montage",
         });
-        if (!pushed && opts.graph) await unstickGraph();
+        if (!pushed && opts.graph && seq === pushedAt) await unstickGraph();
         return !!pushed;
       } catch (err) {
         console.warn("[cutscene] push failed:", err);
@@ -25474,6 +27338,10 @@
         goal: meta.goal || "",
         graph: true,
       };
+      if (beforeBoot()) {
+        queued = opts;
+        return;
+      }
       if (menuOpen()) {
         queued = opts;
         armFlush();
@@ -25499,6 +27367,7 @@
 
     function onMenuClosed() {
       if (!queued) return;
+      if (beforeBoot()) return;
       if (menuOpen()) { armFlush(); return; }
       const opts = queued;
       queued = null;
@@ -25539,6 +27408,7 @@
       isPlaying: () => playing,
       holdForEditor,
       takeHeld,
+      abandon,
       unstickGraph,
     };
   })();
@@ -26976,6 +28846,32 @@
     state._lastDetect = level;
   }
 
+  // The provider refused the player's key (out of credit, a bad key, rate
+  // limited). Without this the only sign is "Signal interrupted" prose and
+  // blank frames. One line above the backend tag, with the way to fix it.
+  function showProviderProblem(p) {
+    let node = document.getElementById("provider-problem");
+    const msg = p && p.message ? String(p.message) : "";
+    if (!msg) { if (node) node.hidden = true; return; }
+    if (!node) {
+      node = document.createElement("div");
+      node.id = "provider-problem";
+      node.className = "provider-problem";
+      node.setAttribute("role", "status");
+      const text = document.createElement("span");
+      text.className = "provider-problem-text";
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "provider-problem-go";
+      go.textContent = "ACCOUNT";
+      go.addEventListener("click", () => { try { Accounts.open(); } catch (_) {} });
+      node.append(text, go);
+      document.body.appendChild(node);
+    }
+    node.querySelector(".provider-problem-text").textContent = msg;
+    node.hidden = false;
+  }
+
   async function refreshStatus() {
     try {
       const s = await getJSON("/api/status");
@@ -26984,18 +28880,27 @@
       changed = setHud(el.hudChaos, "chaos", s.chaos ?? 0) || changed;
       const phaseText = s.alive === false ? "deceased" : (s.phase ?? "normal");
       changed = setHud(el.hudPhase, "phase", phaseText) || changed;
-      // Bottom-left HUD shows the IMAGE provider (what actually draws the
-      // world), not the text/chat backend. Krea shows its tier (medium/large).
+      // Bottom-left HUD: the provider actually answering — the player's
+      // ACCOUNT choice (gemini / openai), "mock" offline, "gemini + krea
+      // medium" when pictures come from elsewhere. backend_label is the
+      // server's word for it; the image provider is only the fallback for an
+      // older server. Hover for the models.
       if (el.backendName) {
-        const prov = s.image_provider || s.backend || "unknown";
-        const model = s.image_model || "";
-        let label = prov;
-        if (prov === "krea" && model) {
-          const tier = model.includes("large") ? "large" : (model.includes("medium") ? "medium" : "");
-          label = tier ? ("krea " + tier) : "krea";
+        let label = s.backend_label || "";
+        if (!label) {
+          const prov = s.image_provider || s.backend || "unknown";
+          const model = s.image_model || "";
+          label = prov;
+          if (prov === "krea" && model) {
+            const tier = model.includes("large") ? "large" : (model.includes("medium") ? "medium" : "");
+            label = tier ? ("krea " + tier) : "krea";
+          }
         }
         el.backendName.textContent = label;
+        const tag = el.backendName.parentElement;
+        if (tag) tag.title = s.backend_detail || "";
       }
+      showProviderProblem(s.provider_problem);
       if (typeof s.image_enabled === "boolean") state.imagesEnabled = s.image_enabled;
       renderCondition(s);
       renderInventory(s.inventory);
@@ -27084,104 +28989,757 @@
   }
 
   // ------------------------------------------------------------------
-  // VHS tape playback — replay this run's frames in sequence
+  // THE TAPE — the run played back (run_tape.py records it, /api/reel/ serves
+  // it). Every beat of the run in order: the opening montage, each turn's
+  // flipbook panels, each fight's standoff and rounds, the death reel. It is
+  // a fluid image sequence, not a slideshow: panels inside a beat dissolve
+  // quickly, beats dissolve slowly, and each beat pushes in a little while it
+  // holds. The pacing comes from the server (run_tape.timing) so the film you
+  // export is the film you watched.
+  //
+  // Design: the "GOD — The Tape" canvas. It borrows the game's own pieces —
+  // the goal HUD's mono label over a Manrope 300 title top-left, the prose's
+  // face for the caption, a bone hairline for the timeline (a tick per turn,
+  // a short rule under each fight), mono text buttons with the menu's
+  // underline — and the controls recede while it plays, leaving the picture,
+  // the line under it and a 2px progress rule.
+  //
+  // Ways in: the death screen (WATCH THE TAPE, T), the pause sheet (TAPE),
+  // T during play, and the world picker's "the tape" under PLAY, which plays
+  // the last run of the selected Experience.
   // ------------------------------------------------------------------
-  const tape = { frames: [], idx: 0, playing: false, timer: null, clock: null, seconds: 0, active: "A" };
+  const Reel = (function () {
+    let root = null;
+    const ui = {};
+    let tape = null;
+    let items = [];
+    let shotStart = [];
+    let shotLen = [];
+    let total = 0;
+    let pos = 0;
+    let playing = false;
+    let speed = 1;
+    let captions = true;
+    let raf = 0;
+    let lastTick = 0;
+    let cur = -1;
+    let curShot = -1;
+    let front = 0;
+    let showToken = 0;
+    let idleTimer = 0;
+    let scrubbing = false;
+    let exportKind = "pack";
+    let exportTimer = 0;
+    let keyHandler = null;
+    let returnFocus = null;
+    const hints = new Map();
 
-  function tapeIsOpen() { return el.tapeOverlay && !el.tapeOverlay.classList.contains("hidden"); }
+    const ICON_PLAY = '<svg width="14" height="16" viewBox="0 0 14 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><polygon points="2,1 13,8 2,15"></polygon></svg>';
+    const ICON_PAUSE = '<svg width="14" height="16" viewBox="0 0 14 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><line x1="3" y1="1" x2="3" y2="15"></line><line x1="11" y1="1" x2="11" y2="15"></line></svg>';
+    const ICON_FS = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><polyline points="1,5 1,1 5,1"></polyline><polyline points="11,1 15,1 15,5"></polyline><polyline points="15,11 15,15 11,15"></polyline><polyline points="5,15 1,15 1,11"></polyline></svg>';
 
-  async function openTape() {
-    if (tapeIsOpen()) return;
-    closeScan(); // no scan overlay behind the tape player
-    Sound.start();
-    try {
-      const data = await getJSON("/api/tape");
-      tape.frames = (data && Array.isArray(data.frames)) ? data.frames : [];
-    } catch (err) {
-      tape.frames = [];
+    function reduce() {
+      return (typeof prefersReducedMotion === "function" && prefersReducedMotion());
     }
-    el.tapeOverlay.classList.remove("hidden");
-    if (!tape.frames.length) {
-      el.tapeEmpty.classList.remove("hidden");
-      el.tapeCounter.textContent = "FRAME 0 / 0";
-      el.tapeRec.textContent = "\u25A0 NO TAPE";
-      return;
+    function mk(tag, cls, text) {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text != null) e.textContent = text;
+      return e;
     }
-    el.tapeEmpty.classList.add("hidden");
-    tape.idx = 0; tape.active = "A";
-    el.tapeFrameA.style.backgroundImage = "";
-    el.tapeFrameB.style.backgroundImage = "";
-    el.tapeFrameA.classList.add("tape-frame-active");
-    el.tapeFrameB.classList.remove("tape-frame-active");
-    showTapeFrame(0);
-    startTapeClock();
-    startTapePlay();
-  }
+    function btn(cls, label, html, text) {
+      const b = mk("button", cls, text == null ? null : text);
+      b.type = "button";
+      b.setAttribute("aria-label", label);
+      if (html) b.innerHTML = html;
+      return b;
+    }
+    function fmt(ms) {
+      const s = Math.max(0, Math.floor((ms || 0) / 1000));
+      return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    }
+    function pad2(n) { return String(n).padStart(2, "0"); }
+    function when(epoch) {
+      if (!epoch) return "";
+      const d = new Date(Number(epoch) * 1000);
+      const today = new Date();
+      const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+      if (d.toDateString() === today.toDateString()) return `TODAY ${hm}`;
+      const mon = d.toLocaleString("en", { month: "short" }).toUpperCase();
+      return `${mon} ${d.getDate()} · ${hm}`;
+    }
+    // The first sentence or two of the narration — the caption is read, not studied.
+    function clipProse(text, n) {
+      const t = String(text || "").replace(/\s+/g, " ").trim();
+      if (t.length <= n) return t;
+      const cut = t.slice(0, n);
+      const stop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
+      return stop > n * 0.45 ? cut.slice(0, stop + 1) : cut.replace(/\s+\S*$/, "") + "…";
+    }
 
-  function showTapeFrame(i) {
-    tape.idx = Math.max(0, Math.min(i, tape.frames.length - 1));
-    const url = tape.frames[tape.idx];
-    const incoming = tape.active === "A" ? el.tapeFrameB : el.tapeFrameA;
-    const outgoing = tape.active === "A" ? el.tapeFrameA : el.tapeFrameB;
-    incoming.style.backgroundImage = `url('${url}')`;
-    incoming.classList.add("tape-frame-active");
-    outgoing.classList.remove("tape-frame-active");
-    tape.active = tape.active === "A" ? "B" : "A";
-    el.tapeCounter.textContent = `FRAME ${tape.idx + 1} / ${tape.frames.length}`;
-    Sound.scene();
-  }
+    function build() {
+      if (root) return root;
+      root = document.getElementById("reel") || mk("div", "reel hidden");
+      root.id = "reel";
+      root.innerHTML = "";
+      // A full takeover: above the game, the death screen and the start menu.
+      document.body.appendChild(root);
+      ui.stage = mk("div", "reel-stage");
+      ui.imgs = [mk("img", "reel-img"), mk("img", "reel-img")];
+      ui.imgs.forEach((im) => { im.alt = ""; im.decoding = "async"; ui.stage.appendChild(im); });
+      root.appendChild(ui.stage);
+      root.appendChild(mk("div", "reel-shade"));
 
-  function startTapePlay() {
-    tape.playing = true;
-    el.tapePlayPause.textContent = "\u23F8"; // pause glyph
-    el.tapeRec.textContent = "\u25B6 PLAY";
-    clearInterval(tape.timer);
-    tape.timer = setInterval(() => {
-      if (tape.idx >= tape.frames.length - 1) { pauseTape(true); return; }
-      showTapeFrame(tape.idx + 1);
-    }, 1300);
-  }
+      const top = mk("div", "reel-top");
+      const meta = mk("div", "reel-meta");
+      ui.kicker = mk("div", "reel-kicker");
+      ui.title = mk("div", "reel-title");
+      meta.appendChild(ui.kicker);
+      meta.appendChild(ui.title);
+      const right = mk("div", "reel-top-right");
+      ui.count = mk("div", "reel-count");
+      ui.close = btn("reel-textbtn", "Close the tape", null, "CLOSE");
+      right.appendChild(ui.count);
+      right.appendChild(ui.close);
+      top.appendChild(meta);
+      top.appendChild(right);
+      root.appendChild(top);
 
-  function pauseTape(ended) {
-    tape.playing = false;
-    clearInterval(tape.timer); tape.timer = null;
-    el.tapePlayPause.textContent = "\u23F5"; // play glyph
-    el.tapeRec.textContent = ended ? "\u23F9 END" : "\u23F8 PAUSE";
-  }
+      ui.cap = mk("div", "reel-cap");
+      ui.capMeta = mk("div", "reel-cap-meta");
+      ui.capLine = mk("div", "reel-cap-line");
+      ui.capProse = mk("div", "reel-cap-prose");
+      ui.cap.appendChild(ui.capMeta);
+      ui.cap.appendChild(ui.capLine);
+      ui.cap.appendChild(ui.capProse);
+      root.appendChild(ui.cap);
 
-  function toggleTapePlay() {
-    if (!tape.frames.length) return;
-    if (tape.playing) { pauseTape(false); Sound.toggle(); return; }
-    if (tape.idx >= tape.frames.length - 1) showTapeFrame(0); // replay from the top
-    Sound.toggle();
-    startTapePlay();
-  }
+      const bar = mk("div", "reel-bar");
+      ui.play = btn("reel-iconbtn reel-play", "Play", ICON_PLAY);
+      ui.now = mk("div", "reel-time", "00:00");
+      ui.track = mk("div", "reel-track");
+      ui.track.setAttribute("role", "slider");
+      ui.track.setAttribute("aria-label", "Position on the tape");
+      ui.track.tabIndex = 0;
+      ui.rail = mk("div", "reel-rail");
+      ui.buffer = mk("div", "reel-hoverfill");
+      ui.fill = mk("div", "reel-fill");
+      ui.marks = mk("div", "reel-marks");
+      ui.knob = mk("div", "reel-knob");
+      ui.hoverLine = mk("div", "reel-hoverline");
+      ui.hover = mk("div", "reel-hover");
+      ui.hoverImg = mk("img", "reel-hover-img");
+      ui.hoverImg.alt = "";
+      ui.hoverMeta = mk("div", "reel-hover-meta");
+      ui.hoverText = mk("div", "reel-hover-text");
+      ui.hover.appendChild(ui.hoverImg);
+      ui.hover.appendChild(ui.hoverMeta);
+      ui.hover.appendChild(ui.hoverText);
+      [ui.rail, ui.buffer, ui.fill, ui.marks, ui.hoverLine, ui.knob, ui.hover].forEach((n) => ui.track.appendChild(n));
+      ui.dur = mk("div", "reel-time reel-dur", "00:00");
+      ui.speed = btn("reel-textbtn reel-speed", "Playback speed", null, "1×");
+      ui.cc = btn("reel-textbtn reel-cc is-on", "Captions", null, "CC");
+      ui.cc.setAttribute("aria-pressed", "true");
+      ui.exportBtn = btn("reel-textbtn", "Export the tape", null, "EXPORT");
+      ui.fs = btn("reel-iconbtn", "Full screen", ICON_FS);
+      [ui.play, ui.now, ui.track, ui.dur, ui.speed, ui.cc, ui.exportBtn, ui.fs].forEach((n) => bar.appendChild(n));
+      root.appendChild(bar);
 
-  function tapeStep(delta) {
-    if (!tape.frames.length) return;
-    pauseTape(false);
-    showTapeFrame(tape.idx + delta);
-  }
+      ui.thin = mk("div", "reel-thin");
+      ui.thinFill = mk("i");
+      ui.thin.appendChild(ui.thinFill);
+      root.appendChild(ui.thin);
 
-  function startTapeClock() {
-    clearInterval(tape.clock);
-    tape.seconds = 0;
-    el.tapeTime.textContent = fmtTimecode(0);
-    tape.clock = setInterval(() => {
-      tape.seconds += 1;
-      el.tapeTime.textContent = fmtTimecode(tape.seconds);
-    }, 1000);
-  }
+      ui.empty = mk("div", "reel-empty hidden");
+      ui.empty.appendChild(mk("div", "reel-kicker", "THE TAPE"));
+      ui.emptyLine = mk("div", "reel-empty-line", "Nothing on tape yet.");
+      ui.empty.appendChild(ui.emptyLine);
+      root.appendChild(ui.empty);
 
-  function closeTape() {
-    clearInterval(tape.timer); tape.timer = null;
-    clearInterval(tape.clock); tape.clock = null;
-    tape.playing = false;
-    el.tapeOverlay.classList.add("hidden");
-    Sound.toggle();
-    updateScanButton(); // the SCAN button is available again once the tape deck closes
-    try { AutoScan.rearm(); } catch (_) {}
-  }
+      buildSheet();
+
+      ui.close.addEventListener("click", () => close());
+      ui.play.addEventListener("click", () => toggle());
+      ui.stage.addEventListener("click", () => { if (!sheetOpen()) toggle(); });
+      ui.speed.addEventListener("click", () => setSpeed(speed === 1 ? 2 : speed === 2 ? 0.5 : 1));
+      ui.cc.addEventListener("click", () => setCaptions(!captions));
+      ui.exportBtn.addEventListener("click", () => openSheet());
+      ui.fs.addEventListener("click", () => fullscreen());
+      root.addEventListener("pointermove", wake);
+      root.addEventListener("pointerdown", wake);
+      bindTrack();
+      return root;
+    }
+
+    // ── EXPORT ─────────────────────────────────────────────────────────
+    function buildSheet() {
+      ui.sheet = mk("div", "reel-sheet hidden");
+      ui.sheet.setAttribute("role", "dialog");
+      ui.sheet.setAttribute("aria-label", "Export the tape");
+      const head = mk("div", "reel-sheet-head");
+      head.appendChild(mk("div", "reel-kicker", "EXPORT THE TAPE"));
+      ui.sheetTitle = mk("div", "reel-sheet-title");
+      ui.sheetStats = mk("div", "reel-sheet-stats");
+      head.appendChild(ui.sheetTitle);
+      head.appendChild(ui.sheetStats);
+      ui.sheet.appendChild(head);
+      const opts = mk("div", "reel-opts");
+      const opt = (kind, name, line, spec) => {
+        const b = mk("button", "reel-opt");
+        b.type = "button";
+        b.dataset.kind = kind;
+        b.appendChild(mk("span", "reel-opt-dot"));
+        const body = mk("span", "reel-opt-body");
+        body.appendChild(mk("span", "reel-opt-name", name));
+        body.appendChild(mk("span", "reel-opt-line", line));
+        body.appendChild(mk("span", "reel-opt-spec", spec));
+        b.appendChild(body);
+        b.addEventListener("click", () => pickKind(kind));
+        opts.appendChild(b);
+        return b;
+      };
+      ui.optPack = opt("pack", "SHOT PACK",
+        "Every frame, numbered, and a shot list: each shot's first frame, last frame and the words " +
+        "that happened between them. Built to hand to an image-to-video model, one shot at a time.",
+        ".ZIP · FRAMES/ · SHOTS.JSON · CAPTIONS.SRT · ANIMATIC.MP4");
+      ui.optAnim = opt("animatic", "ANIMATIC",
+        "The tape as one video, paced the way you just watched it. For cutting against.",
+        ".MP4 · 1376 × 768 · 24 FPS");
+      ui.sheet.appendChild(opts);
+      ui.sheetStatus = mk("div", "reel-sheet-status");
+      ui.sheet.appendChild(ui.sheetStatus);
+      const acts = mk("div", "reel-sheet-actions");
+      ui.doExport = btn("reel-textbtn reel-primary", "Export", null, "EXPORT");
+      ui.openFolder = btn("reel-textbtn reel-primary hidden", "Open the folder", null, "OPEN FOLDER");
+      ui.download = mk("a", "reel-textbtn hidden", "DOWNLOAD");
+      ui.download.setAttribute("download", "");
+      ui.cancel = btn("reel-textbtn", "Back to the tape", null, "BACK");
+      [ui.doExport, ui.openFolder, ui.download, ui.cancel].forEach((n) => acts.appendChild(n));
+      ui.sheet.appendChild(acts);
+      root.appendChild(ui.sheet);
+      ui.doExport.addEventListener("click", () => startExport());
+      ui.cancel.addEventListener("click", () => closeSheet());
+      ui.openFolder.addEventListener("click", () => {
+        postJSON("/api/reel/reveal", { path: ui.openFolder.dataset.path || "" }).catch(() => {});
+      });
+      pickKind("pack");
+    }
+    function sheetOpen() { return ui.sheet && !ui.sheet.classList.contains("hidden"); }
+    function pickKind(kind) {
+      exportKind = kind === "animatic" ? "animatic" : "pack";
+      [ui.optPack, ui.optAnim].forEach((b) => {
+        const on = b.dataset.kind === exportKind;
+        b.classList.toggle("is-on", on);
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+    }
+    function openSheet() {
+      if (!tape) return;
+      pause();
+      const s = tape.summary || {};
+      ui.sheetTitle.textContent = `${tape.experience_name || tape.world || "The run"}, ${when(tape.started).toLowerCase().replace(/^today/, "today")}`;
+      ui.sheetStats.textContent = [
+        `${s.turns || 0} TURN${s.turns === 1 ? "" : "S"}`,
+        s.fights ? `${s.fights} FIGHT${s.fights === 1 ? "" : "S"}` : "",
+        `${s.frames || 0} FRAMES`, fmt(total),
+      ].filter(Boolean).join(" · ");
+      resetExportUi();
+      ui.sheet.classList.remove("hidden");
+      root.classList.add("sheet-on");
+      try { ui.doExport.focus(); } catch (_) {}
+    }
+    function closeSheet() {
+      clearTimeout(exportTimer);
+      ui.sheet.classList.add("hidden");
+      root.classList.remove("sheet-on");
+    }
+    function resetExportUi() {
+      ui.sheetStatus.textContent = "";
+      ui.sheetStatus.classList.remove("is-waiting");
+      ui.doExport.classList.remove("hidden");
+      ui.openFolder.classList.add("hidden");
+      ui.download.classList.add("hidden");
+      ui.cancel.textContent = "BACK";
+    }
+    async function startExport() {
+      if (!tape) return;
+      ui.doExport.classList.add("hidden");
+      ui.sheetStatus.classList.add("is-waiting");
+      ui.sheetStatus.textContent = exportKind === "pack"
+        ? `BUILDING THE SHOT PACK · ${(tape.summary || {}).frames || 0} FRAMES`
+        : "BUILDING THE ANIMATIC";
+      let job = null;
+      try { job = await postJSON(`/api/reel/export/${encodeURIComponent(tape.id)}`, { kind: exportKind }); }
+      catch (_) { job = { state: "failed", error: "the server did not answer" }; }
+      followExport(job);
+    }
+    function followExport(job) {
+      clearTimeout(exportTimer);
+      if (!job || job.state === "failed") {
+        ui.sheetStatus.classList.remove("is-waiting");
+        ui.sheetStatus.textContent = `COULD NOT EXPORT · ${String((job && job.error) || "").toUpperCase()}`;
+        ui.doExport.classList.remove("hidden");
+        return;
+      }
+      if (job.state === "done") {
+        ui.sheetStatus.classList.remove("is-waiting");
+        ui.cancel.textContent = "DONE";
+        if (job.download) {
+          ui.download.href = job.download;
+          ui.download.setAttribute("download", job.name || "");
+          ui.download.classList.remove("hidden");
+        }
+        if (job.saved_to) {
+          // The desktop app: it is already in the player's Videos folder.
+          const parts = String(job.saved_to).split(/[\\/]/);
+          ui.sheetStatus.textContent = `SAVED · ${parts.slice(-3).join(" / ").toUpperCase()}`;
+          ui.openFolder.dataset.path = job.saved_to;
+          ui.openFolder.classList.remove("hidden");
+        } else {
+          ui.sheetStatus.textContent = `READY · ${String(job.name || "").toUpperCase()}`;
+          if (job.download) { try { ui.download.click(); } catch (_) {} }
+        }
+        return;
+      }
+      exportTimer = setTimeout(async () => {
+        let next = null;
+        try { next = await getJSON(`/api/reel/export/${encodeURIComponent(tape.id)}?kind=${exportKind}`); }
+        catch (_) { next = job; }
+        if (sheetOpen()) followExport(next);
+      }, 1200);
+    }
+
+    // ── THE TIMELINE ───────────────────────────────────────────────────
+    function flatten(t) {
+      items = [];
+      shotStart = [];
+      shotLen = [];
+      let at = 0;
+      (t.shots || []).forEach((s, si) => {
+        shotStart[si] = at;
+        const urls = s.urls || [];
+        urls.forEach((u, fi) => {
+          const ms = Number((s.timing || [])[fi]) || 1000;
+          items.push({ s: si, f: fi, url: u, ms, at });
+          at += ms;
+        });
+        shotLen[si] = at - shotStart[si];
+      });
+      total = at;
+    }
+    function indexAt(ms) {
+      let lo = 0, hi = items.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (items[mid].at <= ms) lo = mid; else hi = mid - 1;
+      }
+      return lo;
+    }
+    function drawMarks() {
+      ui.marks.innerHTML = "";
+      if (!tape || !total) return;
+      const shots = tape.shots || [];
+      const pct = (ms) => `${(ms / total) * 100}%`;
+      shots.forEach((s, si) => {
+        if (s.kind === "turn" || s.kind === "death") {
+          const t = mk("i", `reel-tick${s.kind === "death" ? " is-death" : ""}`);
+          t.style.left = pct(shotStart[si]);
+          ui.marks.appendChild(t);
+        }
+      });
+      // A fight: a short rule under the stretch from its standoff to its end.
+      for (let i = 0; i < shots.length; i++) {
+        if (shots[i].kind !== "encounter") continue;
+        let j = i;
+        while (j + 1 < shots.length && (shots[j + 1].kind === "round" || shots[j + 1].kind === "death")) j++;
+        const f = mk("i", "reel-fight");
+        f.style.left = pct(shotStart[i]);
+        f.style.width = pct(shotStart[j] + shotLen[j] - shotStart[i]);
+        ui.marks.appendChild(f);
+      }
+      (tape.chapters || []).forEach((c) => {
+        const at = shotStart[Math.min(shots.length - 1, Number(c.at) || 0)];
+        if (at == null) return;
+        const m = mk("i", "reel-chapter");
+        m.style.left = pct(at);
+        m.title = c.title || "";
+        ui.marks.appendChild(m);
+      });
+    }
+    function bindTrack() {
+      const msAt = (ev) => {
+        const r = ui.track.getBoundingClientRect();
+        const k = Math.max(0, Math.min(1, (ev.clientX - r.left) / Math.max(1, r.width)));
+        return k * total;
+      };
+      ui.track.addEventListener("pointerdown", (ev) => {
+        if (!total) return;
+        scrubbing = true;
+        try { ui.track.setPointerCapture(ev.pointerId); } catch (_) {}
+        root.classList.add("scrubbing");
+        seek(msAt(ev));
+      });
+      ui.track.addEventListener("pointermove", (ev) => {
+        if (!total) return;
+        const ms = msAt(ev);
+        if (scrubbing) seek(ms);
+        preview(ms);
+      });
+      const end = () => {
+        scrubbing = false;
+        root.classList.remove("scrubbing");
+        ui.hover.classList.remove("on");
+        ui.hoverLine.classList.remove("on");
+        root.classList.remove("previewing");
+      };
+      ui.track.addEventListener("pointerup", end);
+      ui.track.addEventListener("pointercancel", end);
+      ui.track.addEventListener("pointerleave", () => {
+        if (scrubbing) return;
+        ui.hover.classList.remove("on");
+        ui.hoverLine.classList.remove("on");
+        ui.buffer.style.width = "0";
+        root.classList.remove("previewing");
+      });
+    }
+    function shotLabel(s) {
+      if (!s) return "";
+      const turn = Number.isFinite(Number(s.turn)) && s.turn != null ? `TURN ${pad2(s.turn)}` : "";
+      switch (s.kind) {
+        case "montage": return String(tape.experience_name || tape.world || "").toUpperCase();
+        case "opening": return (turn && Number(s.turn) > 0) ? `${turn} · ARRIVAL` : "ARRIVAL";
+        case "encounter": return [turn, String(s.title || "").toUpperCase()].filter(Boolean).join(" · ");
+        case "round": return [turn, String(s.title || "").toUpperCase()].filter(Boolean).join(" · ");
+        case "death": return [turn, String(s.title || "").toUpperCase(), "DEATH"].filter(Boolean).join(" · ");
+        default: return turn;
+      }
+    }
+    function shotLines(s) {
+      if (!s) return ["", ""];
+      switch (s.kind) {
+        case "montage": return ["", clipProse(s.prose, 200)];
+        case "opening": return [clipProse(s.prose, 160), ""];
+        case "encounter": return [s.caption || s.title || "", clipProse(s.prose, 180)];
+        case "round":
+        case "death": return [s.action || "", s.caption || ""];
+        default: return [s.action || clipProse(s.prose, 140), s.action ? clipProse(s.prose, 240) : ""];
+      }
+    }
+    function preview(ms) {
+      const i = indexAt(ms);
+      const it = items[i];
+      if (!it) return;
+      const s = tape.shots[it.s];
+      const r = ui.track.getBoundingClientRect();
+      const k = ms / Math.max(1, total);
+      ui.hover.style.left = `${Math.max(110, Math.min(r.width - 110, k * r.width))}px`;
+      ui.hoverLine.style.left = `${k * 100}%`;
+      ui.buffer.style.width = pos < ms ? `${k * 100}%` : "0";
+      const thumb = (s.urls || [])[Math.max(0, (s.urls || []).length - 1)];
+      if (thumb && ui.hoverImg.getAttribute("src") !== thumb) ui.hoverImg.src = thumb;
+      ui.hoverMeta.textContent = [s.turn != null && s.kind !== "montage" ? `TURN ${pad2(s.turn)}` : shotLabel(s),
+        fmt(shotStart[it.s])].filter(Boolean).join(" · ");
+      ui.hoverText.textContent = shotLines(s)[0] || shotLines(s)[1] || "";
+      ui.hover.classList.add("on");
+      ui.hoverLine.classList.add("on");
+      root.classList.add("previewing");
+    }
+
+    // ── PLAYBACK ───────────────────────────────────────────────────────
+    function preload(i) {
+      for (let k = i; k < Math.min(items.length, i + 6); k++) {
+        const u = items[k].url;
+        if (!u || items[k].pre) continue;
+        const im = new Image();
+        im.decoding = "async";
+        im.src = u;
+        items[k].pre = im;
+      }
+    }
+    function show(i) {
+      const it = items[i];
+      if (!it || i === cur) return;
+      const newShot = !(cur >= 0 && items[cur] && items[cur].s === it.s);
+      cur = i;
+      const mine = ++showToken;
+      const back = ui.imgs[1 - front];
+      const fore = ui.imgs[front];
+      back.style.transitionDuration = reduce() ? "0ms" : `${newShot ? 700 : 170}ms`;
+      back.dataset.shot = String(it.s);
+      const swap = () => {
+        if (mine !== showToken) return;
+        back.classList.add("on");
+        fore.classList.remove("on");
+        front = 1 - front;
+      };
+      if (back.getAttribute("src") === it.url && back.complete) swap();
+      else {
+        back.onload = swap;
+        back.onerror = swap;
+        back.src = it.url;
+      }
+      preload(i + 1);
+      if (it.s !== curShot) {
+        curShot = it.s;
+        caption(tape.shots[it.s]);
+        const n = (tape.shots || []).length;
+        const s = tape.shots[it.s];
+        ui.count.textContent = s && s.turn != null && s.kind !== "montage"
+          ? `TURN ${pad2(s.turn)} / ${pad2((tape.summary || {}).turns || 0)}`
+          : `${pad2(it.s + 1)} / ${pad2(n)}`;
+      }
+    }
+    function caption(s) {
+      const [line, prose] = shotLines(s);
+      ui.cap.classList.remove("in");
+      void ui.cap.offsetWidth;
+      ui.capMeta.textContent = shotLabel(s);
+      ui.capLine.textContent = line;
+      ui.capProse.textContent = prose;
+      ui.cap.classList.toggle("no-line", !line);
+      ui.cap.classList.add("in");
+    }
+    function paintClock() {
+      const k = total ? pos / total : 0;
+      ui.fill.style.width = `${k * 100}%`;
+      ui.knob.style.left = `${k * 100}%`;
+      ui.thinFill.style.width = `${k * 100}%`;
+      ui.now.textContent = fmt(pos);
+      ui.track.setAttribute("aria-valuenow", String(Math.round(k * 100)));
+      // The push-in: the frame on screen grows by a few percent across its beat.
+      const it = items[cur];
+      if (it && !reduce()) {
+        const p = Math.max(0, Math.min(1, (pos - shotStart[it.s]) / Math.max(1, shotLen[it.s])));
+        const img = ui.imgs[front];
+        if (img && img.dataset.shot === String(it.s)) img.style.transform = `scale(${(1 + 0.04 * p).toFixed(4)})`;
+      }
+    }
+    function tick(now) {
+      raf = 0;
+      if (!playing) return;
+      const dt = Math.min(250, now - (lastTick || now));
+      lastTick = now;
+      pos = Math.min(total, pos + dt * speed);
+      show(indexAt(pos));
+      paintClock();
+      if (pos >= total) { ended(); return; }
+      raf = requestAnimationFrame(tick);
+    }
+    function play() {
+      if (!items.length) return;
+      if (pos >= total) { pos = 0; cur = -1; curShot = -1; }
+      playing = true;
+      root.classList.remove("is-ended");
+      ui.play.innerHTML = ICON_PAUSE;
+      ui.play.setAttribute("aria-label", "Pause");
+      lastTick = 0;
+      if (!raf) raf = requestAnimationFrame(tick);
+      wake();
+    }
+    function pause() {
+      playing = false;
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+      if (ui.play) {
+        ui.play.innerHTML = ICON_PLAY;
+        ui.play.setAttribute("aria-label", "Play");
+      }
+      if (root) root.classList.remove("idle");
+    }
+    function ended() {
+      pause();
+      root.classList.add("is-ended");
+    }
+    function toggle() { if (playing) pause(); else play(); }
+    function seek(ms) {
+      pos = Math.max(0, Math.min(total, ms));
+      show(indexAt(pos));
+      paintClock();
+    }
+    function step(dir) {
+      if (!items.length) return;
+      const it = items[indexAt(pos)];
+      const si = it ? it.s : 0;
+      let target = si + dir;
+      // Back from inside a beat goes to its start first, the way a player expects.
+      if (dir < 0 && pos - shotStart[si] > 1200) target = si;
+      target = Math.max(0, Math.min((tape.shots || []).length - 1, target));
+      seek(shotStart[target] || 0);
+    }
+    function setSpeed(v) {
+      speed = v;
+      ui.speed.textContent = v === 0.5 ? "½×" : `${v}×`;
+    }
+    function setCaptions(on) {
+      captions = !!on;
+      root.classList.toggle("no-cc", !captions);
+      ui.cc.classList.toggle("is-on", captions);
+      ui.cc.setAttribute("aria-pressed", captions ? "true" : "false");
+    }
+    function fullscreen() {
+      try {
+        if (document.fullscreenElement) { document.exitFullscreen(); return; }
+        if (root.requestFullscreen) { root.requestFullscreen().catch(() => pyFullscreen()); return; }
+      } catch (_) {}
+      pyFullscreen();
+    }
+    function pyFullscreen() {
+      try { if (window.pywebview && window.pywebview.api && window.pywebview.api.toggle) window.pywebview.api.toggle(); } catch (_) {}
+    }
+    // The controls step back while it plays and come back on any movement.
+    function wake() {
+      if (!root) return;
+      root.classList.remove("idle");
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (playing && !scrubbing && !sheetOpen() && root) root.classList.add("idle");
+      }, 2600);
+    }
+
+    function onKey(e) {
+      const k = e.key;
+      const low = (k || "").toLowerCase();
+      e.stopImmediatePropagation();
+      if (sheetOpen()) {
+        if (k === "Escape") { e.preventDefault(); closeSheet(); }
+        return;
+      }
+      if (k === "Escape" || low === "t") { e.preventDefault(); close(); return; }
+      if (k === " " || k === "Spacebar" || low === "k") { e.preventDefault(); toggle(); wake(); return; }
+      if (k === "ArrowLeft") { e.preventDefault(); step(-1); wake(); return; }
+      if (k === "ArrowRight") { e.preventDefault(); step(1); wake(); return; }
+      if (k === "Home") { e.preventDefault(); seek(0); return; }
+      if (k === "End") { e.preventDefault(); seek(total); return; }
+      if (low === "f") { e.preventDefault(); fullscreen(); return; }
+      if (low === "c") { e.preventDefault(); setCaptions(!captions); wake(); return; }
+      if (low === "e") { e.preventDefault(); openSheet(); return; }
+    }
+
+    async function open(opts) {
+      const o = opts || {};
+      build();
+      if (isOpen()) return;
+      returnFocus = document.activeElement;
+      root.classList.remove("hidden", "is-ended", "idle");
+      root.setAttribute("aria-hidden", "false");
+      document.body.classList.add("reel-on");
+      keyHandler = (e) => onKey(e);
+      window.addEventListener("keydown", keyHandler, true);
+      try { closeScan(); } catch (_) {}
+      try { Menu.close(); } catch (_) {}
+      closeSheet();
+      tape = null;
+      items = [];
+      total = 0; pos = 0; cur = -1; curShot = -1;
+      ui.imgs.forEach((im) => { im.classList.remove("on"); im.removeAttribute("src"); im.style.transform = ""; });
+      ui.empty.classList.add("hidden");
+      ui.kicker.textContent = "THE TAPE";
+      ui.title.textContent = "";
+      ui.capMeta.textContent = ""; ui.capLine.textContent = ""; ui.capProse.textContent = "";
+      let data = null;
+      try { data = await getJSON(`/api/reel/run/${encodeURIComponent(o.run || "current")}`); } catch (_) { data = null; }
+      if (!isOpen()) return;
+      if (!data || !Array.isArray(data.shots) || !data.shots.length) {
+        ui.empty.classList.remove("hidden");
+        ui.emptyLine.textContent = "Nothing on tape yet. Every run is recorded as you play it.";
+        root.classList.add("is-empty");
+        return;
+      }
+      root.classList.remove("is-empty");
+      tape = data;
+      flatten(tape);
+      drawMarks();
+      ui.dur.textContent = fmt(total);
+      ui.kicker.textContent = ["THE TAPE", when(tape.started), tape.ending === "died" ? "DIED" : ""].filter(Boolean).join(" · ");
+      ui.title.textContent = [tape.experience_name, tape.world].filter(Boolean).join(" — ") || "This run";
+      try { Sound.select && Sound.select(); } catch (_) {}
+      seek(0);
+      play();
+    }
+    function close() {
+      if (!root || !isOpen()) return;
+      pause();
+      closeSheet();
+      clearTimeout(idleTimer);
+      root.classList.add("hidden");
+      root.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("reel-on");
+      if (keyHandler) window.removeEventListener("keydown", keyHandler, true);
+      keyHandler = null;
+      try { if (document.fullscreenElement === root) document.exitFullscreen(); } catch (_) {}
+      try { if (returnFocus && returnFocus.focus) returnFocus.focus(); } catch (_) {}
+      try { updateScanButton(); } catch (_) {}
+      try { AutoScan.rearm(); } catch (_) {}
+    }
+    function isOpen() { return !!root && !root.classList.contains("hidden"); }
+
+    // The death screen offers the tape when there is one.
+    async function offerOnDeath() {
+      const b = document.getElementById("death-tape");
+      if (!b) return;
+      try {
+        const data = await getJSON("/api/reel/runs");
+        const cur = ((data && data.runs) || []).find((r) => r.current) || ((data && data.runs) || [])[0];
+        b.hidden = !cur;
+      } catch (_) { b.hidden = true; }
+    }
+
+    // The picker: "the tape" under PLAY, and a line for the last run of the
+    // selected Experience. Cached per Experience; a run ending clears it.
+    async function pickerHint(expId) {
+      const tapeBtn = document.getElementById("xp-tape");
+      const last = document.getElementById("xp-lastrun");
+      if (!tapeBtn || !last) return;
+      const paint = (run) => {
+        tapeBtn.hidden = !run;
+        last.hidden = !run;
+        tapeBtn.dataset.run = run ? run.id : "";
+        last.dataset.run = run ? run.id : "";
+        if (!run) return;
+        const img = document.getElementById("xp-lastrun-img");
+        if (img && run.cover) img.src = run.cover;
+        const kind = document.getElementById("xp-lastrun-kind");
+        const line = document.getElementById("xp-lastrun-line");
+        if (kind) kind.textContent = `LAST RUN · ${when(run.started)}`;
+        const how = run.ending === "died" ? "died" : "unfinished";
+        if (line) {
+          line.textContent = [`${run.turns || 0} turn${run.turns === 1 ? "" : "s"}`,
+            run.fights ? `${run.fights} fight${run.fights === 1 ? "" : "s"}` : "", how]
+            .filter(Boolean).join(" · ");
+        }
+      };
+      if (!expId) { paint(null); return; }
+      if (hints.has(expId)) { paint(hints.get(expId)); return; }
+      paint(null);
+      try {
+        const data = await getJSON(`/api/reel/runs?experience=${encodeURIComponent(expId)}`);
+        const run = ((data && data.runs) || [])[0] || null;
+        hints.set(expId, run);
+        paint(run);
+      } catch (_) { paint(null); }
+    }
+    function forgetHints() { hints.clear(); }
+
+    function init() {
+      const deathTape = document.getElementById("death-tape");
+      if (deathTape) deathTape.addEventListener("click", () => open({ run: "current", from: "death" }));
+      const pauseTape = document.getElementById("btn-tape");
+      if (pauseTape) pauseTape.addEventListener("click", () => { try { Menu.close(); } catch (_) {} open({ run: "current", from: "pause" }); });
+      ["xp-tape", "xp-lastrun"].forEach((id) => {
+        const n = document.getElementById(id);
+        if (n) n.addEventListener("click", () => open({ run: n.dataset.run || "current", from: "picker" }));
+      });
+    }
+
+    return { init, open, close, isOpen, offerOnDeath, pickerHint, forgetHints };
+  })();
+  try { window.Reel = Reel; } catch (_) {}
+
+  // The old names, kept for the call sites that ask whether the tape owns
+  // the screen (SCAN, AutoScan, the Watch checks) and for T and the rail.
+  function tapeIsOpen() { return Reel.isOpen(); }
+  function openTape() { Reel.open({ run: "current", from: "key" }); }
+  function closeTape() { Reel.close(); }
 
   function toggleSound() {
     state.soundEnabled = !state.soundEnabled;
@@ -27426,14 +29984,9 @@
       if (Render.onKey(e)) e.preventDefault();
       return;
     }
-    // Tape playback owns the keyboard while open.
-    if (tapeIsOpen()) {
-      if (e.key === "Escape" || e.key.toLowerCase() === "t") closeTape();
-      else if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); toggleTapePlay(); }
-      else if (e.key === "ArrowLeft") tapeStep(-1);
-      else if (e.key === "ArrowRight") tapeStep(1);
-      return;
-    }
+    // The tape owns the keyboard while open (Reel's capture listener takes
+    // every key first; this is the belt to that).
+    if (tapeIsOpen()) return;
     if (document.activeElement === el.customInput) {
       if (e.key === "Escape") {
         // While dictating, Esc means "stop listening" — not "throw away what
@@ -27475,6 +30028,8 @@
       const k = e.key.toLowerCase();
       if (k === "r") resetGame();
       else if (k === "c") { try { CoinOp.insertCoin(); } catch (_) {} }
+      // T: the run you just died in (the death screen's WATCH THE TAPE).
+      else if (k === "t") openTape();
       return;
     }
     // While the "OUT OF COINS" pause overlay is up, the world is frozen
@@ -28824,11 +31379,8 @@
       if (state.touchMode === "aim") layoutPhotoTargets();
     });
     el.forwardBtn.addEventListener("click", moveForward);
-    el.tapeBtn.addEventListener("click", openTape);
-    el.tapePlayPause.addEventListener("click", toggleTapePlay);
-    el.tapePrev.addEventListener("click", () => tapeStep(-1));
-    el.tapeNext.addEventListener("click", () => tapeStep(1));
-    el.tapeEject.addEventListener("click", closeTape);
+    if (el.tapeBtn) el.tapeBtn.addEventListener("click", openTape);
+    Reel.init();
     el.autoplayBtn.addEventListener("click", toggleAutoPlay);
     el.customForm.addEventListener("submit", submitCustomAction);
     // TALK overlay wiring.

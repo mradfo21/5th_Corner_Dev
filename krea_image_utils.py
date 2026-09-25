@@ -145,7 +145,7 @@ IMAGE_DIR = Path("images")
 if not KREA_API_KEY:
     print("[KREA INIT] WARNING: KREA_API_KEY not set — Krea image generation will be unavailable.")
 else:
-    print(f"[KREA INIT] KREA_API_KEY loaded ({KREA_API_KEY[:6]}...{KREA_API_KEY[-4:]}); base={KREA_API_BASE}")
+    print(f"[KREA INIT] KREA_API_KEY loaded; base={KREA_API_BASE}")
 
 # In-memory cache mapping (abs_path, mtime) -> uploaded Krea asset URL, so the
 # same reference frame isn't re-uploaded on every turn.

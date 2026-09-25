@@ -45,17 +45,30 @@ so anything it prints goes to `dist/SOMEWHERE/logs/somewhere.log`.
 ## Set up API keys
 
 Without keys the game runs in mock mode: the loop works, the prose is canned and
-no images are generated. It says so on startup rather than looking live and
-failing every turn. For the real thing, make a `.env`:
+no images are generated. On a machine with no key the start menu opens ACCOUNT
+by itself.
+
+**The player's way: ACCOUNT → PLAYS ON.** Choose Gemini or OpenAI in the
+dropdown, paste that key, SAVE. The sheet proves the key with one real call
+("Works · story … · pictures …", or why not), stores it in
+`%APPDATA%\SOMEWHERE\keys.env` and the choice in `account.json` beside it.
+Either provider plays the whole game — story and pictures. With OpenAI chosen,
+`provider_bridge.py` answers every Gemini-format call with the matching OpenAI
+one; the bottom-left `backend:` tag names the provider actually answering.
+
+**The developer's way: a `.env`:**
 
 ```
 GEMINI_API_KEY=...
+OPENAI_API_KEY=...
 ```
 
-`OPENAI_API_KEY` and `ANTHROPIC_API_KEY` work too — which provider is actually
-used is set in `ai_config.json`, or per-run with `python play.py --backend gemini`.
+**Gemini is the default.** The game plays on OpenAI only when OpenAI is picked
+in ACCOUNT; an `OPENAI_API_KEY` on its own changes nothing, and everything runs
+on `ai_config.json` as it always has. `ANTHROPIC_API_KEY` works for the
+narrator set there.
 
-It is looked for in these places, first one wins:
+The `.env` is looked for in these places, first one wins:
 
 1. beside `play.py` (or beside `SOMEWHERE.exe` in a build)
 2. the folder you launched from

@@ -65,6 +65,14 @@ _REDIRECTS: Tuple[Tuple[str, str, Path, str], ...] = (
     ("tunables", "STORE", ROOT / "tunables.json", "SOMEWHERE_TUNABLES_PATH"),
 )
 
+# Stores a test must not write to, and does not need the real contents of:
+# redirected to an EMPTY folder. Characters are the player's (characters.py) —
+# a suite that creates one must never put it on their roster, and copying a
+# roster of 2K renders into every sandbox would cost more than it tells.
+_EMPTY_REDIRECTS: Tuple[Tuple[str, str, Path, str], ...] = (
+    ("characters", "CHARACTERS_DIR", ROOT / "characters", "SOMEWHERE_CHARACTERS_DIR"),
+)
+
 _TEST_FRAMEWORKS = ("pytest", "_pytest", "unittest")
 
 _engaged: Optional[Path] = None
@@ -112,6 +120,16 @@ def engage(reason: str = "") -> Path:
         _restore.append(("env", env_var, os.environ.get(env_var)))
         os.environ[env_var] = str(dest)
 
+        mod = sys.modules.get(mod_name)
+        if mod is not None and hasattr(mod, attr):
+            _restore.append(("attr", (mod, attr), getattr(mod, attr)))
+            setattr(mod, attr, dest)
+
+    for mod_name, attr, _real, env_var in _EMPTY_REDIRECTS:
+        dest = sandbox / mod_name / attr.lower()
+        dest.mkdir(parents=True, exist_ok=True)
+        _restore.append(("env", env_var, os.environ.get(env_var)))
+        os.environ[env_var] = str(dest)
         mod = sys.modules.get(mod_name)
         if mod is not None and hasattr(mod, attr):
             _restore.append(("attr", (mod, attr), getattr(mod, attr)))

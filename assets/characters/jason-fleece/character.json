@@ -1,0 +1,42 @@
+{
+ "id": "jason-fleece",
+ "name": "Jason Fleece",
+ "concept": "A freelance photojournalist in his thirties who went over the fence for the picture nobody else would take.",
+ "pronouns": "he/him",
+ "role": "Freelance Photojournalist",
+ "tagline": "Freelance photojournalist.",
+ "demeanor": "dry, stubborn, curious",
+ "who": "Jason Fleece, a freelance photojournalist in his thirties: sun-lightened shaggy brown hair, stubble. White crew-neck t-shirt; a denim-blue flak vest with PRESS in big white capitals across the chest and across the back; a red bandana knotted at the neck; a gas mask hanging at the collarbone; dark blue jeans; brown leather work boots; a 35mm camera on a strap across the body.",
+ "held": "the camera held low in one hand",
+ "key": "green",
+ "sources": [],
+ "origin": "starter",
+ "status": "ready",
+ "job": {},
+ "error": "",
+ "base_look": "base-40c293",
+ "current_look": "base-40c293",
+ "wanted_look": "base-40c293",
+ "looks": {
+  "base-40c293": {
+   "kind": "base",
+   "status": "ready",
+   "worn": [],
+   "created": 1790225656.807
+  }
+ },
+ "outfits": {
+  "base-40c293|": "base-40c293"
+ },
+ "inventory": [],
+ "record": {
+  "runs": 0,
+  "deaths": 0,
+  "worlds": [],
+  "turns": 0
+ },
+ "created": 1790225625.257,
+ "updated": 1790225656.807,
+ "last_played": 0,
+ "style": ""
+}

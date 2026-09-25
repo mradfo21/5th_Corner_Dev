@@ -62,6 +62,7 @@ import base64
 import binascii
 import copy
 import json
+import logging
 import os
 import re
 import threading
@@ -496,13 +497,54 @@ def spec_from_prompts(prompts: Optional[Dict[str, Any]] = None) -> Dict[str, Dic
     }
 
 
+def raw_spec() -> Dict[str, Dict[str, Any]]:
+    """The cast sheet exactly as the live prompt file holds it.
+
+    What the EDITORS read and write. The game reads ``get_spec``, which lays the
+    run's Character over the character block — so anything that saves the sheet
+    must start from this, or it writes the bound character into the shared
+    prompt file (and from there into every World snapshot).
+    """
+    return spec_from_prompts(dict(PROMPTS))
+
+
 def get_spec() -> Dict[str, Dict[str, Any]]:
     """The full, normalized cast sheet as the engine sees it right now.
 
     Reads through ``PROMPTS``, so an edit saved by either editor is live on the
     next call with no restart (same hot-reload contract as every other prompt).
+
+    WHO THE PLAYER IS comes from the run's Character when the run has one
+    (characters.py; ``state.character_id`` / ``state.look_id``): its block
+    replaces the sheet's character block here, so every one of the thirty-odd
+    surfaces that asks this module who is on screen — the image directives,
+    the narrator, the encounter briefs, the reference plates — gets the
+    character without being rewritten. The camera and the level stay the
+    World's. A run without a character (an older save, a harness session) is
+    the sheet, as it always was.
     """
-    return spec_from_prompts(dict(PROMPTS))
+    spec = spec_from_prompts(dict(PROMPTS))
+    block = _bound_character_block()
+    if block:
+        merged = dict(CHARACTER_DEFAULTS)
+        merged.update(block)
+        spec[CHARACTER_KEY] = merged
+    return spec
+
+
+def _bound_character_block() -> Optional[Dict[str, Any]]:
+    try:
+        import characters
+        return characters.bound_block()
+    except Exception as e:  # noqa: BLE001 — who you are must never break a render
+        logging.debug(f"[CAST] no bound character: {e}")
+        return None
+
+
+def bound_character(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The bound Character's meta (id, look, turnaround_ref, face_ref), or {}."""
+    spec = spec or get_spec()
+    return dict((spec.get(CHARACTER_KEY) or {}).get("_character") or {})
 
 
 def default_spec() -> Dict[str, Dict[str, Any]]:
@@ -637,7 +679,7 @@ def save_spec(partial: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     game ignore all of it, and have no way to tell why. Nothing about naming
     your character means "and don't use them".
     """
-    current = get_spec()
+    current = raw_spec()
     old_name = character_name(current)
     fields: Dict[str, Any] = {}
     for key in SPEC_KEYS:
@@ -658,17 +700,17 @@ def save_spec(partial: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         fields[key] = _normalize(key, merged)
     if fields:
         prompts_store.save_prompts_bulk(fields)
-    spec = get_spec()
+    spec = raw_spec()
     if CHARACTER_KEY in fields:
         recast_stored_prompts(old_name, spec)
-        spec = get_spec()
+        spec = raw_spec()
     return spec
 
 
 def reset_spec() -> Dict[str, Dict[str, Any]]:
     """Clear the cast sheet back to 'unset' (first person, nobody, nowhere)."""
     prompts_store.save_prompts_bulk(default_spec())
-    return get_spec()
+    return raw_spec()
 
 
 def clear_block(key: str) -> Dict[str, Dict[str, Any]]:
@@ -1507,8 +1549,23 @@ def authored_setting(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return setting
     for field in ("name", "summary"):
         if _norm_field(setting.get(field)) == _norm_field(SHIPPED_SETTING.get(field, "")):
+            # THE FIFTH CORNER's World IS called SOMEWHERE (worlds/somewhere.json).
+            # Its name is not a leftover of the shipped sheet, it is the place,
+            # and blanking it left the level nameless.
+            if field == "name" and _bound_world_named(setting.get(field)):
+                continue
             setting[field] = ""
     return setting
+
+
+def _bound_world_named(name: Any) -> bool:
+    """True when the World bound right now carries this name as its own."""
+    try:
+        import worlds_store
+        bound = worlds_store.bound_slug()
+        return bool(bound) and bound == worlds_store._slug(str(name or ""))
+    except Exception:
+        return False
 
 
 def display_name(spec: Optional[Dict[str, Any]] = None) -> str:
@@ -1629,12 +1686,48 @@ def character_visual_sheet(
     if char.get("signature_gear"):
         lines.append(f"CARRIED / WORN: {char['signature_gear']}")
 
+    cover = face_cover_clause(spec)
+    if cover:
+        lines.append(cover)
     tail = (
         "This is the SAME person in every single frame — face, build, hair, and outfit "
         "must not drift between shots. Lock identity from the back of the head and "
         "wardrobe; do not spin them to face the lens just to prove the face matches."
     )
     return "🧍 PLAYER CHARACTER — WHO IS ON SCREEN\n" + "\n".join(lines) + f"\n{tail}"
+
+
+_FACE_COVER_RE = re.compile(
+    r"\b(gas ?mask|mask|respirator|visor|balaclava|rebreather|face ?plate|face ?shield|"
+    r"helmet with (?:a |its )?(?:visor|faceplate)|full[- ]face)\b", re.IGNORECASE)
+
+
+def face_cover_clause(spec: Optional[Dict[str, Any]] = None) -> str:
+    """"FACE: covered by a cracked riot visor — …" when what the player wears
+    hides their face, else "".
+
+    A masked character is the case the image model gets wrong most: at 150 px
+    on a turnaround the visor is a few pixels, the words mention it once in a
+    list of garments, and the model's prior is a man's face — so a visored
+    cyborg came back from the goal cutscene as a bare-faced man in a fedora.
+    """
+    spec = spec or get_spec()
+    char = authored_character(spec)
+    text = "; ".join(str(char.get(k) or "") for k in ("wardrobe", "signature_gear", "appearance"))
+    piece = ""
+    m = re.search(r"(?:^|;\s*)face:\s*([^;]+)", text, re.IGNORECASE)
+    if m and _FACE_COVER_RE.search(m.group(1)):
+        piece = m.group(1).strip()
+    else:
+        for seg in re.split(r";|\.\s", text):
+            if _FACE_COVER_RE.search(seg):
+                piece = re.sub(r"^\s*\w+:\s*", "", seg).strip()
+                break
+    if not piece:
+        return ""
+    who = display_name(spec)
+    return (f"FACE: covered — {piece.rstrip('. ')}. {who}'s face is hidden behind it in "
+            "every frame and from every side: never draw their bare face.")
 
 
 def setting_plate(spec: Optional[Dict[str, Any]] = None) -> str:
@@ -2623,7 +2716,18 @@ def recast(text: str, spec: Optional[Dict[str, Any]] = None) -> str:
     name = character_name(spec)
     if not name or not character_enabled(spec):
         return text
-    return SHIPPED_PROTAGONIST_RE.sub(name, text)
+    out = SHIPPED_PROTAGONIST_RE.sub(name, text)
+    # A run that is a Character: the prompt file still names whoever the cast
+    # sheet was (recast_stored_prompts baked that name into the bible). The
+    # character is who this run is.
+    if (spec[CHARACTER_KEY] or {}).get("_character"):
+        try:
+            old = character_name(raw_spec())
+        except Exception:
+            old = ""
+        if old and old.lower() != name.lower() and old.lower() not in ("jason", "jason fleece"):
+            out = re.sub(rf"\b{re.escape(old)}\b", name, out)
+    return out
 
 
 def recast_stored_prompts(
@@ -2636,7 +2740,7 @@ def recast_stored_prompts(
     change now walks the live prompt file. Appearance-only edits leave
     the bible alone — CAST still compiles on the next turn.
     """
-    spec = spec or get_spec()
+    spec = spec or raw_spec()
     new_name = character_name(spec)
     if not new_name or not character_enabled(spec):
         return 0
@@ -2738,6 +2842,9 @@ _THIRD_PERSON_FRAMING_RE = re.compile(
 )
 
 
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(❌✓])")
+
+
 def _forbids_visible_character(line: str) -> bool:
     return bool(_PROHIBITION_RE.search(line) and _THIRD_PERSON_FRAMING_RE.search(line))
 
@@ -2760,10 +2867,27 @@ def reconcile(text: str, spec: Optional[Dict[str, Any]] = None) -> str:
     if not shows_character(spec):
         return text
     patterns = _ANTI_PERSON_LINE_PATTERNS + _SELF_INVISIBLE_PATTERNS
-    kept = [
-        ln for ln in text.split("\n")
-        if not any(p.search(ln) for p in patterns) and not _forbids_visible_character(ln)
-    ]
+
+    def offends(s: str) -> bool:
+        return any(p.search(s) for p in patterns) or _forbids_visible_character(s)
+
+    # A line that is a whole paragraph loses only the SENTENCES that offend.
+    # The goal cutscene is built as one long line, and a single "Over-shoulder"
+    # panel plus a "never" elsewhere in it deleted the lot: the reward render
+    # went out with no character, no wardrobe and no brief in its text — which
+    # is why the player in the goal scenes stopped looking like the one the
+    # player built. Short, one-sentence rules still go whole.
+    kept = []
+    for ln in text.split("\n"):
+        if not offends(ln):
+            kept.append(ln)
+            continue
+        parts = _SENTENCE_SPLIT_RE.split(ln)
+        if len(parts) < 2:
+            continue
+        good = [s for s in parts if not offends(s)]
+        if good:
+            kept.append(" ".join(good))
     if not any(ln.strip() for ln in kept):
         return text
     # Deleting a body line can leave its ALL-CAPS section label standing alone.
@@ -3167,10 +3291,34 @@ def live_reference_ids(block: Optional[Dict[str, Any]]) -> List[str]:
 
 
 def character_reference_paths(spec: Optional[Dict[str, Any]] = None) -> List[str]:
-    """Character-sheet image paths for the image call (identity anchor)."""
+    """Character-sheet image paths for the image call (identity anchor).
+
+    A run that is a Character is shown its current look's TURNAROUND — the
+    person from four sides in a neutral A-pose on grey — and only that: the
+    idle hero pose never reaches the simulation, because a posed picture leaks
+    its pose (the old poster leaked its background too)."""
     spec = spec or get_spec()
+    meta = (spec[CHARACTER_KEY] or {}).get("_character") or {}
+    if meta:
+        ref = str(meta.get("turnaround_ref") or "")
+        return [ref] if ref and os.path.exists(ref) else []
     ids = spec[CHARACTER_KEY].get("reference_images", [])
     return [str(p) for p in (reference_path(i) for i in ids) if p]
+
+
+def face_reference_paths(spec: Optional[Dict[str, Any]] = None) -> List[str]:
+    """The bound character's face sheet (front + profile), for close-ups — a
+    fight's two-shot, a death — where a face 150 px across on the turnaround is
+    not enough to copy. [] for a run that is not a Character."""
+    spec = spec or get_spec()
+    meta = (spec[CHARACTER_KEY] or {}).get("_character") or {}
+    ref = str(meta.get("face_ref") or "")
+    return [ref] if ref and os.path.exists(ref) else []
+
+
+def is_turnaround_spec(spec: Optional[Dict[str, Any]] = None) -> bool:
+    spec = spec or get_spec()
+    return bool((spec[CHARACTER_KEY] or {}).get("_character"))
 
 
 def setting_reference_paths(spec: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -3232,11 +3380,20 @@ def reference_annotation(
         )
     if any(p in char_paths for p in paths):
         who = display_name(spec)
-        lines.append(
-            f"• One reference is a CHARACTER SHEET for {who} — the player's own character. "
-            "Copy their face, build, hair, and outfit exactly so they stay the same person. "
-            "Do NOT copy its background, pose, or framing."
-        )
+        if is_turnaround_spec(spec):
+            lines.append(
+                f"• One reference is a CHARACTER SHEET for {who} — the player's own character, "
+                "as a TURNAROUND: the same person from four sides (front, three-quarter, profile, "
+                "back) in a neutral A-pose on flat grey. Copy face, hair, build and every garment "
+                "exactly, from whichever side the camera sees them. Draw ONE of them — the A-pose, "
+                "the grey and the four-up layout are NOT the scene."
+            )
+        else:
+            lines.append(
+                f"• One reference is a CHARACTER SHEET for {who} — the player's own character. "
+                "Copy their face, build, hair, and outfit exactly so they stay the same person. "
+                "Do NOT copy its background, pose, or framing."
+            )
     if not lines:
         return ""
     return (
@@ -3260,10 +3417,24 @@ def reference_part_label(
     char_paths = set(character_reference_paths(spec))
     if path in char_paths:
         who = display_name(spec)
+        if is_turnaround_spec(spec):
+            return (
+                f"CHARACTER SHEET for {who} — a TURNAROUND: this one person from four sides "
+                "(front, three-quarter, profile, back) in a neutral A-pose on flat grey. Copy "
+                "the face, hair, build and EVERY garment, from whichever side the camera sees "
+                f"{who}. Draw ONE {who}, posed by the scene — the A-pose, the grey and the "
+                "four-up layout are NOT the scene. This is WHO to draw, not a previous game frame."
+            )
         return (
             f"CHARACTER SHEET for {who} — copy this face, body, hair, and clothes. "
             "Do NOT copy this photo's background, pose, or framing. "
             "This is WHO to draw, not a previous game frame."
+        )
+    if path in set(face_reference_paths(spec)):
+        who = display_name(spec)
+        return (
+            f"FACE SHEET for {who} — the same person's head, front and profile. Copy this "
+            "face exactly. Not a second person, not a framing."
         )
     if path in set(setting_reference_paths(spec)):
         return (
@@ -3351,11 +3522,17 @@ def keep_character_instruction(
         body = (
             f"\n\n🕹️ KEEP {who} IN FRAME:\n\n"
             f"A CHARACTER SHEET is attached. That sheet is who {who} is. "
-            "Copy face, build, hair, and outfit from the CHARACTER SHEET, "
+            + ("It is a four-view TURNAROUND in a neutral A-pose: draw ONE "
+               f"{who}, posed by the scene, seen from whichever side the camera "
+               "is on. " if is_turnaround_spec(spec) else "")
+            + "Copy face, build, hair, and outfit from the CHARACTER SHEET, "
             "NOT from any previous game frame. A previous frame may show a "
             f"different person — ignore that person. Draw {who}. "
             "Do not erase them. Do not render an empty environment plate."
         )
+        cover = face_cover_clause(spec)
+        if cover:
+            body += "\n" + cover
     else:
         body = (
             f"\n\n🕹️ KEEP {who} IN FRAME:\n\n"

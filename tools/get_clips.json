@@ -1,0 +1,375 @@
+{
+  "note": "Written by tools/refresh_get.py from tools/get_shoot.json. Which seconds of which recording make each /get clip; tools/cut_clips.py reads it.",
+  "sources": {
+    "run": "_claude_film/get-run-20260925-101518/master.mp4",
+    "create": "_claude_film/get-create-20260925-101518/master.mp4",
+    "key": "_claude_film/get-key-20260925-101518/master.mp4",
+    "swat": "_claude_film/get-swat-20260925-001657/master.mp4",
+    "cyber": "_claude_film/get-cyber-20260925-001657/master.mp4",
+    "wear": "_claude_film/get-wear-20260925-101518/master.mp4"
+  },
+  "clips": {
+    "hero": {
+      "label": "",
+      "poster_at": 0.04,
+      "sub": "SWAT \u00b7 Luka 'Grizzly' Novak",
+      "segments": [
+        {
+          "from": 475.16,
+          "to": 551.72,
+          "squeeze": true,
+          "hold": 0.6,
+          "src": "swat"
+        }
+      ]
+    },
+    "create": {
+      "label": "Anyone.",
+      "poster_at": 0.93,
+      "sub": "Three people, each from one line",
+      "segments": [
+        {
+          "from": 11.79,
+          "to": 13.39,
+          "caption": "a wildfire smokejumper in her thirties, soot-streaked yellow Nomex shirt, orange helmet under one arm, a pulaski axe over her shoulder",
+          "caption_box": [
+            0.315,
+            0.34,
+            0.25
+          ],
+          "type_on": true,
+          "src": "create"
+        },
+        {
+          "from": 13.39,
+          "to": 70.56,
+          "squeeze": true,
+          "hold": 0.9,
+          "keep": "end",
+          "max": 2.5,
+          "caption": "a wildfire smokejumper in her thirties, soot-streaked yellow Nomex shirt, orange helmet under one arm, a pulaski axe over her shoulder",
+          "caption_box": [
+            0.315,
+            0.34,
+            0.25
+          ],
+          "src": "create"
+        },
+        {
+          "from": 70.56,
+          "to": 73.96,
+          "caption": "a wildfire smokejumper in her thirties, soot-streaked yellow Nomex shirt, orange helmet under one arm, a pulaski axe over her shoulder",
+          "caption_box": [
+            0.315,
+            0.34,
+            0.25
+          ],
+          "src": "create"
+        },
+        {
+          "from": 78.29,
+          "to": 79.89,
+          "caption": "a retired Victorian deep-sea diver, brass helmet tucked under his arm, canvas suit patched with rivets",
+          "caption_box": [
+            0.315,
+            0.34,
+            0.25
+          ],
+          "type_on": true,
+          "src": "create"
+        },
+        {
+          "from": 79.89,
+          "to": 131.83,
+          "squeeze": true,
+          "hold": 0.9,
+          "keep": "end",
+          "max": 2.5,
+          "caption": "a retired Victorian deep-sea diver, brass helmet tucked under his arm, canvas suit patched with rivets",
+          "caption_box": [
+            0.315,
+            0.34,
+            0.25
+          ],
+          "src": "create"
+        },
+        {
+          "from": 131.83,
+          "to": 135.23,
+          "caption": "a retired Victorian deep-sea diver, brass helmet tucked under his arm, canvas suit patched with rivets",
+          "caption_box": [
+            0.315,
+            0.34,
+            0.25
+          ],
+          "src": "create"
+        },
+        {
+          "from": 139.52,
+          "to": 141.12,
+          "caption": "a street samurai in a neon rain poncho, chrome cybernetic left arm, a katana with a glowing edge",
+          "caption_box": [
+            0.315,
+            0.34,
+            0.25
+          ],
+          "type_on": true,
+          "src": "create"
+        },
+        {
+          "from": 141.12,
+          "to": 196.3,
+          "squeeze": true,
+          "hold": 0.9,
+          "keep": "end",
+          "max": 2.5,
+          "caption": "a street samurai in a neon rain poncho, chrome cybernetic left arm, a katana with a glowing edge",
+          "caption_box": [
+            0.315,
+            0.34,
+            0.25
+          ],
+          "src": "create"
+        },
+        {
+          "from": 196.3,
+          "to": 199.7,
+          "caption": "a street samurai in a neon rain poncho, chrome cybernetic left arm, a katana with a glowing edge",
+          "caption_box": [
+            0.315,
+            0.34,
+            0.25
+          ],
+          "src": "create"
+        }
+      ]
+    },
+    "wear": {
+      "label": "Armed.",
+      "poster_at": 0.85,
+      "sub": "Jason Fleece, piece by piece",
+      "segments": [
+        {
+          "from": 150.43,
+          "to": 155.7,
+          "squeeze": true,
+          "hold": 0.8,
+          "max": 2.2,
+          "src": "wear"
+        },
+        {
+          "from": 213.91,
+          "to": 217.02,
+          "src": "wear"
+        },
+        {
+          "from": 222.95,
+          "to": 228.12,
+          "squeeze": true,
+          "hold": 0.8,
+          "max": 2.2,
+          "src": "wear"
+        },
+        {
+          "from": 280.34,
+          "to": 283.45,
+          "src": "wear"
+        },
+        {
+          "from": 289.39,
+          "to": 294.69,
+          "squeeze": true,
+          "hold": 0.8,
+          "max": 2.2,
+          "src": "wear"
+        },
+        {
+          "from": 348.92,
+          "to": 352.01,
+          "src": "wear"
+        }
+      ]
+    },
+    "arrive": {
+      "label": "Anywhere.",
+      "poster_at": 0.2,
+      "sub": "The FIFTH CORNER \u00b7 SWAT \u00b7 CYBER HORROR",
+      "segments": [
+        {
+          "from": 100.07,
+          "to": 101.57,
+          "src": "run"
+        },
+        {
+          "from": 129.65,
+          "to": 150.51,
+          "squeeze": true,
+          "hold": 1.2,
+          "src": "run",
+          "max": 4.5
+        },
+        {
+          "from": 100.16,
+          "to": 101.66,
+          "src": "swat"
+        },
+        {
+          "from": 129.54,
+          "to": 147.62,
+          "squeeze": true,
+          "hold": 1.2,
+          "src": "swat",
+          "max": 4.5
+        },
+        {
+          "from": 91.5,
+          "to": 93.0,
+          "src": "cyber"
+        },
+        {
+          "from": 116.79,
+          "to": 135.31,
+          "squeeze": true,
+          "hold": 1.2,
+          "src": "cyber",
+          "max": 4.5
+        }
+      ]
+    },
+    "act": {
+      "label": "Anything.",
+      "poster_at": 0.12,
+      "sub": "SWAT \u00b7 CYBER HORROR",
+      "segments": [
+        {
+          "from": 418.49,
+          "to": 420.59,
+          "caption": "Start a conga line through the riot police",
+          "type_on": true,
+          "src": "swat"
+        },
+        {
+          "from": 420.59,
+          "to": 444.23,
+          "squeeze": true,
+          "hold": 1.6,
+          "caption": "Start a conga line through the riot police",
+          "keep": "end",
+          "src": "swat",
+          "max": 5.9
+        },
+        {
+          "from": 323.98,
+          "to": 326.08,
+          "caption": "Tame the biggest sewer rat and ride it down the tunnel",
+          "type_on": true,
+          "src": "cyber"
+        },
+        {
+          "from": 326.08,
+          "to": 349.03,
+          "squeeze": true,
+          "hold": 1.6,
+          "caption": "Tame the biggest sewer rat and ride it down the tunnel",
+          "keep": "end",
+          "src": "cyber",
+          "max": 5.9
+        },
+        {
+          "from": 220.35,
+          "to": 222.45,
+          "caption": "Hack the vending machine until it spits out grenades",
+          "type_on": true,
+          "src": "cyber"
+        },
+        {
+          "from": 222.45,
+          "to": 243.97,
+          "squeeze": true,
+          "hold": 1.6,
+          "caption": "Hack the vending machine until it spits out grenades",
+          "keep": "end",
+          "src": "cyber",
+          "max": 5.9
+        }
+      ]
+    },
+    "fight": {
+      "label": "Attack.",
+      "poster_at": 0.55,
+      "sub": "CYBER HORROR \u00b7 Jean-Luc de la Croix",
+      "segments": [
+        {
+          "from": 390.28,
+          "to": 452.34,
+          "squeeze": true,
+          "hold": 0.6,
+          "src": "cyber"
+        }
+      ]
+    },
+    "goal": {
+      "label": "Arrive.",
+      "poster_at": 0.6,
+      "sub": "The FIFTH CORNER \u00b7 Jason Fleece",
+      "segments": [
+        {
+          "from": 454.19,
+          "to": 672.41,
+          "squeeze": true,
+          "hold": 0.7,
+          "max": 9.0,
+          "src": "run"
+        },
+        {
+          "from": 670.61,
+          "to": 700.83,
+          "squeeze": true,
+          "hold": 0.7,
+          "max": 14.0,
+          "src": "run"
+        },
+        {
+          "from": 709.59,
+          "to": 717.09,
+          "squeeze": true,
+          "hold": 0.7,
+          "src": "run"
+        }
+      ]
+    },
+    "key": {
+      "label": "Access.",
+      "poster_at": 0.55,
+      "segments": [
+        {
+          "from": 2.25,
+          "to": 14.12,
+          "squeeze": true,
+          "hold": 0.8,
+          "crop": [
+            1100,
+            30,
+            820,
+            461
+          ],
+          "src": "key"
+        },
+        {
+          "from": 17.33,
+          "to": 18.13,
+          "squeeze": true,
+          "hold": 0.8,
+          "src": "key"
+        },
+        {
+          "from": 144.28,
+          "to": 149.08,
+          "squeeze": true,
+          "hold": 0.8,
+          "src": "key"
+        }
+      ]
+    }
+  }
+}

@@ -398,7 +398,7 @@ def generate_choices(
     
     # DEBUG: Log API key status
     if gemini_api_key:
-        print(f"[CHOICES DEBUG] API key loaded from engine: {gemini_api_key[:20]}...{gemini_api_key[-8:]} (len={len(gemini_api_key)})")
+        print("[CHOICES DEBUG] API key loaded from engine")
     else:
         print(f"[CHOICES DEBUG] ERROR - API key is EMPTY or None!")
     

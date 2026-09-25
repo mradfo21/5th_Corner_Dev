@@ -624,6 +624,16 @@
       if (eyebrow) body.dataset.lane = eyebrow;
       btn.appendChild(num);
       btn.appendChild(body);
+      // The chance this row lands, when the caller has one (an encounter's
+      // slate — encounter.slate_odds). Drawn after the line, in the game's
+      // own mono, and only ever the server's number.
+      const odds = item && typeof item === "object" ? Number(item.odds) : NaN;
+      if (Number.isFinite(odds)) {
+        const pct = document.createElement("span");
+        pct.className = "moment-choice-odds";
+        pct.textContent = `${Math.max(0, Math.min(100, Math.round(odds)))}%`;
+        btn.appendChild(pct);
+      }
       if (locked) {
         btn.disabled = true;
         btn.setAttribute("aria-disabled", "true");

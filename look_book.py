@@ -182,13 +182,29 @@ def world_key() -> str:
 def enabled() -> bool:
     if not LOOK_BOOK_ENABLED:
         return False
+    # Never under a test run. The level now WAITS for its book (api_reset ->
+    # prepare_level_look_book), so a suite that resets with a real key in the
+    # environment would spend on image calls and sit for a minute per reset.
+    # Tests that exercise the book patch enabled() themselves.
+    try:
+        import authoring_sandbox
+        if authoring_sandbox.engaged_at() is not None:
+            return False
+    except Exception:
+        pass
     try:
         import ai_provider_manager
         if ai_provider_manager.is_mock_active("image") or ai_provider_manager.is_mock_active("chat"):
             return False
     except Exception:
         pass
-    return bool(_api_key())
+    if _api_key():
+        return True
+    try:
+        import provider_bridge   # OpenAI chosen in ACCOUNT answers the book's calls
+        return provider_bridge.active()
+    except Exception:
+        return False
 
 
 def _api_key() -> str:
@@ -510,7 +526,11 @@ SHEET_LABEL = (
     "the frame text names someone or something the sheet designs, draw it the "
     "way the sheet designs it. Do NOT reproduce the sheet's layout, gutters, "
     "borders or any single still's composition, and do not add anyone the "
-    "frame text does not call for. The output is ONE photograph, not a grid."
+    "frame text does not call for. The output is ONE photograph, not a grid. "
+    "THE PLAYER IS NEVER COPIED FROM THIS SHEET: the sheet was shot before "
+    "they last changed, and its protagonist can be wearing an older outfit or "
+    "show a face the player now covers. Who the player is and what they have "
+    "on comes only from the CHARACTER SHEET (the turnaround)."
 )
 
 
@@ -641,6 +661,108 @@ def prebuild_for_generate(session_id: str = "default") -> bool:
     return spawn(session_id, reason="generate")
 
 
+# The level does not start without its book (asked: "make sure the look book
+# generation is completed BEFORE starting the level. Even if it adds to the
+# wait times"). This caps the wait so a stuck build can never hold a run
+# forever; past it the level starts and frames go without the book.
+LOOK_BOOK_WAIT_S = float(os.getenv("SOMEWHERE_LOOK_BOOK_WAIT_S", "300") or 300)
+
+# A build has a budget, and every call inside it is cut to what is left. The
+# first Fifth Corner run in the harness sat on "shooting the world sheet and
+# the roster sheet" past five minutes: both sheet calls hung on a 300s socket
+# timeout with a retry behind each, so the book could never beat the level's
+# wait and the run started on nothing. Now the whole build ends inside
+# LOOK_BOOK_BUDGET_S — whatever landed by then is the book — and no single
+# image call can hold for longer than SHEET_TIMEOUT_S / PLATE_TIMEOUT_S, wall
+# clock (see _post).
+LOOK_BOOK_BUDGET_S = float(os.getenv("SOMEWHERE_LOOK_BOOK_BUDGET_S", "240") or 240)
+SHEET_TIMEOUT_S = 150
+PLATE_TIMEOUT_S = 90
+
+
+def _left(book: dict) -> float:
+    """Seconds this build has left of its budget."""
+    start = book.get("started") or book.get("created") or time.time()
+    return float(start) + LOOK_BOOK_BUDGET_S - time.time()
+
+
+def _cut(book: dict, cap: float) -> int:
+    """A call's timeout: its own cap, or what the build has left if that is less."""
+    return int(max(10.0, min(float(cap), _left(book))))
+
+
+def prepare_for_level(session_id: str = "default") -> bool:
+    """Start this World's book for the run about to begin, ahead of the reset.
+
+    The client calls this before /api/reset (via /api/look_book/prepare, with
+    the World already bound) and waits on it with the loading screen up; the
+    reset then claims the book (reset_for_new_run) instead of rolling another.
+    Calling it again while that book is under way, or once it is done, starts
+    nothing. Returns whether a book is (or will be) there.
+    """
+    if not enabled() or str(session_id or "").startswith(_FRAME_SESSION_PREFIX):
+        return False
+    key = world_key()
+    book = load(session_id)
+    if _PREBUILT.get(session_id) == key and (
+            _BUILDING.get(_slot(session_id)) == key
+            or (book.get("world_key") == key and book.get("status") in ("roster", "brief", "shooting", "ready"))):
+        return True
+    try:
+        shutil.rmtree(book_dir(session_id), ignore_errors=True)
+    except Exception:
+        pass
+    _PREBUILT[session_id] = key
+    spawn(session_id, reason="new run")
+    return True
+
+
+def ensure_for_level(session_id: str = "default", reason: str = "arrival") -> bool:
+    """A World the run has just arrived in gets its book if it has none.
+
+    Mid-run arrivals (a cutscene into another World, or a direct edge) bind a
+    World the run's book was never shot for. The shelf may already hold this
+    World's book from earlier in the run; otherwise shoot one now.
+    """
+    if not enabled() or str(session_id or "").startswith(_FRAME_SESSION_PREFIX):
+        return False
+    key = world_key()
+    if _BUILDING.get(_slot(session_id)) == key:
+        return True
+    book = load(session_id)
+    if book.get("world_key") == key and book.get("status") == "ready":
+        return True
+    return spawn(session_id, reason=reason)
+
+
+def wait_ready(session_id: str = "default", timeout: Optional[float] = None) -> str:
+    """Block until the bound World's book is finished. Returns its status.
+
+    "ready" or "failed" when the build ended, "none" when nothing is being
+    built for this World, "timeout" past ``timeout`` (LOOK_BOOK_WAIT_S), "off"
+    when the book is switched off. Never call it holding a lock other runs need.
+    """
+    if not enabled():
+        return "off"
+    limit = LOOK_BOOK_WAIT_S if timeout is None else float(timeout)
+    deadline = time.time() + max(0.0, limit)
+    waited = False
+    while True:
+        key = world_key()
+        if _BUILDING.get(_slot(session_id)) != key:
+            book = load(session_id)
+            status = str(book.get("status") or "none") if book.get("world_key") == key else "none"
+            if waited:
+                print(f"[LOOK BOOK] the level waited for its book: {status}", flush=True)
+            return status
+        if time.time() >= deadline:
+            print(f"[LOOK BOOK] gave up waiting after {limit:.0f}s; the level starts without it",
+                  flush=True)
+            return "timeout"
+        waited = True
+        time.sleep(0.5)
+
+
 def reset_for_new_run(session_id: str = "default") -> None:
     """A new run gets a new book: new roster, new cast. Called from reset."""
     key = world_key()
@@ -648,7 +770,7 @@ def reset_for_new_run(session_id: str = "default") -> None:
         book = load(session_id)
         if _BUILDING.get(_slot(session_id)) == key or (
                 book.get("world_key") == key and book.get("status") in ("roster", "brief", "shooting", "ready")):
-            print("[LOOK BOOK] the run takes the book GENERATE shot", flush=True)
+            print("[LOOK BOOK] the run takes the book already shot for it", flush=True)
             return
     # Only this World's shelf: the others' books stay for the editor.
     try:
@@ -743,10 +865,20 @@ def _stage_brief(session_id: str, book: dict) -> None:
         })
     book.update({"look_rules": brief.get("look_rules") or {},
                  "frames": brief.get("frames") or [],
-                 "roster_looks": looks})
+                 "roster_looks": looks,
+                 "items": _clean_items(brief.get("items"))})
     book["timings"]["brief"] = round(time.time() - t1, 1)
-    _log(session_id, book, f"brief: {len(book['frames'])} frames, {len(looks)} designed looks "
+    _log(session_id, book, f"brief: {len(book['frames'])} frames, {len(looks)} designed looks, "
+                           f"{len(book.get('items') or [])} treasures "
                            f"in {book['timings']['brief']}s", "brief")
+    kinds = [i["kind"] for i in book.get("items") or []]
+    for it in book.get("items") or []:
+        print(f"[LOOK BOOK] {it['kind']}: {it['name']} — "
+              f"{it.get('power') or it.get('use')}", flush=True)
+    missing = [k for k in ITEM_KINDS[:3] if k not in kinds]
+    if missing:
+        print(f"[LOOK BOOK] the gear has no {', '.join(missing)} in it — "
+              f"the run can only hand out {', '.join(sorted(set(kinds)))}", flush=True)
 
 
 def _shoot(session_id: str, book: dict, name: str, fn) -> Optional[bytes]:
@@ -754,6 +886,9 @@ def _shoot(session_id: str, book: dict, name: str, fn) -> Optional[bytes]:
     # (seen on the first live build — the world sheet simply was not there),
     # and a second ask almost always lands.
     for attempt in (1, 2):
+        if attempt == 2 and _left(book) < 30:
+            print(f"[LOOK BOOK] {name} sheet: no time left in the budget for a second ask", flush=True)
+            return None
         try:
             data = fn(session_id, book)
         except Exception as err:
@@ -853,9 +988,11 @@ def _finish(session_id: str, book: dict, key: str) -> None:
     # good book whenever the editor was open during a build.
     book["status"] = "ready" if ok else "failed"
     book["timings"]["total"] = round(time.time() - (book.get("started") or time.time()), 1)
+    its = book.get("items") or []
     _log(session_id, book, f"{book['status']} in {book['timings']['total']}s — world sheet "
                            f"{'yes' if book.get('world_sheet') else 'NO'}, "
-                           f"{sum(1 for e in looks if e.get('plate'))}/{len(looks)} roster plates", "done")
+                           f"{sum(1 for e in looks if e.get('plate'))}/{len(looks)} roster plates, "
+                           f"{sum(1 for e in its if e.get('plate'))}/{len(its)} treasures", "done")
 
 
 def _build(session_id: str, key: str, reason: str) -> None:
@@ -878,12 +1015,17 @@ def _build(session_id: str, key: str, reason: str) -> None:
 
     # Two sheets, shot in parallel, then stored in order.
     book["status"] = "shooting"
-    _log(session_id, book, "shooting the world sheet and the roster sheet…", "shoot")
+    _log(session_id, book, "shooting the world, the cast and the props…", "shoot")
     t2 = time.time()
     results: Dict[str, Optional[bytes]] = {}
     jobs = [("world", _shoot_world_sheet)]
     if book.get("roster_looks"):
         jobs.append(("roster", _shoot_roster_sheet))
+    # The treasures ride along in the same parallel batch, so six objects with
+    # pictures cost one image call and almost no wall clock on a loading
+    # screen the run already waits through.
+    if book.get("items"):
+        jobs.append(("items", _shoot_item_sheet))
     threads = [threading.Thread(target=_carry(lambda n=n, f=f: results.__setitem__(n, _shoot(session_id, book, n, f))),
                                 daemon=True) for n, f in jobs]
     for th in threads:
@@ -897,6 +1039,8 @@ def _build(session_id: str, key: str, reason: str) -> None:
         _log(session_id, book, "world sheet: the model returned no image twice", "world")
     if book.get("roster_looks"):
         _stage_roster_sheet(session_id, book, results.get("roster") or b"")
+    if book.get("items"):
+        _stage_item_sheet(session_id, book, results.get("items") or b"")
     _finish(session_id, book, key)
 
 
@@ -930,8 +1074,10 @@ def _rebuild_part(session_id: str, key: str, book: dict, part: str, plate: Optio
     _finish(session_id, book, key)
 
 
-def _place_crops(d: Path, cells: list, looks: list) -> Dict[int, int]:
-    """roster index -> crop index, checked by eye on the crops themselves.
+def _place_crops(d: Path, cells: list, looks: list, *, key: str = "kind",
+                 what: str = "roster", check_name: str = "placement_check.jpg",
+                 strictly: str = "") -> Dict[int, int]:
+    """entry index -> crop index, checked by eye on the crops themselves.
 
     The crops are laid out on a montage WE number, so the answer cannot be
     fooled by numbers the sheet model printed, and a crop that caught half of
@@ -954,18 +1100,20 @@ def _place_crops(d: Path, cells: list, looks: list) -> Dict[int, int]:
         sheet.paste(t, (x, y))
         draw.rectangle((x, y + th + 4, x + 60, y + th + 40), fill=(255, 255, 255))
         draw.text((x + 8, y + th + 10), f"#{k + 1}", fill=(0, 0, 0))
-    path = d / "placement_check.jpg"
+    path = d / check_name
     sheet.save(path, quality=88)
-    menu = "\n".join(f"{i + 1}. {e['kind']} — {e.get('look') or ''}" for i, e in enumerate(looks))
+    menu = "\n".join(f"{i + 1}. {e.get(key)} — {e.get('look') or ''}"
+                     for i, e in enumerate(looks))
+    strictly = strictly or ("Be strict: a coyote is not a dog pack, a guard is "
+                            "not a soldier squad, a lab coat is not a hazmat suit.")
     prompt = (
         f"Each numbered tile (#1..#{n}, number in the white box under it) is one "
-        "crop from a casting sheet. Below is the list of roster entries.\n\n"
+        f"crop from a {what} sheet. Below is the list of entries.\n\n"
         + menu + "\n\n"
         "For EVERY tile, give the number of the list entry it clearly shows, or 0 "
         "if it shows none of them, shows parts of two different frames, is cut "
-        "off so the subject is not whole, or is blank. Be strict: a coyote is not "
-        "a dog pack, a guard is not a soldier squad, a lab coat is not a hazmat "
-        f"suit. Return JSON: {{\"tiles\": [e1, e2, ...]}} with exactly {n} numbers."
+        "off so the subject is not whole, or is blank. " + strictly + " "
+        f"Return JSON: {{\"tiles\": [e1, e2, ...]}} with exactly {n} numbers."
     )
     try:
         data = _post("gemini-3.5-flash", [_img_part(str(path), 1600), {"text": prompt}],
@@ -986,7 +1134,7 @@ def _place_crops(d: Path, cells: list, looks: list) -> Dict[int, int]:
         if 0 <= k < len(looks) and k not in out and cell < n:
             out[k] = cell
     moved = sum(1 for k, c in out.items() if k != c)
-    print(f"[LOOK BOOK] roster crops: {n} cut, {len(out)}/{len(looks)} placed"
+    print(f"[LOOK BOOK] {what} crops: {n} cut, {len(out)}/{len(looks)} placed"
           f"{f', {moved} out of order' if moved else ''}", flush=True)
     return out
 
@@ -1010,10 +1158,13 @@ def _shoot_single_plates(session_id: str, book: dict, d: Path, idxs: List[int]) 
         parts = ([{"text": "PROTAGONIST (for contrast only — do not draw them):"}] + char[1:2]
                  if char else []) + [{"text": prompt}]
         for attempt in (1, 2):
+            if _left(book) < 20:
+                print(f"[LOOK BOOK] single plate {i + 1}: the budget is spent", flush=True)
+                return
             try:
                 data = _post(SHEET_MODEL, parts,
                              {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": "4:3", "imageSize": "1K"}},
-                             timeout=180, operation="look_book_plate", service="image")
+                             timeout=_cut(book, PLATE_TIMEOUT_S), operation="look_book_plate", service="image")
                 img = _image_of(data)
                 if img:
                     from PIL import Image
@@ -1062,8 +1213,25 @@ def _post(model: str, parts: list, gen_cfg: dict, timeout: int, operation: str,
     }
     ok, err, data = False, None, {}
     try:
-        r = requests.post(_API.format(model=model), headers={"x-goog-api-key": _api_key()},
-                          json=body, timeout=timeout)
+        # requests' timeout is per socket read, not per call: a response that
+        # trickles in never trips it. The call runs on its own thread and is
+        # abandoned at the wall-clock limit.
+        box: Dict[str, Any] = {}
+
+        def call():
+            try:
+                box["r"] = requests.post(_API.format(model=model), headers={"x-goog-api-key": _api_key()},
+                                         json=body, timeout=(15, timeout))
+            except Exception as e:  # noqa: BLE001
+                box["e"] = e
+        th = threading.Thread(target=call, daemon=True)
+        th.start()
+        th.join(timeout + 5)
+        if th.is_alive():
+            raise TimeoutError(f"no answer in {timeout}s")
+        if "e" in box:
+            raise box["e"]
+        r = box["r"]
         if r.status_code != 200:
             err = f"{r.status_code} {r.text[:200]}"
         else:
@@ -1193,6 +1361,17 @@ Use ONLY what this world already contains. Sharpen it; do not replace it. Everyt
 def _write_brief(session_id: str, rost: List[str]) -> dict:
     P = _prompts()
     pc = _as_dict(P.get("player_character"))
+    # A run that is a Character designs ITS protagonist, not the World's old
+    # cast sheet — the brief wrote "Jason Fleece, PRESS flak jacket" into the
+    # frames of a run whose player was a masked cyborg, and the sheet then rode
+    # beside every turn saying so.
+    try:
+        import game_identity
+        if game_identity.bound_character().get("id"):
+            _pc = game_identity.get_spec()[game_identity.CHARACTER_KEY]
+            pc = {k: _pc.get(k) for k in ("name", "role", "appearance", "wardrobe", "signature_gear", "demeanor")}
+    except Exception:
+        pass
     st = _as_dict(P.get("setting_reference"))
     prompt = f"""{BRIEF_INSTRUCTIONS}
 
@@ -1212,8 +1391,18 @@ ROW 3 SETS — three distinct locations from the bible, empty of people, dressed
 
 For each frame: n, row, title (<=4 words, caps), subject, staging (pose/action + camera), light, design_specifics (3-5 concrete, visual, reusable decisions: exact colours, materials, markings, shapes), story (one clause).
 look_rules: palette (5 named colours with hex), film (stock/grain/contrast), lens, motifs (3 recurring visual motifs).
+items: NINE PIECES OF GEAR — the loot of this world, in two tiers. Think of the best loot in a game you love — it is specific, it has a story stuck to it, it is visibly used, and the moment you see it you know what it is for.
+SIX TREASURES (tier "treasure") — what the player crosses a level to get, the things a player would be THRILLED to find: gear that changes what they can do, drawn out of this world's own materials and history — and they must cover at least one of each of the first three kinds:
+  weapon — what they fight with. Not a generic gun: this world's weapon.
+  armor — what keeps them alive. Worn or carried, and visibly so.
+  upgrade — something that permanently changes what they are capable of: sight, reach, breath, speed, access.
+  tool — opens the world: cuts, climbs, unlocks, crosses.
+  relic — proves or reveals something. The story object.
+THREE SPOILS (tier "spoil") — what this world's hostiles carry, and drop when the player beats them: lesser than a treasure but REAL and useful — a sidearm or blade, a plate or helmet, a stim or filter, a pass or a tool. Named with the same care; each clearly the kind of thing one of the roster above would have on them.
+For each: name (2-3 words, Title Case, the label printed on the picture — a NAME with character, never a generic noun like Core, Module, Key, Device or Unit on its own); tier (treasure or spoil); kind (exactly one of weapon, armor, upgrade, tool, relic); look (ONE sentence for an image prompt: what it is, what it is made of, its size against a hand, its wear and damage — the object alone, no setting, no proper nouns); power (ONE short line, the way a game states what a thing does for you — concrete and specific, never a stat and never vague: "Cuts a sealed door in one pass", "Lets you breathe where the air is bad", "Shows what is behind a wall"); use (one plain sentence on how it is actually used); worth (one sentence: why someone in this world would kill for it).
+Each must be small enough for one person to carry out in their hands. All nine clearly different from each other — never two of the same idea.
 roster_looks: for EVERY roster entry, in the same order: kind (copied exactly), look (<=28 words, a visible design consistent with the sheet — what the game draws when this arrives; make each entry look clearly different from the others and from the protagonist), terms (2-4 lowercase nouns a narrator would use for it in a sentence — always include the plain everyday noun, e.g. "guard", "sentry", "rabbit" for a jackrabbit; never words that would also describe the protagonist, and never words that fit any creature or body, like figure, man, person, creature, beast, carcass, mutant).
-Return JSON: {{"look_rules":{{...}},"frames":[...],"roster_looks":[{{"kind":"...","look":"...","terms":["..."]}}]}}"""
+Return JSON: {{"look_rules":{{...}},"frames":[...],"roster_looks":[{{"kind":"...","look":"...","terms":["..."]}}],"items":[{{"name":"...","tier":"treasure|spoil","kind":"weapon|armor|upgrade|tool|relic","look":"...","power":"...","use":"...","worth":"..."}}]}}"""
     last = None
     for model in BRIEF_MODELS:
         try:
@@ -1266,6 +1455,21 @@ def _character_parts() -> list:
 
 
 def _protagonist_line() -> str:
+    # A run that is a Character (characters.py) is that character, whatever
+    # the World's snapshot of the old cast sheet says: the roster is designed
+    # to look unlike THEM.
+    try:
+        import game_identity
+        meta = game_identity.bound_character()
+        if meta.get("id"):
+            spec = game_identity.get_spec()
+            pc = spec[game_identity.CHARACTER_KEY]
+            look = str(meta.get("wardrobe_line") or pc.get("wardrobe") or "")
+            bits = ", ".join(b for b in (str(pc.get("appearance") or ""), look) if b)
+            return f"The protagonist is {pc.get('name') or 'the protagonist'}: {bits}." if bits \
+                else f"The protagonist is {pc.get('name') or 'the protagonist'}."
+    except Exception:
+        pass
     pc = _as_dict(_prompts().get("player_character"))
     look = ", ".join(str(pc.get(k)) for k in ("appearance", "wardrobe", "signature_gear") if pc.get(k))
     name = pc.get("name") or "the protagonist"
@@ -1297,8 +1501,377 @@ PALETTE: {json.dumps(lr.get('palette') or {})}. RECURRING MOTIFS: {'; '.join(map
 Inside the frames, avoid: {neg}"""
     data = _post(SHEET_MODEL, _character_parts() + [{"text": prompt}],
                  {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": "4:3", "imageSize": SHEET_SIZE}},
-                 timeout=300, operation="look_book_world_sheet", service="image")
+                 timeout=_cut(book, SHEET_TIMEOUT_S), operation="look_book_world_sheet", service="image")
     return _image_of(data)
+
+
+# ── THE WORLD'S TREASURES ───────────────────────────────────────────────────
+#
+# Six objects of extreme value, designed beside the cast and the sets by the
+# same production-designer pass, shot on their own sheet in the same medium,
+# and handed out as goal rewards (goal.advance draws from this table).
+#
+# They live here rather than being invented per goal because a reward is only
+# worth crossing a level for if it is SCARCE and belongs to this world. An
+# object invented to suit the place it is in is worth nothing; one drawn from
+# a table of six that this world authored for itself is a find.
+#
+# The old inventory was twelve hardcoded nouns with emoji (items.py), keyword
+# matched out of the narrator's prose — the one system in a game that
+# generates every pixel that had no picture in it.
+
+ITEM_COUNT = int(os.getenv("SOMEWHERE_LOOK_BOOK_ITEMS", "9"))
+# The first six are TREASURES — what a goal holds; the rest are SPOILS, what
+# a beaten hostile drops (goal.award_spoil). A brief that did not label its
+# rows is tiered by position.
+TREASURE_COUNT = 6
+ITEM_TIERS = ("treasure", "spoil")
+ITEM_PLATE_MAX = 512
+# What a piece of gear is FOR, in the language a player already reads. The
+# first three are the spread the brief insists on — a run that hands out three
+# relics in a row has given the player nothing to do with them.
+ITEM_KINDS = ("weapon", "armor", "upgrade", "tool", "relic")
+
+
+def _clean_items(raw: Any) -> List[dict]:
+    """The brief's item rows, tidied. Anything without a name and a look is
+    dropped: a treasure with no picture prompt cannot be shot."""
+    out: List[dict] = []
+    seen = set()
+    for row in (raw or []):
+        if not isinstance(row, dict):
+            continue
+        name = re.sub(r"\s+", " ", str(row.get("name") or "").strip())[:40]
+        look = str(row.get("look") or "").strip()[:300]
+        if not name or not look:
+            continue
+        k = _norm(name)
+        if k in seen:
+            continue
+        seen.add(k)
+        kind = _norm(row.get("kind"))
+        if kind not in ITEM_KINDS:
+            # Unlabelled gear still exists; it just does not get to claim a
+            # slot in the spread. "relic" is the honest default for a thing
+            # whose use nobody stated.
+            kind = "relic"
+        tier = _norm(row.get("tier"))
+        if tier not in ITEM_TIERS:
+            tier = "treasure" if len(out) < TREASURE_COUNT else "spoil"
+        out.append({"name": name, "kind": kind, "tier": tier, "look": look,
+                    "power": str(row.get("power") or "").strip()[:160],
+                    "use": str(row.get("use") or "").strip()[:220],
+                    "worth": str(row.get("worth") or "").strip()[:220]})
+        if len(out) >= ITEM_COUNT:
+            break
+    return out
+
+
+def items(session_id: str = "default") -> List[dict]:
+    """This world's treasures, with their pictures where the sheet delivered
+    one. [] when the book is not ready — the caller falls back to inventing."""
+    book = current(session_id, rebuild_if_stale=False)
+    if not isinstance(book, dict) or book.get("status") != "ready":
+        return []
+    out = []
+    for it in (book.get("items") or []):
+        row = dict(it)
+        row["plate"] = _file(session_id, it.get("plate") or "") or ""
+        row["ref"] = _file(session_id, it.get("ref") or "") or ""
+        row["tier"] = row.get("tier") or "treasure"
+        out.append(row)
+    return out
+
+
+def plate_url(path: Any) -> str:
+    """A plate on disk as the client fetches it: /api/look_book/<run>/file/<name>.
+
+    Books live under sessions/<run>/look_book/<world>/, outside images/, so a
+    disk path is no use to the browser — and the path handed to goal.py once
+    went out as ?path=C:\\... to a route that never existed, which is why every
+    find card showed a broken picture."""
+    p = Path(str(path or "").strip())
+    if not p.name:
+        return ""
+    try:
+        slug, book, run = p.parent.name, p.parent.parent.name, p.parent.parent.parent.name
+    except Exception:
+        return ""
+    if book != "look_book" or not run or not slug:
+        return ""
+    v = ""
+    try:
+        v = f"&t={int(p.stat().st_mtime)}"
+    except Exception:
+        pass
+    return f"/api/look_book/{run}/file/{p.name}?w={slug}{v}"
+
+
+# The props are shot on a flat key colour and cut out, so the pack shows the
+# THING — item art, the way a game shows loot — and not a photograph of a
+# table with a thing on it. "they need to be with a transparent background so
+# it doesn't seem like a random ai stock photo. that look is awful" (Matt,
+# 2026-09-22). Green unless the world or its gear is green, then magenta.
+KEY_COLOURS = {"green": ("#00FF00", (0, 255, 0)), "magenta": ("#FF00FF", (255, 0, 255))}
+_GREEN_WORDS = r"\b(green|greens|emerald|jade|lime|olive|moss|mossy|verdigris|chartreuse|viridian|toxic)\b"
+_PINK_WORDS = r"\b(magenta|pink|fuchsia|violet|purple|neon pink|hot pink|orchid|mauve|lilac)\b"
+
+
+def _key_colour(book: dict) -> str:
+    """Which flat colour the props are shot on: the one this world uses least."""
+    import colorsys
+    blob = (json.dumps(book.get("look_rules") or {}) + " "
+            + " ".join(str(i.get("look") or "") for i in (book.get("items") or []))).lower()
+    score = {"green": len(re.findall(_GREEN_WORDS, blob)),
+             "magenta": len(re.findall(_PINK_WORDS, blob))}
+    for h in re.findall(r"#([0-9a-f]{6})\b", blob):
+        r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+        hue, sat, val = colorsys.rgb_to_hsv(r, g, b)
+        if sat < 0.35 or val < 0.25:
+            continue
+        if 0.2 < hue < 0.47:
+            score["green"] += 2
+        elif 0.75 < hue < 0.95:
+            score["magenta"] += 2
+    return "magenta" if score["green"] > score["magenta"] else "green"
+
+
+def _cut_out(im, *, feather: float = 0.6):
+    """One props-sheet frame -> the object alone on transparency, or None.
+
+    Keyed on chroma, not on RGB distance: the background is found on the
+    frame's own border (whatever key the model actually painted, not the one
+    it was asked for), and a pixel is background in proportion to how far its
+    colour points the SAME WAY as that key and no other way. Luma is left out
+    of it, so a soft shadow on the key goes with the key instead of leaving a
+    dark green halo under the object, while a dark olive strap — which points
+    another way — stays. The edge band is then despilled (the key's hue taken
+    out of it), which is what stops the green fringe that makes a cut-out look
+    pasted on.
+
+    None when the frame is not on a key at all (a model that painted a room
+    or a white sweep) or when what is left is not one object of sensible size:
+    a missing plate shows a monogram, a bad one shows a lie."""
+    try:
+        import numpy as np
+        from PIL import Image, ImageFilter
+    except Exception:
+        return None
+    rgb = np.asarray(im.convert("RGB")).astype(np.float32)
+    H, W = rgb.shape[:2]
+    if H < 16 or W < 16:
+        return None
+    b = max(2, int(min(H, W) * 0.03))
+    ring = np.concatenate([rgb[:b].reshape(-1, 3), rgb[-b:].reshape(-1, 3),
+                           rgb[:, :b].reshape(-1, 3), rgb[:, -b:].reshape(-1, 3)])
+    bg = np.median(ring, axis=0)
+
+    def ycc(a):
+        r, g, bl = a[..., 0], a[..., 1], a[..., 2]
+        y = 0.299 * r + 0.587 * g + 0.114 * bl
+        cb = -0.168736 * r - 0.331264 * g + 0.5 * bl
+        cr = 0.5 * r - 0.418688 * g - 0.081312 * bl
+        return y, np.stack([cb, cr], -1)
+
+    ybg, kv = ycc(bg)
+    kn = float(np.linalg.norm(kv))
+    # A grey, white or black border is not a key: there is nothing to cut on.
+    if kn < 45:
+        return None
+    # ...and a border that is a mess of colours is a room, not a key.
+    _, ring_c = ycc(ring)
+    spread = float(np.median(np.linalg.norm(ring_c - kv, axis=-1)))
+    if spread > kn * 0.35:
+        return None
+    khat = kv / kn
+    kperp = np.array([-khat[1], khat[0]], dtype=np.float32)
+    y, c = ycc(rgb)
+    p = c @ khat
+    q = np.abs(c @ kperp)
+    key_abs = (p - 1.25 * q) / kn
+    # The same measure with the pixel's brightness brought up to the key's,
+    # so a shadow cast ON the key reads as key. Trusted only where there is
+    # enough light to have a colour at all.
+    scale = (float(ybg) / np.maximum(y, 1.0))[..., None]
+    cr_ = c * scale
+    key_rel = ((cr_ @ khat) - 1.25 * np.abs(cr_ @ kperp)) / kn
+    trust = np.clip((y - 12.0) / 30.0, 0.0, 1.0)
+    keyness = np.maximum(key_abs, np.minimum(key_rel, 1.0) * trust)
+    alpha = 1.0 - np.clip((keyness - 0.12) / (0.45 - 0.12), 0.0, 1.0)
+    a8 = Image.fromarray((alpha * 255).astype(np.uint8), "L")
+    # Salt from grain on the key, and pinholes in the object.
+    a8 = a8.filter(ImageFilter.MedianFilter(3))
+    if feather:
+        a8 = a8.filter(ImageFilter.GaussianBlur(feather))
+    alpha = np.asarray(a8).astype(np.float32) / 255.0
+    # A thing the model let run off its frame (a lanyard out of the top, a
+    # barrel past the side) would end in a straight cut. It fades out instead.
+    fade = max(3.0, min(H, W) * 0.05)
+    yy = np.minimum(np.arange(H), np.arange(H)[::-1])[:, None]
+    xx = np.minimum(np.arange(W), np.arange(W)[::-1])[None, :]
+    alpha = alpha * np.clip(np.minimum(yy, xx) / fade, 0.0, 1.0)
+    solid = alpha > 0.5
+    cover = float(solid.mean())
+    if cover < 0.02 or cover > 0.85:
+        return None
+    ys, xs = np.nonzero(alpha > 0.03)
+    y0, y1, x0, x1 = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
+    # Despill the edge band: take the key's hue out of anything near a
+    # transparent pixel, keep its brightness.
+    edge_src = Image.fromarray(((alpha < 0.98) * 255).astype(np.uint8), "L")
+    band = np.asarray(edge_src.filter(ImageFilter.MaxFilter(5))).astype(bool)
+    pk = np.maximum(c @ khat, 0.0)
+    c2 = c - pk[..., None] * khat[None, None, :] * band[..., None]
+    cb, cr = c2[..., 0], c2[..., 1]
+    out = np.stack([y + 1.402 * cr,
+                    y - 0.344136 * cb - 0.714136 * cr,
+                    y + 1.772 * cb], -1)
+    out = np.clip(out, 0, 255)
+    # ...and the key seen THROUGH the object (clear plastic, glass, a gap in a
+    # grille) is taken out everywhere, in the classic colour-safe way: for a
+    # magenta key, whatever red AND blue stand above green; for a green key,
+    # whatever green stands above both red and blue. A red wax seal or a
+    # yellow cap is untouched; a pink cast on a clear reel goes grey.
+    r_, g_, b_ = out[..., 0], out[..., 1], out[..., 2]
+    if bg[1] > bg[0] + 40 and bg[1] > bg[2] + 40:            # a green key
+        spill = np.maximum(g_ - np.maximum(r_, b_), 0.0)
+        out[..., 1] = g_ - spill
+    elif bg[0] > bg[1] + 40 and bg[2] > bg[1] + 40:          # a magenta key
+        spill = np.maximum(np.minimum(r_, b_) - g_, 0.0)
+        out[..., 0] = r_ - spill
+        out[..., 2] = b_ - spill
+    out[alpha <= 0.01] = 0
+    rgba = np.dstack([out, alpha * 255]).astype(np.uint8)
+    cut = Image.fromarray(rgba, "RGBA")
+    # Framed like inventory art: the object centred on a square with air
+    # around it, so every plate in the pack sits the same way in its slot.
+    w, h = x1 - x0, y1 - y0
+    side = int(max(w, h) * 1.14) + 2
+    canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    canvas.paste(cut.crop((x0, y0, x1, y1)), ((side - w) // 2, (side - h) // 2))
+    return canvas
+
+
+def _ref_of(cut, bg=(118, 118, 118)):
+    """A cut-out flattened onto neutral grey: what an image model is handed as
+    'this exact object'. A transparent PNG goes out as RGB, and whatever sits
+    under the transparency (black here) would be read as part of the thing."""
+    from PIL import Image
+    flat = Image.new("RGB", cut.size, bg)
+    flat.paste(cut, (0, 0), cut)
+    return flat
+
+
+def _shoot_item_sheet(session_id: str, book: dict) -> Optional[bytes]:
+    """One grid of every piece of gear, shot as cut-out item art on a key."""
+    its = book.get("items") or []
+    if not its:
+        return None
+    cols, rows = roster_grid(len(its))
+    lr = book.get("look_rules") or {}
+    key = _key_colour(book)
+    book["item_key"] = key
+    hexv = KEY_COLOURS[key][0]
+    lines = "\n".join(
+        f"FRAME {i + 1}: {e.get('name')}"
+        + (f" ({e['kind']})" if e.get("kind") else "")
+        + f" — {e.get('look') or ''}"
+        for i, e in enumerate(its))
+    spare = (f"Leave any frame beyond {len(its)} solid black."
+             if len(its) < cols * rows else "")
+    prompt = f"""{_medium(book)}
+
+This is the PROPS sheet — the gear of this world, shot as cut-out item art, the way a great game shows its loot.
+LAYOUT — exact: a {cols} x {rows} grid ({cols} columns, {rows} rows) of {cols * rows} equal 4:3 frames separated by thin solid BLACK gutters on a black sheet. No text, numbers, captions or labels anywhere. {spare}
+BACKGROUND — every frame is filled edge to edge with ONE perfectly flat, uniform, solid {key} ({hexv}) chroma-key colour. No floor, no table, no surface, no horizon, no cast shadow, no reflection, no gradient, no vignette, no texture and no grain on the background — nothing in the frame but the object and that flat {key}.
+THE OBJECT — ONE object per frame, ALONE and WHOLE, floating in the middle of its frame with flat {key} all the way round it (never touching or cut off by the frame edge), filling about two thirds of the frame, at a three-quarter hero angle. It has been used and carried — scuffed, stained, repaired, real — and it is lit by this world's own light, a hard key from one side in the palette below, never flat studio light. Close enough to read its material and its wear. No hand, no person, no second object, and no {key} anywhere on the object itself. Frames follow the numbered order below exactly, left to right, top to bottom. Every object must look clearly different from the others.
+PALETTE {json.dumps(lr.get('palette') or {})}.
+{lines}"""
+    data = _post(SHEET_MODEL, [{"text": prompt}],
+                 {"responseModalities": ["IMAGE"],
+                  "imageConfig": {"aspectRatio": "4:3", "imageSize": SHEET_SIZE}},
+                 timeout=_cut(book, SHEET_TIMEOUT_S),
+                 operation="look_book_item_sheet", service="image")
+    return _image_of(data)
+
+
+def _stage_item_sheet(session_id: str, book: dict, data: Optional[bytes] = None) -> None:
+    """Cut the props sheet into one cut-out plate per piece of gear.
+
+    The same path the cast takes: slice row by row (the model does not always
+    draw the grid it was asked for), then check the CROPS by eye against the
+    list — a plate on the wrong item is worse than no plate — and keep each
+    only where it is clearly one whole object. Each kept crop is then keyed
+    off its background (_cut_out) into item_NN.png, with a flattened
+    item_NN_ref.jpg beside it for image models."""
+    d = book_dir(session_id)
+    its = book.get("items") or []
+    if not its:
+        return
+    for e in its:
+        e.pop("plate", None)
+        e.pop("ref", None)
+    for pat in ("item_*.jpg", "item_*.png"):
+        for stale in d.glob(pat):
+            if stale.name == "item_sheet.png":
+                continue
+            try:
+                stale.unlink()
+            except Exception:
+                pass
+    if not data:
+        _log(session_id, book, "props sheet: no image — the gear keeps its "
+                               "words and loses its pictures", "items")
+        return
+    (d / "item_sheet.png").write_bytes(data)
+    book["item_sheet"] = "item_sheet.png"
+    cells = _slice_cells(d / "item_sheet.png")
+    _log(session_id, book, f"props sheet: {len(cells)} frames cut", "items")
+    if not cells:
+        return
+    placement = _place_crops(
+        d, cells, its, key="name", what="props", check_name="item_check.jpg",
+        strictly=("Be strict: a tile showing a person, a room, or two objects "
+                  "together is 0, and so is one where the object is cut off."))
+    uncut = []
+    for i, e in enumerate(its):
+        cell = placement.get(i)
+        if cell is None:
+            continue
+        cut = _cut_out(cells[cell])
+        if cut is None:
+            uncut.append(e.get("name") or f"#{i + 1}")
+            continue
+        cut.thumbnail((ITEM_PLATE_MAX, ITEM_PLATE_MAX))
+        n = f"item_{i + 1:02d}.png"
+        cut.save(d / n, optimize=True)
+        r = f"item_{i + 1:02d}_ref.jpg"
+        try:
+            _ref_of(cut).save(d / r, quality=90)
+            e["ref"] = r
+        except Exception:
+            pass
+        e["plate"] = n
+    if uncut:
+        _log(session_id, book, f"props sheet: no clean cut-out for {', '.join(uncut)} — "
+                               "shown by name, never on a background", "items")
+    _log(session_id, book,
+         f"treasures: {sum(1 for e in its if e.get('plate'))}/{len(its)} with pictures "
+         f"(cut out on {book.get('item_key') or 'green'})",
+         "items")
+
+
+def gear_ref_for(session_id: str, name: str) -> Optional[str]:
+    """The flattened plate of one piece of this world's gear, by name — the
+    picture an image model is handed so the thing in the room, the thing in
+    the hand and the thing in the pack are the same thing."""
+    want = _norm(name)
+    if not want:
+        return None
+    for it in items(session_id):
+        if _norm(it.get("name")) == want:
+            return it.get("ref") or None
+    return None
 
 
 def _shoot_roster_sheet(session_id: str, book: dict) -> Optional[bytes]:
@@ -1317,7 +1890,7 @@ PALETTE {json.dumps(lr.get('palette') or {})}.
     parts = ([{"text": "PROTAGONIST (for contrast only — do not draw them):"}] + char[1:2] if char else []) + [{"text": prompt}]
     data = _post(SHEET_MODEL, parts,
                  {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": "4:3", "imageSize": SHEET_SIZE}},
-                 timeout=300, operation="look_book_roster_sheet", service="image")
+                 timeout=_cut(book, SHEET_TIMEOUT_S), operation="look_book_roster_sheet", service="image")
     return _image_of(data)
 
 

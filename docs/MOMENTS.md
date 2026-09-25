@@ -97,11 +97,51 @@ from the character sheet plus a new challenger. Slam three interrupt bars
 tagged `confront` / `evade` / `use` — every bar is about **the figure in
 the plate**, not the landscape.
 
-Resolve is ceremonial. A pick **holds black**, slams **COMMIT**, then
-`POST /api/encounter/resolve` returns a **new generated still of the verb**
-(bodies in motion, same two people). That still develops from black. A
-**SURVIVED / HURT / CLEAR / DEAD** verdict flares over it, then the
-consequence line. **Every pick** then runs the same
+**A fight is played by tabletop rules** (`combat.py` — read its docstring;
+`Battle` in standalone.js draws it). A d20 against a target: ATTACK rolls
+against his armour class and a hit rolls damage dice off his HP bar; FLEE
+and REASON are skill checks against his DCs. He swings every round with his
+named move (`character.move`, written by the brief). Initiative is rolled
+once when the fight opens — or decided by detection: hidden is a SURPRISE
+round for you, hunted an AMBUSH for him. Natural 20 always succeeds (a
+critical doubles the damage dice), natural 1 always fails (a fumble gives
+him advantage). A bloodied foe may break on MORALE; the boss never does. At
+0 HP: armour from the pack takes the first killing blow of a fight, then a
+DEATH SAVE (d20 ≥ 10, harder each time). A typed action that uses the scene
+well earns ADVANTAGE (`encounter.judge_custom_action`). The bars ride the
+top letterbox — you on the left, him on the right — and the slate reads
+ATTACK / FLEE / REASON with each word's exact odds (`combat.lane_odds`).
+`tools/encounter_length_probe.py` plays thousands of fights through the
+rules and prints how long they run and how often they kill.
+
+A pick throws the dice FIRST: `POST /api/encounter/exchange` plays the
+round (`encounter.roll_exchange` → `combat.play_round`), stores it on the
+fight as `pending`, and returns its **beats** in milliseconds. The client
+plays them (each d20 spinning onto its face, the bars draining, the picture
+shaking) while `POST /api/encounter/resolve` draws the **new generated
+still of the verb** from exactly that result; a pending round is never
+rolled again. When the still lands it plays as the payoff. A won fight ends
+on **SURVIVED** / **TALKED DOWN** / **DRIVEN OFF** (rounds, HP left, the
+spoil it dropped); getting clear gets the **CLEAR** card.
+
+The fight wears the game's own type, not a battle screen's: names in the
+goal HUD's tracked mono, bone hairline bars (red ink only when nearly out),
+the battle line in Manrope 300 and in the second person like the prose
+("You drop your camera at him…" / "It lands. 10 damage."), the rolls under
+it in OSD mono, the endings set like the GOD wordmark. No bold, no
+exclamation marks, no "used X!" — the first cut had all three and read as a
+cartoon beside the rest of the app.
+
+**Dying is a scene.** The dice know you are dead before any picture exists,
+so the client holds the moment (`Battle.dying`: the colour drains, the
+heartbeat slows, one line stays) while the resolve draws a **death
+flipbook** — outcome `die` has its own direction in
+`build_encounter_resolve_prompt`, all of it on the player's death, and its
+panels animate the killing blow (`_death_beat`). The reel plays slowly
+(`DEATH_FRAME_MS`), pushing in, the dark closing; its last frame becomes the
+world; only then does YOU DIED come up over it, naming what did it ("Killed
+by the FREELANCER · HIDDEN BLADE · round 2"). The engine's `game_over` item
+is held until the reel has played. **Every pick** then runs the same
 `_process_turn_background` pipeline as MOVE TO or a typed `/api/choose`
 (`source: "encounter"`, skip image): `advance_story_dynamics` +
 `advance_turn_image_fast` write the consequence. Survive / wounded stay
@@ -113,13 +153,15 @@ Lanes are data. The server owns survive / escape / wounded / die from
 lane + stance + kind + `player_state.condition`. The consequence LLM writes
 that beat; it does not flip `player_alive`. Escape is getting clear **in
 this place** — it is not Talk's restore of the paused explore frame, and
-Esc during the Moment attempts the evade bar. Wounded is a condition flag,
-not HP (`DAMAGE_SYSTEM_ENABLED` stays off).
+Esc during the Moment attempts the evade bar. Player HP (30) outlives the
+fight in `player_state.hp` and mends 8 between fights; `condition` is
+derived from it (wounded at or under half) for the rest of the game to read.
+`DAMAGE_SYSTEM_ENABLED` (turn-by-turn damage outside a fight) stays off.
 
 Exit applies the escape still with `hard_transition` **before** the overlay
 comes down, then `resumeUnderlay()` reveals the modified world. Death pops
-without restaging (`survived: false`). Demo: `Shift+N` or `?encounter_demo=1`.
-Server: `/api/encounter/begin`, `/api/encounter/resolve`, `/api/encounter/travel`
+onto the death reel's last frame (see above). Demo: `Shift+N` or `?encounter_demo=1`.
+Server: `/api/encounter/begin`, `/api/encounter/exchange`, `/api/encounter/resolve`, `/api/encounter/travel`
 (walking time counts down a distance clock; looking around does not).
 
 ## Encounter sound design
@@ -150,9 +192,15 @@ the new walkable world. Abort restores the paused explore bed.
 | Letterbox | `encounterEnter` | Moments `enterSound` |
 | Plate + choices | `encounterLock` + `encounterStance(stance)` | pulse 84 / 96 / 68 / 62 (creature), stance-colored bed |
 | Hover / pick | `encounterChoiceHover` / `encounterChoiceSelect` | remapped from Moments `choiceHover` |
-| Commit | `encounterResolve` + **COMMIT** flare | hold black, pulse 108 |
-| Action plate | develop from black | the verb, same two people |
-| Verdict | `encounterSurvive` / `encounterDie` | **SURVIVED / HURT / CLEAR / DEAD** over the still |
+| Commit | `encounterResolve` | pulse 108; the dice are thrown (`/api/encounter/exchange`) |
+| Each die | `encounterRoll` ticks, then `encounterLand` / `encounterMissed` — by what it means for YOU (his hit is `Missed`) | the face slams down on the track (`.bt-die.slam`), the line it had to beat pulses or cracks |
+| A natural | `encounterNat20` (your 20, his 1) / `encounterNat1` (his 20, your 1) | `impact("nat20")` a clean flare / `impact("nat1")` the colour heads slip + red tears |
+| A blow lands | `encounterStrike` (you) / `encounterHurt` (him) / `encounterCrit` | `impact()`: yours punches the frame in, his jolts it and drains the colour, a crit splits the colour heads (SVG `#bt-rgb-a/-b`) and tears the picture; shake, flash; hit-stop (80ms, 190ms on a crit) before the bar drains and the number lands |
+| A swing misses | `encounterWhiff` (attack or strike) | `impact("whiff")` the frame smears sideways and drifts back |
+| They go down | `encounterKo` | `impact("ko")`, hard shake, their bar dims |
+| Action plate | the standoff is held until it decodes | the verb, same two people — the payoff |
+| Won | `encounterVictory` | **SURVIVED** (or TALKED DOWN / DRIVEN OFF) · rounds · HP left · the spoil |
+| Verdict | `encounterSurvive` / `encounterDie` | **CLEAR / DEAD** when a fight ends any other way |
 | Survive / wounded | stay locked | same turn pipeline as choose + new slate |
 | Escape | `encounterSurvive` | `endEncounter({ restore: false })` + aftermath score |
 | Die | `encounterDie` | heartbeat stop |

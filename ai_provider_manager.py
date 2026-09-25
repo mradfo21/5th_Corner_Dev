@@ -106,25 +106,54 @@ def _ensure_initialized():
             # Set to True anyway to avoid repeated errors
             _initialized = True
 
+def _openai_chosen() -> bool:
+    """The player chose OpenAI in ACCOUNT and has its key.
+
+    Then the game builds Gemini-format requests for everything (story and
+    pictures) and provider_bridge answers them with OpenAI, so the getters
+    below report the Gemini wire whatever ai_config.json says. What the
+    player sees named is provider_bridge.describe(), not these.
+    """
+    try:
+        import provider_bridge
+        return provider_bridge.active()
+    except Exception:
+        return False
+
+
+DEFAULT_TEXT_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-lite-image"
+
+
 def get_text_provider() -> str:
     """Get current text generation provider."""
     _ensure_initialized()
+    if _openai_chosen():
+        return "gemini"
     return load_ai_config().get("text_provider", "gemini")
 
 def get_text_model() -> str:
     """Get current text generation model."""
     _ensure_initialized()
-    return load_ai_config().get("text_model", "gemini-3.1-flash-lite")
+    cfg = load_ai_config()
+    if _openai_chosen() and cfg.get("text_provider", "gemini") != "gemini":
+        return DEFAULT_TEXT_MODEL
+    return cfg.get("text_model", DEFAULT_TEXT_MODEL)
 
 def get_image_provider() -> str:
     """Get current image generation provider."""
     _ensure_initialized()
+    if _openai_chosen():
+        return "gemini"
     return load_ai_config().get("image_provider", "gemini")
 
 def get_image_model() -> str:
     """Get current image generation model."""
     _ensure_initialized()
-    return load_ai_config().get("image_model", "gemini-3.1-flash-lite-image")
+    cfg = load_ai_config()
+    if _openai_chosen() and cfg.get("image_provider", "gemini") != "gemini":
+        return DEFAULT_IMAGE_MODEL
+    return cfg.get("image_model", DEFAULT_IMAGE_MODEL)
 
 
 # The resolutions the image APIs accept. Anything else is rejected rather than
@@ -527,7 +556,7 @@ def _mock_vision_response(prompt: str = "") -> str:
 
 def _gemini_chat(messages, model: str, temperature: float, max_tokens: int) -> str:
     api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
+    if not api_key and not _openai_chosen():
         return "Signal interrupted — GEMINI_API_KEY not configured."
     prompt = _flatten_messages(messages)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -593,7 +622,7 @@ def vision(image_path: Optional[str] = None, image_data_b64: Optional[str] = Non
         return _mock_vision_response(prompt)
 
     api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
+    if not api_key and not _openai_chosen():
         return "Signal interrupted — GEMINI_API_KEY not configured."
 
     image_b64 = image_data_b64

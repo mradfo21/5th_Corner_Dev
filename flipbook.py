@@ -266,6 +266,40 @@ def split_grid(
     return out
 
 
+def match_panel_size(path, frames=4, like=None) -> bool:
+    """Shrink a STILL to the size of one flipbook panel, in place.
+
+    A flipbook beat whose grid does not come back falls through to a still,
+    and that still is the whole render — 1376x768 at the play setting — where
+    every panel around it is a quarter of one (672x376). On screen it is the
+    one frame that is suddenly twice as sharp and lit its own way: "i also saw
+    random frames appearing at 2k resolution when i ended an encounter"
+    (2026-09-23; the last blow of a fight is the beat most likely to have its
+    grid refused). ``like`` is a real panel of this run (the last one) to
+    match exactly; without it a render is only treated as full-size when it
+    is at least 1100 px wide. Only ever shrinks; True when it resized."""
+    try:
+        import os
+        from PIL import Image
+        rows, cols = shape_for(frames)
+        with Image.open(path) as im:
+            w, h = im.size
+            if like and os.path.exists(str(like)) and str(like) != str(path):
+                with Image.open(like) as ref:
+                    tw, th = ref.size
+            elif w >= 1100:
+                tw, th = max(1, w // cols), max(1, h // rows)
+            else:
+                return False
+            if w <= tw * 1.25 and h <= th * 1.25:
+                return False
+            small = im.convert("RGB").resize((tw, th), Image.LANCZOS)
+        small.save(path)
+        return True
+    except Exception:
+        return False
+
+
 def sequence_from_grid(
     grid_path,
     frames,
@@ -449,6 +483,22 @@ def grid_prompt(frames, seconds: float = 2.0, cut: bool = False,
     from the start keyframe. Off for the establishing beat, whose reference is
     the montage's deliberately unpeopled plate: there is nobody in it to
     inherit a pose from, and the establishing block places the character.
+
+    THE SUBJECT ANCHOR. Everything above locks the RIG — lens, height, side,
+    distance — and the SETTING, and none of it ever said where the person may
+    sit IN THE PICTURE. Two grids pulled from a run on 2026-09-22 show what
+    that costs: in one, the character is large on the left in panel 1, small
+    in the centre in panel 2, left again in panel 3 and centre-right in panel
+    4, facing the lens for the first half and facing away for the second. Each
+    panel is a fine photograph; played back they are four shots, not one, and
+    it reads as "we transition from the start frame to the end frame really
+    painfully with lots of popping". A third-person camera works because the
+    character holds a constant place on the screen and the WORLD moves past
+    them — that constancy is the spatial anchor the eye tracks, and it is the
+    one continuity the grid was never asked for. The last panel is the worst
+    offender, because it is the only one the render instruction describes, so
+    the model composes it fresh; both end keyframes now say in as many words
+    that the framing is inherited and only the CONTENT changes.
     """
     frames = normalize_frames(frames)
     rows, cols = shape_for(frames)
@@ -496,7 +546,9 @@ def grid_prompt(frames, seconds: float = 2.0, cut: bool = False,
             f"light changed), the camera rig, and the person. A panel "
             f"{frames} that still shows the place panel 1 shows — the same "
             f"walls, the same floor, the same landmarks at the same distance — "
-            f"is a FAILED panel.\n"
+            f"is a FAILED panel. What does NOT change is the framing: the "
+            f"character is still in the same part of the picture, at the same "
+            f"size, seen from the same side. New place, same shot.\n"
         )
         setting_rule = (
             f"- The SETTING is one continuous place travelled THROUGH, not "
@@ -524,7 +576,12 @@ def grid_prompt(frames, seconds: float = 2.0, cut: bool = False,
             f"instruction describes, reached: the action has visibly happened, "
             f"whatever was being approached has been reached, whatever was "
             f"being opened is open. This is the frame the shot HOLDS on, so it "
-            f"must be a clean, settled composition, not a mid-blur.\n"
+            f"must be a clean, settled composition, not a mid-blur. It is NOT "
+            f"a new shot — it is this shot, a moment later. Compose it around "
+            f"the character exactly where panel 1 put them: same place in the "
+            f"frame, same size, same side of them. Let what CHANGED be the "
+            f"thing that changed. Re-framing here is the pop the viewer sees "
+            f"at the end of every beat.\n"
         )
         setting_rule = (
             f"- The SETTING holds still: walls, doors, vehicles, machinery and "
@@ -572,6 +629,25 @@ def grid_prompt(frames, seconds: float = 2.0, cut: bool = False,
         f"WITH them exactly as it has been — it never jumps to a new angle, "
         f"never swings round to the other side of them, never turns to face "
         f"them, never becomes a different shot.\n"
+        + f"- THE SUBJECT IS THE ANCHOR — this is a third-person follow cam, "
+        f"so the character holds the SAME PLACE IN THE FRAME in every panel: "
+        f"the same height in frame, the same side of centre, and the SAME "
+        f"SIZE on screen, with the same amount of them in shot (if panel 1 is "
+        f"head-to-knee from behind, every panel is head-to-knee from behind). "
+        f"It is the WORLD that moves past them. They must not slide from one "
+        f"part of the picture to another, must not be far away in one panel "
+        f"and close in the next, and must not be framed tighter in one panel "
+        f"and wider in another. Their position in the frame is the ONE thing "
+        f"the eye holds on to across a cut; move it and {frames} panels read "
+        f"as {frames} different shots instead of one take. A panel that puts "
+        f"them somewhere else in the frame, or at a noticeably different "
+        f"size, is a FAILED panel — including the last one.\n"
+        f"- AND THE CAMERA STAYS ON THE SAME SIDE OF THEM. If the reference "
+        f"shows them from behind, every panel is from behind: the camera "
+        f"never slips round in front of them, and they do not turn to face "
+        f"the lens unless the scene says in so many words that they turn "
+        f"around. Panels that show a face when the reference showed a back "
+        f"are the camera cutting to the far side of the subject.\n"
         + setting_rule
         + f"- Things that MOVE are free to. Whatever the scene calls for can enter "
         f"the frame, cross it, leave it, be revealed, catch fire or fall over — "

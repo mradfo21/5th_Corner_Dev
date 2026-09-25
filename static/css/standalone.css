@@ -5699,7 +5699,11 @@ body.moment-encounter .moment-choice {
   letter-spacing: 0.02em;
   line-height: 1.3;
   white-space: normal;
-  text-shadow: none;
+  /* The watch choice's shadow: the same typography over the frame, and what
+     keeps a line readable where the plate is bright. With none, "ATTACK" over
+     a lit vat in the boss fight was white on pale sand — gone. A halo, not a
+     panel: nothing boxes the slate in. */
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.95), 0 0 4px rgba(0, 0, 0, 0.85);
   transition: color 0.14s ease, opacity 0.14s ease;
 }
 body.moment-encounter .moment-choice:hover,
@@ -5734,6 +5738,18 @@ body.moment-encounter .moment-choice:not(.moment-choice-custom) .moment-choice-t
   line-height: 1.25;
   white-space: nowrap;
 }
+/* ...and its odds after it: the chance the word lands, the same line the die
+   is thrown against (encounter.slate_odds). */
+body.moment-encounter .moment-choice-odds {
+  margin-left: 10px;
+  font-family: var(--font-mono);
+  font-size: clamp(11px, 1vw, 13px);
+  font-weight: 300;
+  letter-spacing: 0.08em;
+  color: var(--ink-nav);
+}
+body.moment-encounter .moment-choice:hover .moment-choice-odds,
+body.moment-encounter .moment-choice:focus .moment-choice-odds { color: var(--ink-hi); }
 /* The lane, small and quiet above the verb: which of the three answers this is
    — and therefore which odds are being accepted — without it competing with the
    line the player is actually reading. */
@@ -5913,6 +5929,1082 @@ body.moment-encounter .moment-notify-chip {
     bottom: calc(10vh + 22px);
   }
 }
+
+/* ═══ BATTLE — two bars and a die each (standalone.js Battle, combat.py) ═══
+   The fight speaks the rest of the game's language, not a battle screen's.
+   The first cut was drawn from Pokémon — bold caps names, green/amber/red
+   bars, "Critical hit!" in bold, a VICTORY in 800 weight — and next to the
+   goal HUD, the slate and the menu it read as a different, cheesier app
+   ("everything feels so vanilla tech graphic design", 2026-09-23). So every
+   piece now borrows an existing one:
+     · the names are the goal HUD's label — mono 300, tracked out, quiet;
+     · the numbers are the timecode's mono, the bars a 2px hairline in bone;
+     · the line is the goal name's face — Manrope 300, sentence case — with
+       the rolls under it in the tape's OSD mono;
+     · the endings are the wordmark — 200 weight, tracked to 0.5em;
+     · the one accent is the app's mint, the one alarm its red ink.
+   No boxes, no fills behind text: a halo keeps it readable on a bright plate. */
+#battle {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  --bt-top: clamp(48px, 11vh, 96px);
+  --bt-ink: var(--ink, #E8E6DF);
+  --bt-hi: var(--ink-hi, #FFFFFF);
+  --bt-nav: var(--ink-nav, rgba(232, 230, 223, 0.62));
+  --bt-quiet: var(--ink-quiet, rgba(232, 230, 223, 0.42));
+  --bt-mint: var(--accent, #8effc1);
+  --bt-red: #ff6a55;
+  --bt-halo: 0 1px 10px rgba(0, 0, 0, 0.8), 0 0 3px rgba(0, 0, 0, 0.7);
+}
+#battle.hidden { display: none; }
+#battle.on { opacity: 1; }
+.bt-side {
+  position: absolute;
+  top: calc(var(--bt-top) / 2 - 12px);
+  width: min(360px, 30vw);
+  transition: opacity 0.6s ease;
+}
+/* Inset past the top-right chrome that stays up through a fight (the BUG
+   button, the ceremony ring); the camcorder timecode steps aside instead. */
+.bt-you { left: calc(env(safe-area-inset-left, 0px) + max(3.2vw, 128px)); }
+.bt-foe { right: calc(env(safe-area-inset-right, 0px) + max(3.2vw, 128px)); }
+body.battle-on #vhs-timecode { opacity: 0; transition: opacity 0.3s ease; }
+.bt-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  text-shadow: var(--bt-halo);
+}
+.bt-foe .bt-head { flex-direction: row-reverse; }
+.bt-name {
+  font: 300 10px/1 var(--font-mono);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--bt-nav);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.25s ease;
+}
+.bt-num {
+  font: 300 11px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  color: var(--bt-ink);
+  font-variant-numeric: tabular-nums;
+}
+.bt-bar {
+  position: relative;
+  height: 2px;
+  margin-top: 9px;
+  background: rgba(232, 230, 223, 0.14);
+}
+.bt-fill, .bt-lost {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+}
+/* Anchored at the inner edge, so both bars drain outward — toward their own
+   side of the screen. */
+.bt-you .bt-fill, .bt-you .bt-lost { right: 0; }
+.bt-foe .bt-fill, .bt-foe .bt-lost { left: 0; }
+.bt-fill {
+  z-index: 2;
+  background: var(--bt-ink);
+  transition: width 0.4s cubic-bezier(0.22, 1, 0.36, 1), background 0.4s ease;
+}
+/* The chunk a hit took: it stays where it was, pale, and drains after. */
+.bt-lost {
+  z-index: 1;
+  background: rgba(255, 255, 255, 0.55);
+  transition: width 0.7s ease-in;
+}
+.bt-you .bt-lost { background: rgba(255, 106, 85, 0.7); }
+/* One alarm: red ink when a bar is nearly out. No amber stage. */
+.is-red .bt-fill { background: var(--bt-red); }
+.is-red .bt-num { color: var(--bt-red); }
+.is-out .bt-name, .is-out .bt-num { color: var(--bt-quiet); }
+.bt-side.is-struck .bt-name { color: var(--bt-hi); }
+.bt-side.is-struck { animation: bt-jolt 0.3s ease-out; }
+.bt-side.is-dim { opacity: 0.32; }
+.bt-pop {
+  position: absolute;
+  top: 18px;
+  height: 0;
+}
+.bt-you .bt-pop { right: 0; }
+.bt-foe .bt-pop { left: 0; }
+.bt-dmg {
+  position: absolute;
+  top: 0;
+  font: 300 15px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  text-shadow: var(--bt-halo);
+  animation: bt-dmg 1.3s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.bt-you .bt-dmg { right: 0; color: var(--bt-red); }
+.bt-foe .bt-dmg { left: 0; color: var(--bt-hi); }
+.bt-dmg.crit { font-size: 20px; }
+
+/* The battle line sits where the slate does, and is set like the goal's name:
+   the UI face at 300, sentence case. The rolls go under it in the tape's own
+   mono, the voice every OSD label in the game uses. */
+.bt-line {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--bt-top) + 34px);
+  transform: translateX(-50%);
+  width: min(760px, calc(100vw - 32px));
+  text-align: center;
+  color: var(--bt-ink);
+  text-shadow: var(--bt-halo);
+}
+.bt-line.hidden { display: none; }
+.bt-text {
+  font: 300 clamp(15px, 1.6vw, 21px)/1.4 var(--font-ui);
+  letter-spacing: 0.01em;
+  min-height: 1.4em;
+}
+.bt-text b { font-weight: 400; color: var(--bt-hi); }
+.bt-sub {
+  margin-top: 10px;
+  min-height: 1.2em;
+  font: 300 10px/1.4 var(--font-mono);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--bt-nav);
+  font-variant-numeric: tabular-nums;
+}
+.bt-line.is-waiting .bt-sub::after {
+  content: "· · ·";
+  letter-spacing: 0.4em;
+  animation: bt-wait 1.4s ease-in-out infinite;
+}
+/* The die: a d20 laid out as a hairline of twenty faces, the ones that
+   succeed shaded in from the right, and a tick that lands on the face. */
+.bt-die {
+  position: relative;
+  width: 220px;
+  height: 1px;
+  margin: 34px auto 0;
+  background: rgba(232, 230, 223, 0.22);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.bt-die.on { opacity: 1; }
+.bt-die-need {
+  position: absolute;
+  left: 100%;
+  right: 0;
+  top: -1px;
+  height: 3px;
+  background: rgba(232, 230, 223, 0.4);
+}
+.bt-die-face {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  font: 300 15px/1 var(--font-mono);
+  color: var(--bt-hi);
+  font-variant-numeric: tabular-nums;
+}
+.bt-die.rolling .bt-die-face { color: var(--bt-nav); }
+.bt-die.nat20 .bt-die-face { color: var(--bt-mint); }
+.bt-die.nat1 .bt-die-face { color: var(--bt-red); }
+/* Advantage: the die you did not keep. */
+.bt-die-mark2 {
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  width: 1px;
+  height: 9px;
+  background: var(--bt-quiet);
+  display: none;
+}
+.bt-die.two .bt-die-mark2 { display: block; }
+.bt-die-mark {
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  width: 1px;
+  height: 11px;
+  background: var(--bt-hi);
+  transition: left 0.14s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.bt-die.rolling .bt-die-mark { transition: none; }
+.bt-die.miss .bt-die-mark { background: var(--bt-nav); }
+.bt-die.nat20 .bt-die-mark { background: var(--bt-mint); }
+
+/* Reactions are the picture's: a flash, a jolt, a vignette. Kept low — the
+   frame is the payoff, not the effect over it. */
+.bt-flash {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.bt-flash.on-nat20 {
+  background: radial-gradient(ellipse at center, rgba(142, 255, 193, 0.12) 0%, transparent 62%);
+  animation: bt-flash 0.7s ease-out forwards;
+}
+.bt-flash.on-strike { background: rgba(255, 255, 255, 0.08); animation: bt-flash 0.2s ease-out forwards; }
+.bt-flash.on-strike-crit { background: rgba(255, 255, 255, 0.18); animation: bt-flash 0.32s ease-out forwards; }
+.bt-flash.on-hurt {
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(120, 10, 4, 0.4) 100%);
+  animation: bt-flash 0.55s ease-out forwards;
+}
+.bt-flash.on-hurt-crit {
+  background: radial-gradient(ellipse at center, rgba(120, 10, 4, 0.12) 20%, rgba(120, 10, 4, 0.62) 100%);
+  animation: bt-flash 0.85s ease-out forwards;
+}
+/* IMPACT (Battle.impact): what a blow does to the picture, in the tape's
+   own vocabulary — a punch-in, the colour heads slipping out of register, a
+   tracking tear across a band of the frame. On the still and on the live
+   video alike. Short: 120–450ms, then the picture is itself again. */
+.bt-fx-strike { animation: bt-punch 0.34s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+.bt-fx-strike-crit { animation: bt-punch-hard 0.5s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+.bt-fx-hurt { animation: bt-knock 0.42s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+.bt-fx-hurt-crit { animation: bt-knock-hard 0.6s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+.bt-fx-whiff { animation: bt-whiff 0.38s ease-out both; }
+.bt-fx-ko { animation: bt-ko 0.9s ease-out both; }
+.bt-fx-nat20 { animation: bt-flare 0.6s ease-out both; }
+.bt-fx-nat1 { animation: bt-split 0.36s linear both; }
+/* The colour heads slipping is an SVG filter (#bt-rgb-a/-b, injected by
+   Battle.impact): the red channel shoved one way, green+blue the other. A
+   CSS drop-shadow looks like the same idea and does nothing here — the
+   picture is opaque and full-bleed, so its shadow is behind it. Keyframes
+   carry no 0%/100% so the picture animates out of, and back into, whatever
+   filter it already had (the dying grade, the reel's). */
+@keyframes bt-punch {
+  18% { transform: scale(1.045); filter: brightness(1.25) contrast(1.12); }
+}
+@keyframes bt-punch-hard {
+  8% { transform: scale(1.085) rotate(-0.6deg); filter: url(#bt-rgb-a) brightness(1.55) contrast(1.25); }
+  22% { filter: url(#bt-rgb-b) brightness(1.3) contrast(1.15); }
+  36% { transform: scale(1.03) rotate(0.2deg); filter: brightness(1.08); }
+}
+/* Hit yourself: the frame is jolted and the colour goes out of it. Always
+   scaled UP while it moves, so the black behind the picture never shows. */
+@keyframes bt-knock {
+  15% { transform: scale(1.035) translate(-9px, 3px); filter: saturate(0.3) brightness(0.72) sepia(0.25); }
+}
+@keyframes bt-knock-hard {
+  8% { transform: scale(1.07) translate(-16px, 6px) rotate(0.8deg); filter: saturate(0.15) brightness(0.6) sepia(0.4) url(#bt-rgb-a); }
+  24% { filter: saturate(0.25) brightness(0.66) sepia(0.3) url(#bt-rgb-b); }
+  45% { transform: scale(1.02) rotate(-0.2deg); filter: saturate(0.45) brightness(0.8); }
+}
+@keyframes bt-split {
+  10% { filter: url(#bt-rgb-a) brightness(0.9); }
+  40% { filter: url(#bt-rgb-b) brightness(0.95); }
+  70% { filter: url(#bt-rgb-a) brightness(1); }
+}
+/* A swing into air: the frame smears sideways and drifts back. */
+@keyframes bt-whiff {
+  25% { transform: scale(1.03) translateX(14px) skewX(-1.2deg); filter: blur(1.6px); }
+}
+/* Down: the picture dips and holds its breath, then comes back. */
+@keyframes bt-ko {
+  12% { filter: brightness(1.7) contrast(1.3); }
+  30% { filter: brightness(0.55) saturate(0.4); }
+}
+@keyframes bt-flare {
+  20% { filter: brightness(1.3) saturate(1.2) hue-rotate(-8deg); }
+}
+/* A tracking tear: a band of the frame shoved sideways, scanlined. */
+.bt-tear {
+  position: absolute;
+  left: -4%;
+  right: -4%;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.16) 0 1px, transparent 1px 3px),
+    linear-gradient(to right, rgba(232, 230, 223, 0.05), rgba(232, 230, 223, 0.22), rgba(232, 230, 223, 0.05));
+  mix-blend-mode: screen;
+  animation: bt-tear 0.24s steps(3) forwards;
+}
+.bt-tear.is-red {
+  background:
+    repeating-linear-gradient(to bottom, rgba(255, 106, 85, 0.22) 0 1px, transparent 1px 3px),
+    linear-gradient(to right, rgba(255, 60, 40, 0.04), rgba(255, 60, 40, 0.2), rgba(255, 60, 40, 0.04));
+}
+@keyframes bt-tear {
+  0% { opacity: 1; transform: translateX(var(--tear-x, 18px)); }
+  60% { opacity: 0.8; transform: translateX(calc(var(--tear-x, 18px) * -0.5)); }
+  100% { opacity: 0; transform: translateX(0); }
+}
+/* The die lands: the face slams down, the line answers. */
+.bt-die.slam .bt-die-face { animation: bt-slam 0.32s cubic-bezier(0.2, 1.4, 0.4, 1) both; }
+.bt-die.slam.hit .bt-die-need { animation: bt-need-hit 0.6s ease-out both; }
+.bt-die.slam.miss .bt-die-mark { animation: bt-mark-miss 0.4s steps(3) both; }
+.bt-die.slam.nat20 .bt-die-face { animation: bt-slam-big 0.5s cubic-bezier(0.2, 1.5, 0.4, 1) both; }
+.bt-die.slam.nat1 .bt-die-face { animation: bt-slam-big 0.5s cubic-bezier(0.2, 1.5, 0.4, 1) both; }
+@keyframes bt-slam {
+  0% { transform: translate(-50%, -10px) scale(1.6); opacity: 0.4; }
+  60% { transform: translate(-50%, 1px) scale(0.94); opacity: 1; }
+  100% { transform: translate(-50%, 0) scale(1); }
+}
+@keyframes bt-slam-big {
+  0% { transform: translate(-50%, -16px) scale(2.2); opacity: 0.3; }
+  55% { transform: translate(-50%, 2px) scale(0.9); opacity: 1; }
+  100% { transform: translate(-50%, 0) scale(1.25); }
+}
+@keyframes bt-need-hit {
+  0% { background: rgba(232, 230, 223, 0.4); box-shadow: none; }
+  25% { background: var(--bt-mint, #8effc1); box-shadow: 0 0 12px rgba(142, 255, 193, 0.6); }
+  100% { background: rgba(232, 230, 223, 0.4); box-shadow: none; }
+}
+@keyframes bt-mark-miss {
+  0% { transform: translateX(0); background: var(--bt-red, #ff6a55); }
+  33% { transform: translateX(-3px); }
+  66% { transform: translateX(3px); }
+  100% { transform: translateX(0); }
+}
+/* The damage number lands with weight: it overshoots and settles. */
+.bt-dmg { animation-name: bt-dmg-punch; }
+@keyframes bt-dmg-punch {
+  0% { opacity: 0; transform: translateY(6px) scale(1.7); }
+  12% { opacity: 1; transform: translateY(0) scale(0.92); }
+  22% { transform: translateY(0) scale(1.05); }
+  32% { transform: translateY(0) scale(1); }
+  75% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-14px); }
+}
+.bt-dmg.crit { font-size: 24px; }
+/* The bar that was hit flickers as it drops. */
+.bt-side.is-struck .bt-fill { animation: bt-bar-flicker 0.3s steps(3) both; }
+@keyframes bt-bar-flicker {
+  0% { opacity: 0.2; }
+  33% { opacity: 1; }
+  66% { opacity: 0.4; }
+  100% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bt-fx-strike, .bt-fx-strike-crit, .bt-fx-hurt, .bt-fx-hurt-crit, .bt-fx-whiff,
+  .bt-fx-ko, .bt-fx-nat20, .bt-fx-nat1, .bt-tear, .bt-die.slam .bt-die-face,
+  .bt-dmg { animation: none !important; }
+}
+#moment-scene.bt-shake { animation: bt-shake 0.34s ease-out; }
+#moment-scene.bt-shake-hard { animation: bt-shake-hard 0.54s ease-out; }
+
+/* The end of a fight: the wordmark's treatment — a word at 200 weight,
+   tracked out, over the frame — with the goal HUD's label above it. */
+.bt-victory {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+  color: var(--bt-ink);
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.42) 0%, transparent 70%);
+  opacity: 0;
+  transition: opacity 0.6s ease;
+  text-shadow: var(--bt-halo);
+}
+.bt-victory.hidden { display: none; }
+.bt-victory.on { opacity: 1; }
+.bt-v-meta {
+  font: 300 10px/1 var(--font-mono);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--bt-nav);
+}
+.bt-v-word {
+  font: 200 clamp(34px, 4.4vw, 64px)/1 var(--menu-font-display, var(--font-ui));
+  letter-spacing: 0.5em;
+  margin-right: -0.5em;
+  text-transform: uppercase;
+  color: var(--bt-ink);
+  animation: bt-victory 1.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.bt-v-spoil {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  max-width: 26rem;
+}
+.bt-v-eyebrow {
+  font: 300 10px/1 var(--font-mono);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--bt-mint);
+}
+.bt-v-name { font: 300 16px/1.3 var(--font-ui); color: var(--bt-ink); }
+.bt-v-power, .bt-v-gear { font: 300 13px/1.5 var(--font-ui); color: var(--bt-nav); }
+
+@keyframes bt-dmg {
+  0% { opacity: 0; transform: translateY(4px); }
+  15% { opacity: 1; transform: translateY(0); }
+  75% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-14px); }
+}
+@keyframes bt-flash { 0% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes bt-jolt {
+  0%, 100% { transform: translateX(0); }
+  30% { transform: translateX(-2px); }
+  65% { transform: translateX(1px); }
+}
+@keyframes bt-shake {
+  0%, 100% { transform: translate(0, 0); }
+  20% { transform: translate(-5px, 2px); }
+  40% { transform: translate(4px, -2px); }
+  60% { transform: translate(-2px, 1px); }
+  80% { transform: translate(1px, -1px); }
+}
+@keyframes bt-shake-hard {
+  0%, 100% { transform: translate(0, 0) scale(1.02); }
+  10% { transform: translate(-12px, 5px) scale(1.03); }
+  25% { transform: translate(10px, -6px) scale(1.03); }
+  40% { transform: translate(-7px, 4px) scale(1.025); }
+  60% { transform: translate(5px, -2px) scale(1.02); }
+  80% { transform: translate(-2px, 1px) scale(1.02); }
+}
+@keyframes bt-wait { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.9; } }
+@keyframes bt-victory {
+  0% { opacity: 0; letter-spacing: 0.7em; }
+  100% { opacity: 1; letter-spacing: 0.5em; }
+}
+@media (max-width: 640px) {
+  .bt-side { width: 40vw; }
+  .bt-you { left: 4vw; }
+  .bt-foe { right: 4vw; }
+  .bt-v-word { letter-spacing: 0.3em; margin-right: -0.3em; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #moment-scene.bt-shake, #moment-scene.bt-shake-hard,
+  .bt-side.is-struck, .bt-dmg, .bt-v-word { animation: none; }
+}
+
+/* ═══ THE DEATH (standalone.js Battle.dying / deathReel / playDeath) ═══
+   Suspense first: the colour goes out of the world while the picture of your
+   death is still being drawn, the bars fade, one line stays. Then the reel:
+   the death flipbook, played slowly, pushing in, the dark closing at the
+   edges. Then YOU DIED — over that last frame, set like the GOD wordmark. */
+body.bt-dying #moment-scene-img {
+  filter: grayscale(0.85) brightness(0.62) contrast(1.08);
+  transition: filter 3.2s ease;
+}
+body.bt-dying #battle .bt-side { opacity: 0.18; transition: opacity 2.4s ease; }
+body.bt-dying #battle .bt-you { opacity: 0.5; }
+body.bt-dying #moment-overlay::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 38%, rgba(8, 0, 0, 0.66) 100%);
+  animation: bt-death-pulse 2.6s ease-in-out infinite;
+}
+body.bt-death-reel #moment-scene-img {
+  filter: saturate(0.7) contrast(1.08) brightness(0.9);
+  transform: scale(1.0);
+  animation: bt-death-push 9s linear forwards;
+  transition: filter 1.2s ease;
+}
+body.bt-death-reel #moment-overlay::after {
+  animation: bt-death-close 8s ease-in forwards;
+}
+#battle.bt-dead .bt-side { opacity: 0; transition: opacity 1s ease; }
+@keyframes bt-death-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@keyframes bt-death-push { from { transform: scale(1.0); } to { transform: scale(1.09); } }
+@keyframes bt-death-close {
+  from { opacity: 0.6; }
+  to { opacity: 1; background: radial-gradient(ellipse at center, transparent 18%, rgba(4, 0, 0, 0.92) 85%); }
+}
+
+#death-overlay {
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.2) 0%, rgba(4, 3, 3, 0.8) 78%);
+  animation: death-fade-in 1.6s ease-out;
+}
+.death-static { opacity: 0.2; }
+.death-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.8), 0 0 3px rgba(0, 0, 0, 0.7);
+}
+.death-cause {
+  font: 300 10px/1.4 var(--font-mono);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--ink-nav, rgba(232, 230, 223, 0.62));
+  animation: death-rise 1.4s ease-out 0.5s both;
+}
+.death-cause.hidden { display: none; }
+.death-title {
+  font: 200 clamp(48px, 6.4vw, 104px)/1 var(--menu-font-display, var(--font-ui));
+  letter-spacing: 0.5em;
+  margin: 10px -0.5em 22px 0;
+  text-transform: uppercase;
+  color: var(--ink, #E8E6DF);
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.85);
+  animation: death-title-in 2.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes death-title-in {
+  0% { opacity: 0; letter-spacing: 0.8em; filter: blur(4px); }
+  45% { opacity: 1; filter: blur(0); }
+  100% { opacity: 1; letter-spacing: 0.5em; }
+}
+@keyframes death-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+#death-message {
+  font: 300 16px/1.5 var(--font-ui);
+  color: var(--ink-nav, rgba(232, 230, 223, 0.62));
+  max-width: 34rem;
+  margin: 0 auto 26px;
+  animation: death-rise 1.4s ease-out 1.1s both;
+}
+/* The menu's own button: mono, tracked, no box — white and a 1px rule on
+   hover, exactly as PLAY is. */
+#death-restart {
+  position: relative;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--ink-nav, rgba(232, 230, 223, 0.62));
+  font: 300 12px/1 var(--font-mono);
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  padding: 16px 4px;
+  animation: death-rise 1.2s ease-out 1.6s both;
+  transition: color 0.25s ease;
+}
+#death-restart::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 10px;
+  height: 1px;
+  background: var(--ink, #E8E6DF);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.3s ease;
+}
+#death-restart:hover, #death-restart:focus-visible { background: transparent; color: var(--ink-hi, #fff); outline: none; }
+#death-restart:hover::after, #death-restart:focus-visible::after { transform: scaleX(1); }
+.death-hint { color: var(--ink-quiet, rgba(232, 230, 223, 0.42)); animation: death-rise 1.2s ease-out 1.8s both; }
+.death-hint b { color: var(--ink-nav, rgba(232, 230, 223, 0.62)); border-color: rgba(232, 230, 223, 0.24); }
+@media (prefers-reduced-motion: reduce) {
+  body.bt-death-reel #moment-scene-img, .death-title, #death-message, .death-cause,
+  #death-restart, .death-hint { animation: none; }
+}
+
+/* ═══ THE TAPE (standalone.js Reel, run_tape.py) ═══
+   The run played back, fullscreen — drawn to the "GOD — The Tape" canvas.
+   Nothing here is new vocabulary: the goal HUD's mono label over a Manrope
+   300 title, the prose's face for the caption, a bone hairline for the
+   timeline, mono text buttons with the menu's 1px underline, the mint accent
+   for the one thing under the cursor. The controls recede while it plays
+   (.idle), leaving the picture, the caption and a 2px progress rule. */
+.reel {
+  position: fixed;
+  inset: 0;
+  z-index: 9800;
+  background: #050504;
+  color: var(--ink, #E8E6DF);
+  overflow: hidden;
+  font-family: var(--font-ui);
+  --reel-ink: var(--ink, #E8E6DF);
+  --reel-hi: var(--ink-hi, #FFFFFF);
+  --reel-nav: var(--ink-nav, rgba(232, 230, 223, 0.62));
+  --reel-quiet: var(--ink-quiet, rgba(232, 230, 223, 0.42));
+  --reel-line: var(--ink-line, rgba(232, 230, 223, 0.24));
+  --reel-mint: var(--accent, #8effc1);
+  --reel-red: #ff6a55;
+  --reel-halo: 0 1px 10px rgba(0, 0, 0, 0.8), 0 0 3px rgba(0, 0, 0, 0.6);
+  --reel-side: max(60px, 4.6vw);
+  animation: reel-in 0.45s ease-out;
+}
+.reel.hidden { display: none; }
+.reel.idle { cursor: none; }
+@keyframes reel-in { from { opacity: 0; } to { opacity: 1; } }
+
+.reel-stage { position: absolute; inset: 0; overflow: hidden; }
+.reel-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transform-origin: 50% 46%;
+  transition-property: opacity;
+  transition-timing-function: ease-in-out;
+  will-change: opacity, transform;
+}
+.reel-img.on { opacity: 1; }
+/* Two soft shades so the type holds on a bright frame — not a panel. */
+.reel-shade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(to bottom, rgba(6, 6, 5, 0.58) 0%, rgba(6, 6, 5, 0) 20%),
+    linear-gradient(to top, rgba(6, 6, 5, 0.84) 0%, rgba(6, 6, 5, 0.42) 18%, rgba(6, 6, 5, 0) 42%);
+  transition: opacity 0.8s ease;
+}
+.reel.idle .reel-shade { opacity: 0.55; }
+
+.reel-top, .reel-bar {
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.reel.idle .reel-top { opacity: 0; transform: translateY(-6px); pointer-events: none; }
+.reel.idle .reel-bar { opacity: 0; transform: translateY(6px); pointer-events: none; }
+
+.reel-top {
+  position: absolute;
+  top: 40px;
+  left: var(--reel-side);
+  right: var(--reel-side);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  text-shadow: var(--reel-halo);
+}
+.reel-meta { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding-top: 4px; }
+.reel-kicker {
+  font: 300 10px/1 var(--font-mono);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--reel-nav);
+}
+.reel-title {
+  font: 300 16px/1.3 var(--font-ui);
+  color: var(--reel-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60vw;
+}
+.reel-top-right { display: flex; align-items: center; gap: 36px; }
+.reel-count {
+  font: 300 10px/1 var(--font-mono);
+  letter-spacing: 0.34em;
+  color: var(--reel-nav);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Text buttons: the menu's own — mono, tracked, a 1px rule on hover. */
+.reel-textbtn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 3px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--reel-nav);
+  font: 300 11px/1 var(--font-mono);
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 0.25s ease;
+}
+.reel-textbtn::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: calc(3px + 0.4em);
+  bottom: 12px;
+  height: 1px;
+  background: var(--reel-ink);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.3s ease;
+}
+.reel-textbtn:hover, .reel-textbtn:focus-visible { color: var(--reel-hi); outline: none; }
+.reel-textbtn:hover::after, .reel-textbtn:focus-visible::after { transform: scaleX(1); }
+.reel-textbtn.is-on { color: var(--reel-ink); }
+.reel-textbtn.is-on::after { transform: scaleX(1); background: var(--reel-nav); }
+.reel-textbtn.hidden { display: none; }
+.reel-speed, .reel-cc { letter-spacing: 0.2em; }
+.reel-speed::after, .reel-cc::after { right: calc(3px + 0.2em); }
+.reel-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--reel-nav);
+  cursor: pointer;
+  transition: color 0.25s ease;
+}
+.reel-iconbtn:hover, .reel-iconbtn:focus-visible { color: var(--reel-hi); outline: none; }
+.reel-play { color: var(--reel-ink); margin-left: -12px; }
+
+/* The caption: set like the prose — the line in Manrope 300, the narration
+   under it quieter, the beat's label above in mono. */
+.reel-cap {
+  position: absolute;
+  left: 50%;
+  bottom: 118px;
+  transform: translateX(-50%);
+  width: min(760px, calc(100vw - 64px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  text-shadow: var(--reel-halo);
+  pointer-events: none;
+  transition: bottom 0.6s ease, opacity 0.3s ease;
+}
+.reel.idle .reel-cap { bottom: 58px; }
+.reel.no-cc .reel-cap { visibility: hidden; }
+/* A turn previewed on the timeline takes the caption's place. */
+.reel.previewing .reel-cap { visibility: hidden; }
+.reel-cap.in { animation: reel-cap-in 0.7s ease-out both; }
+@keyframes reel-cap-in { from { opacity: 0; transform: translate(-50%, 4px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.reel-cap-meta {
+  font: 300 10px/1.3 var(--font-mono);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--reel-nav);
+}
+.reel-cap-meta:empty, .reel-cap-line:empty, .reel-cap-prose:empty { display: none; }
+.reel-cap-line { font: 300 clamp(17px, 1.65vw, 22px)/1.4 var(--font-ui); color: var(--reel-ink); }
+.reel-cap-prose {
+  font: 300 clamp(13px, 1.1vw, 15px)/1.55 var(--font-ui);
+  color: var(--reel-nav);
+  max-width: 640px;
+}
+.reel-cap.no-line .reel-cap-prose { font-size: clamp(15px, 1.35vw, 18px); color: var(--reel-ink); }
+
+/* The transport. */
+.reel-bar {
+  position: absolute;
+  left: var(--reel-side);
+  right: var(--reel-side);
+  bottom: 36px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  text-shadow: var(--reel-halo);
+}
+.reel-bar > .reel-iconbtn:last-child { margin-right: -12px; }
+.reel-time {
+  font: 300 11px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  color: var(--reel-ink);
+  font-variant-numeric: tabular-nums;
+  min-width: 42px;
+}
+.reel-dur { color: var(--reel-nav); text-align: right; }
+.reel-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 28px;
+  cursor: pointer;
+  touch-action: none;
+  outline: none;
+}
+.reel-rail, .reel-fill, .reel-hoverfill {
+  position: absolute;
+  left: 0;
+  top: 13px;
+  height: 2px;
+  transition: height 0.15s ease, top 0.15s ease;
+}
+.reel-rail { right: 0; background: rgba(232, 230, 223, 0.14); }
+.reel-hoverfill { width: 0; background: rgba(232, 230, 223, 0.28); }
+.reel-fill { width: 0; background: var(--reel-ink); }
+.reel-track:hover .reel-rail, .reel-track:hover .reel-fill, .reel-track:hover .reel-hoverfill,
+.reel.scrubbing .reel-rail, .reel.scrubbing .reel-fill, .reel.scrubbing .reel-hoverfill { top: 12px; height: 4px; }
+.reel-knob {
+  position: absolute;
+  top: 9px;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border-radius: 50%;
+  background: var(--reel-hi);
+  transform: scale(0.6);
+  opacity: 0;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+.reel-track:hover .reel-knob, .reel.scrubbing .reel-knob, .reel-track:focus-visible .reel-knob { opacity: 1; transform: scale(1.1); }
+.reel-marks { position: absolute; inset: 0; pointer-events: none; }
+/* A tick per turn above the rail; a short rule under each fight. */
+.reel-tick {
+  position: absolute;
+  top: 7px;
+  width: 1px;
+  height: 4px;
+  background: var(--reel-quiet);
+}
+.reel-tick.is-death { background: var(--reel-red); height: 6px; top: 5px; }
+.reel-chapter {
+  position: absolute;
+  top: 3px;
+  width: 1px;
+  height: 8px;
+  background: var(--reel-nav);
+}
+.reel-fight {
+  position: absolute;
+  top: 18px;
+  height: 1px;
+  background: var(--reel-nav);
+}
+.reel-hoverline {
+  position: absolute;
+  top: 5px;
+  width: 1px;
+  height: 18px;
+  margin-left: -1px;
+  background: var(--reel-mint);
+  opacity: 0;
+  pointer-events: none;
+}
+.reel-hoverline.on { opacity: 1; }
+/* The turn under the cursor: its last frame, framed like a picker cell. */
+.reel-hover {
+  position: absolute;
+  bottom: 40px;
+  left: 0;
+  width: 240px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  text-shadow: var(--reel-halo);
+}
+.reel-hover.on { opacity: 1; }
+.reel-hover-img {
+  width: 240px;
+  height: 135px;
+  object-fit: cover;
+  outline: 1px solid rgba(142, 255, 193, 0.7);
+  outline-offset: 3px;
+  background: #0b0b0a;
+}
+.reel-hover-meta {
+  margin-top: 4px;
+  font: 300 10px/1.5 var(--font-mono);
+  letter-spacing: 0.24em;
+  color: var(--reel-mint);
+}
+.reel-hover-text { font: 300 13px/1.4 var(--font-ui); color: var(--reel-ink); }
+.reel-hover-text:empty { display: none; }
+
+/* Watching: the controls have gone, a 2px rule says where you are. */
+.reel-thin {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: rgba(232, 230, 223, 0.1);
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+.reel-thin > i { display: block; height: 100%; width: 0; background: var(--reel-nav); }
+.reel.idle .reel-thin { opacity: 1; }
+
+.reel-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  text-align: center;
+}
+.reel-empty.hidden { display: none; }
+.reel-empty-line { font: 300 16px/1.5 var(--font-ui); color: var(--reel-nav); max-width: 28rem; }
+.reel.is-empty .reel-bar, .reel.is-empty .reel-cap, .reel.is-empty .reel-count { display: none; }
+
+/* EXPORT: the picture dims, the sheet sits in the middle — rules between the
+   options, no box around them. */
+.reel.sheet-on .reel-stage { filter: brightness(0.32) saturate(0.7); transition: filter 0.4s ease; }
+/* visibility, not opacity: the caption's entrance animation fills forwards
+   and would win over an opacity rule. */
+.reel.sheet-on .reel-cap, .reel.sheet-on .reel-bar, .reel.sheet-on .reel-shade { visibility: hidden; pointer-events: none; }
+.reel-sheet {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(560px, calc(100vw - 48px));
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+  text-shadow: var(--reel-halo);
+  animation: reel-in 0.35s ease-out;
+}
+.reel-sheet.hidden { display: none; }
+.reel-sheet-head { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
+.reel-sheet-title {
+  font: 200 clamp(26px, 2.6vw, 34px)/1.1 var(--menu-font-display, var(--font-ui));
+  letter-spacing: 0.02em;
+  color: var(--reel-ink);
+}
+.reel-sheet-stats {
+  font: 300 10px/1 var(--font-mono);
+  letter-spacing: 0.34em;
+  color: var(--reel-quiet);
+  font-variant-numeric: tabular-nums;
+}
+.reel-opts { display: flex; flex-direction: column; border-bottom: 1px solid var(--reel-line); }
+.reel-opt {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  padding: 18px 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--reel-line);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.reel-opt-dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  margin-top: 2px;
+  border-radius: 50%;
+  border: 1px solid var(--reel-quiet);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.reel-opt.is-on .reel-opt-dot { background: var(--reel-mint); border-color: var(--reel-mint); }
+.reel-opt-body { display: flex; flex-direction: column; gap: 8px; }
+.reel-opt-name { font: 300 12px/1 var(--font-mono); letter-spacing: 0.4em; color: var(--reel-nav); }
+.reel-opt.is-on .reel-opt-name, .reel-opt:hover .reel-opt-name { color: var(--reel-hi); }
+.reel-opt-line { font: 300 14px/1.55 var(--font-ui); color: rgba(232, 230, 223, 0.55); }
+.reel-opt.is-on .reel-opt-line { color: rgba(232, 230, 223, 0.74); }
+.reel-opt-spec { font: 300 10px/1.3 var(--font-mono); letter-spacing: 0.24em; color: var(--reel-quiet); }
+.reel-opt:focus-visible { outline: none; }
+.reel-opt:focus-visible .reel-opt-name { color: var(--reel-hi); text-decoration: underline; text-underline-offset: 6px; }
+.reel-sheet-status {
+  min-height: 12px;
+  text-align: center;
+  font: 300 10px/1.4 var(--font-mono);
+  letter-spacing: 0.3em;
+  color: var(--reel-nav);
+  word-break: break-word;
+}
+.reel-sheet-status.is-waiting::after { content: " · · ·"; animation: bt-wait 1.4s ease-in-out infinite; }
+.reel-sheet-actions { display: flex; justify-content: center; gap: 40px; margin-top: -10px; }
+.reel-primary { color: var(--reel-hi); }
+.reel-primary::after { transform: scaleX(1); }
+
+@media (max-width: 720px) {
+  .reel { --reel-side: 18px; }
+  .reel-top { top: 18px; }
+  .reel-bar { gap: 10px; bottom: 14px; }
+  .reel-speed, .reel-cc { display: none; }
+  .reel-cap { bottom: 86px; }
+  .reel-hover { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reel, .reel-cap.in, .reel-sheet { animation: none; }
+  .reel-img { transition-duration: 0ms !important; }
+}
+
+/* The death screen's two ways out, side by side, and the picker's "the
+   tape" beside watch with the last run under it. */
+.death-actions { display: flex; gap: 48px; align-items: center; justify-content: center; }
+#death-tape {
+  position: relative;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--ink-hi, #fff);
+  font: 300 12px/1 var(--font-mono);
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  padding: 16px 4px;
+  cursor: pointer;
+  animation: death-rise 1.2s ease-out 1.5s both;
+}
+#death-tape::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: calc(4px + 0.4em);
+  bottom: 10px;
+  height: 1px;
+  background: var(--ink, #E8E6DF);
+}
+#death-tape[hidden] { display: none; }
+#death-tape:hover, #death-tape:focus-visible { color: var(--accent, #8effc1); outline: none; }
+#death-tape:hover::after, #death-tape:focus-visible::after { background: var(--accent, #8effc1); }
+
+.xp-subrow {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  pointer-events: none;
+}
+.xp-tape[hidden] { display: none; }
+.xp-subrow .xp-tape::before {
+  content: "";
+  display: inline-block;
+  width: 1px;
+  height: 10px;
+  margin-right: 20px;
+  vertical-align: -1px;
+  background: rgba(216, 240, 228, 0.2);
+}
+.xp-lastrun {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 6px;
+  padding: 4px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.55s var(--cine-ease, ease) 0.16s, transform 0.55s var(--cine-ease, ease) 0.16s;
+}
+.xp-lastrun[hidden] { display: none; }
+body.xp-ready .xp-lastrun { opacity: 1; transform: none; }
+.xp-lastrun img {
+  width: 96px;
+  height: 54px;
+  object-fit: cover;
+  opacity: 0.85;
+  outline: 1px solid transparent;
+  outline-offset: 2px;
+  transition: outline-color 0.22s ease, opacity 0.22s ease;
+}
+.xp-lastrun:hover img, .xp-lastrun:focus-visible img { outline-color: rgba(142, 255, 193, 0.7); opacity: 1; }
+.xp-lastrun:focus-visible { outline: none; }
+.xp-lastrun-text { display: flex; flex-direction: column; gap: 7px; text-shadow: 0 1px 10px rgba(2, 5, 4, 0.9); }
+.xp-lastrun-kind { font: 300 10px/1 var(--font-mono); letter-spacing: 0.34em; color: rgba(216, 240, 228, 0.5); }
+.xp-lastrun-line { font: 300 14px/1.3 var(--font-ui); color: rgba(216, 240, 228, 0.82); }
+.xp-lastrun:hover .xp-lastrun-kind { color: #8effc1; }
 
 /* While a Conversation Moment is live, restyle the existing Talk strip into
    a bottom-third cinematic caption bar and enable the scrim so the world
@@ -8447,6 +9539,23 @@ body.xp-open:has(#xp-exit) #start-exit { visibility: hidden; pointer-events: non
   margin-right: -0.5em;
   color: inherit;
 }
+/* The line under the name. Nietzsche, set in the margin's own hand: the
+   build tag's mono, quiet ink, tracked wide; it trails the gap the same way
+   the wordmark does so both sit on the centre line. */
+.start-tagline {
+  margin: 6px 0 0;
+  font: 400 12px/1.4 var(--menu-font-mono);
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  /* Brighter than the build tag: it sits over the menu's film, which can be
+     a sunrise, and at the tag's 0.42 it went under on anything bright. */
+  color: rgba(232, 230, 223, 0.78);
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.65);
+  white-space: nowrap;
+  text-align: center;
+  margin-right: -0.32em;
+  pointer-events: none;
+}
 
 .start-nav {
   position: absolute;
@@ -8524,6 +9633,7 @@ body.xp-open:has(#xp-exit) #start-exit { visibility: hidden; pointer-events: non
 }
 @media (max-width: 639px) {
   .start-brand { font-size: 64px; }
+  .start-tagline { white-space: normal; max-width: 86vw; font-size: 10px; }
   .start-tiles { flex-direction: column; align-items: center; gap: 8px; }
   .start-build { display: none; }
 }
@@ -10108,101 +11218,7 @@ body.agent-log-on #agent-log { display: flex; }
 /* (Reset lives in #control-rail; tape/auto-play/renderer/narrator/debug/vhs/
    sound live in the World Editor's ENGINE layer — see .we-sys-btn above.) */
 
-/* ---------- Tape playback overlay ---------- */
-
-#tape-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  background: #000;
-  overflow: hidden;
-  animation: tape-fade-in 0.4s ease-out;
-}
-#tape-overlay.hidden { display: none; }
-
-@keyframes tape-fade-in { from { opacity: 0; } to { opacity: 1; } }
-
-.tape-frame {
-  position: absolute;
-  inset: 0;
-  background-size: cover;
-  background-position: center;
-  background-color: #050505;
-  opacity: 0;
-  transition: opacity 0.4s ease-in-out;
-  filter: saturate(0.85) contrast(1.08);
-}
-.tape-frame-active { opacity: 1; }
-
-#tape-scanlines {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: repeating-linear-gradient(to bottom, rgba(0,0,0,0.14) 0px, rgba(0,0,0,0.14) 1px, transparent 2px, transparent 4px);
-  mix-blend-mode: multiply;
-}
-#tape-overlay::after {
-  content: "";
-  position: absolute; inset: 0;
-  pointer-events: none;
-  /* Very light edge darkening only — no heavy vignette over the footage. */
-  box-shadow: inset 0 0 60px rgba(0,0,0,0.25);
-}
-
-#tape-hud {
-  position: absolute;
-  top: calc(env(safe-area-inset-top, 0px) + 18px);
-  left: 0; right: 0;
-  display: flex;
-  justify-content: center;
-  gap: 22px;
-  font-family: var(--font-mono);
-  font-size: 18px;
-  color: rgba(255,255,255,0.75);
-  letter-spacing: 0.1em;
-  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
-  pointer-events: none;
-  z-index: 2;
-}
-#tape-rec { color: #8effc1; }
-
-#tape-empty {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-mono);
-  font-size: 26px;
-  letter-spacing: 0.14em;
-  color: rgba(216,240,228,0.5);
-}
-#tape-empty.hidden { display: none; }
-
-#tape-controls {
-  position: absolute;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 28px);
-  left: 0; right: 0;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 14px;
-  z-index: 2;
-}
-.tape-ctl {
-  background: rgba(6,12,10,0.5);
-  border: 1px solid rgba(142,255,193,0.35);
-  color: #cdf7df;
-  font-family: inherit;
-  font-size: 16px;
-  padding: 8px 14px;
-  border-radius: 4px;
-  cursor: pointer;
-  backdrop-filter: blur(2px);
-  transition: background 0.14s, border-color 0.14s;
-}
-.tape-ctl:hover { background: rgba(142,255,193,0.16); border-color: rgba(142,255,193,0.8); }
-.tape-eject { font-size: 12px; letter-spacing: 0.1em; }
+/* The tape player is #reel (THE TAPE, further up). */
 
 /* ---------- Responsive ---------- */
 
@@ -10392,28 +11408,6 @@ html.is-mobile.is-portrait .scene::after {
   background-size: contain;
 }
 
-/* Tape playback frames get the same treatment (also background-image divs). */
-html.is-mobile.is-portrait .tape-frame {
-  background-repeat: no-repeat;
-}
-html.is-mobile.is-portrait .tape-frame::before,
-html.is-mobile.is-portrait .tape-frame::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: inherit;
-  background-repeat: no-repeat;
-  background-position: center;
-}
-html.is-mobile.is-portrait .tape-frame::before {
-  background-size: cover;
-  transform: scale(1.18);
-  filter: blur(20px) saturate(0.9) brightness(0.7);
-  box-shadow: inset 0 0 130px 46px rgba(0, 0, 0, 0.55);
-}
-html.is-mobile.is-portrait .tape-frame::after {
-  background-size: contain;
-}
 
 /* Realtime video + its freeze back-buffer are replaced elements (no usable
    pseudo-elements), so we fit them with `contain`. The still "floor" staged
@@ -10427,8 +11421,7 @@ html.is-mobile.is-portrait .reactor-freeze {
 /* On very roomy portrait tablets the crop is far less severe, so ease off the
    blur strength for a cleaner look. */
 @media (min-width: 700px) {
-  html.is-mobile.is-portrait .scene::before,
-html.is-mobile.is-portrait .tape-frame::before {
+  html.is-mobile.is-portrait .scene::before {
     filter: blur(34px) saturate(0.85) brightness(0.55);
   }
 }
@@ -10436,8 +11429,7 @@ html.is-mobile.is-portrait .tape-frame::before {
 /* Respect reduced-motion / reduced-data leanings: the blurred fill is purely
    decorative, so drop it to a flat dark backdrop when motion is reduced. */
 @media (prefers-reduced-motion: reduce) {
-  html.is-mobile.is-portrait .scene::before,
-html.is-mobile.is-portrait .tape-frame::before {
+  html.is-mobile.is-portrait .scene::before {
     filter: none;
     background-image: none;
     background: #050505;
@@ -15343,6 +16335,49 @@ body.opening-overture .opening-card { opacity: 1; }
   .opening-card { transition: none; }
   .opening-rule i { animation: none; width: 100%; }
 }
+/* The look book the level waits for (LookBookStatus.gate): micro text and a
+   five-segment bar at the foot of the black, under the overture's title.
+   body.lookbook-gate turns it on — not body.opening-lookbook, which the
+   .opening-lookbook rule below would match and fade the whole page out. */
+.opening-lookbook {
+  position: absolute;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 6vh);
+  transform: translateX(-50%);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  width: min(600px, 90vw);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  text-align: center;
+  color: rgba(216, 240, 228, 0.58);
+  opacity: 0;
+  transition: opacity 0.6s var(--cine-ease);
+  pointer-events: none;
+}
+body.lookbook-gate .opening-lookbook,
+body.lookbook-gate-done .opening-lookbook { opacity: 1; }
+.opening-lookbook.is-live { color: rgba(240, 193, 74, 0.86); }
+.opening-lookbook.is-ready { color: rgba(142, 255, 193, 0.86); }
+.opening-lookbook.is-bad { color: rgba(255, 122, 107, 0.86); }
+.opening-lookbook .lbs-bar { display: flex; gap: 4px; width: min(260px, 60vw); }
+.opening-lookbook .lbs-bar i { flex: 1; height: 2px; background: rgba(216, 240, 228, 0.14); }
+.opening-lookbook .lbs-bar i.done { background: rgba(142, 255, 193, 0.85); }
+.opening-lookbook .lbs-bar i.live {
+  background: #F0C14A;
+  animation: we-lb-pulse 1.2s ease-in-out infinite;
+}
+/* The corner strip says the same thing; one is enough. */
+body.lookbook-gate .lookbook-status { display: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .opening-lookbook .lbs-bar i.live { animation: none; }
+}
+
 /* Hold the black EMPTY. The ceremony, the veil, the prose and the choice stack
    all have their own show rules and would otherwise sit on top of it. */
 body.opening-blackout #ceremony,
@@ -15439,7 +16474,6 @@ body.opening-blackout #fist-btn {
   #fist-btn.ready { animation: none; }
 }
 
-<<<<<<< HEAD
 /* The run's look book, on the Image node (look_book.py). The sheet is shown
    whole because it is read as a whole — nine frames, one world — and the
    roster as small plates with their roster line under them, because that line
@@ -15664,7 +16698,9 @@ body.opening-blackout #fist-btn {
   position: fixed;
   top: calc(env(safe-area-inset-top, 0px) + 122px);
   right: calc(env(safe-area-inset-right, 0px) + 14px);
-  z-index: 20;
+  /* Over the cutscene overlay (33): an arrival in another World waits for
+     that World's book while the montage's last shot holds. */
+  z-index: 60;
   width: 216px;
   display: flex;
   flex-direction: column;
@@ -15764,7 +16800,6 @@ body.world-editor-on .lookbook-status { display: none !important; }
   #world-editor .we-lookbook.is-live::after,
   #world-editor .we-lb-progress .lbs-bar i.live { animation: none; }
 }
-=======
 /* ── THE GOAL ─────────────────────────────────────────────────────────────────
    One thing you can see (goal.py). Top-left names it; on the picture it gets an
    item tag: a dot on the thing, a leader up and to the right, a rule, the name
@@ -15774,7 +16809,9 @@ body.world-editor-on .lookbook-status { display: none !important; }
   position: fixed;
   top: calc(env(safe-area-inset-top, 0px) + 58px);
   left: calc(env(safe-area-inset-left, 0px) + 60px);
-  z-index: 22;
+  /* Above the scene layers, like the tag: the name is clickable (it walks you
+     there) and at 22 the picture took the click instead. */
+  z-index: 34;
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -15796,7 +16833,19 @@ body.world-editor-on .lookbook-status { display: none !important; }
   font: 300 16px/1.3 var(--font-ui);
   color: var(--ink);
   text-shadow: 0 1px 10px rgba(0, 0, 0, 0.7);
+  /* The name IS the way to walk there — it carries a click handler and says
+     "Go to <it>" on hover — but the HUD around it is pointer-events: none so
+     it never sees the wall of nothing over the picture. Without this the
+     click went straight through to #sceneB and the run could not move on
+     from a goal the tag had not found in the frame yet. */
+  pointer-events: auto;
+  cursor: pointer;
+  align-self: flex-start;
+  transition: color 0.25s ease;
 }
+#goal-hud.reached .goal-hud-name { cursor: default; }
+#goal-hud .goal-hud-name:hover { color: var(--ink-hi); }
+#goal-hud.reached .goal-hud-name:hover { color: var(--ink); }
 #goal-hud .goal-hud-why {
   font: 300 13px/1.5 var(--font-ui);
   color: var(--ink-nav);
@@ -15815,7 +16864,10 @@ body.has-goal #shot-tally {
 #goal-tag {
   position: fixed;
   inset: 0;
-  z-index: 21;
+  /* Above the scene layers. At 21 the tag DREW over the picture but the scene
+     took the clicks — "#sceneB intercepts pointer events" — so its own button
+     could not be pressed at all. */
+  z-index: 34;
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.5s ease;
@@ -15833,6 +16885,229 @@ body.has-goal #shot-tally {
   text-shadow: 0 1px 10px rgba(0, 0, 0, 0.75), 0 0 2px rgba(0, 0, 0, 0.6);
 }
 .scan-tag.goal-shadowed { opacity: 0 !important; pointer-events: none !important; }
+/* The tag is how you go there: its name, its GOAL line and a 44px target on
+   the dot take the click; the rest of the layer stays click-through. */
+#goal-tag.on .gt-name, #goal-tag.on .gt-kind, #goal-tag.on .gt-hit { pointer-events: auto; cursor: pointer; }
+#goal-tag .gt-hit {
+  position: absolute; width: 44px; height: 44px; margin: -22px 0 0 -22px;
+  padding: 0; border: 0; border-radius: 50%; background: transparent; pointer-events: none;
+}
+#goal-tag .gt-name, #goal-tag .gt-kind { transition: color 0.2s ease; }
+#goal-tag.hover .gt-name { color: var(--ink); }
+#goal-tag.hover .gt-kind { color: #fff; }
+#goal-tag.hover .gt-ring { opacity: 1; stroke-width: 1.5; }
+/* READY — one step out: the thing glows and asks to be reached. */
+#goal-tag.ready .gt-ring {
+  stroke: #fff; opacity: 1; stroke-width: 1.5;
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.9)) drop-shadow(0 0 16px rgba(255, 255, 255, 0.55));
+  transform-box: fill-box; transform-origin: center;
+  animation: goal-ready-pulse 1.6s ease-in-out infinite;
+}
+#goal-tag.ready .gt-dot { fill: #fff; filter: drop-shadow(0 0 8px rgba(255, 255, 255, 1)); }
+#goal-tag.ready .gt-lead { stroke: #fff; }
+#goal-tag.ready .gt-name { text-shadow: 0 0 12px rgba(255, 255, 255, 0.7), 0 1px 10px rgba(0, 0, 0, 0.75); }
+#goal-tag.ready .gt-kind { color: #fff; letter-spacing: 0.4em; }
+#goal-tag.ready .gt-hit { width: 64px; height: 64px; margin: -32px 0 0 -32px; }
+@keyframes goal-ready-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.9); opacity: 0.35; }
+}
+/* HEAD THERE — the goal's own interact prompt, next to its GOAL line. Same
+   pill as a scan tag, brighter and breathing, so it reads as the one thing
+   on screen worth pressing. */
+#goal-tag .gt-go {
+  position: absolute; display: inline-flex; align-items: center; gap: 8px;
+  height: 24px; padding: 0 12px 0 10px; border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.75); background: rgba(10, 12, 18, 0.55);
+  color: #fff; font: 400 10px/1 var(--font-mono); letter-spacing: 0.26em;
+  text-transform: uppercase; white-space: nowrap; pointer-events: none;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  animation: goal-go-breathe 2.2s ease-in-out infinite;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+#goal-tag.on .gt-go { pointer-events: auto; cursor: pointer; }
+#goal-tag .gt-go:hover, #goal-tag.hover .gt-go { background: rgba(255, 255, 255, 0.18); border-color: #fff; }
+#goal-tag .gt-go-arrow { font-size: 9px; letter-spacing: 0; }
+@keyframes goal-go-breathe {
+  0%, 100% { box-shadow: 0 0 8px 1px rgba(255, 255, 255, 0.18); }
+  50%      { box-shadow: 0 0 18px 5px rgba(255, 255, 255, 0.42); }
+}
+body.processing #goal-tag .gt-go { opacity: 0.35; animation: none; }
+#goal-hud-name { cursor: pointer; }
+#goal-hud.reached #goal-hud-name { cursor: default; }
+
+
+/* ── THE FIND ──────────────────────────────────────────────────────────────
+   The moment a piece of this world's gear becomes theirs. It was designed by
+   the look book, shot on the props sheet and stood lit in the room the reward
+   walked them into, so it gets the screen for a few seconds: the plate, what
+   it is, and what it does. Before this the payoff of a whole lap was a name
+   on a board. Hands the game back on a click or on its own. */
+#goal-find {
+  position: fixed;
+  inset: 0;
+  z-index: 66;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+  background: radial-gradient(ellipse 70% 60% at 50% 50%,
+              rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0.88) 100%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.55s ease;
+}
+#goal-find.hidden { display: none; }
+#goal-find.on { opacity: 1; pointer-events: auto; cursor: pointer; }
+#goal-find .gf-inner {
+  display: flex;
+  align-items: center;
+  gap: 34px;
+  max-width: 780px;
+  transform: translateY(14px) scale(0.985);
+  transition: transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+#goal-find.on .gf-inner { transform: none; }
+#goal-find .gf-plate {
+  width: 260px;
+  height: 260px;
+  object-fit: cover;
+  border: 1px solid var(--ink-line);
+  border-radius: 3px;
+  background: #07090c;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 24px 70px rgba(0, 0, 0, 0.75);
+}
+#goal-find .gf-plate.gone { display: none; }
+#goal-find .gf-text { max-width: 400px; }
+#goal-find .gf-kind {
+  font: 300 10px/1 var(--font-mono);
+  letter-spacing: 0.44em;
+  margin-right: -0.44em;
+  color: var(--ink-quiet);
+  margin-bottom: 14px;
+}
+#goal-find .gf-name {
+  font: 200 clamp(21px, 2.3vw, 30px)/1.15 var(--font-mono);
+  letter-spacing: 0.3em;
+  margin-right: -0.3em;
+  text-transform: uppercase;
+  color: var(--ink-hi);
+}
+#goal-find .gf-power {
+  margin-top: 16px;
+  font: 300 15px/1.6 var(--font-ui);
+  color: var(--ink);
+}
+#goal-find .gf-power:empty { display: none; }
+#goal-find .gf-from {
+  margin-top: 20px;
+  font: 300 10px/1 var(--font-mono);
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--ink-quiet);
+}
+
+/* ── THE PACK ──────────────────────────────────────────────────────────────
+   What they are carrying, along the bottom. The plates themselves, small —
+   the point of generating them was that you get to look at them. */
+#goal-pack {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+  z-index: 24;
+  display: flex;
+  gap: 10px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.7s ease;
+}
+#goal-pack.on { opacity: 1; }
+#goal-pack .gp-item {
+  width: 54px;
+  text-align: center;
+}
+#goal-pack .gp-item img {
+  width: 54px;
+  height: 54px;
+  object-fit: cover;
+  border: 1px solid var(--ink-line);
+  border-radius: 2px;
+  background: #07090c;
+  filter: saturate(0.85);
+}
+#goal-pack .gp-name {
+  margin-top: 5px;
+  font: 300 8px/1.2 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-quiet);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The pack belongs to play: it goes with the rest of the chrome. */
+body.start-menu-on #goal-pack,
+body.mode-watch #goal-pack,
+body.moment-active #goal-pack { opacity: 0; }
+
+/* ARRIVED — the goal glows on the picture; clicking it is the finish. */
+#goal-arrive {
+  position: fixed; z-index: 35; padding: 0; margin: 0;
+  border: 1px solid rgba(255, 255, 255, 0.9); border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05); cursor: pointer;
+  opacity: 0; pointer-events: none; transition: opacity 0.6s ease, background 0.2s ease;
+  animation: goal-arrive-pulse 1.6s ease-in-out infinite;
+}
+#goal-arrive.on { opacity: 1; pointer-events: auto; }
+#goal-arrive:hover { background: rgba(255, 255, 255, 0.14); }
+#goal-arrive .ga-label {
+  position: absolute; left: 50%; top: 100%; transform: translate(-50%, 14px);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  white-space: nowrap; text-transform: uppercase;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.8), 0 0 2px rgba(0, 0, 0, 0.6);
+}
+#goal-arrive .ga-name { font: 400 13px/1 var(--font-mono); letter-spacing: 0.3em; color: #fff; }
+#goal-arrive .ga-kind { font: 300 9px/1 var(--font-mono); letter-spacing: 0.36em; color: var(--ink-nav); }
+@keyframes goal-arrive-pulse {
+  0%, 100% { box-shadow: 0 0 12px 2px rgba(255, 255, 255, 0.22), inset 0 0 10px rgba(255, 255, 255, 0.10); }
+  50%      { box-shadow: 0 0 30px 9px rgba(255, 255, 255, 0.55), inset 0 0 22px rgba(255, 255, 255, 0.22); }
+}
+body.start-menu-on #goal-arrive, body.mode-watch #goal-arrive, body.world-editor-on #goal-arrive,
+body.moment-active #goal-arrive, body.camera-mode #goal-arrive { opacity: 0 !important; pointer-events: none !important; }
+
+/* GOAL — the level opens on the view of it, and names it. Low over the
+   vista, so the thing itself stays visible above the words. */
+#goal-begin {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  padding: 140px 24px 16vh; text-align: center;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.45) 55%, rgba(0, 0, 0, 0) 100%);
+  opacity: 0; pointer-events: none; transition: opacity 0.9s ease;
+}
+/* Click-through. The card is a title, not a door: while it was taking
+   pointer events it sat over the tag for its first seconds and ate the click
+   that starts the walk (seen in the loop playtest: "goal-begin intercepts
+   pointer events"). It still gets out of the way on any click, because the
+   click lands on the game underneath and the listener hears it. */
+#goal-begin.on { opacity: 1; pointer-events: none; }
+#goal-begin .gb-kind {
+  font: 300 11px/1 var(--font-mono); letter-spacing: 0.4em; margin-right: -0.4em;
+  text-transform: uppercase; color: var(--ink-quiet);
+}
+#goal-begin .gb-name {
+  font: 200 clamp(24px, 3vw, 40px)/1.2 var(--font-mono); letter-spacing: 0.42em;
+  margin-right: -0.42em; text-transform: uppercase; color: var(--ink);
+}
+#goal-begin .gb-why { max-width: 620px; font: 300 15px/1.6 var(--font-ui); color: var(--ink-nav); }
+#goal-begin .gb-why:empty { display: none; }
+#goal-begin .gb-hint {
+  margin-top: 10px; font: 300 10px/1 var(--font-mono); letter-spacing: 0.34em;
+  margin-right: -0.34em; text-transform: uppercase; color: var(--ink-quiet);
+}
+body.start-menu-on #goal-begin, body.mode-watch #goal-begin, body.world-editor-on #goal-begin,
+body.moment-active #goal-begin, body.camera-mode #goal-begin { opacity: 0 !important; pointer-events: none !important; }
 #goal-tag .gt-name { font: 400 12px/1 var(--font-mono); letter-spacing: 0.28em; color: #fff; }
 #goal-tag .gt-kind { font: 300 9px/1 var(--font-mono); letter-spacing: 0.34em; color: var(--ink-nav); }
 
@@ -15901,4 +17176,3 @@ body.awaiting-first-scene #goal-hud, body.awaiting-first-scene #goal-tag {
 }
 #goal-reached .gr-continue:hover,
 #goal-reached .gr-continue:focus-visible { color: var(--ink-hi); border-bottom-color: var(--ink); outline: none; }
->>>>>>> claude/goal-first-frame

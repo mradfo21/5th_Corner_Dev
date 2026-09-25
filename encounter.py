@@ -15,12 +15,15 @@ parallel narrator.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+import combat as _combat
 
 ENCOUNTER_STANCES = ("hostile", "desperate", "opportunistic")
 # Anything outside this list was silently rewritten to "person", so a model that
@@ -110,6 +113,7 @@ _PERSON_NOUNS = (
     "figure", "stranger", "person", "someone", "creature", "presence",
     "soldier", "trooper", "officer", "scavenger", "animal", "beast", "dog",
     "thing", "shape", "silhouette", "body", "child", "crew", "team",
+    "humanoid", "mutant", "monster",
 )
 
 # A vision description narrates a PHOTOGRAPH, so it opens by naming the shot
@@ -187,6 +191,9 @@ ENCOUNTER_BRIEF_SCHEMA = {
                 "kind": {"type": "string"},
                 "look": {"type": "string"},
                 "stance": {"type": "string"},
+                # What it does to hurt you, as the battle line names it
+                # ("Freelancer used HIDDEN BLADE!") — combat.foe_move.
+                "move": {"type": "string"},
             },
             "required": ["label", "look", "stance"],
         },
@@ -499,6 +506,119 @@ def onscreen_threat_target(session_id: str = "default",
         return None
 
 
+# ───────── the story's own character: who the last beat put in front of you ──
+# The travel clock fires 8–26 s after a picture lands, and when nobody is in
+# the frame and the player has not been noticed, the roster decides who
+# arrives. It never looked at the beat the player had just read. Played
+# 2026-09-23 (bugs/20260923_225738): "A shifty figure in a black windbreaker
+# darts behind the van, dropping a grease pencil", with "Sprint toward the
+# shifty figure" on the slate, and twenty seconds later the fight opened on a
+# riot officer in a yellow hazmat suit — the look book's Riot Control Officer,
+# drawn in beside him. "the character we encountered that triggered the
+# encounter WASNT the character that appeared in the encounter." The figure
+# had ducked behind the van, so the detector had nothing to box; the story
+# still knew exactly who was there.
+_STORY_PERSON_NOUNS = (
+    "figure|man|woman|person|stranger|guard|officer|soldier|scavenger|operative|"
+    "agent|sniper|gunman|thug|looter|survivor|drifter|raider|mercenary|cultist|"
+    "creature|beast|dog|hound|coyote|priest|worker|technician|medic|doctor|"
+    "child|kid|boy|girl|rioter|protester|cop|trooper|sentry|watchman|hunter|"
+    "stalker|mutant|entity|someone|intruder|saboteur|silhouette|sentinel|"
+    "attacker|assailant|pursuer|squatter|vagrant|hermit|nurse|scientist|"
+    "researcher|miner|rancher|trucker|biker|ranger|deputy|sheriff|militiaman|"
+    "fighter|zealot|thief|smuggler|informant|contact|courier|photographer|"
+    "journalist|reporter"
+)
+_STORY_SUBJECT_RE = re.compile(
+    r"\b(?:a|an|the|another|one)\s+((?:[a-z][\w'-]*\s+){0,3}?(?:"
+    + _STORY_PERSON_NOUNS + r"))\b"
+    r"((?:,?\s+(?:in|with|wearing|carrying|holding|clutching|dressed in)\s+"
+    r"(?:[\w'-]+\s*){1,6}))?",
+    re.I,
+)
+# Where a "in a black windbreaker darts behind the van" clause stops being
+# the person and starts being what they do.
+_STORY_CLAUSE_STOP = re.compile(
+    r"^(?:is|was|are|were|has|had|stands?|stood|darts?|runs?|ran|moves?|"
+    r"watch(?:es)?|waits?|turns?|steps?|emerges?|appears?|lurks?|crouch(?:es)?|"
+    r"raises?|levels?|aims?|drops?|flees?|sprints?|slips?|ducks?|vanish(?:es)?|"
+    r"disappears?|climbs?|walks?|approach(?:es)?|calls?|shouts?|screams?|"
+    r"points?|stares?|peers?|glances?|reaches?|grabs?|pulls?|push(?:es)?|"
+    r"backs?|breaks?|bolts?|hides?|kneels?|lies|lays?|sits?|who|that|which|as|"
+    r"while|before|after|behind|near|by|toward|towards|at|on|from|into|onto|"
+    r"across|through|to|and|but|then|\w+ing)$",
+    re.I,
+)
+
+
+def story_subject(dispatch: str) -> Optional[dict]:
+    """The first person or creature a beat of prose puts in front of the
+    player, as ``{"label", "said"}``, or None. Pure; no model call."""
+    text = re.sub(r"\s+", " ", str(dispatch or "")).strip()
+    for m in _STORY_SUBJECT_RE.finditer(text):
+        head = m.group(1).strip()
+        if _SIGHT_EXCLUDE_RE.search(head):
+            continue
+        # Words straight before the article that make it not a person in the
+        # scene: "your own silhouette", "like a man", "of the officer's".
+        before = text[max(0, m.start() - 12):m.start()].lower()
+        # "left behind by the rival operative" names someone who is not here.
+        if re.search(r"\b(your|like|of|as if|than|by|about|for)\s*$", before):
+            continue
+        tail = []
+        for w in (m.group(2) or "").replace(",", " ").split():
+            if tail and _STORY_CLAUSE_STOP.match(w.strip(".;:!?")):
+                break
+            tail.append(w.strip(".;:!?"))
+            if w.endswith((".", ";", ":", "!", "?")):
+                break
+        label = " ".join([head] + tail).strip()
+        if len(tail) == 1:          # a lone "in" or "with" says nothing
+            label = head
+        label = _clip(label[:1].upper() + label[1:], "", 60)
+        cut = text.rfind(". ", 0, m.start())
+        start = cut + 2 if cut != -1 else 0
+        end = text.find(". ", m.end())
+        said = text[start:(end + 1 if end != -1 else len(text))].strip()
+        # Down and out of it is not someone to meet.
+        if re.search(r"\b(dead|lifeless|unconscious|motionless|collapses|collapsed|"
+                     r"lies still|bleeds out|slumped)\b", said, re.I):
+            continue
+        return {"label": label, "said": _clip(said, "", 260)}
+    return None
+
+
+def story_subject_target(session_id: str = "default") -> Optional[dict]:
+    """The character the latest beat introduced, as an encounter target
+    (``source: "story"``), or None to leave the roll alone.
+
+    Only the newest ordinary beat counts: the one the player just read. Not
+    the aftermath of a fight (it names who was just fought), and not someone
+    the last encounter was with (see sighting_is_recent_antagonist)."""
+    try:
+        import engine
+        st = engine._load_state(session_id) or {}
+        hist = engine._load_history(session_id) or []
+        row = next((h for h in reversed(hist) if isinstance(h, dict)
+                    and str(h.get("dispatch") or "").strip()), None)
+        if not row:
+            return None
+        choice = str(row.get("choice") or "")
+        if choice.startswith("[ENCOUNTER]") or choice.startswith("__"):
+            return None
+        found = story_subject(str(row.get("dispatch") or ""))
+        if not found:
+            return None
+        if sighting_is_recent_antagonist(st, found["label"]):
+            return None
+        print(f"[ENCOUNTER] story: the last beat put {found['label']!r} in front "
+              f"of the player — that is who arrives, not a roster draw", flush=True)
+        return {"label": found["label"], "said": found["said"], "source": "story"}
+    except Exception as e:
+        print(f"[ENCOUNTER] story subject failed: {e}", flush=True)
+        return None
+
+
 # ───────── a sighting: the person on screen IS the encounter ────────────────
 # The travel clock decides WHEN an encounter happens and the roster decides
 # WHAT; the frame only got a say at ALERTED or worse (onscreen_threat_target).
@@ -582,6 +702,10 @@ def sighting_can_fire(state: Optional[dict]) -> tuple[bool, str]:
                 return False, "cooldown"
         except (TypeError, ValueError):
             pass
+    # A person in the picture is a roadside fight like any other: the walk to
+    # a goal holds one (ENCOUNTER_PER_GOAL_LEG), then the one who holds it.
+    if leg_is_full(st):
+        return False, "leg_quota"
     return True, "ok"
 
 
@@ -648,6 +772,8 @@ def stage_sighting(state: dict, subject: dict, crop_path: str = "",
         "at": time.time(),
     }
     st["encounter_sighting"] = sight
+    if st.get("level_goal"):
+        st["goal_leg_fights"] = int(st.get("goal_leg_fights") or 0) + 1
     public = {k: v for k, v in sight.items() if k not in ("crop_path", "at")}
     return public
 
@@ -1361,6 +1487,7 @@ def normalize_encounter_brief(raw: Any, place_hold: str = "") -> dict:
     locked_look = ""
     if isinstance(char_in, dict):
         locked_look = _clip(char_in.get("locked_look") or "", "", 160)
+    move = _clip(char_in.get("move") or "", "", 40) if isinstance(char_in, dict) else ""
     out = {
         "character": {
             "label": label,
@@ -1379,6 +1506,8 @@ def normalize_encounter_brief(raw: Any, place_hold: str = "") -> dict:
         out["motive"] = motive
     if locked_look:
         out["character"]["locked_look"] = locked_look
+    if move:
+        out["character"]["move"] = move
     # Preserve where the exchange got to; normalize rebuilds from scratch and
     # would otherwise reset every round to a fresh standoff.
     enemy_state = str(data.get("enemy_state") or "ready").strip().lower()
@@ -1414,6 +1543,25 @@ def normalize_encounter_brief(raw: Any, place_hold: str = "") -> dict:
         out["roster_kind"] = roster_kind
     if data.get("roster_plate"):
         out["roster_plate"] = _clip(data.get("roster_plate"), "", 80)
+    # THE BOSS STAYS THE BOSS. api_begin stamps `boss`, and then aligns the
+    # brief to the plate — which rebuilds it through here. It fell through the
+    # rebuild, so the fight at the goal was rolled as a roadside one; its name
+    # relabelled to what the picture showed ("A figure in heavy"); and never
+    # marked as the boss going down (goal.boss_defeated). Same trap as
+    # `setting` and `roster_kind` above, one field later. (His stat block —
+    # the longer bar, no morale to break — is combat.foe_block's.)
+    if data.get("boss"):
+        out["boss"] = True
+    # Which piece of armour has already taken a killing blow this fight.
+    if data.get("armor_spent"):
+        out["armor_spent"] = _clip(data.get("armor_spent"), "", 60)
+    # THE FIGHT'S OWN RECORD — both bars, the turn count, the exchange thrown
+    # and not yet played (combat.py). One field, kept whole, because every
+    # field this rebuild did not name has been lost through it at least once
+    # (`_sequence`, `detection`, `setting`, `roster_kind`, `boss`).
+    kept = _combat.clean_combat(data.get("combat"))
+    if kept:
+        out["combat"] = kept
     return out
 
 
@@ -1770,13 +1918,17 @@ def adopt_plate_look(brief: dict, plate_seen: str) -> dict:
         return brief
     char["look"] = look
     char["locked_look"] = look
+    # The boss is named by the goal (goal.boss); the look follows the pixels,
+    # the name does not.
+    if brief.get("boss") and char.get("label"):
+        return brief
     if brief.get("roster_plate") and _label_names_roster_entry(brief) \
             and not look_clones_player(char.get("label") or ""):
         # Drawn from the roster entry's look-book plate: what it IS was decided
         # before the render and the render copied it. The look follows the
         # pixels; the name stays the roster entry's.
         return brief
-    grounded = _grounded_label_from_look(look, plate_seen)
+    grounded = _grounded_label_from_look(look, plate_seen, kind=char.get("kind") or "")
     if grounded and not look_clones_player(grounded) and not _is_clothing_clause_label(grounded):
         char["label"] = grounded
     return brief
@@ -1812,7 +1964,32 @@ def _camera_shows_player() -> bool:
         return True
 
 
-def _grounded_label_from_look(look: str, plate_seen: str = "") -> str:
+def _reads_as_description(text: str) -> bool:
+    """A label that is really the start of a sentence about the picture.
+
+    Played 2026-09-23: a creature sighting was named "The scene shows a
+    third-person view" — the vision pass's opening words, taken as the name
+    because nothing in them was a noun for a body. It went on the fight's
+    title and on the spoil it dropped ("Off the scene shows a third-person
+    view"). A name is a few words about someone, never a clause about a shot.
+    """
+    raw = re.sub(r"\s+", " ", str(text or "")).strip(" ,.;:-")
+    if not raw:
+        return True
+    if strip_camera_language(raw) != raw:
+        return True
+    if re.search(r"\b(?:shows?|showing|depicts?|depicting|features?|featuring|"
+                 r"captures?|capturing|illustrates?|appears?\s+to)\b", raw, re.I):
+        return True
+    return len(raw.split()) > 6
+
+
+def generic_foe_label(kind: str = "") -> str:
+    """What to call someone when nothing better can be read off them."""
+    return "A creature" if str(kind or "").strip().lower() == "creature" else "A stranger"
+
+
+def _grounded_label_from_look(look: str, plate_seen: str = "", kind: str = "") -> str:
     """Name a person, not the first clothing clause of their description.
 
     'wearing a tattered high-visibility blue vest…' used to become the
@@ -1838,8 +2015,8 @@ def _grounded_label_from_look(look: str, plate_seen: str = "") -> str:
             return _clip(f"{article} {noun} in {cloth}", "A stranger", 40)
         return f"{article} {noun}"
     first = _clip((source or look_s or seen_s).split(",")[0], "", 40)
-    if _is_clothing_clause_label(first) or not first:
-        return "A stranger"
+    if _is_clothing_clause_label(first) or not first or _reads_as_description(first):
+        return generic_foe_label(kind)
     if first[0].islower():
         first = first[0].upper() + first[1:]
     return first
@@ -1874,6 +2051,11 @@ def align_brief_to_plate(brief: dict, vision: Optional[dict] = None) -> dict:
     if not seen:
         return ground_danger_to_visible(brief)
     label = str(char.get("label") or "")
+    # The one at the goal is named by the goal (goal.boss): that name is who
+    # the whole walk was toward, and a vision pass that only saw "a figure in
+    # heavy armour" does not get to rename him.
+    if brief.get("boss"):
+        return ground_danger_to_visible(brief, seen)
     plow = seen.lower()
     pulp = any(r in label.lower() for r in _PULP_RANKS)
     pulp_in_plate = any(r in plow for r in _PULP_RANKS)
@@ -1892,9 +2074,10 @@ def align_brief_to_plate(brief: dict, vision: Optional[dict] = None) -> dict:
         named_in_plate = _label_names_roster_entry(brief)
     if (look_clones_player(label) or _is_clothing_clause_label(label)
             or (pulp and not pulp_in_plate) or (tokens and not named_in_plate)):
-        grounded = _grounded_label_from_look(char.get("look") or "", seen)
+        grounded = _grounded_label_from_look(char.get("look") or "", seen,
+                                             kind=char.get("kind") or "")
         if look_clones_player(grounded) or _is_clothing_clause_label(grounded):
-            grounded = "A stranger"
+            grounded = generic_foe_label(char.get("kind"))
         char["label"] = grounded
     return ground_danger_to_visible(brief, seen)
 
@@ -2526,6 +2709,48 @@ _LANE_KEYWORDS = {
 }
 
 
+# A typed action that does violence to the thing in front of you is ATTACK,
+# whatever else is in the sentence. The keyword list is substring-matched and
+# had no gun in it: "shoot him with a gun" hit nothing, the model reads that
+# settle a miss fell through to REASON, and the player watched the shot play
+# out while the foe's health did not move ("it doesn't deal damage"). "…shoot
+# him in the lower back" matched parley's "lower", "…from cover" evade's.
+_HARM_RE = re.compile(
+    r"\b(?:shoot|shoots|shot|shooting|open(?:s|ed)? fire|fire[sd]? (?:at|on|into|a round|a shot|twice|again)|"
+    r"fire[sd]? (?:my|the|his|her|a|this) [\w-]+(?: [\w-]+)? (?:at|into|on)|run (?:him|her|them|it) through|"
+    r"put(?:s|ting)? (?:a|one|two|three|another) (?:round|bullet|slug|shell|bolt|arrow|shot)s? (?:in|into|through)|"
+    r"(?:cap|pop|plug|drill|waste|smoke)s? (?:him|her|them|it)\b|"
+    r"pull(?:s|ed)? the trigger|gun (?:him|her|them|it) down|pistol[- ]whip\w*|snipe[sd]?|"
+    r"blast(?:s|ed)? (?:him|her|them|it)|unload\w* (?:on|into)|"
+    r"attack\w*|kill\w*|murder\w*|stab\w*|slash\w*|shank\w*|knife (?:him|her|them|it)|"
+    r"(?:cut|hack|slice)s? (?:him|her|them|it|its|his|her)|behead\w*|decapitat\w*|"
+    r"strangl\w*|throttl\w*|choke\w*|headbutt\w*|bludgeon\w*|bash\w*|"
+    r"punch\w*|kick(?:s|ed|ing)? (?:him|her|them|it|its|his)|hit(?:s|ting)? (?:him|her|them|it)|"
+    r"smash\w*|stomp\w*|bite (?:him|her|them|it)|gouge\w*|"
+    r"tackle\w*|stab|shove\w*|slam\w*|swing\w* (?:at|the|my)|throw\w* (?:a|the|my) \w+ at)\b",
+    re.IGNORECASE)
+# ...unless the violence is only SAID: a threat, a bluff, a warning, an
+# "if you move". Those stay the model's to read (usually REASON).
+_HARM_ONLY_SAID_RE = re.compile(
+    r"\b(?:threaten\w*|warn\w*|bluff\w*|pretend\w*|fake\w*|feint\w*|tell (?:him|her|them|it)|"
+    r"say\w*|said|yell\w* that|if (?:he|she|they|it|you)|or i(?:'ll| will)|unless|"
+    r"don'?t|do not|without (?:shooting|firing|hurting|attacking)|instead of)\b",
+    re.IGNORECASE)
+
+
+def is_plain_attack(text: str) -> bool:
+    """True when a typed action plainly does violence to the opponent."""
+    blob = re.sub(r"\s+", " ", str(text or "")).strip()
+    harm = _HARM_RE.search(blob) if blob else None
+    if not harm:
+        return False
+    # "threaten to shoot him" / "tell him I'll shoot" / "don't shoot": the
+    # framing comes BEFORE the violence. "shoot him and say goodbye" is still
+    # a shot.
+    said = _HARM_ONLY_SAID_RE.search(blob[:harm.start()])
+    return not said
+
+
 def lane_keyword_hits(text: str) -> list:
     """Which lanes this wording touches, in lane order. Free, no model.
 
@@ -2570,6 +2795,8 @@ def classify_custom_lane(text: str, brief: Optional[dict] = None) -> str:
     violence, which is what most improvised actions are, and the old default of
     confront quietly charged the player combat odds for talking.
     """
+    if is_plain_attack(text):
+        return "confront"
     hits = lane_keyword_hits(text)
     if len(hits) == 1:
         return hits[0]
@@ -2594,12 +2821,15 @@ def _ask_custom_lane(text: str, brief: Optional[dict] = None) -> str:
             "A player is in a confrontation and has written what they do next. "
             "Decide which of three things that action IS.\n"
             "\n"
-            "confront — they use force on it: strike, tackle, grab, throw "
-            "something at it, put it down.\n"
+            "confront — they use force or a weapon on it: shoot it, fire at "
+            "it, stab, cut, strike, tackle, grab, throw something at it, put "
+            "it down. Using a weapon on it is ALWAYS confront, even one they "
+            "may not have.\n"
             "evade — they break contact: run, hide, dodge past, get out, "
             "refuse to be where it is.\n"
             "parley — anything else: talk, offer, hand something over, "
-            "comply, bluff, threaten with words, stall, show it something.\n"
+            "comply, bluff, threaten (with words or a weapon they do NOT use), "
+            "stall, show it something.\n"
             "\n"
             f"Facing them: {who}. {facing}\n"
             f"They wrote: {action[:300]}\n"
@@ -2626,6 +2856,92 @@ def _ask_custom_lane(text: str, brief: Optional[dict] = None) -> str:
         if candidate in lane:
             return candidate
     return ""
+
+
+ENCOUNTER_JUDGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "lane": {"type": "string", "enum": list(ENCOUNTER_LANES)},
+        "advantage": {"type": "boolean"},
+        "why": {"type": "string"},
+    },
+    "required": ["lane", "advantage"],
+}
+
+
+def judge_custom_action(text: str, brief: Optional[dict] = None) -> dict:
+    """A typed action in a fight: which lane it is, and whether it earns
+    ADVANTAGE (combat.py: two d20, keep the higher).
+
+    This is the skill in the system. The three written verbs are the model's;
+    the fourth row is the player's own words, and a line that uses something
+    real — what the photograph shows, what this one wants, a weakness the
+    fight has shown — is a better move than "hit him", so it rolls better.
+    It never costs anything: a typed action is never punished for being
+    typed (CLAUDE.md, ACT). `{}` on any failure, and the caller falls back to
+    match_encounter_choice for the lane."""
+    action = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not action:
+        return {}
+    import engine
+    b = brief or {}
+    char = (b.get("character") or {})
+    who = str(char.get("label") or "the other one").strip()
+    seen = str(b.get("plate_seen") or b.get("place_hold") or "").strip()
+    try:
+        raw = engine._ask(
+            "A player is in a fight in a tabletop-style game and has written "
+            "what they do next. Judge two things.\n"
+            "\n"
+            "lane — what the action IS: confront (force or a weapon used on it: "
+            "shoot it, fire at it, stab, cut, strike, tackle, grab, throw "
+            "something at it — using a weapon on it is ALWAYS confront), evade "
+            "(break contact: run, hide, dodge past), parley (anything else: "
+            "talk, offer, bluff, threaten with words or with a weapon they do "
+            "not use, show it something).\n"
+            "advantage — true only when the action cleverly uses something "
+            "SPECIFIC: an object or feature that is really in the scene below, "
+            "what this opponent wants or fears, or an opening the fight has "
+            "given. Generic effort ('hit him hard', 'run fast', 'talk him "
+            "down') is false. A good idea that anyone at a table would reward "
+            "is true.\n"
+            "why — if true, the reason in at most eight words, e.g. \"the "
+            "steam vent is right behind him\".\n"
+            "\n"
+            f"Opponent: {who}. Wants: {str(b.get('motive') or '')[:160]}\n"
+            f"Danger: {str(b.get('danger') or '')[:160]}\n"
+            f"The scene: {seen[:300]}\n"
+            f"They wrote: {action[:300]}\n"
+            "Return JSON only.",
+            model="gemini",
+            temp=0.0,
+            tokens=80,
+            use_lore=False,
+            response_schema=ENCOUNTER_JUDGE_SCHEMA,
+        )
+    except Exception as err:
+        try:
+            engine.log_error(f"[ENCOUNTER] judge ask failed: {err}")
+        except Exception:
+            pass
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip()))
+        except Exception:
+            print(f"[ENCOUNTER] judge reply did not parse for {action[:60]!r}: {raw[:120]!r}", flush=True)
+            return {"lane": "confront", "advantage": False, "why": ""} if is_plain_attack(action) else {}
+    if not isinstance(raw, dict):
+        return {}
+    lane = str(raw.get("lane") or "").strip().lower()
+    if lane not in ENCOUNTER_LANES:
+        print(f"[ENCOUNTER] judge gave no lane for {action[:60]!r}: {str(raw)[:120]}", flush=True)
+        return {}
+    if lane != "confront" and is_plain_attack(action):
+        print(f"[ENCOUNTER] judge read {action[:60]!r} as {lane}; it is an attack", flush=True)
+        lane = "confront"
+    why = re.sub(r"\s+", " ", str(raw.get("why") or "")).strip().strip(".")[:60]
+    return {"lane": lane, "advantage": bool(raw.get("advantage")), "why": why}
 
 
 def structure_encounter_choices(options: Any) -> list:
@@ -2703,306 +3019,171 @@ def match_encounter_choice(posted_text: str, posted_lane: str,
     return verb, lane
 
 
-# What being already-seen costs when a fight starts, indexed by the detection
-# level the encounter opened on (hidden / suspicious / alerted / hunted).
+# ─── THE FIGHT ────────────────────────────────────────────────────────────
+# A fight is played by combat.py's d20 rules: initiative, attack rolls
+# against armour class, damage dice off two health bars, skill checks for
+# fleeing and talking, morale, death saves. That replaced a weighted pick of
+# survive / escape / wounded / die per exchange, whose last exchange was
+# decided by decree (it read 100% on the slate) and whose `escape` band ended
+# committed attacks with no roll of the player's at all — "make it a proper
+# combat system that has an element of skill / dice roll. like dungeons and
+# dragons" (Matt, 2026-09-23).
 #
-# The odds below read lane, stance, kind, condition, fate and enemy state —
-# and, until this, not the one dial the player spends the whole run watching.
-# A run could be hunted for twenty turns and the moment something actually
-# walked up it rolled exactly like a run that had never been seen, which is
-# what made detection a readout rather than a stake.
-#
-# Hidden is initiative: it did not know you were there, so you get the first
-# move and the option of simply not being found. Hunted is the inverse — this
-# thing is here BECAUSE it has been following you, so running away is the one
-# answer it has already solved for.
-_DETECTION_ODDS = (
-    {"survive": 8,  "escape": 8,   "wounded": -8, "die": -8},   # hidden
-    {"survive": 3,  "escape": 3,   "wounded": -3, "die": -3},   # suspicious
-    {"survive": -4, "escape": -8,  "wounded": 8,  "die": 4},    # alerted
-    {"survive": -8, "escape": -18, "wounded": 14, "die": 10},   # hunted
-)
+# What the world knew of you still decides the jump (combat.roll_initiative):
+# hidden is a surprise round for you, hunted an ambush for them and a harder
+# escape — the doctrine the old _DETECTION_ODDS table encoded, now as rules a
+# player can see. The pack still does what its cards say: a WEAPON hits more
+# often and harder; ARMOUR takes one killing blow a fight.
+
+# Roadside fights per goal. The walk to a goal already ends in the one who
+# holds it (goal.boss); on top of that the travel clock fired every other
+# step, and a lap was three fights in five turns — the 23:45 loop playtest
+# died in the third. One on the way, then the boss.
+ENCOUNTER_PER_GOAL_LEG = int(os.getenv("ENCOUNTER_PER_GOAL_LEG", "1"))
 
 
-def apply_detection_odds(w: dict, detection: Optional[int] = None) -> dict:
-    """Fold the detection level the fight opened on into the outcome weights.
-
-    Mutates and returns `w`. ``None`` means "nobody said", and leaves the
-    weights exactly as they were — which is what an encounter record written
-    before this existed, and any caller that does not care, both look like.
-    `hidden` is a real bonus rather than the baseline, so defaulting an unknown
-    level to 0 would hand every legacy fight a stealth advantage it never
-    earned.
-
-    `die` is only ever RAISED where it was already non-zero: the lanes that
-    carry an explicit `die: 0` (talking down someone opportunistic, confronting
-    a non-hostile person) are saying that this lane cannot kill you, and being
-    watched on the way in should not quietly turn them lethal. It still costs
-    you — through escape and wounded.
-    """
-    if detection is None:
-        return w
+def fight_context(state: Optional[dict], enc: Optional[dict]) -> dict:
+    """Everything a round is rolled against, read once, in one place — for
+    the roll and for the odds on the slate, so the two can never be computed
+    from different readings of the same fight."""
+    st = state if isinstance(state, dict) else {}
+    enc = enc if isinstance(enc, dict) else {}
+    char = enc.get("character") if isinstance(enc.get("character"), dict) else {}
+    # The level the fight OPENED on, pinned at begin — not a fresh read. You
+    # do not become un-followed halfway through being caught. None on a record
+    # written before detection was pinned: initiative is rolled for it.
+    opened_at = enc.get("detection")
+    if opened_at is not None:
+        opened_at = _as_detection(opened_at)
     try:
-        idx = max(0, min(len(_DETECTION_ODDS) - 1, int(detection)))
-    except (TypeError, ValueError):
-        return w
-    for key, delta in _DETECTION_ODDS[idx].items():
-        base = int(w.get(key, 0))
-        if key == "die" and delta > 0 and base <= 0:
-            continue
-        w[key] = base + delta
-    w["survive"] = max(5, int(w.get("survive", 0)))
-    return w
-
-
-def encounter_outcome_weights(lane: str, stance: str = "hostile",
-                              kind: str = "person",
-                              condition: str = "ok",
-                              fate: str = "NORMAL",
-                              enemy_state: str = "ready",
-                              detection: Optional[int] = None) -> dict:
-    """Integer weights for survive / escape / wounded / die.
-
-    `enemy_state` is what makes this a fight rather than a slot machine. A
-    confront against a ready body is an opening exchange — it mostly costs the
-    other person their balance. A confront against a body already staggered is
-    the finish. Rolling both the same way is why committing to a verb used to
-    change nothing 75% of the time and kill you the other 25%.
-
-    `detection` is how much the world already knew about the player when this
-    started — see _DETECTION_ODDS.
-    """
-    lane_l = lane if lane in ENCOUNTER_LANES else "confront"
-    stance_l = stance if stance in ENCOUNTER_STANCES else "hostile"
-    kind_l = kind if kind in ENCOUNTER_KINDS else "person"
-    wounded = str(condition or "ok").strip().lower() == "wounded"
-    fate_l = str(fate or "NORMAL").strip().upper()
-    staggered = str(enemy_state or "ready").strip().lower() == "staggered"
-
-    if lane_l == "confront":
-        if kind_l == "creature" or stance_l == "hostile":
-            w = {"survive": 55, "escape": 5, "wounded": 32, "die": 8}
-        elif stance_l == "desperate":
-            w = {"survive": 55, "escape": 10, "wounded": 32, "die": 3}
-        else:
-            w = {"survive": 70, "escape": 15, "wounded": 15, "die": 0}
-        if staggered:
-            # They are off their feet. Pressing the advantage should land.
-            w = {"survive": 78, "escape": 5, "wounded": 14, "die": 3}
-        if wounded:
-            w["die"] = w.get("die", 0) + 12
-            w["survive"] = max(5, w["survive"] - 15)
-    elif lane_l == "evade":
-        if kind_l == "creature":
-            w = {"survive": 10, "escape": 55, "wounded": 25, "die": 10}
-        elif stance_l == "hostile":
-            w = {"survive": 10, "escape": 65, "wounded": 20, "die": 5}
-        else:
-            w = {"survive": 15, "escape": 75, "wounded": 10, "die": 0}
-        if wounded:
-            w["die"] = w.get("die", 0) + 10
-            w["wounded"] = w.get("wounded", 0) + 10
-            w["escape"] = max(20, w["escape"] - 15)
-    else:
-        # Parley. Talking is the safest lane by a wide margin, which is the
-        # point — it is the option that costs you something other than blood.
-        # It is not free: a creature has no use for what you are offering,
-        # and a desperate person is the one most likely to swing anyway.
-        if kind_l == "creature":
-            w = {"survive": 30, "escape": 12, "wounded": 48, "die": 10}
-        elif stance_l == "opportunistic":
-            w = {"survive": 80, "escape": 12, "wounded": 8, "die": 0}
-        elif stance_l == "desperate":
-            w = {"survive": 58, "escape": 10, "wounded": 30, "die": 2}
-        else:
-            w = {"survive": 65, "escape": 10, "wounded": 22, "die": 3}
-        if staggered:
-            # They have already had the worst of it and want a way out.
-            w["survive"] = w.get("survive", 0) + 15
-            w["wounded"] = max(0, w.get("wounded", 0) - 10)
-        if wounded:
-            # Bleeding in front of someone who wants something is leverage
-            # against you, not for you.
-            w["wounded"] = w.get("wounded", 0) + 10
-            w["survive"] = max(15, w["survive"] - 10)
-
-    apply_detection_odds(w, detection)
-
-    if fate_l == "LUCKY":
-        w["die"] = max(0, w.get("die", 0) - 15)
-        w["survive"] = w.get("survive", 0) + 10
-        w["escape"] = w.get("escape", 0) + 5
-    elif fate_l == "UNLUCKY":
-        w["wounded"] = w.get("wounded", 0) + 15
-        w["survive"] = max(5, w.get("survive", 0) - 10)
-        if lane_l == "confront":
-            w["die"] = w.get("die", 0) + 10
-    return {k: max(0, int(v)) for k, v in w.items()}
-
-
-# How much likelier each further round of the same lane is to settle the other
-# body, and the ceiling it climbs to. A flat per-round chance has a long tail:
-# at 0.62 a staggered body shrugs off four consecutive finishers about one
-# fight in ten, and a playtest hit exactly that — "crush his skull with boot"
-# landed four times running, the prose said the skull yielded and the player
-# was standing over him, and the state machine still said `staggered` and kept
-# the Moment open. Pressing an advantage has to converge, or the fight reads as
-# broken however good the individual beats are.
-ENEMY_STATE_ROUND_GAIN = 0.14
-ENEMY_STATE_MAX_CHANCE = 0.94
-
-# A confrontation is TWO exchanges at the outside, and usually one.
-#
-# Reported as "encounters take far too long, and make very little sense and
-# aren't dramatic enough". All three are the same fault. Every round is a real
-# generation (~30s), so a four-round fight was two minutes of standing in one
-# place — and the ladder below was what made four rounds ordinary: winning meant
-# climbing ready -> staggered -> down, so it took a MINIMUM of two landed
-# confronts and often four.
-#
-# That is also where the incoherence came from. The slate promises "ONE
-# committed, extreme act of violence - the thing that cannot be undone" and the
-# consequence writes it: the skull is crushed, the body drops. Then the state
-# machine says `ready`, the same three lanes come back, and the player is asked
-# to kill a man they just killed. The drama was being written and then revoked.
-#
-# So a committed verb can FINISH it outright now, and the second exchange always
-# does. Escalation lives inside two beats — swing, and settle — instead of being
-# spread thin across four.
-ENCOUNTER_MAX_ROUNDS = int(os.getenv("ENCOUNTER_MAX_ROUNDS", "2"))
-
-# A landed confront's odds of moving the other body one step. These used to be
-# 0.55 and 0.62, which did not deliver what the docstring below promises: two
-# committed verbs finished a fight only about a third of the time, and the
-# prose ran far ahead of the state machine. A playtest opened with a crate to
-# the face, then a skull crushed against monitors, then a skull shattered
-# against monitors — and the man was still `ready`, not even staggered, for all
-# three. At these rates a pressed fight settles in two verbs about 73% of the
-# time and in four about 99.8%.
-CONFRONT_STAGGER_CHANCE = 0.75   # ready -> staggered
-CONFRONT_DOWN_CHANCE = 0.70      # staggered -> down
-# ...and the one that matters most: a committed verb ending it where it stands,
-# with no intermediate rung. This is the beat the choice slate has been
-# promising all along.
-CONFRONT_FINISH_CHANCE = 0.62    # ready -> down, in one
-
-
-def _settle_chance(base: float, round_no: int = 1) -> float:
-    """`base` on the first exchange, climbing with each further one."""
-    rounds = max(0, int(round_no or 1) - 1)
-    return max(0.0, min(ENEMY_STATE_MAX_CHANCE,
-                        base + ENEMY_STATE_ROUND_GAIN * rounds))
-
-
-def advance_enemy_state(lane: str, outcome: str, enemy_state: str = "ready",
-                        rng: Any = None, stance: str = "hostile",
-                        kind: str = "person", round_no: int = 1) -> str:
-    """How the other body changes as a result of this exchange.
-
-    This is the escalation the encounter never had. Pressing a confront moves
-    them ready -> staggered -> down, so two committed verbs finish a fight and
-    the player can win one, which was previously impossible: `encounter_releases`
-    only fired on escape or death.
-
-    ``round_no`` is what stops the tail. The odds above are for the FIRST
-    exchange; every further one in the same fight is likelier to settle it (see
-    ENEMY_STATE_ROUND_GAIN), so a player who keeps pressing always gets an
-    answer instead of watching the same standoff repeat.
-    """
-    state = str(enemy_state or "ready").strip().lower()
-    if state not in ENCOUNTER_ENEMY_STATES:
-        state = "ready"
-    if outcome in ("die", "escape") or state in ENCOUNTER_ENEMY_SETTLED:
-        return state
-    # The last exchange settles it, whatever the dice say. A fight that can run
-    # a third round is a fight that CAN take two minutes, and the odds below
-    # only ever made that less likely — never impossible. See
-    # ENCOUNTER_MAX_ROUNDS.
-    final = int(round_no or 1) >= ENCOUNTER_MAX_ROUNDS
-    roll = rng.random() if rng is not None else random.random()
-    if lane == "confront":
-        if final:
-            return "down"
-        if state == "staggered":
-            return ("down" if roll < _settle_chance(CONFRONT_DOWN_CHANCE, round_no)
-                    else "staggered")
-        # Straight to the ground, no rung in between — the verb the player
-        # picked said it would be. Failing that, they are at least staggered:
-        # a landed blow always shows.
-        if roll < _settle_chance(CONFRONT_FINISH_CHANCE, round_no):
-            return "down"
-        return "staggered"
-    if lane == "parley":
-        # This is the other way to win, and the only one that does not
-        # cost a body. A creature has no use for what the player is
-        # offering, so talking at it changes nothing — on the last exchange
-        # the fight still has to end, and it ends by the player getting clear
-        # (see roll_encounter_outcome), not by the thing being reasoned with.
-        if str(kind or "person").strip().lower() == "creature":
-            return state
-        if final:
-            return "standing_down"
-        chance = 0.55 if str(stance or "").strip().lower() == "opportunistic" else 0.35
-        if state == "staggered":
-            chance += 0.20
-        if outcome == "wounded":
-            chance -= 0.25
-        return "standing_down" if roll < _settle_chance(chance, round_no) else state
-    # Evading buys distance; they recover their footing.
-    return "ready" if roll < 0.6 else state
-
-
-def roll_encounter_outcome(lane: str, stance: str = "hostile",
-                           kind: str = "person", condition: str = "ok",
-                           fate: str = "NORMAL", rng: Any = None,
-                           enemy_state: str = "ready",
-                           round_no: int = 1,
-                           detection: Optional[int] = None) -> dict:
-    """Server-owned result. The consequence LLM writes this beat; it does not flip it."""
-    weights = encounter_outcome_weights(lane, stance, kind, condition, fate,
-                                        enemy_state=enemy_state,
-                                        detection=detection)
-    total = sum(weights.values()) or 1
-    pick = rng.random() if rng is not None else random.random()
-    cursor = 0.0
-    outcome = "survive"
-    for name in ENCOUNTER_OUTCOMES:
-        cursor += weights.get(name, 0) / total
-        if pick <= cursor:
-            outcome = name
-            break
-    prev = "wounded" if str(condition or "").strip().lower() == "wounded" else "ok"
-    next_enemy = advance_enemy_state(lane, outcome, enemy_state, rng=rng,
-                                     stance=stance, kind=kind,
-                                     round_no=round_no)
-    # Last exchange, and the other body is still not settled: the only lanes
-    # that can reach here are evade (which ends by getting clear) and talking
-    # at a creature (which never had a chance of landing). Both end the same
-    # way — the player is out of it. Without this the cap would be a cap on
-    # confront alone and a fight could still stall on the lane that is meant to
-    # be the way out. Death is left exactly as rolled; how a run ends is not
-    # something a pacing rule gets to overrule.
-    if (outcome != "die"
-            and int(round_no or 1) >= ENCOUNTER_MAX_ROUNDS
-            and next_enemy not in ENCOUNTER_ENEMY_SETTLED):
-        outcome = "escape"
-    if outcome == "die":
-        next_cond = prev
-        alive = False
-    elif outcome == "wounded":
-        next_cond = "wounded"
-        alive = True
-    else:
-        next_cond = prev
-        alive = True
+        import goal as _goal_edge
+        edge = _goal_edge.gear_edge(st) or {}
+    except Exception:
+        edge = {}
+    weapon = (edge.get("weapon") or [""])[0] or ""
+    armor = (edge.get("armor") or [""])[0] or ""
+    hp, _mx = _combat.player_hp(st.get("player_state"))
     return {
-        "outcome": outcome,
-        "alive": alive,
-        "condition": next_cond,
-        "lane": lane if lane in ENCOUNTER_LANES else "confront",
-        "enemy_state": next_enemy,
-        "round_no": max(1, int(round_no or 1)),
-        "weights": weights,
+        "stance": str(char.get("stance") or "hostile").strip().lower(),
+        "kind": str(char.get("kind") or "person").strip().lower(),
+        "fate": str(st.get("fate") or "NORMAL"),
+        "detection": opened_at,
+        "boss": bool(enc.get("boss")),
+        "weapon": weapon,
+        "armor": armor,
+        # Armour takes one killing blow a FIGHT; the brief remembers which.
+        "armor_ready": bool(armor) and not str(enc.get("armor_spent") or ""),
+        "hp": hp,
+        "you": _combat.player_block(name=player_display_name(), weapon=weapon,
+                                    armor=armor, fate=str(st.get("fate") or "NORMAL")),
+    }
+
+
+def fight_record(state: Optional[dict], enc: dict) -> dict:
+    """The fight's record, opening one if this fight has none (a save from
+    before the rules, or a caller that skipped begin)."""
+    return _combat.clean_combat(enc.get("combat")) or open_fight_record(
+        dict(state or {}, player_state=dict((state or {}).get("player_state") or {})), enc)
+
+
+def slate_odds(state: Optional[dict], enc: dict) -> Dict[str, int]:
+    """Each lane's odds for the round about to be chosen (combat.lane_odds)."""
+    ctx = fight_context(state, enc)
+    rec = fight_record(state, enc)
+    return {lane: _combat.lane_odds(rec, ctx["you"], lane) for lane in ENCOUNTER_LANES}
+
+
+def player_display_name() -> str:
+    """Who the left-hand bar belongs to: the cast sheet's protagonist, or YOU
+    when the run has no name for them."""
+    try:
+        import game_identity
+        name = str(game_identity.display_name() or "").strip()
+    except Exception:
+        name = ""
+    if not name or name.lower().startswith("the player"):
+        return "YOU"
+    return name.split(" ")[0][:22]
+
+
+def open_fight_record(state: Optional[dict], brief: dict, rng: Any = None) -> dict:
+    """The combat record a fight opens with — his stat block, the initiative
+    — and the player's bar mended for the walk here (mutates
+    state["player_state"])."""
+    st = state if isinstance(state, dict) else {}
+    ps = st.get("player_state")
+    if not isinstance(ps, dict):
+        ps = {"alive": True}
+        st["player_state"] = ps
+    hp = _combat.mend(ps)
+    char = brief.get("character") if isinstance(brief.get("character"), dict) else {}
+    name = ""
+    if brief.get("boss"):
+        try:
+            import goal as _goal_name
+            name = str((_goal_name.boss(st) or {}).get("name") or "")
+        except Exception:
+            name = ""
+        name = _combat.foe_short_name(name, char.get("kind") or "") if name else ""
+    if not name:
+        name = _combat.best_foe_name([brief.get("_named"), char.get("label")],
+                                     char.get("kind") or "")
+        # ...and the opening line says it the same way.
+        if (brief.get("_named") and _combat.foe_short_name(
+                char.get("label") or "", char.get("kind") or "") in _combat.GENERIC_NAMES):
+            char = dict(char, label=brief["_named"])
+    det = brief.get("detection")
+    return _combat.open_combat(char, you_name=player_display_name(), you_hp=hp,
+                               you_max=int(ps.get("hp_max") or _combat.PLAYER_MAX_HP),
+                               boss=bool(brief.get("boss")), name=name,
+                               detection=_as_detection(det) if det is not None else None,
+                               rng=rng)
+
+
+def roll_exchange(state: dict, enc: dict, verb: str, lane: str,
+                  rng: Any = None, edge: int = 0, edge_why: str = "") -> dict:
+    """Play one round for a committed verb (combat.play_round), before any
+    picture of it exists: stored on the fight as `pending` (api_exchange) so
+    the client can play the dice during the wait, and read back by
+    api_resolve so the picture is drawn of exactly this result. Never rolled
+    twice.
+
+    `rolled` carries the words the rest of the game reads a fight by — the
+    picture prompt, the engine turn, the verdict: outcome (survive / escape /
+    wounded / die), enemy_state (ready / staggered / down / standing_down),
+    alive, condition."""
+    ctx = fight_context(state, enc)
+    rec = fight_record(state, enc)
+    lane = lane if lane in ENCOUNTER_LANES else "confront"
+    played = _combat.play_round(
+        rec, lane=lane, verb=verb, you=ctx["you"], you_hp=ctx["hp"], rng=rng,
+        edge=edge, edge_why=edge_why, armor_ready=ctx["armor_ready"])
+    exchange = played["exchange"]
+    rolled = {
+        "outcome": played["outcome"],
+        "alive": played["alive"],
+        "condition": played["condition"],
+        "lane": lane,
+        "enemy_state": played["enemy_state"],
+        "round_no": exchange["round"],
+        "end": played["end"],
+    }
+    armor_saved = played["armor_used"]
+    if armor_saved:
+        print(f"[ENCOUNTER] the {armor_saved} took a killing blow", flush=True)
+    print(f"[ENCOUNTER] round {exchange['round']} {lane}: {played['end'] or 'goes on'} · "
+          f"you {exchange['you']['hp_before']}->{exchange['you']['hp']} · "
+          f"them {exchange['foe']['hp_before']}->{exchange['foe']['hp']}", flush=True)
+    return {
+        "verb": verb,
+        "lane": lane,
+        "rolled": rolled,
+        "armor_saved": armor_saved,
+        "armor_spent": armor_saved or str(enc.get("armor_spent") or ""),
+        "weapon": ctx["weapon"] if lane == "confront" else "",
+        "exchange": exchange,
+        "combat": rec,
+        "after": played["after"],
     }
 
 
@@ -3085,6 +3266,8 @@ def apply_travel(state: dict, dt: float, *, now: Optional[float] = None,
     remain = ensure_travel_clock(st, rng=rng)
     if dt <= 0:
         return False, "no_travel", remain
+    if leg_is_full(st):
+        return False, "leg_quota", remain
 
     remain = max(0.0, round(remain - dt, 3))
     st["encounter_travel_remain"] = remain
@@ -3092,7 +3275,47 @@ def apply_travel(state: dict, dt: float, *, now: Optional[float] = None,
         return False, "counting", remain
 
     reset_travel_clock(st, rng=rng)
+    if st.get("level_goal"):
+        st["goal_leg_fights"] = int(st.get("goal_leg_fights") or 0) + 1
     return True, "due", 0.0
+
+
+def foe_name(session_id: str, enc: Optional[dict], fallback: str = "") -> str:
+    """Who a spoil came off, the way a player would say it. The play-out
+    relabels a fight to what the picture shows ("A man", "A figure in
+    heavy"), so the roster entry's own everyday noun wins when there is one:
+    "the scavenger", "the guard"."""
+    kind = str((enc or {}).get("roster_kind") or "").strip()
+    if kind:
+        try:
+            import look_book
+            e = look_book._entry_for(look_book.current(session_id, rebuild_if_stale=False),
+                                     kind) or {}
+            terms = [str(t).strip() for t in (e.get("terms") or []) if str(t).strip()]
+            if terms:
+                return f"the {terms[0]}"
+        except Exception:
+            pass
+    label = re.sub(r"\s+", " ", str(fallback or "")).strip()
+    if re.match(r"^(A|An)\s", label):
+        label = label[0].lower() + label[1:]
+        # A label cut from the picture's description ends mid-clause ("a
+        # figure in long", "a figure in heavy"): the noun is enough.
+        label = re.split(r"\s+(?:in|with|wearing|holding|carrying|of|on|at|from|"
+                         r"behind|under|near)\b", label, maxsplit=1)[0]
+    # A sentence about the picture is not who it was ("The scene shows a
+    # third-person view", seen live on a spoil).
+    if label and _reads_as_description(label):
+        label = generic_foe_label(((enc or {}).get("character") or {}).get("kind")).lower()
+    return label[:60]
+
+
+def leg_is_full(state: Optional[dict]) -> bool:
+    """This goal's walk has had its roadside fight; the next is the boss."""
+    st = state if isinstance(state, dict) else {}
+    if not st.get("level_goal") or ENCOUNTER_PER_GOAL_LEG <= 0:
+        return False
+    return int(st.get("goal_leg_fights") or 0) >= ENCOUNTER_PER_GOAL_LEG
 
 
 def cinematic_composition(action: bool = False) -> str:
@@ -3252,6 +3475,23 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
                 f"whatever they carry in play. Do not restage the place, do "
                 f"not teleport."
             )
+        elif aimed and str((target or {}).get("source") or "") == "story":
+            place_lock += (
+                f"The {aimed} is the one the story just named — the player "
+                f"has been following them. If they are in this photograph, it "
+                f"is that same person, now turned on the player; if they are "
+                f"not, they step INTO it now from where they were last seen "
+                f"(behind cover, out of a doorway, round a vehicle). Exactly "
+                f"one of them, dressed as described, and nobody else added. "
+                f"Do not restage the place, do not teleport."
+            )
+        elif aimed and str((target or {}).get("source") or "") == "boss":
+            place_lock += (
+                f"ADD {aimed} — the one who holds this place — INTO this "
+                f"photograph, out of the place itself, squaring up to the "
+                f"player. Nobody else added. Do not restage the place, do not "
+                f"teleport."
+            )
         elif aimed:
             place_lock += (
                 f"The {aimed} is ALREADY in this photograph — do not add a "
@@ -3398,10 +3638,72 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
     return prompt
 
 
+def exchange_story(exchange: Optional[dict], who: str, foe: str,
+                   verb: str = "") -> list:
+    """The round the dice played, as the lines a picture has to show, in order.
+
+    The resolve picture was drawn from the player's verb alone, under an
+    AGENCY LOCK that forbade the other one striking — so a round where the
+    player's swing missed and the enemy's blow landed came back as the player
+    landing the blow. "it'll say i missed and the player is being damaged,
+    while showing the player damaging the enemy, it was backwards" (Matt,
+    2026-09-23). combat.play_round already knows every beat; this says them.
+    """
+    beats = [b for b in ((exchange or {}).get("beats") or []) if isinstance(b, dict)]
+    act = (verb or "").strip().rstrip(".") or "their move"
+    # "The freelancer" opens a sentence; mid-sentence it is "the freelancer".
+    fm = foe[:1].lower() + foe[1:] if foe[:4] in ("The ", "A ") or foe[:3] == "An " else foe
+    out = []
+    for b in beats:
+        side, kind, res = b.get("side"), b.get("kind"), str(b.get("result") or "")
+        crit = bool(b.get("crit"))
+        if side == "you" and kind == "attack":
+            if res in ("hit", "crit", "ko"):
+                out.append(f"{who} — {act} — CONNECTS: {fm} takes it"
+                           f"{' full force' if crit else ''}"
+                           f"{' and goes down' if res == 'ko' else ', rocked'}.")
+            elif "footing" in str(b.get("text") or "").lower():
+                out.append(f"{who} goes for it — {act} — and loses their footing; "
+                           f"nothing lands on {fm}.")
+            else:
+                out.append(f"{who} goes for it — {act} — and MISSES: {fm} slips it, "
+                           f"the blow finds air, no contact.")
+        elif side == "you" and kind == "flee":
+            out.append(f"{who} breaks away and gets clear of {fm}." if res == "away" else
+                       f"{who} tries to get away and {fm} cuts them off.")
+        elif side == "you" and kind == "reason":
+            out.append(f"{who} — {act} — and {fm} backs off, the fight going out of them."
+                       if res == "settled" else
+                       f"{who} — {act} — and {fm} isn't having it, still squared up.")
+        elif side == "you" and kind == "armor":
+            out.append(f"The blow that should have finished {who} is taken by their armour.")
+        elif side == "foe" and kind == "strike":
+            move = str(b.get("move") or "").strip().lower() or "a blow"
+            if res in ("hit", "crit"):
+                out.append(f"{foe} hits {who} with {move}{' — a brutal one' if crit else ''}: "
+                           f"{who} TAKES the blow and staggers.")
+            else:
+                out.append(f"{foe} comes at {who} with {move} and MISSES — {who} is untouched.")
+        elif side == "foe" and kind == "note" and res == "flat":
+            out.append(f"{foe} is caught flat-footed and does nothing.")
+        elif side == "foe" and kind == "morale":
+            out.append(f"{foe} breaks and runs." if res == "routed" else
+                       f"{foe} is hurt but stays in it.")
+        elif side == "foe" and kind == "end" and res == "ko":
+            if not (out and "goes down" in out[-1]):
+                out.append(f"{foe} goes down.")
+    return out
+
+
 def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
                                    outcome: str, setting: str = "",
-                                   world_flavor: str = "") -> str:
-    """Hard-cut still of THIS verb landing. Place and cast are text locks."""
+                                   world_flavor: str = "",
+                                   exchange: Optional[dict] = None) -> str:
+    """Hard-cut still of THIS verb landing. Place and cast are text locks.
+
+    With ``exchange`` (the round combat.play_round played) the picture shows
+    that round in order — who connects and who misses — instead of assuming
+    the player's verb landed. See exchange_story."""
     brief = normalize_encounter_brief(brief)
     char = brief["character"]
     verb_s = (verb or "").strip() or "Hold your ground"
@@ -3479,13 +3781,74 @@ def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
             "person's weight coming off their front foot."
         ),
     }.get(lane_s, f"{actor} Bodies in contact. The player is acting.")
+    told = exchange_story(exchange, player_name, char["label"], verb_s) \
+        if out_s != "die" else []
+    if told:
+        motion = (
+            "WHAT HAPPENS, IN THIS ORDER — the dice have already decided it; "
+            "draw exactly this and nothing else: "
+            + " ".join(f"({i}) {line}" for i, line in enumerate(told, 1))
+            + " A MISS is air: no contact, the one who missed off-balance. A HIT "
+            "is contact and the one who was hit reacts. Whoever takes a blow in "
+            "these lines is the one hurt in the picture — if it is the player, "
+            "the player is the one staggering. Drawing it the other way round "
+            "is the failure."
+        )
     bits.append(
         f"CAST LOCK — TEXT ONLY. Same two people. Same faces, hair, clothes, "
         f"gender. The other person is {char['label']} — {locked}. "
         f"They are NOT wearing the player's vest or PRESS gear. "
         f"Do not recast. Do not add a third person. Do not draw a character sheet."
     )
-    if lane_s == "parley":
+    if out_s == "die":
+        # THE DEATH. "when the player dies, from some horrific creature or vile
+        # enemy, the death is part of the fun, seeing what happened to you …
+        # render a new DEATH FLIPBOOK. show a new continuing frame all focused
+        # on your painful death, THEN show the YOU DIED" (Matt, 2026-09-23).
+        # Every rule below the cast lock is about the PLAYER acting, which is
+        # the one thing this beat is not — so the death gets its own direction
+        # and none of the agency locks.
+        move = str(char.get("move") or "").strip() or "what it came here to do"
+        bits.append(
+            f"THIS IS THE PLAYER'S DEATH. {player_name}"
+            f"{' (wearing ' + player_clothes + ')' if player_clothes else ''} tried to "
+            f"{verb_s[0].lower() + verb_s[1:] if verb_s else 'fight'} — and "
+            f"{char['label']} ended it with {move}. CONTINUE from the attached "
+            "moment: the same place, the same two figures, the same camera holding on it "
+            "(the screen pushes in on its own; the frames keep one rig). "
+            "Every frame is about the player: the blow landing on them, their body "
+            "giving way, falling, the last thing they see. The other one is the "
+            "one doing this, and is never the one hurt. Painful and final, told by "
+            "the body, the angle and the light — the way a horror film would hold "
+            "on it. No gore, no blood spray, no wounds shown in detail; the horror "
+            "is that it is over. Do not show the player winning, escaping or "
+            "standing at the end."
+        )
+        bits.append(
+            "The LAST frame: the player down and still, "
+            f"{char['label']} over them or already turning away. Darkness "
+            "closing at the edges."
+        )
+        bits.append(
+            cinematic_composition(action=True) +
+            " No HUD, no game UI, no captions, no letterbox. "
+            "A finished 1993 photograph."
+        )
+        prompt = " ".join(bits)
+        try:
+            import engine
+            if hasattr(engine, "_sanitize_for_image_generation"):
+                prompt = engine._sanitize_for_image_generation(prompt)
+        except Exception:
+            pass
+        return prompt
+    if told:
+        bits.append(
+            "ORDER LOCK — HARD. The lines below are the whole exchange and "
+            "its order. Nobody lands a blow the lines do not give them, and "
+            "every blow they give lands."
+        )
+    elif lane_s == "parley":
         bits.append(
             f"AGENCY LOCK — HARD. {actor} The player is the one defusing "
             f"this. Nobody is being struck, grabbed, or thrown. Do not "
@@ -3513,6 +3876,13 @@ def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
             "landing, you failed. If you return the previous standoff "
             "unchanged, you failed."
         )
+    elif told:
+        contact = (
+            "Bodies are in contact or a hand's width apart — this is an "
+            "exchange, not a conversation. If you return the previous "
+            "standoff with a small pose change, you failed. If the two "
+            "people are standing apart looking at each other, you failed."
+        )
     else:
         contact = (
             "Bodies are in contact or a hand's width apart — this is an "
@@ -3523,8 +3893,9 @@ def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
         )
     bits.append(
         f"THIS IS A HARD CUT. New camera, new blocking. {shot} "
-        f"Show the instant the verb lands: {verb_s} ({lane_s}). {motion} "
-        f"{contact}"
+        + (f"Show this exchange. {motion} " if told else
+           f"Show the instant the verb lands: {verb_s} ({lane_s}). {motion} ")
+        + f"{contact}"
     )
     enemy_state = str(brief.get("enemy_state") or "ready").strip().lower()
     if out_s in ("survive", "wounded") and enemy_state == "standing_down":
@@ -3546,6 +3917,8 @@ def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
             "a hand out for something to catch — but still up, still in it. "
             "This is the middle of the fight, not the end of it."
         )
+    elif told and out_s in ("survive", "wounded"):
+        pass   # the ordered lines above already say who landed what
     elif out_s == "survive":
         bits.append(
             "The verb has already landed. Contact, weight, a body reacting. "
@@ -3696,9 +4069,38 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
     aimed = _clip((target or {}).get("label") if isinstance(target, dict) else target, "", 60)
     designed = ""
     sighted = bool(isinstance(target, dict) and target.get("source") == "sighting")
-    if aimed and sighted:
+    is_boss = bool(isinstance(target, dict) and target.get("source") == "boss")
+    if aimed and is_boss:
+        rolled = aimed
+        roll_line = (
+            f"THIS IS THE BOSS: {aimed}\n"
+            f"HOW THEY LOOK: {_clip(target.get('look'), '', 260)}\n"
+            f"WHAT THEY WANT: {_clip(target.get('want'), '', 160)}\n"
+            f"The player has walked the whole run to reach {target.get('goal') or 'this place'} "
+            "and has just stepped through its threshold. The boss has been "
+            "waiting here for them. This is the climax of the run: the most "
+            "dangerous confrontation so far, face to face, in the place itself. "
+            "The label is exactly the boss's name above; the look is that look; "
+            "the stance is hostile; the danger is the worst thing they will do "
+            "to stop the player, starting now. Do not substitute anyone else.\n\n"
+        )
+    elif aimed and sighted:
         rolled = aimed
         roll_line = sighting_brief_line(target)
+    elif aimed and str((target or {}).get("source") or "") == "story":
+        rolled = aimed
+        roll_line = (
+            f"THE STORY HAS JUST PUT THIS CHARACTER IN FRONT OF THE PLAYER: {aimed}\n"
+            f"The beat the player just read: \"{_clip(target.get('said'), '', 260)}\"\n"
+            "That is who this encounter is with — the player read about them "
+            "and went after them. The label names THEM, the look is what that "
+            "beat says they look like (fill in only what it leaves out, and "
+            "contradict none of it), and the danger is what they do now that "
+            "the player has caught up with them. Do not roll up anyone else, "
+            "and do not swap them for someone easier to photograph. If the "
+            "photograph does not show them yet, they step out into it now, from "
+            "where the beat left them.\n\n"
+        )
     elif aimed:
         rolled = aimed
         roll_line = (
@@ -3764,8 +4166,15 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
         "and whose it is. Anything the available light and a 35mm lens could "
         "actually catch in 1993 is fair; nothing that needs CGI or a glow.\n"
         f"{_brief_cast_rule()}"
-        "Return one JSON object with character, motive, danger, stakes, "
-        "place_hold."
+        # The fight is played as two health bars now (combat.py), and every
+        # blow it lands is announced by name. Named here, off the same
+        # photograph, so it is the thing the picture shows it holding.
+        "character.move is what it does to hurt the player, the way a battle "
+        "screen would announce it: two or three words, taken from what it is "
+        "or what it holds in this photograph (HIDDEN BLADE, CAMERA FLASH, "
+        "CRUSHING GRIP, RIFLE BUTT).\n"
+        "Return one JSON object with character (label, kind, look, stance, "
+        "move), motive, danger, stakes, place_hold."
     )
     raw = ""
     try:
@@ -3933,8 +4342,12 @@ def _generate_encounter_choices(brief: dict, image_url: Optional[str],
 
 
 def _pin_encounter_plate(session_id: str, image_path: Optional[str], web_url: Optional[str],
-                         brief: dict) -> None:
-    """Make the confrontation plate the img2img reference for the aftermath turn."""
+                         brief: dict) -> dict:
+    """Make the confrontation plate the img2img reference for the aftermath turn.
+
+    Also opens the fight's record (combat.py) under the same lock that writes
+    it — the player's bar is mended for the walk here, once — and returns the
+    two bars and the odds for the opening slate."""
     import engine
     brief = dict(brief or {})
     if web_url:
@@ -3954,11 +4367,18 @@ def _pin_encounter_plate(session_id: str, image_path: Optional[str], web_url: Op
         st["encounter_last_label"] = _clip(
             (brief.get("character") or {}).get("label"), "", 60)
         st["encounter_sighting"] = None
+        if not isinstance(brief.get("combat"), dict):
+            brief["combat"] = open_fight_record(st, brief)
+            st["encounter"] = brief
+        opened = {
+            "combat": _combat.hud(brief["combat"], _combat.player_hp(st.get("player_state"))[0]),
+            "odds": slate_odds(st, brief),
+        }
         reset_travel_clock(st)
         engine._save_state(st, session_id)
         engine._sync_ambient_state(st, session_id)
     if not image_path:
-        return
+        return opened
     try:
         hist = engine._load_history(session_id) or []
         prev = hist[-1] if hist else {}
@@ -3978,6 +4398,7 @@ def _pin_encounter_plate(session_id: str, image_path: Optional[str], web_url: Op
             engine.log_error(f"[ENCOUNTER] pin plate history failed: {err}")
         except Exception:
             pass
+    return opened
 
 
 def _record_encounter_companion(session_id: str, brief: dict, image_path: Optional[str],
@@ -4085,6 +4506,12 @@ def _pin_encounter_resolve(session_id: str, image_path: Optional[str],
         ps["alive"] = bool((record or {}).get("alive", True))
         cond = str((record or {}).get("condition") or ps.get("condition") or "ok")
         ps["condition"] = cond if cond in ENCOUNTER_CONDITIONS else "ok"
+        # The left-hand bar outlives the fight: what this exchange took is
+        # still gone when the next one opens (combat.mend puts some back).
+        if (record or {}).get("hp") is not None:
+            _, hp_max = _combat.player_hp(ps)
+            ps["hp"] = max(0, min(hp_max, int(record["hp"])))
+            ps["hp_max"] = hp_max
         engine._save_state(st, session_id)
         engine._sync_ambient_state(st, session_id)
     if not image_path:
@@ -4134,6 +4561,25 @@ def _plate_stranger_billing(brief: Optional[dict]) -> tuple[str, str]:
     return label, look
 
 
+def _still_as_panel(session_id: str, image_path: Optional[str]) -> None:
+    """A still standing in for a flipbook beat is shrunk to one panel's size
+    (flipbook.match_panel_size) — otherwise it is the one frame of the fight
+    drawn at twice the resolution of every frame around it."""
+    if not image_path:
+        return
+    try:
+        import engine
+        import flipbook
+        st = engine._load_state(session_id) or {}
+        if engine.flipbook_active(st) and flipbook.match_panel_size(
+                image_path, engine.flipbook_settings(st)["frames"],
+                like=st.get("flipbook_last_frame")):
+            print(f"[ENCOUNTER] the still stands in for a flipbook beat — "
+                  f"shrunk to panel size ({os.path.basename(str(image_path))})", flush=True)
+    except Exception:
+        pass
+
+
 def _plate_sequence(session_id: str, prompt: str, ref_path: Optional[str],
                     caption: str = "", two_shot: str = "", two_shot_look: str = "",
                     beat: str = "", hold_cast: bool = False,
@@ -4161,6 +4607,11 @@ def _plate_sequence(session_id: str, prompt: str, ref_path: Optional[str],
 
     try:
         st = engine._load_state(session_id) or {}
+        # Put on something since the frame this continues was drawn: that
+        # frame shows the old outfit, and "hold the cast" copies it.
+        _wc = engine._wardrobe_change_directive(st)
+        if _wc and _wc not in prompt:
+            prompt = f"{prompt}\n\n{_wc}"
         if not engine.flipbook_active(st):
             print(f"[ENCOUNTER] flipbook off for this plate "
                   f"(settings={engine.flipbook_settings(st)}, "
@@ -4287,6 +4738,15 @@ def api_begin():
     # A fight the player aimed at something they had already scanned and dived
     # into, rather than one the travel clock rolled. Overrides the roster draw.
     target = data.get("subject") if isinstance(data.get("subject"), dict) else None
+    if target and str(target.get("source") or "") == "boss":
+        # The boss is the run's, not the client's: read it off the goal.
+        try:
+            import goal as _goal
+            target = _goal.boss_subject(engine._load_state(session_id) or {}) or None
+        except Exception as _boss_err:
+            print(f"[ENCOUNTER] boss subject failed: {_boss_err}", flush=True)
+            target = None
+        force = True
     if target and not str(target.get("label") or "").strip():
         target = None
 
@@ -4329,6 +4789,8 @@ def api_begin():
     detection = session_detection(session_id)
     if not target:
         target = onscreen_threat_target(session_id, detection)
+    if not target:
+        target = story_subject_target(session_id)
 
     ref_path = engine._save_portrait_reference(reference_b64, session_id) if reference_b64 else None
     if not ref_path:
@@ -4366,6 +4828,19 @@ def api_begin():
     # Pinned so api_resolve rolls every round against the level the fight
     # OPENED on. See the `opened_at` read there.
     brief["detection"] = detection
+    # What the brief called them, before the picture renames them. The plate
+    # is canon for how they LOOK, but its reading is often just "A man" —
+    # seen live: a "System Cleanup Sub-Contractor" fought under a bar reading
+    # MAN. The HP bar's name is taken from this (open_fight_record).
+    named = str((brief.get("character") or {}).get("label") or "")
+    if isinstance(target, dict) and target.get("source") == "boss":
+        brief["boss"] = True
+        if isinstance(brief.get("character"), dict):
+            brief["character"]["label"] = target["label"]
+            brief["character"]["stance"] = "hostile"
+            if target.get("kind") in ENCOUNTER_KINDS:
+                brief["character"]["kind"] = target["kind"]
+        print(f"[ENCOUNTER] BOSS: {target['label']!r} at {target.get('goal')!r}", flush=True)
     # A rolled roster entry has a designed plate in the look book; a sighting
     # already has the figure's own pixels, which beat any design.
     if not cast_plates:
@@ -4475,6 +4950,7 @@ def api_begin():
             except Exception:
                 pass
 
+        _still_as_panel(session_id, image_path)
         web = engine._to_web_image_url(image_path, session_id) if image_path else None
         try:
             engine.cost_tracker.record_usage(
@@ -4509,8 +4985,25 @@ def api_begin():
     brief["setting"] = place.get("setting") or ""
     if web:
         brief["plate_url"] = web
-    _pin_encounter_plate(session_id, image_path, web, brief)
+    brief["_named"] = named
+    opened = _pin_encounter_plate(session_id, image_path, web, brief)
+    if not isinstance(opened, dict):
+        opened = {}
     _record_encounter_companion(session_id, brief, image_path, web, prompt)
+    # THE TAPE: the fight's opening — the standoff, as it played.
+    try:
+        import run_tape
+        _hud = opened.get("combat") or {}
+        run_tape.record(
+            session_id, "encounter",
+            list((brief.get("_sequence") or {}).get("frames") or []) or [image_path or web],
+            frame_ms=(brief.get("_sequence") or {}).get("frame_ms"),
+            title=str((_hud.get("foe") or {}).get("name") or brief["character"].get("label") or ""),
+            caption=str(_hud.get("opening") or brief["character"].get("label") or ""),
+            prose=str(brief.get("danger") or ""),
+            prompt=prompt, turn=st.get("turn_count"), state=st)
+    except Exception as _tape_err:
+        print(f"[TAPE] encounter not recorded: {_tape_err}", flush=True)
     try:
         import play_log
         play_log.record("encounter_begin", session_id, {
@@ -4557,7 +5050,9 @@ def api_begin():
         # while the player reads the slate. `enter_sequence` was produced by the
         # plate pass, not a second generation.
         "sequence": brief.get("_sequence"),
-        "choices": choices,
+        "choices": _combat.odds_on_slate(choices, opened.get("odds") or {}),
+        # Both bars and the line the fight opens on (combat.py).
+        "combat": opened.get("combat"),
         "mode": gen_mode,
         "prompt": realtime,
         "plate_prompt": prompt[:400],
@@ -4566,9 +5061,20 @@ def api_begin():
     })
 
 
+def _death_beat(brief: Optional[dict], verb: str = "") -> str:
+    """What a death flipbook's panels animate: not the player's verb (it
+    failed) but the other one's killing blow and the fall."""
+    char = ((brief or {}).get("character") or {})
+    who = str(char.get("label") or "The other one")
+    move = str(char.get("move") or "").strip()
+    return (f"{who} kills the player{' with ' + move if move else ''}: the blow "
+            "lands, the player falls, and lies still.")
+
+
 def _generate_resolve_plate(session_id: str, brief: dict, prompt: str,
                             ref_path: Optional[str], verb: str = "",
-                            lane: str = "", outcome: str = "") -> tuple[Optional[str], str]:
+                            lane: str = "", outcome: str = "",
+                            story: str = "") -> tuple[Optional[str], str]:
     """Hard-cut verb still. Style swatch / identity only — never the enter plate."""
     import engine
     if not getattr(engine, "IMAGE_ENABLED", True):
@@ -4601,7 +5107,11 @@ def _generate_resolve_plate(session_id: str, brief: dict, prompt: str,
     design_refs = _book_design_refs(session_id)
     fb = _plate_sequence(session_id, prompt, ref_path, caption=caption,
                          two_shot=billed, two_shot_look=billed_look,
-                         beat=_clip(verb or (brief or {}).get("stakes") or "", "", 200),
+                         # What the panels animate: the round as it was
+                         # rolled (exchange_story), not the verb as if it landed.
+                         beat=(_clip(story, "", 700) if story else
+                               _clip(_death_beat(brief, verb) if outcome == "die"
+                                     else (verb or (brief or {}).get("stakes") or ""), "", 200)),
                          hold_cast=True, cast_plates=book_plates or None,
                          design_refs=design_refs)
     if fb and fb.get("still"):
@@ -4624,7 +5134,15 @@ def _generate_resolve_plate(session_id: str, brief: dict, prompt: str,
         # carry identity and place while the wording moves the camera.
         plate = str(ref_path) if ref_path and Path(str(ref_path)).exists() else ""
         identity = encounter_identity_paths()
-        refs = ([plate] if plate else []) + [p for p in identity[:2] if p != plate]
+        # A still is a close-up: the character's face sheet rides behind the
+        # turnaround, where a face 150 px across on a four-up strip is not
+        # enough to copy (characters.py; [] for a run that is not a Character).
+        try:
+            import game_identity as _gi_face
+            identity = identity + [f for f in _gi_face.face_reference_paths() if f not in identity]
+        except Exception:
+            pass
+        refs = ([plate] if plate else []) + [p for p in identity[:3] if p != plate]
         if refs:
             image_path = generate_gemini_img2img(
                 prompt=prompt,
@@ -4681,6 +5199,7 @@ def _generate_resolve_plate(session_id: str, brief: dict, prompt: str,
         )
     except Exception:
         pass
+    _still_as_panel(session_id, image_path)
     return image_path, gen_mode
 
 
@@ -4728,6 +5247,8 @@ def api_resolve():
             "released": encounter_releases(rec.get("outcome"), rec),
             "choices": structure_encounter_choices(enc.get("choices") or []),
             "dispatch": rec.get("dispatch") or "",
+            "exchange": ((enc.get("combat") or {}).get("last")
+                         if isinstance(enc.get("combat"), dict) else None),
             "cached": True,
         })
     if st.get("encounter_resolving"):
@@ -4736,26 +5257,29 @@ def api_resolve():
         return jsonify({"error": "missing_choice"}), 400
 
     brief = normalize_encounter_brief(enc)
-    # Ordered before the match so a typed action can be read against WHAT the
-    # player is facing: "show them the badge" is a different act depending on
-    # whether that is a checkpoint guard or a dog.
-    verb, lane = match_encounter_choice(
-        posted_text, posted_lane, enc.get("choices"),
-        custom=bool(data.get("custom")), brief=brief,
-    )
+    # THE DICE WERE ALREADY THROWN. The client asks /api/encounter/exchange
+    # first and plays the numbers while this call draws the picture; what was
+    # rolled there is what is drawn here, whatever this body says. Without
+    # one (an older client, the API playtests) the dice are thrown below.
+    pending = ((enc.get("combat") or {}).get("pending")
+               if isinstance(enc.get("combat"), dict) else None)
+    if isinstance(pending, dict) and pending.get("verb") and pending.get("lane") in ENCOUNTER_LANES:
+        verb, lane = str(pending["verb"]), str(pending["lane"])
+    else:
+        pending = None
+        # Ordered before the match so a typed action can be read against WHAT
+        # the player is facing: "show them the badge" is a different act
+        # depending on whether that is a checkpoint guard or a dog.
+        verb, lane = match_encounter_choice(
+            posted_text, posted_lane, enc.get("choices"),
+            custom=bool(data.get("custom")), brief=brief,
+        )
     brief["choices"] = structure_encounter_choices(
         enc.get("choices") or fallback_encounter_choices(brief)
     )
     brief["plate_url"] = enc.get("plate_url")
     brief["plate_path"] = enc.get("plate_path")
     brief["place_hold"] = brief.get("place_hold") or enc.get("place_hold") or ""
-    ps = st.get("player_state") or {}
-    condition = str(ps.get("condition") or "ok").strip().lower()
-    if condition not in ENCOUNTER_CONDITIONS:
-        condition = "ok"
-    stance = (brief.get("character") or {}).get("stance") or "hostile"
-    kind = (brief.get("character") or {}).get("kind") or "person"
-
     with engine.WORLD_STATE_LOCK:
         locked = engine._load_state(session_id) or {}
         if locked.get("encounter_resolving"):
@@ -4764,24 +5288,13 @@ def api_resolve():
         engine._save_state(locked, session_id)
         engine._sync_ambient_state(locked, session_id)
 
-    prev_enemy = str(enc.get("enemy_state") or "ready").strip().lower()
-    if prev_enemy not in ENCOUNTER_ENEMY_STATES:
-        prev_enemy = "ready"
-    round_no = max(1, int(enc.get("round_no") or 1))
-    # The level the fight OPENED on, pinned at begin — not a fresh read. A
-    # multi-round exchange must not get easier because the dial happened to
-    # cool between rounds; you do not become un-followed halfway through
-    # being caught. None on a record written before this existed, which rolls
-    # the old odds rather than inventing a level for it.
-    opened_at = enc.get("detection")
-    if opened_at is not None:
-        opened_at = _as_detection(opened_at)
-    rolled = roll_encounter_outcome(
-        lane, stance=stance, kind=kind, condition=condition,
-        fate=str(st.get("fate") or "NORMAL"),
-        enemy_state=prev_enemy, round_no=round_no,
-        detection=opened_at,
-    )
+    thrown = pending or roll_exchange(st, enc, verb, lane)
+    rolled = thrown["rolled"]
+    armor_saved = str(thrown.get("armor_saved") or "")
+    armor_spent = str(thrown.get("armor_spent") or enc.get("armor_spent") or "")
+    weapon = str(thrown.get("weapon") or "") or None
+    exchange = thrown.get("exchange") or {}
+    round_no = max(1, int(rolled.get("round_no") or enc.get("round_no") or 1))
     record = {
         "outcome": rolled["outcome"],
         "alive": rolled["alive"],
@@ -4790,19 +5303,47 @@ def api_resolve():
         "verb": verb,
         "enemy_state": rolled["enemy_state"],
         "round_no": round_no,
+        # The bar, as the exchange left it — written by _pin_encounter_resolve
+        # with the rest of what this turn did to the player.
+        "hp": (exchange.get("you") or {}).get("hp"),
     }
     brief["enemy_state"] = rolled["enemy_state"]
+    # The fight goes on with the record the round left (his bar, the turn,
+    # talk tries, death saves) — and nothing pending: this round is spent.
+    brief["combat"] = dict(thrown.get("after") or {})
+    brief["combat"].pop("pending", None)
     brief["round_no"] = round_no
+    if armor_spent:
+        brief["armor_spent"] = armor_spent
     brief["stakes"] = stakes_after_verb(brief, verb, lane, rolled["outcome"])
     prompt = build_encounter_resolve_prompt(
         brief, verb, lane, rolled["outcome"],
         setting=enc.get("setting") or brief.get("place_hold") or "",
         world_flavor=world_flavor(session_id),
+        exchange=exchange,
     )
+    # The thing they fight with is in their hands in the shot — the weapon
+    # from the pack, not whatever the model would have handed them.
+    if weapon:
+        _w = next((g for g in (st.get("gear") or []) if isinstance(g, dict)
+                   and g.get("name") == weapon), {})
+        prompt += (f"\nTHE PLAYER FIGHTS WITH {weapon.upper()}: "
+                   f"{str(_w.get('look') or '').strip()[:240]} It is in their hands "
+                   "in this shot, and it is what the blow is struck with.")
     ref_path = _confrontation_plate_path(session_id, enc)
+    _who = "the player"
+    try:
+        import game_identity as _gi
+        _who = _gi.display_name() or _who
+    except Exception:
+        pass
     image_path, gen_mode = _generate_resolve_plate(
         session_id, brief, prompt, ref_path,
         verb=verb, lane=lane, outcome=rolled["outcome"],
+        story=" ".join(exchange_story(
+            exchange, _who,
+            str(((brief.get("character") or {}).get("label")) or "the other one"),
+            verb)) if rolled["outcome"] != "die" else "",
     )
     web = engine._to_web_image_url(image_path, session_id) if image_path else None
     if not web:
@@ -4823,6 +5364,27 @@ def api_resolve():
     brief["resolve_url"] = web
     brief["resolve_prompt"] = realtime
     _pin_encounter_resolve(session_id, image_path, web, brief, record)
+    # THE TAPE: the round as it played — what you tried, what came of it, and
+    # its frames (a death is its own kind: the death flipbook, held longer).
+    try:
+        import run_tape
+        _foe = exchange.get("foe") or {}
+        _lines = [str(b.get("text") or "").strip() for b in exchange.get("beats") or []
+                  if b.get("text") and b.get("kind") != "initiative"]
+        _dead = rolled["outcome"] == "die"
+        run_tape.record(
+            session_id, "death" if _dead else "round",
+            list((brief.get("_sequence") or {}).get("frames") or []) or [image_path or web],
+            frame_ms=(brief.get("_sequence") or {}).get("frame_ms"),
+            title=f"{str(_foe.get('name') or '').title()} · round {exchange.get('round') or round_no}",
+            action=_combat.you_go(verb), caption=" ".join(_lines),
+            prompt=prompt, turn=st.get("turn_count"), state=st)
+        if _dead:
+            run_tape.end(session_id, "died", cause=(
+                f"Killed by the {str(_foe.get('name') or 'thing').lower()} · "
+                f"{str(_foe.get('move') or '').lower()} · round {exchange.get('round') or round_no}"))
+    except Exception as _tape_err:
+        print(f"[TAPE] round not recorded: {_tape_err}", flush=True)
     try:
         import play_log
         play_log.record("encounter_resolve", session_id, {
@@ -4838,12 +5400,34 @@ def api_resolve():
         pass
 
     released = encounter_releases(rolled["outcome"], record)
+    # THE FIGHT AT THE GOAL SETTLES by its own rules now: the boss has no
+    # morale to break and the round cap is far past where his bar empties
+    # (combat.foe_block), so it ends with him down, talked down, the player
+    # dead, or the player deliberately running — never with the two of you
+    # simply parting, which is what "the boss wasn't defeated" was (played
+    # 2026-09-22).
     next_choices = []
     dispatch = ""
     turn_text = encounter_action_for_turn(
         verb, brief, lane=lane, outcome=rolled["outcome"],
     )
     subject = (brief.get("character") or {}).get("label") or ""
+    if enc.get("boss"):
+        # The label the fight opened on IS the boss (goal.boss_subject). Two
+        # rounds in, the resolve had renamed him "A figure" and then "A man in
+        # brown suit and glasses", so the fight read as three different people.
+        try:
+            import goal as _goal_pin
+            _pin = _goal_pin.boss(engine._load_state(session_id) or {}) or {}
+        except Exception:
+            _pin = {}
+        if _pin.get("name"):
+            subject = _pin["name"]
+            char = brief.setdefault("character", {})
+            char["label"] = _pin["name"]
+            if _pin.get("look"):
+                char["look"] = _pin["look"]
+            char["stance"] = char.get("stance") or "hostile"
 
     player_action_item = engine.create_feed_item(
         type="player_action",
@@ -4856,11 +5440,54 @@ def api_resolve():
             "released": released,
         },
     )
+    # The boss at the goal, put down or talked down: that is what finishes the
+    # goal (goal.py). Getting away from them does not.
+    boss_fight = bool(enc.get("boss"))
+    boss_defeated = bool(
+        boss_fight and released and rolled["outcome"] != "die"
+        and str(record.get("enemy_state") or "") in ENCOUNTER_ENEMY_SETTLED
+    )
+    # WON — put down or talked down, and still standing. Getting away is not
+    # winning, and neither is the fight going on. A win pays out one piece of
+    # this world's gear (goal.award_spoil): "introduce a loot award for
+    # winning at an encounter" (Matt, 2026-09-22).
+    won = bool(
+        released and rolled["outcome"] != "die" and rolled.get("alive", True)
+        and str(record.get("enemy_state") or "") in ENCOUNTER_ENEMY_SETTLED
+    )
+    loot = None
+    pack = None
     with engine.WORLD_STATE_LOCK:
         st = engine._load_state(session_id) or {}
         engine._feed_append(st, player_action_item)
+        if boss_defeated:
+            try:
+                import goal as _goal
+                _goal.boss_defeated(st, subject, record.get("enemy_state"))
+            except Exception as _goal_err:
+                print(f"[ENCOUNTER] boss completion failed: {_goal_err}", flush=True)
+        if won:
+            try:
+                import goal as _goal
+                # Named the way the fight OPENED: by the play-out the resolve
+                # has often renamed them "A man".
+                foe = subject if boss_fight else foe_name(
+                    session_id, enc, str(st.get("encounter_last_label") or "").strip() or subject)
+                got = _goal.award_spoil(st, session_id, foe=foe,
+                                        how=str(record.get("enemy_state") or ""))
+                if got:
+                    loot = _goal._pack_card(got)
+                pack = _goal.pack_cards(st, session_id)
+            except Exception as _loot_err:
+                print(f"[ENCOUNTER] spoils failed: {_loot_err}", flush=True)
         st["last_choice"] = verb
         st["drift_count"] = 0
+        if rolled["outcome"] == "die":
+            try:
+                import characters as _characters
+                _characters.note_death(st)
+            except Exception:
+                pass
         engine._save_state(st, session_id)
         engine._sync_ambient_state(st, session_id)
 
@@ -4915,6 +5542,21 @@ def api_resolve():
             brief["stakes"] = result.get("stakes")
 
     verdict = release_verdict(rolled["outcome"], record, brief)
+    # Say what the gear did — the card is where a player learns the rules.
+    if armor_saved:
+        verdict = {"word": "HURT",
+                   "line": f"The {armor_saved} took it. You are hurt, not dead."}
+    elif weapon and str(record.get("enemy_state") or "") == "down" and verdict.get("line"):
+        verdict = dict(verdict, line=f"{verdict['line']} The {weapon} did the work.")
+    # The next slate carries its odds, read off the fight as this exchange
+    # left it: the next round, their new footing, your new condition.
+    after = engine._load_state(session_id) or {}
+    after_enc = after.get("encounter") if isinstance(after.get("encounter"), dict) else None
+    if next_choices and after_enc and not released:
+        next_choices = _combat.odds_on_slate(
+            next_choices, slate_odds(after, after_enc))
+    bars = _combat.hud(brief.get("combat"), int(record.get("hp") if record.get("hp") is not None
+                                                 else _combat.player_hp(after.get("player_state"))[0]))
     # Frames come from the plate generation itself (one pass, not two) — see
     # _generate_resolve_plate. None means this beat stayed a still.
     return jsonify({
@@ -4934,13 +5576,105 @@ def api_resolve():
         "enemy_state": rolled["enemy_state"],
         "verdict_word": verdict["word"],
         "closing": verdict["line"],
+        "armor_saved": armor_saved or None,
+        "weapon": weapon or None,
+        "boss": boss_fight,
+        "boss_defeated": boss_defeated,
+        # What they had on them, if the fight was won and the world has any
+        # gear left to drop; and the pack it went into.
+        "won": won,
+        "loot": loot,
+        "pack": pack,
         "choices": next_choices,
         "dispatch": dispatch,
         "danger": brief.get("danger") or "",
         "stakes": brief.get("stakes") or "",
         "mode": gen_mode,
         "music_prompt": encounter_music_prompt(brief),
+        # What the player watched while this was drawn (combat.play_round),
+        # and both bars as it left them.
+        "exchange": exchange or None,
+        "combat": bars,
     })
+
+
+def api_exchange():
+    """POST /api/encounter/exchange — throw the dice for a verb, now.
+
+    Body: ``{choice, lane, custom?}`` — the same as resolve. Returns
+    ``{verb, lane, exchange}`` in the time it takes to read the state file
+    (plus a lane read for a typed action), because nothing here draws.
+
+    Why it exists: a turn of a fight is a real generation, 10–20 seconds of
+    picture and more of prose, and the result was only known when all of it
+    was done — so the player stared at a held standoff with a spinner, and
+    the verdict arrived in the same instant as the picture. "One of the tougher
+    issues facing us is the slowness of our generation. the pain of waiting"
+    (Matt, 2026-09-23). The result was never the slow part: it is two draws.
+    So the dice are thrown first, the client plays them — your die, his die,
+    both bars — and /api/encounter/resolve draws the picture of exactly that.
+
+    Thrown once. Asking again returns the same throw (a double tap, a retry
+    after a failed resolve), so no result can be re-rolled by asking twice.
+    """
+    from flask import jsonify, request
+    import engine
+
+    if engine._rate_limited("encounter_exchange", 0.4):
+        return jsonify({"error": "slow_down"}), 429
+    data = request.get_json(silent=True) or {}
+    session_id = data.get("session_id") or engine._resolve_request_session_id()
+    set_look_session(session_id)
+    posted_text = str(data.get("choice") or data.get("text") or "").strip()
+    posted_lane = str(data.get("lane") or "").strip().lower()
+
+    st = engine._load_state(session_id) or {}
+    enc = st.get("encounter") if isinstance(st.get("encounter"), dict) else None
+    if not enc:
+        return jsonify({"error": "no_encounter"}), 409
+    if not (st.get("player_state") or {}).get("alive", True):
+        return jsonify({"error": "game_over"}), 409
+    if st.get("encounter_resolving"):
+        return jsonify({"error": "already_resolving"}), 409
+    record = enc.get("combat") if isinstance(enc.get("combat"), dict) else {}
+    if isinstance(record.get("pending"), dict):
+        p = record["pending"]
+        return jsonify({"verb": p.get("verb"), "lane": p.get("lane"),
+                        "exchange": p.get("exchange"), "repeat": True})
+    if not posted_text:
+        return jsonify({"error": "missing_choice"}), 400
+
+    brief = normalize_encounter_brief(enc)
+    edge, edge_why = 0, ""
+    judged = judge_custom_action(posted_text, brief) if data.get("custom") else {}
+    if judged.get("lane") in ENCOUNTER_LANES:
+        verb, lane = posted_text, judged["lane"]
+        if judged.get("advantage"):
+            edge, edge_why = 1, str(judged.get("why") or "")
+    else:
+        verb, lane = match_encounter_choice(
+            posted_text, posted_lane, enc.get("choices"),
+            custom=bool(data.get("custom")), brief=brief,
+        )
+    with engine.WORLD_STATE_LOCK:
+        locked = engine._load_state(session_id) or {}
+        live = locked.get("encounter") if isinstance(locked.get("encounter"), dict) else None
+        if not live or locked.get("encounter_resolving"):
+            return jsonify({"error": "already_resolving" if live else "no_encounter"}), 409
+        raw = live.get("combat") if isinstance(live.get("combat"), dict) else {}
+        if isinstance(raw.get("pending"), dict):
+            p = raw["pending"]
+            return jsonify({"verb": p.get("verb"), "lane": p.get("lane"),
+                            "exchange": p.get("exchange"), "repeat": True})
+        # A fight opened before these rules (a save from before them) has no
+        # record they can play: open one now rather than fight without it.
+        rec = _combat.clean_combat(raw) or open_fight_record(locked, live)
+        live["combat"] = rec
+        thrown = roll_exchange(locked, live, verb, lane, edge=edge, edge_why=edge_why)
+        rec["pending"] = thrown
+        engine._save_state(locked, session_id)
+        engine._sync_ambient_state(locked, session_id)
+    return jsonify({"verb": verb, "lane": lane, "exchange": thrown["exchange"]})
 
 
 def api_travel():

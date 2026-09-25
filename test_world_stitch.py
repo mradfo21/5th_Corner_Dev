@@ -402,7 +402,7 @@ class TestTheRunsProtagonistCrossesTheStitch(unittest.TestCase):
         specs = iter([{game_identity.CHARACTER_KEY: prior}, {game_identity.CHARACTER_KEY: other}])
         import prompts_store
         with mock.patch.object(game_identity, "character_enabled", return_value=True), \
-             mock.patch.object(game_identity, "get_spec", side_effect=lambda: next(specs)), \
+             mock.patch.object(game_identity, "raw_spec", side_effect=lambda: next(specs)), \
              mock.patch.object(worlds_store, "load_world", return_value={}), \
              mock.patch.object(prompts_store, "save_prompts_bulk") as save:
             self.assertTrue(engine._bind_world_prompts(WORLD_B))
@@ -412,7 +412,7 @@ class TestTheRunsProtagonistCrossesTheStitch(unittest.TestCase):
         prior = {"enabled": True, "name": "Isaac Clarke"}
         import prompts_store
         with mock.patch.object(game_identity, "character_enabled", return_value=True), \
-             mock.patch.object(game_identity, "get_spec", return_value={game_identity.CHARACTER_KEY: dict(prior)}), \
+             mock.patch.object(game_identity, "raw_spec", return_value={game_identity.CHARACTER_KEY: dict(prior)}), \
              mock.patch.object(worlds_store, "load_world", return_value={}), \
              mock.patch.object(prompts_store, "save_prompts_bulk") as save:
             engine._bind_world_prompts(WORLD_B)

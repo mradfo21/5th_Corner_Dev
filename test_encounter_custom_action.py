@@ -124,10 +124,10 @@ class TestTheLaneIsDecidedHonestly(unittest.TestCase):
 
         with mock.patch.object(engine, "_ask", side_effect=ask):
             lane = encounter.classify_custom_lane(
-                "throw my camera at his head", BRIEF)
+                "flash my camera in his eyes", BRIEF)
         self.assertEqual(lane, "confront")
         # It is told what it is answering about, and constrained to the lanes.
-        self.assertIn("throw my camera at his head", seen["prompt"])
+        self.assertIn("flash my camera in his eyes", seen["prompt"])
         self.assertIn("A site foreman", seen["prompt"])
         self.assertEqual(seen["schema"], encounter.ENCOUNTER_LANE_SCHEMA)
 
@@ -142,6 +142,24 @@ class TestTheLaneIsDecidedHonestly(unittest.TestCase):
                 "put the trailer between us", "", SLATE,
                 custom=True, brief=BRIEF)
         self.assertEqual((verb, lane), ("put the trailer between us", "evade"))
+
+    def test_violence_is_an_attack_whatever_else_the_sentence_says(self):
+        """"shoot him with a gun" matched no keyword and, offline, fell to
+        parley; "…in the lower back" matched parley's "lower", "…from cover"
+        evade's. Using a weapon on it is ATTACK. Violence that is only SAID —
+        a threat, a warning — is not."""
+        for action in ("shoot him with a gun", "shoot him in the lower back",
+                       "shoot him from cover", "fire my gun at him", "attack him",
+                       "kill it", "I pull the trigger", "run him through with the pipe",
+                       "throw the wrench at him", "stab it with the screwdriver",
+                       "put a round through his knee"):
+            with self.subTest(action=action), mock.patch.object(
+                    engine, "_ask", side_effect=RuntimeError("offline")):
+                self.assertEqual(encounter.classify_custom_lane(action, BRIEF), "confront")
+        for action in ("threaten to shoot him", "tell him I'll shoot if he moves",
+                       "don't shoot, talk to him"):
+            with self.subTest(action=action):
+                self.assertFalse(encounter.is_plain_attack(action))
 
     def test_hiding_is_breaking_contact(self):
         """Written actions reach the keyword list too, and the obvious way a
@@ -357,10 +375,19 @@ class TestTheSlateSaysWhatYouAreAboutToDo(unittest.TestCase):
 
     def test_no_eyebrow_repeats_the_word(self):
         """Moments draws any lane it is handed as an eyebrow — "confront" over
-        "attack". It is handed the words only; the index maps back."""
+        "attack". It is handed the words (and their odds) only; the index maps
+        back."""
         fn = self._show_choices()
-        self.assertIn("mapped.map((c) => ({ label: c.label }))", fn)
+        self.assertIn("mapped.map((c) => ({ label: c.label, odds: c.odds }))", fn)
         self.assertIn("pick(mapped[idx])", fn)
+
+    def test_the_word_carries_its_odds(self):
+        """"a % of success" (Matt, 2026-09-23) — the server's number, drawn
+        after the word by Moments, never computed here."""
+        fn = self._show_choices()
+        self.assertIn("Number(c.odds)", fn)
+        self.assertIn('pct.className = "moment-choice-odds"', MOMENTS_JS)
+        self.assertIn("body.moment-encounter .moment-choice-odds", CSS)
 
     def test_the_eyebrow_is_readable_by_attr(self):
         """`content: attr(data-lane)` only reads the pseudo-element's OWN
@@ -401,6 +428,14 @@ class TestItLooksLikeWatchAndNotLikeAMenu(unittest.TestCase):
             with self.subTest(prop=prop):
                 self.assertIn(prop, watch)
                 self.assertIn(prop, block)
+
+    def test_a_line_reads_over_a_bright_plate(self):
+        # "ATTACK" over a lit vat was white on pale sand with no shadow at all.
+        watch = CSS.split(".watch-choice {", 1)[1].split("}", 1)[0]
+        shadow = watch.split("text-shadow:", 1)[1].split(";", 1)[0]
+        row = CSS.split("body.moment-encounter .moment-choice {", 1)[1].split("}", 1)[0]
+        self.assertIn("text-shadow:" + shadow + ";", row)
+        self.assertNotIn("text-shadow: none", row)
 
     def test_the_prompt_bar_matches_the_action_bar(self):
         """Same instrument as ACT in normal play, so it reads as the same

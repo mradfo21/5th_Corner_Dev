@@ -274,6 +274,94 @@ button.acct-line:hover, button.acct-line:focus-visible, .acct-line.is-open { col
 .acct-msg.is-ok { color: var(--acct-go); }
 .acct-msg.is-error { color: var(--acct-warn); }
 
+/* PLAYS ON: the provider dropdown and its key, first thing in the sheet. */
+.acct-select {
+  flex-grow: 1;
+  min-width: 0;
+  height: 44px;
+  padding: 0 28px 0 0;
+  background: none;
+  border: none;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  font: 400 18px/1 var(--acct-sans);
+  color: var(--acct-hi);
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--acct-dim) 50%),
+                    linear-gradient(135deg, var(--acct-dim) 50%, transparent 50%);
+  background-position: calc(100% - 12px) 50%, calc(100% - 6px) 50%;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+.acct-select:focus-visible { color: var(--acct-hi); }
+.acct-select option { background: #0b0b0b; color: var(--acct-ink); }
+.acct-field .acct-actions { flex-shrink: 0; gap: 18px; }
+.acct-keyval { flex-grow: 1; min-width: 0; display: flex; align-items: baseline; gap: 12px; }
+.acct-dots { font: 400 14px/1 var(--acct-mono); letter-spacing: 0.08em; color: var(--acct-hi); }
+.acct-stored { font-size: 12px; color: var(--acct-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acct-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--acct-dim);
+}
+.acct-status > span:nth-last-child(2), .acct-status > span:only-child { flex-grow: 1; min-width: 0; }
+.acct-status .acct-word { height: 32px; }
+.acct-status .acct-word::after { bottom: 6px; }
+.acct-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--acct-dim); }
+.acct-status.is-ok { color: var(--acct-ink); }
+.acct-status.is-ok .acct-dot { background: var(--acct-go); box-shadow: 0 0 10px rgba(142, 255, 193, 0.55); }
+.acct-status.is-bad { color: var(--acct-warn); }
+.acct-status.is-bad .acct-dot { background: var(--acct-warn); }
+.acct-link {
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--acct-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--acct-line-hi);
+  cursor: pointer;
+}
+.acct-link:hover, .acct-link:focus-visible { color: var(--acct-hi); text-decoration-color: currentColor; outline: none; }
+
+/* A provider refused the key mid-run (standalone.js showProviderProblem). */
+.provider-problem {
+  position: fixed;
+  left: 18px;
+  bottom: 44px;
+  z-index: 60;
+  max-width: min(520px, calc(100vw - 36px));
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.78);
+  border: 1px solid rgba(242, 194, 123, 0.45);
+  border-radius: 10px;
+  font: 400 13px/1.45 'Manrope', system-ui, sans-serif;
+  color: #F2C27B;
+  backdrop-filter: blur(6px);
+}
+.provider-problem[hidden] { display: none; }
+.provider-problem-go {
+  flex-shrink: 0;
+  padding: 6px 0;
+  background: none;
+  border: none;
+  font: 300 11px/1 'JetBrains Mono', monospace;
+  letter-spacing: 0.3em;
+  color: #E8E6DF;
+  cursor: pointer;
+}
+.provider-problem-go:hover, .provider-problem-go:focus-visible { color: #fff; outline: none; text-decoration: underline; }
+body.start-menu-on .provider-problem { bottom: 18px; }
+
 @media (max-width: 639px) {
   .acct-sheet { padding: calc(env(safe-area-inset-top, 0px) + 24px) 24px 32px; }
   .acct-big { font-size: 56px; }
@@ -283,3 +371,5 @@ button.acct-line:hover, button.acct-line:focus-visible, .acct-line.is-open { col
   .acct-sheet { transform: none; transition: opacity 0.2s ease; }
 }
 #account-panel [hidden] { display: none !important; }
+.acct-status.is-wait .acct-dot { background: var(--acct-ink); animation: acct-pulse 0.9s ease-in-out infinite alternate; }
+@keyframes acct-pulse { from { opacity: 0.25; } to { opacity: 1; } }

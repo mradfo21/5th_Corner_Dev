@@ -591,7 +591,32 @@ _WALLET_FREE_PREFIXES = (
     "/api/state/save",
     "/api/reactor/usage", "/api/talk/end", "/api/cutscene/complete",
     "/api/bug/capture", "/api/replay/", "/api/shutdown", "/api/admin",
+    "/api/reel/",
 )
+
+
+# Every beat that draws the player takes the character's current look first
+# (engine.adopt_current_look): a fitting that landed since the last choice is
+# worn in the goal cutscene, the fight, the photo and the conversation — not
+# only from the next choice turn.
+_DRAWS_THE_PLAYER = (
+    "/api/cutscene/play", "/api/encounter/begin", "/api/encounter/exchange",
+    "/api/encounter/resolve", "/api/encounter/travel", "/api/photo",
+    "/api/investigate", "/api/observe", "/api/detect", "/api/goal/sight",
+    "/api/camp/enter", "/api/flipbook", "/api/viewfinder",
+    "/api/talk/session", "/api/talk/portrait",
+)
+
+
+@app.before_request
+def _adopt_current_look():
+    if request.method != "POST" or (request.path or "") not in _DRAWS_THE_PLAYER:
+        return None
+    try:
+        engine.adopt_current_look(engine._resolve_request_session_id())
+    except Exception:
+        pass
+    return None
 
 
 @app.before_request
@@ -898,6 +923,22 @@ app.add_url_rule('/api/detect', 'standalone_api_detect', _gated_detect, methods=
 # The run's goal on the picture: is it in this frame, and where (goal.py).
 import goal as _goal_mod
 app.add_url_rule('/api/goal/sight', 'standalone_api_goal_sight', _goal_mod.api_goal_sight, methods=['POST'])
+# Characters (characters.py): who you are, as a thing the game owns — the
+# roster and the create/draw/revise jobs for the PLAY screen, and the run's
+# bound character and its pack (WEAR / TAKE OFF) for the inventory.
+import characters as _characters_mod
+app.add_url_rule('/api/characters', 'characters_list', _characters_mod.api_list, methods=['GET'])
+app.add_url_rule('/api/characters', 'characters_create', _characters_mod.api_create, methods=['POST'])
+app.add_url_rule('/api/characters/surprise', 'characters_surprise', _characters_mod.api_surprise, methods=['POST'])
+app.add_url_rule('/api/characters/<cid>', 'characters_get', _characters_mod.api_get, methods=['GET'])
+app.add_url_rule('/api/characters/<cid>/draw', 'characters_draw', _characters_mod.api_draw, methods=['POST'])
+app.add_url_rule('/api/characters/<cid>/revise', 'characters_revise', _characters_mod.api_revise, methods=['POST'])
+app.add_url_rule('/api/characters/<cid>/style', 'characters_style', _characters_mod.api_style, methods=['POST'])
+app.add_url_rule('/api/characters/<cid>/delete', 'characters_delete', _characters_mod.api_delete, methods=['POST'])
+app.add_url_rule('/api/characters/<cid>/file/<path:rel>', 'characters_file', _characters_mod.api_file, methods=['GET'])
+app.add_url_rule('/api/character', 'character_bound', _characters_mod.api_bound, methods=['GET'])
+app.add_url_rule('/api/character/wear', 'character_wear', _characters_mod.api_wear, methods=['POST'])
+app.add_url_rule('/api/character/bind', 'character_bind', _characters_mod.api_bind, methods=['POST'])
 # Realtime danger grading for the peripheral-vignette / health system: the
 # client posts the on-screen video frame at ~1 Hz; the engine returns a single
 # ordinal threat level (0 safe / 1 threatened / 2 attacking) for that frame.
@@ -1192,6 +1233,18 @@ app.add_url_rule('/api/encounter/begin', 'standalone_api_encounter_begin',
                  _session_scoped(_gated_encounter_begin), methods=['POST'])
 app.add_url_rule('/api/encounter/resolve', 'standalone_api_encounter_resolve',
                  _session_scoped(_gated_encounter_resolve), methods=['POST'])
+def _gated_encounter_exchange():
+    """Free — the credit is spent on the resolve that draws it. Refused when
+    that resolve could not be paid for, so no dice are thrown for a turn
+    that cannot be played."""
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    return engine.api_encounter_exchange()
+
+
+app.add_url_rule('/api/encounter/exchange', 'standalone_api_encounter_exchange',
+                 _session_scoped(_gated_encounter_exchange), methods=['POST'])
 app.add_url_rule('/api/encounter/roll', 'standalone_api_encounter_roll',
                  _session_scoped(engine.api_encounter_roll), methods=['POST'])
 
@@ -1604,6 +1657,81 @@ def api_tape():
         return error_response("Failed to build tape", str(e))
 
 
+# ═══ THE TAPE (run_tape.py) — every run, kept, played back and exported ═══
+# /api/reel/ because /api/replay/ is the model-call replay cache.
+
+def _reel_sid() -> str:
+    return engine._resolve_request_session_id()
+
+
+@app.route('/api/reel/runs', methods=['GET'])
+def api_reel_runs():
+    """Every kept run of this session, newest first. ``?experience=<slug>``
+    narrows it to one picker tile (its "last run")."""
+    import run_tape
+    try:
+        items = run_tape.runs(_reel_sid(), str(request.args.get('experience') or '').strip())
+        return jsonify({"runs": items})
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to list tapes", str(e))
+
+
+@app.route('/api/reel/run/<rid>', methods=['GET'])
+def api_reel_run(rid):
+    """One run's manifest (``current`` = the run being recorded, else the
+    newest): shots with frame URLs and the timing the player plays them at."""
+    import run_tape
+    tape = run_tape.load(_reel_sid(), rid)
+    if not tape:
+        return jsonify({"error": "no_tape"}), 404
+    return jsonify(tape)
+
+
+@app.route('/api/reel/frame/<rid>/<name>', methods=['GET'])
+def api_reel_frame(rid, name):
+    import run_tape
+    p = run_tape.frame_file(_reel_sid(), rid, name)
+    if not p:
+        return jsonify({"error": "not_found"}), 404
+    resp = send_file(str(p), max_age=86400)
+    resp.headers["Cache-Control"] = "public, max-age=86400, immutable"
+    return resp
+
+
+@app.route('/api/reel/export/<rid>', methods=['POST', 'GET'])
+def api_reel_export(rid):
+    """POST starts an export (``{"kind": "pack"|"animatic"}``); GET reports
+    it. Done: ``download`` is the file's URL, and on the desktop app
+    ``saved_to`` is where it was put in the player's Videos folder."""
+    import run_tape
+    body = request.get_json(silent=True) or {}
+    kind = str(body.get('kind') or request.args.get('kind') or 'pack')
+    job = run_tape.export_job(_reel_sid(), rid, kind)
+    out = {k: job.get(k) for k in ("state", "kind", "name", "size", "saved_to", "error")}
+    if job.get("state") == "done":
+        out["download"] = (f"/api/reel/export/{job.get('run')}/file?kind={job.get('kind')}"
+                           f"&session_id={_reel_sid()}")
+    return jsonify(out)
+
+
+@app.route('/api/reel/export/<rid>/file', methods=['GET'])
+def api_reel_export_file(rid):
+    import run_tape
+    job = run_tape.export_job(_reel_sid(), rid, str(request.args.get('kind') or 'pack'))
+    if job.get("state") != "done" or not job.get("file"):
+        return jsonify({"error": "not_ready", "state": job.get("state")}), 409
+    return send_file(job["file"], as_attachment=True, download_name=job.get("name"))
+
+
+@app.route('/api/reel/reveal', methods=['POST'])
+def api_reel_reveal():
+    """Open the export folder in Explorer / Finder. Desktop app only."""
+    import run_tape
+    body = request.get_json(silent=True) or {}
+    return jsonify({"ok": run_tape.reveal(body.get("path") or None)})
+
+
 _OBJECTIVES_CACHE = {"key": None, "value": None}
 
 
@@ -1764,6 +1892,14 @@ def api_status():
             # records one without the other can't say what it cost.
             "image_size": ai_provider_manager.get_image_size(),
             "image_enabled": engine.IMAGE_ENABLED,
+            # The bottom-left "backend:" tag. The provider actually answering
+            # (the player's ACCOUNT choice), not ai_config's wire provider,
+            # which reads "gemini" while OpenAI draws every frame.
+            "backend_label": _backend_label(),
+            "backend_detail": _backend_detail(),
+            # The provider refused the key (no credit, bad key, rate limit):
+            # the HUD says so instead of leaving "Signal interrupted" prose.
+            "provider_problem": _provider_problem(),
             # Renderer selection + the latest scene prompt, so the standalone
             # client can steer the Reactor realtime world model with the same
             # text used to generate the still image.
@@ -3664,7 +3800,7 @@ def admin_studio_content():
         import levels_store
         import experience_store
         game_identity.ensure_spec_keys()
-        spec = game_identity.get_spec()
+        spec = game_identity.raw_spec()
         return jsonify(success_response({
             "prompts": dict(prompts_store.PROMPTS),
             "prompts_defaults": prompts_store.load_defaults(),
@@ -3806,7 +3942,7 @@ def admin_studio_identity_get():
         import game_identity
         game_identity.ensure_spec_keys()
         return jsonify(success_response({
-            "identity": game_identity.get_spec(),
+            "identity": game_identity.raw_spec(),
             "schema": game_identity.identity_schema(),
             "defaults": game_identity.default_spec(),
             "preview": game_identity.preview(),
@@ -3986,7 +4122,7 @@ def admin_studio_identity_fill():
             message = f"Nothing drafted ({result.get('reason') or 'unknown'})"
         return jsonify(success_response(
             {"fill": result,
-             "identity": game_identity.get_spec(),
+             "identity": game_identity.raw_spec(),
              "preview": game_identity.preview()},
             message))
     except Exception as e:
@@ -4032,7 +4168,7 @@ def admin_studio_regenerate():
         return jsonify(success_response(
             {"report": report,
              "lines": world_regen.describe(report),
-             "identity": game_identity.get_spec(),
+             "identity": game_identity.raw_spec(),
              "preview": game_identity.preview()},
             f"Regenerated {count} field(s)" if count
             else "Nothing to regenerate — the world is fully authored"))
@@ -4074,14 +4210,14 @@ def admin_studio_reference_upload():
                 image_fill = game_identity.attach_reference_and_fill(
                     slot, meta['id'], overwrite=True)
             else:
-                existing = game_identity.get_spec()[slot].get('reference_images', [])
+                existing = game_identity.raw_spec()[slot].get('reference_images', [])
                 game_identity.save_spec({
                     slot: {'reference_images': existing + [meta['id']], 'enabled': True},
                 })
 
         return jsonify(success_response({
             "reference": meta,
-            "identity": game_identity.get_spec(),
+            "identity": game_identity.raw_spec(),
             "preview": game_identity.preview(),
             "image_fill": image_fill,
         }, "Reference image added"))
@@ -4106,7 +4242,7 @@ def admin_studio_reference_delete():
         removed = game_identity.delete_reference(ref_id)
         return jsonify(success_response({
             "removed": removed,
-            "identity": game_identity.get_spec(),
+            "identity": game_identity.raw_spec(),
             "preview": game_identity.preview(),
         }, "Reference image removed" if removed else "Reference image was already gone"))
     except Exception as e:
@@ -4358,6 +4494,15 @@ def admin_studio_world_frames_reset():
         # not from whatever else the live file had picked up. Then light it
         # from its OWN palette, rolled now, not from the last run's.
         worlds_store.load_world(slug)
+        # A World the editor made starts with the blank place: no bible, a
+        # placeholder name. Draft what it lacks from what the author did write,
+        # into the World itself, before the still and the look book read it.
+        drafted = {}
+        try:
+            import world_gaps
+            drafted = world_gaps.fill(slug, reason="generate")
+        except Exception as gap_err:  # noqa: BLE001
+            print(f"[EDITOR] GENERATE: gaps not filled: {gap_err}", flush=True)
         try:
             lighting = _engine._generate_random_starting_time()
         except Exception:
@@ -4376,11 +4521,12 @@ def admin_studio_world_frames_reset():
             print(f"[EDITOR] GENERATE: look book not started: {lb_err}", flush=True)
         return jsonify(success_response({
             "look_book": look_book_started,
+            "drafted": sorted(drafted.keys()),
             "frame": rec,
             "experience": _experience_json(),
             "world": world or {},
             "prompts": dict(prompts_store.PROMPTS),
-            "identity": game_identity.get_spec(),
+            "identity": game_identity.raw_spec(),
             "identity_preview": game_identity.preview(),
         }))
     except Exception as e:
@@ -4810,7 +4956,7 @@ def admin_studio_experience_enter():
             "experience": _experience_json(exp),
             "world": world,
             "prompts": dict(prompts_store.PROMPTS),
-            "identity": game_identity.get_spec(),
+            "identity": game_identity.raw_spec(),
             "identity_preview": game_identity.preview(),
         }, f"Editing '{world.get('name') or 'World'}'"))
     except Exception as e:
@@ -5050,7 +5196,7 @@ def admin_studio_levels_load():
         return jsonify(success_response({
             "level": info,
             "prompts": dict(prompts_store.PROMPTS),
-            "identity": game_identity.get_spec(),
+            "identity": game_identity.raw_spec(),
             "identity_preview": game_identity.preview(),
         }, f"Loaded level '{info['name']}'"))
     except KeyError as e:
@@ -5372,6 +5518,29 @@ def api_look_book():
         return error_response("Failed to read the look book", str(e))
 
 
+@app.route('/api/look_book/prepare', methods=['POST'])
+def api_look_book_prepare():
+    """Bind the World the run is about to start in and start its look book.
+
+    The client calls this before /api/reset and holds the loading screen,
+    showing the book's stages, until the book is done — the level never starts
+    without it. Returns the book's summary; polling /api/look_book follows it.
+    Body: ``world_id`` (as /api/reset takes it). Wallet-gated like any spend.
+    """
+    try:
+        body = request.get_json(silent=True) or {}
+        sid = engine._resolve_request_session_id()
+        # The run's character first: the roster is designed to look unlike
+        # the protagonist, and the protagonist is this run's character.
+        if body.get("character_id"):
+            engine._bind_character_for_reset(sid, str(body.get("character_id") or ""))
+        info = engine.prepare_level_look_book(sid, str(body.get("world_id") or "").strip())
+        return jsonify({"data": info})
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to prepare the look book", str(e))
+
+
 @app.route('/api/look_book/<session_id>/file/<name>', methods=['GET'])
 def api_look_book_file(session_id, name):
     import look_book
@@ -5537,7 +5706,7 @@ def talk_voice_library():
 def api_info():
     """Get API information"""
     return jsonify({
-        "name": "SOMEWHERE Game Engine API",
+        "name": "ABYSS Game Engine API",
         "version": "2.0.0",
         "features": [
             "Session management",
@@ -5562,7 +5731,7 @@ def api_health():
     """Health check endpoint"""
     return jsonify({
         "status": "healthy",
-        "service": "SOMEWHERE Game Engine API",
+        "service": "ABYSS Game Engine API",
         # WHICH BUILD IS ACTUALLY SERVING. Without this, "did my push deploy?"
         # can only be answered by inferring it from behaviour, and the dashboard's
         # event list is easy to read stale — so a live deploy looks like a missing
@@ -5602,10 +5771,44 @@ def enable_local_keys() -> None:
     """
     global _local_keys_armed
     _local_keys_armed = True
+    # The tape's exports land in the player's Videos folder, and OPEN FOLDER
+    # opens it — only ever on the desktop app, never on a hosted server.
+    try:
+        import run_tape
+        run_tape.LOCAL_APP = True
+    except Exception:
+        pass
     try:
         billing.mark_local_app()
     except Exception:
         pass
+
+
+def _backend_label() -> str:
+    try:
+        import provider_bridge
+        return provider_bridge.backend_label()
+    except Exception:
+        return ai_provider_manager.active_backend("image")
+
+
+def _provider_problem() -> dict:
+    try:
+        import provider_bridge
+        return provider_bridge.current_problem()
+    except Exception:
+        return {}
+
+
+def _backend_detail() -> str:
+    try:
+        import provider_bridge
+        d = provider_bridge.describe()
+        bits = [b for b in (d.get("text_model") and "story " + d["text_model"],
+                            d.get("image_model") and "pictures " + d["image_model"]) if b]
+        return " · ".join(bits)
+    except Exception:
+        return ""
 
 
 def _keys_write_allowed() -> bool:
@@ -5758,6 +5961,69 @@ def api_keys_put():
     except OSError:
         return error_response("Could not save keys", "The local store is not writable.", code=500)
     return jsonify(status)
+
+
+@app.route("/api/keys/provider", methods=["PUT"])
+def api_keys_provider():
+    """ACCOUNT's dropdown: {provider: "gemini"|"openai", value?: key}.
+
+    Saves the choice (and the key, when one is pasted), then proves the key
+    works with one real call, so the sheet can say "Works" or what went
+    wrong. Same local-only contract as PUT /api/keys.
+    """
+    if not _local_keys_armed:
+        return error_response(
+            "Keys cannot be edited on this server",
+            "Only the local app can save API keys.", code=403)
+    if request.remote_addr not in ("127.0.0.1", "::1", "localhost"):
+        return error_response(
+            "Keys are local-only", request.remote_addr, code=403)
+    body = request.get_json(silent=True) or {}
+    provider = str(body.get("provider") or "").strip().lower()
+    value = body.get("value")
+    if value is not None and not isinstance(value, str):
+        return error_response("Invalid key", "value must be a string.", code=400)
+    try:
+        status = keys_store.choose_provider(provider, value)
+    except ValueError as e:
+        return error_response("Invalid key", str(e)[:240], code=400)
+    except OSError:
+        return error_response("Could not save keys", "The local store is not writable.", code=500)
+    import provider_bridge
+    status["check"] = provider_bridge.check(provider) if provider_bridge.provider_key(provider) else None
+    status["ai"] = provider_bridge.describe()
+    return jsonify(status)
+
+
+@app.route("/api/keys/open_page", methods=["POST"])
+def api_keys_open_page():
+    """Open the provider's get-a-key page in the player's own browser (the
+    app window is a webview; a link inside it would open there)."""
+    if not _keys_write_allowed():
+        return error_response("Local only", "Only the local app opens pages.", code=403)
+    import provider_bridge
+    import webbrowser
+    provider = str((request.get_json(silent=True) or {}).get("provider") or "").strip().lower()
+    url = provider_bridge.KEY_PAGES.get(provider)
+    if not url:
+        return error_response("Unknown provider", provider, code=400)
+    try:
+        webbrowser.open(url)
+    except Exception as e:  # noqa: BLE001
+        return error_response("Could not open the browser", str(e)[:120], code=500)
+    return jsonify({"ok": True, "url": url})
+
+
+@app.route("/api/keys/check", methods=["POST"])
+def api_keys_check():
+    """Prove a stored key works (one tiny real call). Local app only."""
+    if not _keys_write_allowed():
+        return error_response("Local only", "Only the local app can check keys.", code=403)
+    body = request.get_json(silent=True) or {}
+    import provider_bridge
+    provider = str(body.get("provider") or provider_bridge.effective_provider() or "").strip().lower()
+    result = provider_bridge.check(provider)
+    return jsonify({"check": result, "ai": provider_bridge.describe()})
 
 
 @app.route("/api/keys/custom", methods=["PUT", "DELETE"])
@@ -5946,7 +6212,7 @@ def pricing_page():
     )
     ours = "what the model provider charges us" if m <= 1 else f"provider cost × {m:g}"
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>GOD · What things cost</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>ABYSS · What things cost</title>
 <style>
 body{{margin:0;background:#000;color:#E8E6DF;font:15px/1.6 Manrope,system-ui,sans-serif}}
 main{{max-width:720px;margin:0 auto;padding:56px 20px}}
@@ -6030,7 +6296,7 @@ def index():
 
 if __name__ == '__main__':
     print("=" * 70)
-    print("SOMEWHERE Game Engine API")
+    print("ABYSS Game Engine API")
     print("=" * 70)
     port = int(os.getenv('PORT', 5001))
     # Debug mode is a security and stability hazard in production: it exposes

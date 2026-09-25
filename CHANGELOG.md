@@ -1,4 +1,1844 @@
+# 🔧 CHANGELOG - September 25, 2026
+
+## 🎨 The game is ABYSS, every /get word starts with A, and one character suits up in the pack
+
+Matt: "can you re-name the app, across the entire app, to "ABYSS" instead of god. "when you stare into the abyss, the abyss stares back" is a good tag line." And: "the only section that doesn't feel good is the wear it section. we need to show more examples across a single character (not call of duty's ghost guy since i bet thats copyrighted)". And: "keep going on the alliteration … so that every big header section is an A".
+
+**The name.** Everything a player reads now says ABYSS:
+- the start menu's wordmark, with the tagline under it in the margin's mono;
+- the window title, the splash, the offline dialogs, the watch screen's idle word, the exit card and the web lobby;
+- /get's title (`downloads.game_title`) and its link-preview description, with the tagline under the name;
+- the release zip (`ABYSS/ABYSS.exe`) and its notes;
+- exported tapes (`Videos/ABYSS Tapes`), Stripe's product names, and the cost page.
+
+What stays SOMEWHERE on purpose: `%APPDATA%\SOMEWHERE` (a player's keys, characters and account live there, and renaming it would lose them), every `SOMEWHERE_*` env var, and the code. `play.py` now keeps the two apart: `TITLE` is the folder and `NAME` is what the window says. The /get brand was sized for three letters. It is now `clamp(76px, 17vw, 230px)`, so five letters fit a phone.
+
+**The words.** Anyone. · **Armed.** (was Wear it.) · Anywhere. · Anything. · **Attack.** (was Fight.) · **Arrive.** (was Get there.) · **Access.** (was Your key.)
+
+**Armed.** It is now one character suiting up piece by piece. Jason Fleece, the shipped starter, starts in a denim vest; the clip puts on a Vulcanized Enforcer Brigandine, then a Lead-Lined Patrol Gorget, then a Riot Helmet, then takes up a Slag Trench Cleaver. Each shows the pick, WEAR IT, and the new pose developing.
+- The things come from a kit (`tools/get_kit/`: four plates and `kit.json`, taken from real finds in earlier films). `film_run --kit` puts it in the played character's pack in the film's roster copy only.
+- The shot list's `wear` film plays four WEARs in a row, and the finder's `"all": true` takes every fitting in order.
+
+The fourth fitting drew Jason back in his denim PRESS vest with the helmet and cleaver. The brigandine and gorget were gone, though `look.json` asked for all four (`changes` lists them) and the check passed it (`same_person_and_outfit: true`; it never asks whether each worn thing is in the picture). A fitting is drawn from the base look with every worn item at once, and at four the image model drops some; the third already lost the gorget. So the clip keeps fittings 1–3 (`"fits": [1, 2, 3]`). The game bug is open: a fitting should be checked for each worn item, or drawn on the previous fit.
+
+**No Ghost.** Simon 'Ghost' Riley is in Matt's own roster, not in the shipped build (the only starter in `assets/characters/` is Jason). Until now he played the desert run and sat in the character list of two clips.
+- `hide_characters` in the shot list removes him from every film's roster copy (`film_run --hide`).
+- The desert run is now Jason, with two new lines to type.
+- The character, desert and key films were shot again, so no clip shows him, even in a list.
+
+## ✅ NEW: /get shows the goal, typed actions going wild, three characters being made, and the pack
+
+Matt: "lets make sure we have a section under "fight" for showing off the goal system. then make another section showing off custom actions and how wild it can get. also update the character marketing page so that it shows the generation of multiple characters. also make a page below it showing off how we can equip items".
+
+The page now runs **hero → Anyone. → Wear it. → Anywhere. → Anything. → Fight. → Get there. → Your key.** Every clip was re-filmed from three runs played at once, one per Experience, plus a character film and a first-launch film (`python tools/refresh_get.py --films run,swat,cyber --parallel`).
+
+- **Get there.** (new, under Fight.) The goal lap from the desert run, in one clip: Ghost walking to the tagged *Acid Leaching Vat*, the Head Foreman stepping out on the way, the reward cutscene, and the *Borehole Breaker 870* on the table. The harness's new `goal` verb plays it: it presses the goal tag's HEAD THERE up to eight times, fights whatever interrupts, takes the way in, sits through the reward and takes the prize.
+- **Anything.** (typed actions.) Each world's film types two wild lines (`act_lines` in the shot list). The clip plays the three best, taken by name: *"Start a conga line through the riot police"* (SWAT: a riot robot ends up in the line), *"Tame the biggest sewer rat and ride it down the tunnel"* and *"Hack the vending machine until it spits out grenades"* (CYBER HORROR).
+  - The game's own input is a sliver at the bottom that scrolls sideways; in the first cut you could not tell anything had been typed. The words now ride over the top of the picture as a caption, typed out while the real ones are typed, and stay up through the result.
+  - The wait for the answer is squeezed, and its **last** seconds are kept (`"keep": "end"`). Capping it from the front had kept the waiting and dropped the picture it ends on. The answer's final picture holds 1.6 s (`result_hold`); at the clip's own hold, the conga line was on screen for half a second.
+  - The desert's two lines didn't pay off. "Ride an oil drum down the dune like a sled" drew Ghost crouched beside a drum, and the arm-wrestle drew a plain still. So the desert line is rewritten for the next shoot, and this cut doesn't use it.
+- **Anyone.** One run makes three characters one after another (`PT_CREATE` takes `||`): a wildfire smokejumper, a Victorian deep-sea diver and a street samurai came back as Maeve McAllister, Silas Vance and Koji Sato.
+  - Each gets its line typed out in a box between the screen's own column and the portrait. Then comes "Picturing them" and the portrait developing in.
+  - The reveal plays at real speed. Squeezed, a finished portrait counted as "still" and was on screen for under a second.
+- **Wear it.** (new, below Anyone.) The pack in each world: Ghost puts on a Riot Helmet, Luka takes up a Notched Iron Pipe, Jean-Luc straps on a Contraband Service Pistol. Each shows the item picked, WEAR IT, the silhouette and the new pose developing.
+  - The first cut squeezed each fitting and capped it from the front. That kept the half-minute wait and lost the new pose, which lands at the very end.
+  - The pick is now squeezed and the pose played whole. It is trimmed to the pack, so the world doesn't flash between fittings.
+- **Your key.** A cropped segment's motion is still measured on the whole picture (see below). The clip now starts at the first thing done on the sheet: the harness logs `ACCOUNT: choosing the provider`. Before, it included thirteen seconds of the sheet sitting there while the harness took its own screenshot.
+
+What changed underneath:
+- `cut_clips`:
+  - a segment's `caption` (with `type_on` and an optional `caption_box`) is burned in with Pillow-drawn frames;
+  - `"keep": "end"` caps from the back;
+  - a captioned piece is trimmed back to its own length (a caption that typed longer than its piece held the last frame);
+  - `motion_in_crop` exists but is off: measured inside the ACCOUNT crop, a key going in is a row of dots too small to survive the downscale, and the whole 40-second flow squeezed to 1.9 s.
+- `refresh_get`:
+  - a clip's film list takes `{"film": "swat", "pick": {"typed": 2}}`, so one clip can use the same film twice in the order written;
+  - a finder's own `max` wins over `max_each`.
+- Harness: `CREATE: submitted n of m` times each drawing. Older films fall back to "playable in Ns", which is timed from the Enter.
+
+**Checked:** every clip frame by frame at two frames a second, three cuts running, on the contact sheets:
+- the conga line forms at the end of its piece;
+- the rat is ridden down the green tunnel;
+- the grenades come out of the machine;
+- Silas and Koji develop in from nothing;
+- each fitting ends on the new pose;
+- the key clip goes dropdown → OpenAI and back → key typed → checking → "Works · story gemini-3.1-flash-lite · pictures gemini-3.1-flash-lite-image" → Jason Fleece → the sewer.
+
+Five films at once dropped the painted rate to about 13 fps and timed out a harness screenshot. `--parallel` now films two at a time (`--jobs N`), and a slow screenshot no longer ends a run. The three world films took 18 minutes.
+
+# 🔧 CHANGELOG - September 24, 2026
+
+## ✅ NEW: One command re-shoots the website's clips from the game as it is now
+
+Matt: "make it so we can easily re-do the marketing captures as the game updates, for the website".
+
+The /get clips were cut by hand. Someone watched each 12-minute film, wrote down the seconds that held a fight or the opening montage in `tools/get_clips.json`, and cut. A new build meant filming again and picking every second again.
+
+- **`python tools/refresh_get.py`** does the whole thing:
+  - it films the three runs listed in `tools/get_shoot.json`: a run deep into The FIFTH CORNER, a character created on camera, and a first launch with no key. Each plays in the authoring sandbox on a port of its own; `--parallel` films them all at once;
+  - it finds each clip's moment in the film's `timeline.json`;
+  - it cuts the candidates and opens `_claude_get/refresh/<stamp>/review.html`, with every new clip next to the one on the site and a line saying what was picked.
+- **`--publish`** copies the candidate onto the site: `static/video/get`, the link preview and `tools/get_clips.json`. It then deletes films nothing uses any more.
+- **`--no-shoot`** re-cuts from the last films, `--films key` re-films just one, and `"pick": {"fight": 2}` in the shot list overrides a choice.
+- **Moments, not seconds.** The finder reads the body classes the game sets and the harness's play-by-play:
+  - *last_fight* and *hardest_fight* are `moment-encounter` spans, ranked by the damage in `battle rN: … them X->Y`;
+  - *opening* is the title card and the montage (`moment-cutscene`, `opening-overture`);
+  - *create* is the `char-open` span holding `created '…'`;
+  - *key* is the `keys-open` span, cropped to the sheet and only kept when the verdict said Works;
+  - *move* is a turn after the first fight that drew a flipbook, clear of the fights' footage.
+- A clip whose moment did not happen in a shoot (no fight rolled, the key check failed) keeps the one on the site, and the review page says so.
+- **Several worlds, not one desert.** Matt: "the marketing should probably show a variety of worlds right?"
+  - There is now one run film per Experience: The FIFTH CORNER as Ghost, SWAT as Luka, CYBER HORROR as Jean-Luc.
+  - A clip's `film` can be a list, meaning the first film the moment happened in. With `"each": true` it takes that moment from every film in turn, so "Anywhere." is the three title cards and openings back to back (`max_each` caps each world's share).
+  - The first shoot put the hero fight in the SWAT riot street (Luka against an Insurgent Runner, three rounds) and "Fight." in the CYBER HORROR sewer (Jean-Luc against a Scavenger). "Anywhere." runs desert → riot city → green-lit sub-level.
+- `film_run.py --out`, `cut_clips.py --spec / --out / --og`, `poster_at` (the poster as a fraction of the finished clip) and a segment's `max` are what it drives.
+
+**Checked:**
+- Run on the three films the site's clips were hand-cut from, the finder picked the same moments to within a second or two: the last fight (with the Reclamation Survivor), the monolith fight with the Extraction Specialist (dealt 7, took 6), Maya Vance's creation, the title card and montage, and the ACCOUNT flow ("Works").
+- For the move it took turn 9 ("water tank → MOVE"); the pool plunge overlapped the hero fight's footage.
+- It cut all six clips, 48.5 MB at 1080p and 11.2 MB at 720p.
+- A real `--films key` shoot then filmed a new first launch and cut from it.
+
+## ✅ NEW: Play on your own Gemini or OpenAI key, picked in ACCOUNT, and see which one is playing
+
+What Matt asked for: download a build, run it, open ACCOUNT, choose from a dropdown whether it's OpenAI or Gemini, paste the key, see that it's stored, have the "backend" tag in the bottom left say what is really playing, and have it genuinely work. Real players choose their own key and can switch providers.
+
+### Why OpenAI never really worked
+
+There was an OpenAI key slot, but it only moved the narrator, and only in part. Every story, vision, choice, look-book, character and picture call in the game builds a **Gemini** `generateContent` request and posts it with `requests`. That is about twenty call sites across engine, choices, goal, look_book, characters, gemini_image_utils, evolve_prompt_file and ai_provider_manager. Most of them bail out when there is no `GEMINI_API_KEY`. With only an OpenAI key:
+
+- `choices.generate_choices` sent `gpt-4o-mini` to the Gemini URL, so the player always got the fallback slate.
+- Vision, SCAN, danger, the goal-sight box, world evolution, the look book and character renders all quietly switched off.
+- `engine.client` was the OpenAI client built at import. Pasting a key in ACCOUNT never rebuilt it, so the narrator failed until a restart.
+- The OpenAI picture path (`gpt-image-1`) existed but nothing could select it.
+- The bottom-left tag showed the *image* provider from `ai_config.json`, never the narrator, so it could say "gemini" while nothing was answering.
+
+### What changed
+
+- **ACCOUNT → PLAYS ON.** A dropdown (Gemini / OpenAI) and that provider's key field come first in the sheet.
+  - SAVE stores the key in `%APPDATA%\SOMEWHERE\keys.env` and the choice in `account.json` beside it. Nothing goes in the install folder.
+  - It then makes **one real call** to prove the key: "Works · story gpt-6-luna · pictures gpt-image-2.5-flare", or the reason in plain words ("OpenAI says this account is out of credit. Add some at platform.openai.com → Billing").
+  - A stored key shows as ••••last-four · saved, with CHANGE / REMOVE / CHECK.
+  - A key pasted under the wrong provider flips the dropdown (sk-… is OpenAI, AIza… is Gemini).
+  - "Get one at aistudio.google.com / platform.openai.com" opens in the player's own browser.
+  - The optional keys (Anthropic, Krea, Reactor, ElevenLabs, Custom) moved under MORE KEYS.
+- **A first launch opens ACCOUNT by itself** when the machine has no key, instead of the "OFFLINE MODE" message box (`SOMEWHERE_KEY_DIALOG=1` brings the box back).
+- **`provider_bridge.py`** makes OpenAI answer the game's Gemini calls. With OpenAI chosen, a hook on `requests.Session.request` (the same place `cost_tracker` meters Gemini) answers each Gemini `generateContent` POST with the matching OpenAI call and a Gemini-shaped reply:
+  - text and vision go to `/v1/chat/completions`; a `responseSchema` becomes a JSON reply, with the schema in the system message;
+  - pictures go to `/v1/images/generations`, or `/v1/images/edits` with the reference images (identity plates, the previous frame). They are drawn at the exact frame the scene asked for (1536×864 for 16:9), so nothing is cropped;
+  - dictation goes to `/v1/audio/transcriptions`.
+
+  So every call site added later is covered without anyone remembering this file. With Gemini chosen, nothing in it runs.
+- **Models come from the key.** `/v1/models` is matched against a preference order: `gpt-6-luna` for the story, `gpt-image-2.5-flare` for pictures, `gpt-transcribe` for dictation.
+  - A parameter a model refuses (temperature, reasoning effort, custom sizes, the JSON `images` list) is dropped or stepped down once and remembered for that model.
+  - The story asks for the least reasoning each model allows (`none`, then `minimal`, then `low`).
+- **Gemini stays the default.** OpenAI plays only when it is picked in ACCOUNT and has a key. A `.env` with both keys, or an OpenAI key on its own, runs exactly as before on `ai_config.json`'s providers.
+- **`ai_provider_manager`'s wire getters say "gemini" while OpenAI is chosen**, whatever `ai_config.json` names (a Claude narrator, Krea pictures). Every path therefore takes the Gemini route the bridge understands.
+- **The backend tag is the provider actually answering**: `gemini`, `openai`, `gemini + krea medium` or `mock` (`/api/status` `backend_label`). Hover it for the models.
+- **When a provider refuses the key mid-run** (out of credit, a bad key, rate limited), one line above the tag says so, with an ACCOUNT button. Before, the only sign was "Signal interrupted" prose and blank frames.
+- **The ledger books OpenAI at OpenAI's rates.** The caller's own "Gemini" line is dropped, and GPT Image's token billing is priced (`pricing.json`: `gpt-6-luna`, `gpt-image-2.5-flare`).
+- **Keys never reach a log.** Four startup and debug lines printed the first 10–20 characters of the Gemini or Krea key into `logs/somewhere.log`, which bug reports upload.
+- **The download matches the page.** `publish_build` zips the build as `GOD/GOD.exe`; the page has always said "Run GOD.exe" while the folder held `SOMEWHERE.exe`. Its release-notes print no longer dies on a Windows console over an emoji heading.
+- `build_exe.py --out DIR` builds without wiping `dist/` (and any saves in a build played from there).
+
+### How it was verified
+
+- `test_provider_bridge` (23 tests, no network) covers the invariants above: nothing intercepted on Gemini; schema, image, edit, crop, transcription and refused-parameter handling; the ledger; the wrong-provider paste. `test_keys_store` and `test_providers` still pass.
+- **A friend's first launch, filmed** (`tools/film_run.py --first-launch gemini`: no key in the server, an empty key store):
+  - ACCOUNT opened by itself and the harness (`PT_ACCOUNT`) typed the key.
+  - The sheet said "Works · story gemini-3.1-flash-lite · pictures gemini-3.1-flash-lite-image".
+  - The run started, the tag said `gemini`, and Ghost fought a Security Operative through three rounds.
+- **The packaged build** (`_claude_get/pack_test.py`: `build_exe --out`, the exact `publish_build` zip, unzipped outside the repo, run with an empty `%APPDATA%` and no key in its environment):
+  - The zip is `GOD/GOD.exe`, 488 MB, with no secrets in it.
+  - ACCOUNT opened by itself and the verdict was Works.
+  - Jason Fleece played a turn and a fight with the Site Foreman.
+  - `keys.env` holds only `GEMINI_API_KEY`; there are no key files in the install; `backend_label` is `gemini`.
+- **OpenAI end to end, as far as the account allows:**
+  - The key lists its models (gpt-6-luna and gpt-image-2.5-flare among them) and the check picked `gpt-6-luna` / `gpt-image-2.5-flare`.
+  - Every call from `engine._ask`, vision and the image utils reached OpenAI through the bridge.
+  - OpenAI answered 429 "no credits remaining": the sheet said so in those words, the tag said `openai`, and the in-run line appeared.
+  - Generation itself waits on credits for that account.
+
+
+## 🎯 FIX: Typed attacks hurt, the goal scenes draw the character I built, and wearing something never looks frozen
+
+Three things I hit while playing.
+
+### "shoot him with a gun" played the shot and did no damage
+
+The typed fourth row in a fight is judged by the model, then a second lane
+reader, then a keyword list, and **anything none of them could place fell
+through to REASON**, which is a talk check and can never deal damage. Nothing
+on the confront keyword list was a gun (no shoot, fire, attack or kill). Worse,
+"…shoot him in the *lower* back" matched REASON's "lower" and "…from *cover*"
+matched FLEE's "cover". When the model call failed (and on a 403 that's
+every call), the shot was filed as talking. The verb was still narrated and
+drawn, so you watched it happen while his bar didn't move.
+
+- **`encounter.is_plain_attack()`**: a typed action that plainly does
+  violence to the opponent is ATTACK, whatever else is in the sentence (shoot,
+  fire at, open fire, pull the trigger, put a round through, attack, kill,
+  stab, slash, cut, throw X at, run him through…). It runs before the
+  keywords and overrides a judge that calls it talk.
+- Violence that is only said stays with the model: "threaten to shoot him",
+  "tell him I'll shoot", "don't shoot". The framing has to come *before* the
+  violence, so "shoot him and say goodbye" is still a shot.
+- The judge and lane-reader prompts now say that using a weapon on it is
+  always ATTACK, and threatening with a weapon you don't use is REASON.
+- A judge reply that doesn't parse, or has no lane, is now logged instead of
+  vanishing.
+
+**Proved live:**
+- `_claude_fight_real.py` (real Gemini): 10/10 attack phrasings came back
+  ATTACK and 4/4 non-attacks didn't. Through `/api/encounter/exchange`, 6/6
+  typed shots rolled ATTACK and three drew blood (11→4, 11→0, 11→0; the
+  others missed on the die, as they should).
+- In the real client as Luka, with `PT_ENC_TYPE="shoot him with a gun"`
+  typed into the fourth row every round:
+  - Smog Sentinel 19→10 ("It lands. 9 damage."), a miss, then 10→0 ("goes
+    down").
+  - A Police Scavenger took 11→2 and ran.
+
+### The goal cutscene drew someone else
+
+It showed Luka as a bare-faced man in a fedora and generic armour, where he is
+a cyborg in a cracked riot visor and a long coat. There were five causes:
+
+1. **The reward's whole prompt was deleted.** `game_identity.reconcile`
+   drops lines that pair a prohibition with a third-person framing term.
+   The cutscene prompt is *one* line, it has an "OVER-THE-SHOULDER" panel and
+   a "never" in its brief, so the entire line went: the character, his
+   wardrobe, the brief and the keyframe rules. The model drew from the
+   pictures and "not a different person" alone. **Reconcile now trims
+   sentences, not paragraphs**; one-sentence rules still go whole.
+2. **"The START KEYFRAME wins."** The reward copied whoever the last frame
+   showed. When that frame had drifted, the drift was locked in and handed
+   to every turn after it. Now the keyframe gives **where and how** the
+   player stands, and the **character sheet gives who**: face, head and
+   every garment. Where they disagree, the sheet wins. The face sheet now
+   rides with the reward too.
+3. **A covered face is said out loud.** `face_cover_clause()`: when what
+   they wear hides the face (a mask, a visor, a respirator), every frame is
+   told "FACE: covered — … never draw their bare face". At 150 px on a
+   turnaround a visor is a few pixels, and the model's prior is a man's face.
+   The face sheet prompt also keeps the covering on.
+4. **The look book designed the World's protagonist**, "Jason Fleece, PRESS
+   flak jacket", and rode beside every turn. Its brief now designs the run's
+   character, and its label says the player is never copied from it.
+5. **The run took a new look only at a choice turn.** A fitting that landed
+   between choices wasn't in the reward, the fight, the photo or the
+   conversation. `engine.adopt_current_look()` now runs before every beat
+   that draws the player (`api._DRAWS_THE_PLAYER`: the cutscene, the
+   encounter begin/exchange/resolve/travel, photo, investigate, observe,
+   detect, goal sight, camp, flipbook, viewfinder, talk). The
+   wardrobe-change line reaches the reward and the fight plates as well as
+   turns.
+
+And one more that dropped what they wear: **STYLE (and CHANGE SOMETHING)
+took their gear off.** A restyle draws a new base, bare, and set every item
+to not-worn. Restyling Luka removed his visor while the pack still said
+WEARING. Now whatever they have on goes back on over the new base as its own
+fitting ("Putting their things back on…"), and until then he stays in the
+look he had. He is never bare in between.
+
+**Proved live:** a full goal run as Luka on real models (`CHAR_HARNESS=goal
+_claude_char_run.py`). He is the same person on every frame: the turns, the
+fight two-shots, all four reward panels (the cracked glass visor on the
+close-up at the wheel, the fedora, the coat, the cyborg arms) and the frame
+inside after it.
+
+### Wearing something felt frozen
+
+The progress was there, but as a 1 px bar and 8 px text, and nothing
+happened until the server answered.
+
+- **It starts on the press.** 160 ms after WEAR, the figure goes to its
+  shadow and the clock is up. It waits that long so a look that's already
+  drawn swaps without a flash.
+- **The progress block is now the character screen's size:** a 17 px line
+  that says what is happening ("Luka is putting on the Shattered Riot
+  Visor…", then "On him from your next move — posing him in it…"), a 280 px
+  bar with a sheen running along it, and the time left.
+- **The shadow breathes** (opacity only, on the compositor) so a
+  half-minute wait never reads as a still screen.
+- **Close the pack and the clock keeps going:** a thin green ring round the
+  pack button fills, and the button pulses when the new pose lands.
+- The progress value is set on the bar and the ring, not the panel. On the
+  panel it restyled everything inside it every frame.
+
+**Filmed on the PC** (`_claude_cs_film.py`, `CSF_SCENE=pack`):
+- At +0.35 s the shadow, the line and the bar are up.
+- The ring is on while the pack is shut, and the clock continues when it's
+  reopened (0.337→0.379).
+- The pose develops in at 109 s.
+- Frame pacing through the fitting matches the pack's own baseline in that
+  recording (max 150 ms, where the first cut hit 200 ms and a 2.9 s stall).
+
+**Tests:**
+- `test_encounter_custom_action`, `test_combat`: typed violence is ATTACK
+  offline, the judge can't file a shot as talk, and a typed shot hurts him.
+- `test_game_identity`: a one-line reward keeps its character, its brief and
+  the covered face through reconcile.
+- `test_goal_sight`: the sheet wins.
+- `test_characters` (47):
+  - restyling keeps what they have on;
+  - `adopt_current_look` moves the run to the fitted look and binds it;
+  - the render routes are covered.
+- 646 across the touched suites pass on the PC.
+
+## 🎨 NEW: One art style by default (photoreal), and STYLE under the name to break it
+
+Asked, over Luka "Grizzly" Novak on the character screen, drawn as inked
+concept art: *"i think we need to work on the prompting so its all
+photorealistic at first. here its in an art style. now we WANT this. but it
+should be a custom choice.. add a default prompt, hidden under a sub menu
+thats tastefully placed below the name (style), that contains the default
+prompt. i think having a consistent art style at first is key, but if
+players want we break it, we'll let them"*
+
+**Why Luka came back as a drawing.** The turnaround prompt opened
+*"CHARACTER TURNAROUND MODEL SHEET for a video game"*. A "model sheet" is a
+drawn thing, and the model drew one. The only word for the rendering was
+"Photoreal", once, at the very end. Since this morning the turnaround also
+starts before the brief lands, so it was drawn from Luka's bare line (*"a
+massive cyborg gangster"*), which gives the model nothing to anchor a style
+on. The hero pose and the face sheet had no style at all. They copied
+whatever the sheet was.
+
+**What changed** (`characters.py`):
+- **`DEFAULT_STYLE`** is a real directive. It asks for photorealistic, like a
+  modern AAA character-select screen in Unreal Engine 5, and names the
+  materials (skin with pores, cloth weave, worn leather, scuffed metal). It
+  then says plainly what it is not: not a drawing, no linework, no ink
+  outlines, no cel shading, no anime.
+- **The style leads every picture of a character**, as `ART STYLE — this
+  decides how it is rendered, whatever else is said`: the turnaround (whose
+  opening no longer says "model sheet"), the hero pose and the face sheet. A
+  fitting is told to keep the exact style of the sheet it redraws.
+- **Each character keeps its own style** (`style`; "" means the game's own).
+  So a later change to the default still reaches characters on the default.
+- **`restyle()` / `POST /api/characters/<id>/style`** redraws the same person
+  in another style. It's a fitting on the base whose only change is the
+  rendering: the face, build and everything they wear are kept. The hero
+  pose and face sheet follow it.
+  - If the redraw fails, the style goes back to what it was.
+  - A character drawn before styles existed has no `style` at all (what it
+    was drawn in is unknown), so any style, the default included, redraws
+    it. That is Luka's case.
+
+**On the screen** (`characters.js`, `characters.css`): under the name, one
+quiet mono line reads **STYLE · PHOTOREAL ⌄**. Click it, or press **S**, and
+the roster steps aside for the prompt itself, the game's default in it, whole
+and editable.
+- Rewrite it and **REDRAW IN THIS STYLE ⏎**. It stays dim until the text
+  differs from their current style.
+- **BACK TO DEFAULT** puts the game's prompt back. Esc closes.
+- The line then reads your style's first words: *STYLE · HAND-INKED
+  COMIC-BOOK CONCEPT…*
+- On the create screen the same line sits under DESCRIBE THEM, and whatever
+  is in it is what the new character is drawn in.
+
+**Tests:** 45 in `test_characters.py`. New ones check that:
+- the default leads the turnaround, the pose and the face, and "MODEL SHEET"
+  is gone;
+- a player's style replaces it;
+- a restyle is a fitting that says "EXCEPT the rendering", and restyling to
+  the default stores "";
+- a character drawn before styles can be redrawn in the default;
+- an ordinary fitting keeps the sheet's style.
+
+## ✅ Characters are the player's for good, and the pack changes them the way the main menu does
+
+Asked, in a row:
+- *"are we making sure these characters are permanent and stored on disk?"*
+- *"visualize the customization screen IN GAME for me and make sure it is
+  working elegantly so we are able to add and remove items from our
+  character at runtime with the same pleasing feeling / look we have at the
+  main menu"*
+- then, over a frame of the drawing screen: *"get rid of this stupid stick
+  figure. either use no silhouette, or the black outline of the old one only.
+  it looks cheesy. same for the main menu"*
+
+### On disk, for good
+
+They already were, in `characters/<id>/`:
+- `character.json`, and one folder per look (the turnaround the simulation
+  reads, the hero pose, the face sheet, the words);
+- the pack's plates under `items/`.
+
+That folder is outside `sessions/`, so a reset, New Game, `demo_check` and
+`clean_artifacts` never touch it (none of them name it). Deleting a character
+moves it to `_deleted/`, and it is gitignored. On this PC an audit
+(`_claude_roster_audit.py`) read every file back: Jason Fleece and Ghost,
+every look whole, no problems.
+
+What could still lose one, now closed (`characters.py`):
+- **A torn write.** JSON was written to a temp file and renamed, but not
+  flushed to disk first, and a record that would not parse just dropped off
+  the roster.
+  - `_write_json` now fsyncs before the rename.
+  - It keeps the last good copy as `.bak`.
+  - It retries the rename when Windows has the file held (an antivirus scan).
+  - `_read_json` falls back to the `.bak` and puts it back, keeping the torn
+    file as `.broken`.
+  - A folder that still can't be read is logged and left alone, never
+    removed.
+- **A packaged build kept the roster inside the game folder**, which is what
+  an update or `build_exe.py --clean` replaces. A frozen build now keeps it in
+  `%APPDATA%\SOMEWHERE\characters`, beside the keys, and carries an older
+  build's roster over once.
+- Tests for all of it: a torn record comes back from its last good copy,
+  writes leave no temp files, a packaged build uses the player's folder and
+  brings the old roster, and the repo keeps it beside the code.
+
+### The pack, in a run
+
+I filmed it opening, selecting, wearing, taking off, wearing again, closing
+and reopening. The in-run capture is `_claude_cs_film.py` with
+`CSF_SCENE=pack`; a fitting rehearses from a real fitted look via
+`SOMEWHERE_CHARACTERS_REHEARSE_FIT`. What changed (`pack.js`, `pack.css`):
+
+- **The figure is the main menu's.** `makeFigure` in characters.js is shared
+  as `CharacterArt.Figure`: two slots that cross-fade, preloaded, never
+  blanking. Wearing something makes the pose they had go to a black shape
+  with a faint rim of light. The new pose develops in over it (light and blur
+  settling), not a swap.
+- **The main menu's clock** runs under the verb, driven every frame from the
+  learned ETAs: *ON IN ABOUT 20 SECONDS*, then *THE PORTRAIT IN…*. The cell
+  being fitted pulses mint, and WORN sets in on it.
+- **WEARING · RIOT HELMET** sits under the character: what the next move will
+  show.
+- **The grid is built once and updated in place.** It used to be rebuilt on
+  every arrow press. Now the selection ring eases between cells and the
+  detail sets in on a change.
+- **Opening sets in** like the character screen: the figure rises, the pack
+  follows, the verb comes last.
+- **Found while filming:** the shadow's filter was tied to `.on`. So as it
+  faded out, the old pose turned back into full colour for its last second
+  before the new one covered it. The filter is on the class now.
+- **Played on the real models** (`_claude_char_run.py`, with
+  `CHAR_WEAR_PORTRAIT=1` holding the pack open until the pose lands):
+  - Ghost put on the Riot Helmet. It was worn from the next move at 28 s.
+  - The pack held his old pose as a shadow with the clock running, and at
+    51 s the new pose developed in: riot dome, visor up, a hand at his chest.
+  - The next turn drew him in it.
+
+### No stick figure
+
+A first drawing on the main menu used to have a drawn A-pose outline where the
+character would stand, lit from the feet up with a scan line. The pack used
+the same figure while fitting. It is gone from both:
+- **A first drawing has an empty stage**: the key light, the name setting in,
+  the bar and its countdown. Filming it on the PC caught one more flash. The
+  poll that found the drawing finished set the NEW portrait as a shadow for a
+  second before the reveal coloured it. A finished drawing now always
+  develops in.
+- **A redraw or a fitting shows the old pose as a black shape** with a rim of
+  light, and nothing invented.
+- A roster square for someone not drawn yet is plain, with no outline.
+
+### Also
+
+- A race I'd left in this morning: the brief can name the character between
+  the turnaround line being written and it landing. That made "Drawing them
+  from every side…" overwrite "Drawing Wren…" about one time in four, and the
+  test caught it. `_stage` now reads the name under the store lock.
+- `test_characters.py` has 40 tests, all passing. I ran it eight times in a
+  row after the race fix.
+
+## ✅ FIXED: No portrait is ever the reference sheet's A-pose, and the hero pose has attitude
+
+Asked, over a screenshot of Ghost in the pack straight after putting on the
+riot helmet: *"why is he in an A pose. the off the sheet style should be a
+stylish pose"*
+
+**The mechanism.** Two things, one of them mine from this morning:
+1. **The stand-in.** To make a character playable at ~24 s instead of ~50,
+   the screens were given a stand-in portrait the moment the turnaround
+   landed: the three-quarter view cut off the four-view sheet. The sheet is
+   drawn in an A-pose on purpose, because the four views have to line up. So
+   for the ~25 s the hero pose took, the portrait was a model-sheet figure
+   with its arms held out. The harness closed the pack before Ghost's real
+   pose landed, and the fitting's folder had only the stand-in.
+2. **The hero pose itself** was asked for "a relaxed, confident idle stance".
+   Drawn off an A-pose sheet, that kept leaning back into it: arms held off
+   the body, feet square, facing the camera.
+
+**What changed** (`characters.py`, `characters.js`, `pack.js`):
+- **No stand-in portrait.** When the turnaround lands, only the roster
+  square is cut from it: a head and shoulders, where no pose shows.
+  `idle.png` is only ever the hero pose. If that fails twice, and then again
+  on a third try, the sheet's view goes in as a last resort so the character
+  still has a figure.
+- **Playable is not the reveal any more; the posed portrait is.** The drawing
+  screen keeps the outline filling with light, and when the character becomes
+  playable (~24 s) it offers **PLAY NOW ⏎**. The line reads "Posing Maeve for
+  the portrait…" and the countdown reads *YOU CAN PLAY NOW · THE PORTRAIT IN
+  ABOUT 20 SECONDS*.
+  - The bar and the outline run to the portrait, with being playable at the
+    middle.
+  - The server learns both times from this machine's drawings (`_ready_eta`,
+    `_total_eta`).
+  - The reveal happens when the posed portrait exists.
+- **A fitting keeps its old pose until its new one is drawn.** `card()` gives a
+  look with no hero pose yet the portrait of the look it was fitted onto. The
+  pack holds that pose, dimmed, and the new one develops over it. The
+  four-view strip is no longer shown there either.
+- **The pose prompt asks for attitude and names what not to copy.**
+  - It asks for a character-select hero shot with a strong silhouette that
+    says who they are (role and demeanor come from the brief).
+  - The body turns 30–40° from camera and the head turns back; the weight is
+    on the back leg with the front foot stepped out; shoulders and hips tilt
+    against each other; one hand is busy with what they carry. It should be
+    grounded, "like a film still", not a superhero stance.
+  - It then says plainly: NOT the turnaround's A-pose — the arms are not held
+    out, the feet are not side by side, and the body does not face the camera
+    square-on.
+- **`tools/repose_characters.py`** redraws only the hero pose of existing
+  characters with today's prompt. The turnaround (what the simulation sees),
+  the words and the face sheet are untouched.
+  - `--dir <copy>` runs it on a copy first, to look; `--starters` runs it on
+    the shipped ones.
+  - I ran it on a copy of this machine's roster twice. The first prompt got a
+    hand on a strap but still stood square; the second got the turn and the
+    step. Those poses were copied onto the real roster (Jason Fleece, Ghost)
+    and the shipped starter.
+
+**Tests:** `test_characters.py` has 36 tests. New ones check that:
+- when a character becomes playable, there is no `idle.png` and no card idle,
+  but there is a roster square, and the idle arrives with the hero pose;
+- a fitting shows the old portrait until its own is drawn;
+- `repose` draws only idles and leaves the sheet byte-identical;
+- the pose prompt refuses the A-pose.
+
+The harness gained `PT_CREATE_EARLY=1` to press PLAY NOW while the portrait
+is still drawing.
+
+## 🎨 The character screen's smoke is gone: one studio light on a dark wall
+
+Asked: *"the smokey background is extremely cheesy. please generate a much
+better background of a simpler gradient"*
+
+The backdrop was drawn smoke: SVG fractal noise pushed through a colour matrix
+into bone-white wisps, masked toward the figure, and drifting on a 48 s loop.
+It is replaced by `CharacterArt.backdrop()`, which is pure CSS (`.cs-bg` in
+`characters.css`), no image and nothing that moves:
+- a near-black wall, a shade lighter at the top than at the floor;
+- one soft pool of warm-neutral key light behind where the figure stands, with
+  a wider, fainter spill around it;
+- a faint pool of light on the floor under the feet;
+- the left third a shade darker, where the words sit;
+- a fine static grain (a tiled noise SVG, overlay at 7%), so the long
+  gradients don't band on a dark screen.
+
+The pack (`pack.js`) uses the same backdrop over the dimmed game. Its wall is
+most of the way opaque there. The smoke used to hide the game's HUD behind
+the veil; with a clean gradient, the goal line and the corner chrome read
+through and crossed INVENTORY and CLOSE. Now the game is a faint shape far
+behind. The old `.cs-glow`,
+`.pk-glow`, the smoke SVG and its `cs-drift` keyframes are removed.
+
+Looked at by filming the screen (`_claude_cs_film.py`, now with
+`CSF_STILLS=1` for a full-quality screenshot at each step). I checked the
+roster, the drawing screen with the lit outline, the reveal, and the pack
+over a run.
+
+## 🎬 The character screen moves like one piece: it comes up whole, nothing cuts, and the drawing is something to watch
+
+Asked: *"look through the player creation menu to make sure all transitions
+are smooth, loading progress is animated an elegant, and everything flows
+smoothly"*
+
+**How I looked.** Real renders take 50 s and cost money each time, and offline
+a character is drawn in a blink, so offline shows nothing. So there is now a
+**rehearsal**: `SOMEWHERE_CHARACTERS_REHEARSE=<a look folder>` plus
+`SOMEWHERE_CHARACTERS_REHEARSE_SECS=22,24,4` makes `characters._draw_rehearsal`
+play the real pipeline's stages, lines and timing with a real character's
+pictures and no model calls. `_claude_cs_film.py` films the whole screen with
+it:
+- title → PLAY → the roster, both ways → create → developing → reveal → the
+  hero pose landing → the picker → back → the title;
+- the video has a clock burned into the corner, and every long animation
+  frame is logged against the step that caused it.
+
+I filmed it on the PC's Chromium and on real models. What was wrong, in the
+order a player meets it:
+
+1. **The screen filled in after the veil lifted.** It opened on an empty
+   "+ Create new", then the name, then the figure, a beat apart. The title's
+   background film also showed through the screen's own 0.35 s fade.
+2. **Every mode change was a hard cut.** Roster to create to developing to
+   select, the whole left column swapped in one frame. On "Create new" the
+   character vanished in a single frame.
+3. **The reveal blinked.** The developing picture was one `<img>` and the
+   revealed one another. At the reveal the first disappeared and the idle
+   faded up from nothing.
+4. **The stand-in pose became the hero pose with a cut** (the src was
+   swapped).
+5. **The progress bar stepped.** It was a CSS width set on each 1.4 s poll,
+   against a fixed 30 s ETA. It sat at two thirds when the character arrived,
+   then jumped. The heading said DESCRIBE THEM the whole time.
+6. **Moving down the roster**, the name changed a third of a second before
+   the picture could start to fade. Every poll also rebuilt the roster's
+   thumbnails.
+
+**What changed** (`static/js/characters.js`, `static/css/characters.css`, a
+little of `characters.py` and `standalone.js`):
+
+**The figure is two slots that cross-fade (`Fig`).**
+- A new picture loads and decodes into the back slot, fades up over the front
+  one, and the two trade places. Nothing is replaced by nothing.
+- Moving through the roster, the leaving figure goes in 0.45 s and the
+  arriving one takes 0.8 s. Both drift a few pixels the way the list moved.
+- The same person in a better picture (stand-in → hero) comes up over the old
+  one, and the old one fades only once it's covered:
+  - a two-way fade dipped the figure to half and let the smoke through;
+  - removing the old one on a timer left its A-pose arms showing past the new
+    pose for a second.
+- Every figure on the roster is fetched and decoded when the list arrives,
+  and held.
+
+**Modes dip and come back.** `swapTo` fades the column and the verbs out
+(180 ms), changes mode, and brings them up again. A second change mid-dip
+lands at once instead of queueing. A new name or tagline in the same mode
+sets in with a small rise.
+
+**It comes up whole.**
+- PLAY starts `Characters.prefetch()` as the veil begins to cover. The roster
+  and the selected figure are fetched and decoded during the 1.3 s of black.
+- Under the veil the screen has no fade of its own.
+- On the way in, the figure rises into place, the name, line and roster
+  follow it down (staggered), and the verbs come last.
+- Back from the picker, it comes up at once with the list it had.
+
+**The drawing is something to watch.**
+- **The name arrives first.** The brief's name, pronouns and line are written
+  to the record the moment they land (~5 s), while the turnaround is still
+  drawing. The heading goes from a breathing PICTURING THEM to the name.
+  The line becomes "Drawing Maeve from every side…".
+- **A smooth, honest bar.** The bar and the outline are driven every frame,
+  easing toward a curve of how long this machine's drawings take.
+  `characters._ready_eta()` is the median `ready_secs` of the last six looks
+  plus a breath, instead of the fixed 30. They never go backwards.
+- **The outline fills with light** from the feet up, with a scan line riding
+  the edge.
+- **The countdown text**: ABOUT 20 SECONDS, then A FEW SECONDS, then ANY
+  MOMENT. If it runs long, TAKING LONGER THAN USUAL.
+- **The reveal is one gesture.** The bar runs out ("Here they are."), the
+  first pose develops in (light and blur settling), and the column turns over
+  to the name with CHARACTER · NEW.
+- **The four-view strip is no longer shown mid-drawing.** It is on disk a
+  moment before the pose cut from it, and a poll in that moment flashed it.
+  The stand-in pose is now written first.
+- **Every picture a screen can fetch is written whole or not at all**
+  (`_save_img` / `_write_atomic`: a temp name, then a rename). On the PC,
+  the poll found `idle.png` while PIL was still writing it, and the browser
+  fetched the half-file. Its URL is keyed on the file's mtime second, so the
+  screen kept a head-and-shoulders fragment for the whole 24 s of finishing.
+  The real pipeline had the same race.
+
+**Played it.**
+- **Rehearsal films**, in the container and on the PC:
+  - every step above has been checked frame by frame;
+  - on the PC the screen itself logs no animation frame over 50 ms from
+    PLAY to the reveal.
+- **A real run on real models**: `_claude_char_run.py`, with `CHAR_VIDEO=1`
+  recording the page.
+  - The brief took ~5 s, and "Maeve Vance" set in over PICTURING THEM while
+    the outline was still filling.
+  - She was playable at 24.6 s. The bar ran out and she developed in.
+  - The hero pose dissolved over the stand-in at 51.5 s, and she played the
+    run.
+- `test_characters.py` has 33 tests, all passing on the PC. New since the last
+  entry:
+  - the name, and the line with it, land before the turnaround does;
+  - the countdown is learned from this machine's drawings.
+
+## ⏱️ FASTER: A new character is playable in ~23 s, not a minute — the portrait finishes while you look at them
+
+Asked: *"now why does the character generation take so long? is there any way
+to speed it up or give players rendering progress?"*
+
+**Why it took a minute.** Three model calls in a row, and the player waited
+for all of them:
+1. the brief (a text call: name, the line under the name, the words for the
+   image), ~5 s, with nothing on screen;
+2. the turnaround, four views on `gemini-3-pro-image` at 2K, ~20–25 s;
+3. the hero idle (another pro 2K render) beside the face sheet and the
+   read-back, ~25 s.
+
+Only the turnaround is load-bearing. It is what the simulation reads and
+what every later picture copies. The idle is for the menu, and the face and
+the words hang off the turnaround.
+
+**What changed** (`characters.py`):
+- **The brief runs beside the turnaround**, not before it. The turnaround is
+  drawn from the player's own line, and the brief has always landed by the
+  time it has.
+- **Playable the moment the turnaround lands.** `_draw_look` takes an
+  `on_ready` callback. At that point the character is READY and the
+  three-quarter view, cut off the turnaround, is written as a stand-in idle.
+  The job goes to a `finishing` stage and the card says `finishing: true`.
+- **The hero idle, the face sheet and the read-back finish behind it**,
+  ~25 s more. The character screen cross-fades the idle in when it lands
+  (preloaded, no blink), and a quiet mint line reads *FINISHING THE PORTRAIT
+  — PLAY WHENEVER YOU'RE READY* until it does. It sits out of the flow, so the
+  roster doesn't jump when it goes.
+- **A run can start during `finishing`.** Until the words are read back,
+  `bound_block` describes a new body with the brief. A fitting is described
+  as the look it was fitted onto plus what was put on. The face sheet is
+  simply absent for those turns (`face_reference_paths` already allowed for
+  that).
+- **Fittings are the same shape.** The new look is worn from the next move
+  once its turnaround lands, and the pack keeps polling through `finishing`
+  so its figure cross-fades too. The pack now says *PUTS IT ON IN ABOUT HALF
+  A MINUTE*.
+- `look.json` records `ready_secs` beside `secs`. The server logs
+  "playable at Xs, finished at Ys", and a fitting logs "worn from the next
+  move at Xs".
+
+**Progress.** The DEVELOPING screen already shows the stage line ("Drawing them
+from every side…"), a bar and a countdown. The ETA it counts down from is now
+the time to PLAYABLE (`READY_ETA_S = 30`), not the time to finished.
+
+**Played it.** Real models, `_claude_char_run.py` with
+`CHAR_CREATE="A night-shift paramedic in her thirties…"`:
+- she was on the screen and playable in **23.3 s** (24 s by the harness
+  clock), and the hero pose cross-faded in at 47 s;
+- before this change, Maeve Callahan took ~60 s to appear at all;
+- Elena Vance then played two turns and a four-round fight, and the hi-vis
+  jacket, the bun and the red trauma bag were in every frame.
+
+Two more runs:
+- **PLAY at once.** A retired boxing coach was playable at 22.9 s, and the
+  harness pressed PLAY while he was still finishing. The run started and
+  played clean.
+- **A fitting.** Ghost put on the Riot Helmet. It was worn from the next move
+  at 24.3 s, where it used to take ~50 s. Turn 2 took the fitted look at the
+  boundary before its words had been read back (they landed at 52 s). The
+  sim was told his old garments with the helmet's look text on the head, and
+  the frame shows the riot dome with the visor raised.
+
+Tests: `test_characters.py` has 32 tests, all passing on the PC. They include
+the online path with the models faked: READY with a stand-in idle while the
+hero idle is still blocked, then the words and the idle landing after. There
+is also a fitting worn before its words land.
+
+**Still on the table, not done:** a faster image model for the idle and the
+face (flash image). That would cut the finishing half, which nobody waits on
+now. A 1K turnaround would cut the half they do wait on, at the cost of face
+detail in the one picture everything else copies. I wouldn't trade that.
+
+## ✅ NEW: Characters — who you are is a thing the game owns, made on its own screen, worn into every frame
+
+Asked: *"like a classic RPG, when you enter a world, you need a character …
+a high level being with a customizable look, who you control, with persistent
+inventory, and is completely reactive to items you discover and are wearing"*,
+then, once the design was on the canvas, *"implement the character system,
+completely … menus to create them, and modified inventory system to be able to
+modify our character with items we find in game. this should all be saved to
+disc, characters become a key asset."* The design record is
+`docs/plans/CHARACTER_SYSTEM_PLAN.md` (now marked shipped, with what changed on
+the way).
+
+**Why the old way kept failing.** The player was three things that were not
+one thing: words in the live prompt file's `player_character`, an uploaded
+poster attached to every render as the "character sheet", and a property of
+whichever World was bound. The words said a blue PRESS flak vest, the poster
+showed a black plate carrier, and the vest flipped whenever the frame being
+continued didn't show it. The poster leaked its background and pose, showed
+only his front while the follow-cam mostly sees his back, and lived in the
+one prompt file every World bind rewrites.
+
+**What a Character is** (`characters.py`). One record on disk,
+`characters/<id>/`, outside sessions, prompts and Worlds (a reset never
+touches it). It holds:
+- the identity (name, pronouns, the line under the name),
+- the pack,
+- the looks, each one a four-view A-pose TURNAROUND on a key colour, cut out,
+  on grey for the image models (`turnaround_ref.jpg`),
+- an idle hero pose for the screens and a face sheet for close-ups,
+- a record (runs, deaths, Worlds).
+
+The words the prompts read are written BY A VISION PASS OVER THE TURNAROUND.
+The player's line is the brief, the render is the truth, and the words are
+read off the truth, so they can't disagree with the picture. The pipeline:
+- a brief from one line (and any pictures),
+- the turnaround on `gemini-3-pro-image` at 2K, checked mechanically (four
+  whole figures at one scale, off a clean key) with one retry,
+- the read-back, the idle and the face in parallel.
+
+Measured on your PC: a new character in ~55–60 s, a fitting in ~50–55 s.
+Jason ships as the starter (`assets/characters/jason-fleece/`, built by
+`tools/build_starter_character.py` from the spike's render, so it's the blue
+PRESS vest the runs are written with). Your Ghost came over from the cast
+sheet on first read and was drawn for real.
+
+**The screens** (`static/js/characters.js`, the canvas design):
+- PLAY now opens the character screen: black, drawn smoke, the character on
+  the right, the controls on the left.
+- Select from the roster, or Create new: one line, + ADD A PICTURE, SURPRISE
+  ME. While they're drawn you get a breathing outline and the line "Drawing
+  her from every side…" with a real progress bar.
+- The reveal (CHARACTER · NEW) offers PLAY, TRY AGAIN and CHANGE SOMETHING
+  (one line, redrawn onto them).
+- PLAY goes to the World picker as before, and the run starts with
+  `character_id`.
+- The World Editor's Character block is now the character's card with
+  "Change character", which opens the same screen and binds the run.
+
+**Into the simulation.** The run points at the character
+(`state.character_id` / `look_id`, bound before the look book and the intro
+render). `game_identity.get_spec()` lays the character over the cast sheet's
+character block, so the thirty-odd surfaces that ask who is on screen get
+them without being rewritten. The only character plate is the turnaround,
+labelled as one person from four sides: "Draw ONE … the A-pose, the grey and
+the four-up layout are NOT the scene". The idle never reaches the sim.
+Editors read and write `raw_spec()`, so the overlay never lands in the prompt
+file. A run without a character (an older save, a harness session) is the
+cast sheet, exactly as before.
+
+**The pack you wear** (`static/js/pack.js`, the canvas "Inventory"). B opens
+the character's own frame: the game dimmed behind, him on the right, the pack
+on the left, and WEAR IT / TAKE IT OFF.
+- What a run finds (a goal's prize, a fight's spoils) goes onto the
+  character, plate copied out of the World's look book, and comes back in
+  every later run, in any World.
+- WEAR IT is a fitting: the base turnaround plus the item's plate, redrawn
+  with it on. It always starts from the base look with the whole worn set, so
+  on/off never drifts. Looks are cached by outfit, so taking it off again is
+  instant.
+- The run takes the new look at its next turn boundary, never mid-render.
+  The narrator gets one line ("… is now wearing Riot Helmet"), and the tape
+  gets a chapter mark and ships the turnarounds in the export.
+- Only what's WORN does fight work (`goal.gear_edge`), so the dice and the
+  picture agree.
+
+**Found by playing it: the new helmet didn't show up in the frames.** The
+first harness run put a riot helmet on Ghost. The fitting was right (the
+turnaround and the pack's figure both wore it), but the next turns kept
+drawing his old NVG helmet. The START KEYFRAME showed it, and continuity
+copies what the last frame shows; the fitted turnaround alone lost that vote.
+Two more attempts found two more holes:
+- A WARDROBE CHANGE line at the top of the prompt, plus the item's plate as
+  a reference, still lost. On a turn with a roster plate aboard, the look
+  book's world sheet took the plate's slot of the six.
+- The narrator was only told to mention the change "in passing", so the
+  visual scene, which is what the picture is actually drawn from, never
+  named it.
+
+The turn a new look is taken (and the one after) now:
+- leads with WARDROBE CHANGE,
+- tells the keyframe's caption its outfit is out of date,
+- carries the item's own plate labelled NEW GEAR in place of the wider view,
+  and the world sheet sits that turn out,
+- tells the consequence model the visual_scene MUST show it, with its look
+  ("a black police riot helmet with a clear perspex visor raised, the visor
+  cracked").
+
+The third run's scene came back as "Simon 'Ghost' Riley, wearing a black
+police riot helmet with a cracked visor, …". From panel 2 on, and through the
+fight that followed, he wore the smooth riot dome with the visor raised
+instead of the NVG helmet.
+
+**Verified by playing it** in the real client, headless on a server of its own
+against a copy of the roster (`_claude_char_run.py`, frames in
+`_claude_charrun/`):
+- PLAY → character screen (Ghost and Jason, figures painted) → Ghost → picker
+  → a run that `/api/character` confirms is Ghost. Every frame drew the skull
+  balaclava, the skeleton gloves and the SAS plate carrier, from the front and
+  from behind.
+- WEAR: B → Riot Helmet → WEAR IT → fitted in 47–58 s across three runs.
+  The pack's figure developed into him in the helmet, and the next turn's
+  state was on the new look ("the run took the new look fit-… at the turn
+  boundary"). The frames drew it on the third run (above).
+- A won fight's spoils landed in his pack ("carrying 2").
+- CREATE through the screen: "A night-shift paramedic in her thirties…" came
+  back as Maeve Callahan in 60 s, and her run drew her from behind in the green
+  reflective jacket with the red trauma bag.
+- Every harness turn committed and resolved, with no black screens.
+
+Suites: `test_characters.py` (30). Everything else is the same as before the
+change, same pre-existing failures and nothing new.
+
+# 🔧 CHANGELOG - September 23, 2026
+
+## ✅ FIXED: The one the story names is the one you fight, the reward is lit like the game, and a round is drawn the way the dice played it
+
+Three reports off one evening of play.
+
+**"the character we encountered that triggered the encounter WASNT the
+character that appeared in the encounter"** (bug 20260923_225738). The beat
+read *"A shifty figure in a black windbreaker darts behind the van"*; twenty
+seconds of walking later the travel clock opened a fight with a **Riot Control
+Officer** in a hazmat suit. `api_begin` looks for a target in four places — the
+client's subject (a boss or a SCAN sighting), a staged sighting, and
+`onscreen_threat_target` at ALERTED or worse — and with none of them it rolls
+the roster. The prose is not any of those: a figure the narrator introduces is
+in the story before the detector ever sees them, and at SUSPICIOUS the frame
+does not get a say. So the roster won, and brought its own look-book plate.
+
+**Now** there is a fifth source, ahead of the roster: `story_subject_target`
+reads the newest ordinary beat (not a fight's aftermath, not a `__` system
+row) and takes the first person or creature it puts in front of the player —
+`"A shifty figure in a black windbreaker"`, with the sentence that said it.
+Not *"your own silhouette"*, not *"like a man"*, not *"left behind by the rival
+operative"*, not anyone the sentence says is dead or down, and not whoever
+the last fight was with. The brief is told `THE STORY HAS JUST PUT THIS
+CHARACTER IN FRONT OF THE PLAYER`, the roster roll is skipped (so no roster
+plate argues with it), and the standoff plate is told they step into the
+frame from where they were last seen. The same bug's second fight, the Signal
+Warden out of the van, was the right person but its plate was being told
+*"the player has just struck it"* before anyone had moved; a boss now gets
+"the one who holds this place — INTO this photograph".
+`TestWhoTheStoryNamedIsWhoArrives` (6).
+
+**"significant drift from the goal -> the goal cutscene -> the scene … like
+they had new lighting."** The reward montage was on the pro image model at
+2K, moved there on 2026-09-22 because the play model's edit endpoint 400'd
+**at 2K**. That kept the wrong half: a different model relights, and its
+panels were 1376x768 against the game's 672x376. The play model at its own
+1K is exactly the render every flipbook turn already is, so the reward is on
+that now (`cutscene._MOOD_RENDER["reward"]` = model None, size None).
+
+**"random frames appearing at 2k resolution when i ended an encounter."** A
+fight beat whose grid is refused falls through to a still, and the still is
+the whole render — 1376x768 — between frames a quarter of that size. The last
+blow is the beat most likely to be refused, hence "when I ended an
+encounter". `flipbook.match_panel_size` shrinks such a still to the run's
+real panel size (the last panel, or a quarter of a full render when there is
+no panel yet; it only ever shrinks) at both places a still stands in for a
+flipbook beat: `engine._gen_image_impl`'s still path and the encounter's
+resolve / fallback plates. `AStillStandingInIsPanelSized` (2).
+
+**"it'll say i missed and the player is being damaged, while showing the
+player damaging the enemy, it was backwards."** The resolve picture was drawn
+from the player's VERB — "Stomp the Signal Warden's head" — under an AGENCY
+LOCK that said the player does the verb and the other one only receives it.
+`combat.play_round` already knew the round was *you miss, he hits*; none of
+its beats reached the picture, so the picture drew the verb landing. **Now**
+`exchange_story` turns the round's beats into the lines a picture has to show,
+in order — *"… goes for it — Stomp the Signal Warden's head — and MISSES: the
+Signal Warden slips it, the blow finds air, no contact. The Signal Warden hits
+Ghost with crushing grip: Ghost TAKES the blow and staggers."* — and that is
+both the resolve prompt's `WHAT HAPPENS, IN THIS ORDER` (the agency lock is
+replaced by an ORDER LOCK when there is an exchange; a round with no exchange
+is drawn as before) and the flipbook's beat, so the four panels animate the
+round rather than the verb. A death keeps its own beat.
+`TestThePictureShowsTheRoundTheDicePlayed` (5).
+
+**Verified** on this machine with real renders off the bug frame
+(`_claude_round_probe.py`, `_claude_bug/round_MISSHIT*`, `reward_NOW_*`):
+the miss-then-hit round came back as a flipbook grid on the play model at 1K,
+its last panel 672x376; the reward montage came back from Gemini (not the
+optical crop fallback) in 7 seconds, four panels at 688x384, on
+`gemini-3.1-flash-lite-image`. Suites: encounter / combat / goal / cutscene /
+tape 559 green; `test_flipbook` the same 7 pre-existing
+`TestGeneratingAFlipbookTurn` failures and nothing new.
+
+## ✅ FIXED: Every fight round carries the player's character sheet, and why the vest still changes
+
+Asked: *"lots of wardrobe changes throught the new sequence. verify for
+encounter, goal, and rewards, we're using the character image in img2img
+aswell"*.
+
+**Audited at the wire.** I faked only the HTTP call to the image model and
+recorded what each beat actually attaches, in order, with its label. Turns:
+START KEYFRAME, then the CHARACTER SHEET. The fight's standoff plate (grid
+and still): the same. The goal reward: the frame on screen, then the sheet.
+The turn after the reward: the reward's last panel, then the sheet. **Every
+fight round and the death reel: no sheet.** Their grids go out with
+`hold_cast=True`, and the image layer's merge was
+`if identity_paths and not hold_cast`, which dropped the sheet outright (a
+sheet in slot 1 recast the player and lost the challenger). The restage prompt
+also said "not a character-sheet recast".
+
+**Now** under `hold_cast` the sheet rides right behind the cast photograph.
+The photograph keeps slot 1 and the other person's design comes after the
+sheet. The restage prompt says the player's clothes are the ones on the sheet,
+every garment, and that nothing on the sheet goes on the other person.
+`TestEveryRoundCarriesThePlayersSheet` pins the order at the wire.
+
+**Verified** with real renders of a round off the bug frame (Jason on the rig
+platform, the Warden below; `_claude_fight_sheet_probe.py`,
+`_claude_bug/fight_*`), with and without the sheet. In all four, Jason keeps
+the blue PRESS vest: in a fight the standoff frame holds the outfit. In one of
+three with the sheet, the Warden came back in a PRESS plate carrier (the
+sheet's vest bled onto the other person). That is the risk the old code was
+avoiding, and the reason for the new "nothing on it goes on the other person"
+line. The other two were clean.
+
+**What is actually changing the vest.** The character image and the
+character's words disagree. The sheet is a poster: a black plate carrier with
+a small PRESS patch, and a mine battle behind him. The appearance text says "a
+blue flack jacket with 'press' written across it". The run was drawn from the
+words (the blue vest in every frame of the bug session). The model reaches for
+the sheet whenever the frame it continues does not show the vest, like the
+reward's last panel, which is a close-up of his hands. The next turn then came
+back in the plate carrier, and the sheet's battle background turned up in the
+panels of a thinly prompted test render. No reference ordering fixes two
+descriptions of one vest; the sheet and the words have to agree.
+
+## ✅ FIXED: The turn after the goal reward starts inside, where the reward left you
+
+Asked, after the reward fix: *"since we had that bug with img2img of the
+encounter to the goal, make sure the goal, to the scene after, is also using
+the right im2img"*. It wasn't.
+
+**The mechanism.** `goal.finish_reward` wrote the reward's last panel into
+history as a hard-transition handoff row, the way the World stitch does, and
+for the still path that is enough. But the flipbook is the renderer every
+turn uses, and it never looks at history while it has its own anchors:
+`_flipbook_generate` takes the START KEYFRAME from `flipbook_last_frame` and
+the WIDER VIEW from `flipbook_first_frame`, and only falls back to what
+history handed it when those are empty. The World stitch empties them
+(`_WORLD_SCOPED_KEYS`). The reward did not. So they still held the last turn
+*before* the reward, outside the place, and "Take the Hydraulic Wire Shear",
+the first thing done inside, was drawn continuing the frame outside the rig.
+The room the reward had just walked the player into reached the grid nowhere.
+
+**Now** `finish_reward` points `flipbook_last_frame` at the reward's last
+panel and clears the wider view, the last grid and the last sequence. It also
+clears `current_observed_vision` (SCAN's prior and the narrator's "what is on
+screen": it described the outside) and the detected scene objects, and sets
+`current_image_prompt` to the inside. Only when a panel was drawn; with no
+panel, nothing moved on screen and the old anchors are still true. The
+`montage_refs` a turn that cuts out of the room rides in are now the reward's
+panels from the way in onward, not the two outside shots.
+
+**Verified** with real renders off the bug frame (`_claude_after_reward_probe.py`,
+sandboxed, `_claude_bug/after_*`), the next turn drawn through the real
+`_flipbook_generate`:
+- **Before:** `lead=pre.png refs=['pre.png', 'pre_f01.png', guide]`. The
+  "take it" grid opened on Jason back at the fence by the rig, and the shear
+  the reward ended on was nowhere.
+- **After:** `lead=cutscene_…_04.png`. Panel 1 is the reward's last shot a
+  beat later (the same hand reaching for the same shear on the same gravel,
+  the same burning cable pile). Panels 2–4 pull out as he lifts it.
+- **Tried and dropped:** the reward's third panel as the wider view. Panel 1
+  re-framed to a wide behind him instead of continuing the close-up, which is
+  the kind of cut this fix is against.
+
+`test_the_turn_after_it_starts_from_inside_not_from_the_frame_before` failed
+on the old code (`lead_reference` was `turn11_last.png`) and passes now. It
+runs `finish_reward` and then the real `_flipbook_generate` against a fake
+image call, and checks the reference order sent to the model.
+
+## 💥 A hit feels like a hit: layered impacts, hit-stop, and the picture takes the blow
+
+Asked: *"is there anyway to punch up the hit / missed etc effects and sounds
+to make combat even more stimulating and engaging?"*
+
+**Why it felt thin.** Every combat cue was one or two sine blips at
+0.02–0.06 through `tone()`; a blow and a die landing were the same kind of
+sound at slightly different pitches. The screen answered a hit with a shake
+and a flat tint over the whole overlay, the same for yours and his, and the
+bar drained the instant the line appeared, so there was no moment where the
+hit *happened*. A miss did nothing at all. A natural 20 flashed green whoever
+rolled it — his 20 on you sounded like good news.
+
+**Sound.** `Sound` has an impact kit now, still pure Web Audio: `thump` (a
+pitch-dropped sine through a tanh soft clip — the body), `crack` (a filtered
+noise transient — the contact), `whoosh` (a swept band of noise), `ring` and
+`swell`. Each cue is built from layers:
+- **Your blow** (`encounterStrike`): bright crack, a 120→42 Hz thump, a low
+  grit tail and a sub.
+- **His blow** (`encounterHurt`): duller, lower (95→30 Hz), a bandpassed
+  crunch, and a thin 3.7 kHz ring — your ears.
+- **A crit** (`encounterCrit`): a 120ms in-breath, then crack, a 150→28 Hz
+  thump, metal ring and a boom under it.
+- **A swing into air** (`encounterWhiff`, new): a swept whoosh past the lens
+  and a scrape. Plays on any attack or strike that misses — yours or his.
+- **Down** (`encounterKo`): the fall, the bounce, the ground.
+- **The die** (`encounterRoll` / `Land` / `Missed`): a dry click that never
+  repeats its pitch, then a clack and a thump when it lands. `Land` /
+  `Missed` are now chosen by what the roll means for **you**, like the
+  line's colour: his hit lands with the falling tone.
+- **A natural** (`encounterNat20` / `encounterNat1`, new): your 20 (or his 1)
+  is a bright chord; his 20 (or your 1) is a detuned sawtooth falling away.
+
+Rendered offline (OfflineAudioContext, one page per cue) to check nothing
+clips stacked: peaks run 0.03 (a tick) to 0.36 (a crit); a whiff 0.08.
+
+**Picture** (`Battle.impact`, `bt-fx-*` on `#moment-scene-img` and
+`#reactor-video`, so it works on the live world-model video too):
+- **Yours lands**: the frame punches in 4.5% and brightens for a beat.
+- **His lands**: the frame is jolted sideways and the colour drains out,
+  with a red tracking tear across a band of the picture.
+- **Crits**: the colour heads slip — red one way, green+blue the other — and
+  two or three tears. That split is an SVG filter (`#bt-rgb-a/-b`, injected
+  once). The first version used CSS `drop-shadow`, which looks like the same
+  idea on paper and is invisible here: the picture is opaque and full-bleed,
+  so its shadow is behind it. Found by freezing each effect mid-animation and
+  screenshotting it.
+- **A miss** smears the frame sideways with a touch of blur and lets it drift
+  back. **Down** flashes and dips. **A natural** flares or splits.
+- Every move is scaled *up*, so the black behind the picture never shows at
+  an edge. The keyframes carry no 0%/100%, so a blow that lands while the
+  dying grade is on animates out of that grade and back into it.
+- **Hit-stop**: 80ms (190ms on a crit) between the impact and the bar
+  draining — the frame freezes on the blow, then the damage lands. The
+  number overshoots and settles; the bar that was hit flickers as it drops.
+- **The die** slams down onto the track; the line it had to beat pulses mint
+  on a success, the tick cracks sideways on a failure.
+- `prefers-reduced-motion` turns all of it off.
+
+**Verified** in the real client against the mock server with three scripted
+fights (a win with his hit and your natural-20 KO, a death from his natural
+20, a double miss), with a MutationObserver logging every class, element and
+cue with its timestamp. The double miss: `encounterMissed` → 280ms →
+`encounterWhiff` + `bt-fx-whiff`, twice. His crit on you: `encounterMissed` +
+`encounterNat1` + `bt-fx-nat1` as his 20 lands, then `encounterCrit`,
+`bt-fx-hurt-crit`, three red tears 60ms apart, and the −17 lands 190ms later.
+Each effect was also frozen at 40–270ms into its animation and screenshotted:
+the crit's split reads at a glance, his crit drains the frame to near-grey
+with the heads out of register, and no frame shows an edge.
+`test_combat`, `test_run_tape` and the encounter suites: 347 passed.
+
+## ✅ FIXED: The goal reward starts on the frame you are on, with you in it
+
+Filed from the BUG button (`bugs/20260923_171912`): *"the cutscene with the
+goal reward uses a different character and loses continuity with the frame we
+were at when triggering the cutscene. this needs to feel it continues the
+current frame. i dont think the img2img of the frame we're on before we do the
+cutscene is working well"*. Jason was standing on the platform of the Rusted
+Rig Skeleton in his PRESS vest over a white tee, the Warden smoking on the
+gravel below. The reward's panel 1 was a low wide at the FOOT of the rig, and
+every panel after it had him in a dark blue jacket.
+
+**The mechanism — four things, each pushing the same way:**
+- The reward went out under the encounter's restage (`hold_cast=True`):
+  "ACTION RESTAGE — SAME CAST … copy BOTH faces … hands on the other body".
+  With `hold_cast` the image layer also drops the character sheet entirely
+  (`if identity_paths and not hold_cast`), so the only thing saying who the
+  player is was the frame — which went out unlabelled, under a template that
+  calls it "a reference for light, materials, and colour … NOT a composition
+  to reproduce".
+- `goal.reward_brief` asked for "FOUR DIFFERENT CAMERAS IN FOUR DIFFERENT
+  PLACES", starting with a low wide outside.
+- The shared cutscene prompt added the anchor PLACE LOCK ("Do not teleport")
+  AND, from the level goal, "It is visible in these shots and is NOT REACHED
+  in any of them" — the opposite of a reward, in the same prompt.
+- Nothing said the frame was a beginning.
+
+**Now the reward is one continuous take from the frame on screen.** The frame
+goes out FIRST (`lead_reference`) and labelled START KEYFRAME — "the person in
+it is THE PLAYER: copy their face, hair, build and every garment exactly" —
+under the flipbook's keyframe contract instead of the encounter restage, with
+the character sheet behind it. Panel 1 is the next instant of that frame;
+panels 2–4 follow the player to the way in, through it and to the thing inside
+(`grid_motion` tells the grid the take travels — a flipbook turn is told its
+panels are "slightly" apart, and the first fix came back as four near-copies of
+the frame). The reward prompt drops the place lock and the "never reached"
+line; where the character sheet's words disagree with the frame, the frame
+wins. Every other cutscene mood is unchanged.
+
+**Verified** by re-rendering the reward from the frame the bug was filed on,
+real models (`_claude_reward_probe.py`, sandboxed): panel 1 is the same camera
+on the same platform a beat later; Jason keeps the PRESS vest, white tee, red
+bandana and jeans in all four panels; the take comes down past the wreck to
+his hand closing on the Hydraulic Wire Shear. Open: the later panels drift a
+little toward an illustrated look, and a goal that is not a building (a rig)
+has no real "inside". `TheRewardContinuesTheFrameOnScreen` in
+`test_goal_sight.py` pins the prompt, the label, slot 1 and the contract.
+
+## 📼 NEW: The tape — every run kept, played back fullscreen, and exported as a shot pack
+
+Asked: *"after you do a run or at anytime during it and at the main menu when
+you select a world, we should be able to view your last run, as a fluid image
+sequence, with fullscreen playback and elegant simple controls, and a way to
+export it so we could make it into longer form seedance etc movies"* — and
+*"use the design tool to make sure the interface for the tape system is
+elegant, simple, and matches the rest of the apps graphic design"*.
+
+**Why there was nothing to watch.** New Game calls `purge_run_media`, which
+deletes every picture in the session's images folder, so a run stopped
+existing the moment the next one started. While it was live, the only
+ordered record was `tape_frames`: one URL per turn (the last flipbook panel),
+none of the fights, none of the opening montage, nothing about what happened
+in each frame. The old T-key player stepped through those at a fixed 1.3s.
+
+**The run records itself now (`run_tape.py`).** Each beat is written as it
+lands — the montage shots, the arrival, every turn's panels with what you did
+and the narration, each fight's standoff and every round with its outcome
+line, the death reel — to `sessions/<id>/runs/<run>/tape.json`. Its frames
+are hard-linked into the run's own folder as they are recorded, so the purge
+at New Game removes the images folder's name for them and the tape keeps its
+own, at no extra disk while the run is live. The last 24 runs of a session
+are kept. `run_tape.timing` is the one pacing rule: a flipbook plays a little
+slower than the game plays it and holds its last panel for the line under it;
+a still holds for the read; the montage is slow and a death slower. The
+player and the export both read it.
+
+**The player (`Reel` in standalone.js), drawn first on the "GOD — The Tape"
+canvas on real frames from today's run.** Fullscreen; panels inside a beat
+dissolve in 170ms, beats in 700ms, and each beat pushes in 4% while it holds.
+Every piece is one the game already has: the goal HUD's mono label over a
+Manrope 300 title top-left, the caption set like the prose, a bone hairline
+timeline with a tick per turn and a short rule under each fight, mono text
+buttons with the menu's underline, the mint accent only for the turn under
+the cursor. The controls recede after 2.6s of playing, leaving the picture,
+the caption and a 2px progress rule. Hover the timeline for the turn's last
+frame and what you did; ←/→ steps beat by beat; space, F, C, E, Esc.
+
+Three ways in: WATCH THE TAPE on the death screen (T), TAPE in the pause
+sheet (and T during play), and "the tape" under PLAY in the world picker,
+which plays the last run of the selected Experience, with its last frame and
+a line — *LAST RUN · TODAY 16:26 — 6 turns · 3 fights · died*.
+
+**The export is a shot pack.** EXPORT builds a zip: every frame numbered in
+playing order, `shots.json` (each shot's `first_frame`, `last_frame`,
+`video_prompt` — the action, its outcome and the narration — `duration_s` and
+the still's own prompt), `captions.srt` and `animatic.mp4` (1376×768, 24 fps,
+paced by `timing`). A shot is the unit an image-to-video model takes, and
+shot N+1 starts on shot N's last frame, so generating them in order cuts
+together into one film. The desktop app has no download bar, so the pack is
+copied into Videos/GOD Tapes and OPEN FOLDER opens it; a browser downloads
+it. Endpoints are under `/api/reel/` (`/api/replay/` was taken by the
+model-call replay cache).
+
+**Verified on the real engine** (`_claude_battle_run.py`, sandboxed, plan
+choice → encounter → choice, then `_claude_tape_check.py`): the run recorded
+9 shots and 24 frames — four montage shots, the arrival panels, two rounds
+against a crazed citizen ("You put the figure down" / "It lands. 5 damage.
+The crazed citizen is caught flat-footed."; "You sprint past the twitching
+citizen" / "You get away."), the aftermath and "You kick open the rusted
+grate" — and exported a 16.7 MB pack in 1.2s with a 37s animatic. The first
+turn and the fight's standoff are missing from that tape because their
+renders failed (the PC dropped off the network mid-run: `WinError 10051`);
+nothing that did not reach the screen is recorded. In the player, walked
+through headless on a 20-shot tape of an earlier run: the picker's last-run
+line, playing and receded, the scrub preview, the export sheet, a finished
+export and the death screen's WATCH THE TAPE. `test_run_tape.py` (19).
+
+**Fixed the same evening — "T doesn't work, even on this screen."** Two
+things. The death screen's key handler knew R and C and returned on
+everything else, so T never got past it. And a fight's death put the death
+screen up the wrong way: the engine sends a "GAME OVER" slate beside its
+game_over item, and that slate's branch showed the overlay and marked the run
+dead directly — underneath the death reel, and early enough that the reel's
+own exit (which shows the cause and offers the tape) found the run already
+over and did nothing. No KILLED BY line, no WATCH THE TAPE. The slate now
+waits for the reel and goes through `handleGameOver` like everything else.
+Replayed headless with the engine's ordering (slate first): the pushed build
+showed the screen with the button hidden and T dead; the fix shows WATCH THE
+TAPE, T opens the tape and Esc returns to the death screen. Matt's own run had
+been recorded (sessions/default/runs/20260923-170152-8443, 40 frames) —
+only the way in was broken.
+
+## 🎲 A fight is played by tabletop rules now, dying is a scene, and the fight looks like the rest of the game
+
+Asked, after the first bars-and-dice build: *"Round 2 always shows 100% … Attacks
+sometimes just fizzle … lets fix these. make it a proper combat system that has
+an element of skill / dice roll. like dungeons and dragons"*; then *"WHEN we die,
+can we turn this into a suspense moment … render a new DEATH FLIPBOOK … THEN show
+the YOU DIED"*; then, after playing it: *"you failed to incorporate the simpler
+text / graphic design of the rest of our app … the whole thing felt really
+cheesy during combat"* and *"i was teleported to a random new location with a
+new character … maybe it was two playtests happening at the same time?"*
+
+**The rules (`combat.py`, new).** Every action is a d20 plus a modifier against
+a number: his armour class to hit, a DC to get away or to talk him down. A
+natural 20 always lands and doubles the damage dice; a natural 1 always fails
+and gives him advantage on his next swing. Initiative is rolled once, when the
+fight opens — or decided by what the world knew of you (unseen: he is caught
+flat-footed and your first roll has advantage; hunted: he ambushes you). A
+failed run gives him advantage; talking gets easier every time he listens and
+once he is hurt; a hurt man with something to lose rolls morale and may break
+and run. Armour takes the first killing blow of a fight; after that you roll a
+death save (DC 10, harder each time). A typed action that uses the scene well
+earns advantage. Both faults are gone by construction: no round is ever decided
+before its dice (the slate's odds come from the same numbers the die is thrown
+against, `combat.lane_odds`, and are never 100 after round one), and every
+attack round has your roll in it. `tools/encounter_length_probe.py` plays
+20,000 fights per line: a hostile person, attacking, is over in a median of 2
+rounds (p90 4) and kills you 0.8% of the time from full HP; a boss is a median
+of 4 rounds and kills you 18% of the time, 3% with a weapon and armour.
+
+**Dying is a scene.** The dice know you are dead before any picture exists, so
+the client holds it: the colour drains, the heartbeat slows, one line stays —
+while the resolve draws a **death flipbook** that continues from the frame you
+were looking at (outcome `die` has its own direction in
+`build_encounter_resolve_prompt`: the blow landing, the body giving way, the
+last frame the player down and still, no gore). The reel plays slowly, pushing
+in, the dark closing at the edges; YOU DIED comes up over its last frame with
+what killed you (`KILLED BY THE FREELANCER · HIDDEN BLADE · ROUND 1`). Real
+models (`_claude_death_probe.py`, a rigged natural 20 and a failed save): four
+panels of a scavenger coyote leaping on Jason at the derrick, the last one him
+on his back with it standing over him — same place, same two figures, in 11.2s.
+
+**It looks like the game now.** The first cut was drawn from a battle screen —
+bold caps names, green/amber/red bars, "Reclamation Guard used **IRON PIPE
+SWING!** **Critical hit!**", VICTORY in 800 weight — and beside the goal HUD
+and the menu it read as a different app. Every piece now borrows one that
+exists: names are the goal HUD's tracked mono label, the bars a 2px bone
+hairline (red ink only when nearly out), the line the goal name's Manrope 300,
+the rolls the tape's OSD mono, the endings set like the GOD wordmark
+(SURVIVED / TALKED DOWN / DRIVEN OFF, and Y O U  D I E D with a menu-style
+RESTART under it). The line speaks the way the prose does — to you, in the
+present: "You drop your camera at him…" then "It lands. 10 damage." Written
+about the character by name it had come out as "Jason goes to drop your cam".
+
+**The teleport was my harness, not the game.** A battle harness boots its own
+server on its own port and session — but every World bind (a reset, a level
+stitch) writes the World into the ONE live prompt file, and every server on the
+machine hot-reloads it. My run stitched into the riot-zone World at 15:11 while
+Matt was mid-fight on Horizon, so his next turn was drawn in another place with
+another protagonist, then the flipbook's last frame dragged it back. It also
+left the live file on that World and renamed `worlds/world.json`'s level to
+"World"; both restored (copies in `_claude_combat_backup/authoring_1523/`).
+The harnesses now call `authoring_sandbox.engage()` before spawning the server,
+and a `PT_CDP` playtest no longer loads `default` on its way out. CLAUDE.md
+says so.
+
+## ⚔️ NEW: A fight is two health bars and a die each — and the dice play while the picture draws
+
+Asked, over three rounds of mockups on the canvas (GOD — Encounter,
+Pokémon-style): *"i like the idea of a % of sucess.. did i get hit? did he get
+hit? can we show the random number generator rolling and thinking, and giving
+us stimulation throughout this slow encounter"*, then *"lean into that. think
+pokemon battle system"*, then *"okay lets implement this, making sure theres
+satisfying reactions and feedback for the playeer on the combat turns … making
+sure the encounter architecture is prefect"*.
+
+**The mechanism of the old wait.** A turn of a fight was one call —
+`/api/encounter/resolve` — that rolled the outcome, drew the play-out still
+and ran the engine turn, and only then answered. So the RESULT of the turn
+(two random draws, microseconds of work) arrived in the same instant as the
+PICTURE (10–20 seconds), and the player sat in front of a held standoff with a
+spinner, learning nothing, until everything landed at once as a word card.
+The slow part was never the decision. It was being made to wait for the
+decision behind the picture.
+
+**The dice are thrown first now** (`/api/encounter/exchange`,
+`encounter.roll_exchange`). It rolls the exchange exactly as before
+(`roll_encounter_outcome` — no odds were changed), stores it on the fight as
+`combat.pending`, and answers in the time it takes to read the state file with
+the exchange's **beats**: who acted, the face they rolled, the line they
+needed, what it cost whom, in the order it happened. The client plays them
+while `/api/encounter/resolve` draws the still of exactly that result — it
+reads the pending throw instead of rolling, so a retry, a double tap or a
+failed picture can never re-roll a turn. Measured on the real app: the dice
+start **0.1s** after the click; the beats play for 3–7s; the picture lands at
+10–16s as the payoff instead of the verdict.
+
+**What the player sees (combat.py, `Battle` in standalone.js).**
+- **Two bars in the top letterbox** — you on the left (the cast sheet's name,
+  40 HP), what you are fighting on the right (the brief's own name for them,
+  30 HP; the boss 45). Both drain from their outer edge; green, amber under
+  half, red under a fifth. The camcorder timecode steps aside while they are
+  up; the bars are inset past the BUG button and the ceremony ring.
+- **The fight names itself** as the bars fill: "An **investigative
+  freelancer** blocks your way!"
+- **The slate is still ATTACK / FLEE / REASON** — the word and nothing else,
+  as Matt asked twice — with each word's **odds** after it. The odds are
+  `encounter.slate_odds`: the same threshold that lane's die is thrown
+  against, laid out the same way, so ATTACK 62% is a die that lands on 62 or
+  under. The fourth row is the typed action again ("Do something else — type
+  it"); it had fallen off the encounter slate, which a test had been red
+  about.
+- **Each beat**: the line types in ("Freelancer used **HIDDEN BLADE!**"), a
+  tick runs across a 1–100 track with the line to beat shaded in, the number
+  spins and slows and lands on the real face, then the result ("Isaac took
+  **17** damage."). A blow that lands shakes the picture and flashes it (white
+  for yours, a red vignette for his), the bar drops at once and the chunk it
+  lost glows red where it was before draining after it, and the damage pops
+  beside the bar. A critical holds the frame for a beat first. A knockout
+  dims their bar and says so: "**Freelancer** is down!"
+- **VICTORY** when you win — turns taken, HP left, the spoil it dropped
+  ("Spoils · weapon — Lead Sap Truncheon") — and then the pack's own find
+  card takes the thing into the backpack as before. Getting clear or going
+  down keeps the CLEAR / DEAD card. A round that goes on shows no card at
+  all: the beats already said everything.
+- New sound cues in the Encounter family (roll tick, land, miss, strike,
+  hurt, critical, knockout, victory) — mutable from the sound panel like the
+  rest.
+
+**Honest by construction.** `combat.py` is not a second rules engine; it is a
+pure function of the draws `roll_encounter_outcome` already made
+(`dice` on its result: the pick, the act draw and the threshold it was
+thrown against). His face is the pick laid out on a d100 measure-for-measure
+— killing blow on the lowest faces, then a wound, then breaking off, then a
+miss — so a face under the line is a hit because the draw was one, and the
+faces are exactly as random as the draw. Yours is the act draw against
+`settle_threshold`, which `advance_enemy_state` and the slate now both read,
+so the number you choose by cannot drift from the number you are rolled at.
+HP is read off how deep into its band the draw fell — a low roll on his side
+is a hard hit — and a non-lethal hit never takes the last point: only the
+`die` band empties your bar. The turn plays in an order that could have
+happened: if he wounds you AND you put him down, his blow comes first (a man
+who is down does not swing afterwards); if you settle him, he never swings;
+if the fight breaks apart before your verb lands, the line says you *tried*
+("Isaac tried to crush the officer's windpipe…") rather than claiming it
+landed.
+
+**Architecture, in one place.** Everything an exchange is rolled against is
+read once, by `fight_context` (stance, kind, condition, fate, the detection
+level the fight opened on, round, cap, boss, gear) — for the roll AND for the
+slate's odds. The fight's own record is one field, `combat`, carried whole
+through `normalize_encounter_brief`, because every field that rebuild did not
+name has been lost through it at least once (`_sequence`, `detection`,
+`setting`, `roster_kind`, `boss`). Player HP outlives the fight in
+`player_state.hp`, mends 10 between fights and never walks back past 30 while
+`condition` is wounded — the bar says what the odds already believe about you.
+The brief now names his move (`character.move`: "HIDDEN BLADE", "HEAVY PIPE
+SWING", "HEAVY SHOTGUN BLAST"), code-owned in the brief prompt, off the same
+photograph.
+
+**Fixed on the way.** `encounter.world_flavor` called `logging.exception` in a
+module that never imported `logging`, so a failed flavour lookup would have
+taken a resolve down with a NameError.
+
+**Verified by playing it.** `test_combat.py` holds the invariants (faces land
+in the range of what was rolled over thousands of random weights; a hit is a
+face at or under the line; the slate's number is the die's line for every
+lane, footing, round and detection level; the bars move only for what the
+beats say; the throw is made once and the resolve draws it). Then the real
+app, real models, headless on a server of its own (`playtest_app.py` now
+takes `PT_CDP` and `PT_ENC_OFFSET`, and holds every round to the battle's
+promises: bars up with odds on the slate, the dice within 5s of the click,
+the bars ending where the server says). Eight fights across three runs:
+- *"Isaac crushed the officer's windpipe instantly! **A critical hit!**"*
+  (ATTACK 62%, rolled 62) → "**Control Officer** is down!" → VICTORY, spoils
+  Service Riot Shotgun.
+- REASON 35%, rolled 63: *"Isaac gave him the green sigil… **but the crazed
+  citizen didn't back off!**"*, then *"Crazed Citizen used **HEAVY PIPE
+  SWING!** **It missed!**"* (21% to hit, rolled 58) — round two ATTACK 100%
+  (the last exchange settles it, and now says so), down.
+- The long one: *"Heavy-Order Unit used **HEAVY SHOTGUN BLAST!** Isaac took
+  **9** damage."*, a failed REASON at 10% (35% on the slate, less while
+  bleeding — the sub-line says so), then a killing blow: *"A killing blow —
+  **the Padded Riot Vambrace took it!** Isaac took **18**."* — 13/40, amber —
+  and round three *"Isaac put the figure down!"* → VICTORY in 3 turns, 13/40
+  HP left.
+- Three fights running in one run opened on the fight breaking apart before
+  the verb landed; that is where "tried to" came from.
+
+**Still open, and worth a decision.** Not tuned here, only made visible:
+(1) the last exchange is a sure thing (ATTACK / REASON 100%) because
+`ENCOUNTER_MAX_ROUNDS` ends every fight on round two — the tension of round
+two is entirely his die; (2) on ATTACK a hidden or lucky approach carries a
+13–16% chance of the fight simply breaking apart (the `escape` band, which
+`_DETECTION_ODDS` and LUCKY raise on every lane), which reads as a flat beat
+now that everything else on screen is so specific. A future "reaction angles"
+cutscene layer would plug into the beats: each one already says who acted,
+at whom, and how hard.
+
+# 🔧 CHANGELOG - September 22, 2026
+
+## 🎒 NEW: The pack — gear you can see, a backpack beside the fist, and loot for winning a fight
+
+Asked: *"when items are generated they need to be with a transparent
+background so it doesn't seem like a random ai stock photo. that look is
+awful. ok lets implement this and get it working in game, within our loop,
+and our goals, and introduce a loot award for winning at an encounter."*
+Designed on the canvas first (GOD — The Goal, row 4: the loot loop, the prize
+in the room, the find, the pack button, the pack open).
+
+**The gear is item art now, not a photograph of a table.**
+- The props sheet is shot on a flat key colour — magenta when the world or
+  its gear is green, green otherwise (`look_book._key_colour`) — and every
+  crop is keyed off it (`look_book._cut_out`). The key is found on the
+  crop's own border and matched on chroma, not brightness: a soft shadow on
+  the key goes with it, a dark olive strap on the object stays. The key's
+  colour is taken out of the edge and out of anything seen through the
+  object (a clear reel stays clear, a red seal stays red), a thing that runs
+  off its frame fades out instead of ending in a cut, and each plate is
+  centred on a square like inventory art.
+- `item_NN.png` (RGBA) is what the client shows; `item_NN_ref.jpg` is the
+  same cut-out flattened on grey, for image models.
+- A crop that is not on a key (a model that painted a room anyway) gets no
+  plate. The pack shows the thing's letter instead — never a background.
+- The reward cutscene's last panel is drawn against the prize's own plate,
+  so the thing lit in the room is the thing the find card then shows.
+
+**Nine pieces per world: six treasures for goals, three spoils for fights.**
+- The brief designs SIX TREASURES (weapon, armour and upgrade guaranteed)
+  and THREE SPOILS — what this world's hostiles carry. Each row has a `tier`.
+- A goal holds a treasure (`goal.draw_gear`).
+- **A won fight pays out** (`goal.award_spoil`, from `encounter.api_resolve`):
+  putting someone down or talking them down drops one piece — a spoil first,
+  then only a treasure the remaining goals will not need. Running away pays
+  nothing. The resolve answer carries `loot` and `pack`.
+
+**The gear does something in a fight.**
+- A **weapon** in the pack makes a committed attack likelier to end it
+  (`WEAPON_EDGE`, +0.15 on the finish), and the play-out is drawn with it in
+  the player's hands.
+- **Armour** in the pack takes one killing blow a fight: the player comes out
+  HURT instead of dead, and the verdict card says which piece took it.
+- The verdict card's one line under the word names the gear that decided it.
+
+**The pack (`static/js/pack.js`, `static/css/pack.css`).**
+- A backpack button beside the fist, in the same ring. A count, a green NEW
+  glow while something new has not been looked at, and a lit OPEN state. An
+  empty pack is not a button. B opens it (I is the image-model menu); Esc or
+  B closes it; the arrows walk the slots.
+- Slots on the left (nine, growing by rows so nothing is ever dropped), the
+  thing on the right: its plate, kind, name, what it does, what it does in a
+  fight, why someone would kill for it, and where it came from ("Out of …"
+  for a goal, "Off …" for a fight). The footer counts how much of this
+  world's gear has been found.
+- **The find**: every take and every spoil gets the screen — the thing,
+  big, on nothing, then it flies into the backpack and the count ticks up.
+  Finds queue, and wait for a fight or a cutscene to leave the screen. The
+  dark behind the card is paint only, so nothing under it is ever blocked.
+- The last goal's prize is shown before the win, and the card that says the
+  run is won shows what was carried out — the things themselves, in a row.
+- One pack: things the prose picked up along the way (`items.py`) sit in
+  the same slots. The corner emoji list and the plate strip along the bottom
+  are gone.
+
+**Fixed on the way.**
+- **Every plate was a broken image.** They went out as
+  `/api/look_book/plate?path=C:\…`, a route that never existed. They go out
+  through the look book's own file route now (`look_book.plate_url`).
+- **The first goal never drew its gear.** `_goal_for_this_run` read a
+  `session_id` that was not in scope; the NameError took the draw and the
+  draft down, and the goal fell back to the level's sentence cut at 34
+  characters: "The reinforced blast door at the". It is told the run now, and
+  a name cut to length no longer ends on "at the".
+- **A goal drafted before the book was ready** gets its gear on the way in
+  (`goal.bind_gear`), before the reward cutscene shoots what is inside.
+- **One roadside fight per goal** (`ENCOUNTER_PER_GOAL_LEG`, travel clock and
+  sightings both). A lap was three fights in five turns and the loop
+  playtest died in the third; now it is one on the way, then the boss.
+- **The fight at the goal was never flagged as the boss.** `api_begin`
+  stamped `boss` and the three-round cap, then aligned the brief to its plate
+  through `normalize_encounter_brief`, which dropped both. So the boss rolled
+  as a roadside fight (two rounds), was renamed to what the picture showed
+  ("Commander Of Edicts" became "A figure in heavy"), and its defeat never
+  reached `goal.boss_defeated`. The stamp now survives the rebuild and the
+  plate no longer renames the boss.
+- **Beating the boss opens the door; it does not finish the goal.**
+  `boss_defeated` also marked the goal done, which the sight answer reads as
+  `completed`, and a completed goal never lights its way in — the first run
+  with the boss flagged stood at a door that never glowed. The boss down now
+  means arrived; taking the thing in the room is still what finishes it.
+- Spoils say who they came off in plain words — the boss by name, a roster
+  entry by its own noun ("Off the scavenger"), anyone else without the
+  clipped clause ("a figure", not "a figure in heavy").
+- The scene's scan tags no longer read through a card that holds the screen
+  (they said "glowing doorway" across RUN COMPLETE).
+- **An attack on the boss could end the fight by itself.** A confront rolls
+  `escape` about one time in eight on a quiet approach, and the boss rule
+  counted any `escape` as the player running — so "Crush the Zealot's skull
+  downward" ended the fight with him on his feet, no spoil, and the door open
+  anyway (twice in one run). A boss fight now `hold`s: only the evade lane
+  gets you out, an attack's escape odds become a survived exchange, and the
+  last exchange puts him down in its own picture.
+- **A creature was named "The scene shows a third-person view".** With no
+  noun for a body in its look ("a mutated, gaunt humanoid"), the label fell
+  back to the first words of the vision pass. `humanoid`, `mutant` and
+  `monster` count as bodies now, a sentence about the shot is never a name
+  (`_reads_as_description`), and the fallback is "A creature" / "A stranger";
+  the spoil line gets the same check.
+- **The open pack could show every cell empty.** Each server answer re-syncs
+  the pack, and every sync rebuilt the open grid with new `<img>`s that paint
+  blank until they decode — the playtest's screenshot of the pack right after
+  the win had labels and no pictures. The pack only redraws when what it
+  shows has changed, and a redraw hands back the already-decoded picture.
+  The harness now checks what is painted on screen, not just what loaded.
+- Behind RUN COMPLETE the corner still read "Goal 3/3 Foundry Blast Apron" —
+  the thing just taken, named as if it were still wanted. The win clears it.
+- The fight's slate had `text-shadow: none`, so "ATTACK" over a lit vat in a
+  boss fight was white on pale sand and could not be read. It carries the
+  watch choice's shadow now — the same typography over the frame the slate
+  was set to match; a halo, not a panel.
+- **One slow render could leave a run with no first frame.** The opening
+  montage is a single `gemini-3-pro-image` render at 2K, and text-to-image
+  calls had the flash model's 30s budget; it came back at 30.0s once, was
+  abandoned, and with no plate to crop the run opened on nothing — the loop
+  stood on a blank start for two and a half minutes. A pro or 2K+ render now
+  gets 75s (the img2img budget), and the opening asks once more before it
+  gives up.
+
+**Played on this machine**, the whole loop, with the harness pressing every
+fight (`_claude_goal_loop.py`, which now also opens the pack, reads every
+plate's alpha, and checks the find card for every take): three goals won,
+7 things carried out — 3 prizes and 4 spoils — every find shown with its
+picture, every plate a clean cut-out, the pack opening on all of them, and
+the win showing the haul. After the fixes above, four more full runs in four
+fresh worlds all won 3 of 3: all twelve bosses went down and paid out, the
+armour took a killing blow where it should, every plate in the open pack was
+painted on screen (checked, not assumed), and nothing was rebuilt while it
+was open. The one run that failed was the opening timeout, fixed above.
+
+Tests: `test_look_book` (GearIsCutOut, TheGearHasTiers, ThePlateIsServed,
+TheWorldsTreasures), `test_goal_sight` (TheFindIsShown,
+ThePackIsABackpackBesideTheFist, AWonFightPaysOut, GearWorksInAFight,
+TheBossStaysTheBoss, GoalsHoldTreasures, ThePlateTheClientGets,
+NamesDoNotEndMidPhrase, TheFirstGoalDrawsItsGearToo, TheBossDoesNotBreakOff,
+NamesAreNotSentences), `test_encounter_custom_action` (a_line_reads_over_a_bright_plate),
+`test_cutscene` (the_opening_asks_twice_before_it_gives_up), `test_opening_montage`
+(ASlowRenderIsGivenTime).
+`test_encounter_custom_action::
+test_the_slate_offers_a_typed_action` fails before and after this change.
+
 # 🔧 CHANGELOG - September 21, 2026
+
+## 📖 FIX: GENERATE writes the bible and the level name a World was missing
+
+Asked: *"SWAT has no world bible, so its opening montage uses the built-in
+scene descriptions. THE FIFTH CORNER has no level name. Why aren't these
+fixed in the generation process?"*
+
+**Why they weren't.** Nothing in generation wrote either one.
+- A World made in the editor starts as the blank place. Its bible
+  (`world_initial_state`) is the 266-character harness line about a camera
+  following a person, and its level name is the node's ("World").
+- SWAT's author filled in the Level sheet and the Experience lore, but no
+  step ever turned those into a bible. So:
+  - the montage (which wants 400+ characters) fell back to stock briefs;
+  - the narrator played from the harness line;
+  - the title card said "World".
+- THE FIFTH CORNER *did* have a name: its World is called SOMEWHERE. But
+  `game_identity.authored_setting` blanks any level named like the shipped
+  demo, treating it as a leftover.
+
+**Now:**
+- **`world_gaps.fill(slug)`** runs when GENERATE binds a World, and when a
+  run is prepared (before the look book is shot). If the World's bible is
+  under 400 characters, or its level name is a placeholder ("World", "New
+  Level", "an open place"…), one text call drafts them. It works from what
+  the author did write: the Level sheet, the character, the Experience lore,
+  and the thin bible.
+- **The draft goes into the World's own file** and the live sheet. The
+  editor shows it, you can rewrite it, and it's never redrafted once there.
+  Your bible text is kept word for word, after the drafted premise. Only
+  the missing part is written. Any failure leaves the World as authored.
+- **A World keeps a level name that is its own.** SOMEWHERE survives when
+  the bound World is `somewhere`. A recast over another World still drops
+  the shipped name.
+- **GENERATE's response lists what was drafted** (`drafted`).
+
+**Also:** `worlds/world.json` (SWAT) is committed (`91b150b`), so a merge
+can no longer reset it to the desert.
+
+Tests: `test_world_gaps` (11). The neighbouring suites (game_identity,
+editor_is_manual, look_book, opening_montage, cutscene, world_frames) have
+the same results before and after.
+
+## ⏱️ FIX: A look book can no longer hold the level past its wait
+
+Found by the harness on THE FIFTH CORNER: the run never started. The look
+book sat on *"shooting the world sheet and the roster sheet…"* for over five
+minutes, and the harness gave up at 320s with a black screen.
+
+**Why.** Each sheet call had a 300s timeout and a retry behind it, so one
+slow answer from the image model could hold the build for ten minutes. The
+level's wait (300s) ran out first. Worse, `requests`' timeout only limits
+the gap between bytes, not the whole call, so an answer that trickles in
+never tripped it at all.
+
+**Now:**
+- **A build has a budget.** `LOOK_BOOK_BUDGET_S` is 240s (env
+  `SOMEWHERE_LOOK_BOOK_BUDGET_S`), under the level's 300s wait. Every image
+  call is cut to what's left of it. Whatever has landed when it runs out is
+  the book.
+- **Sheets get 150s and plates get 90s**, down from 300 and 180.
+- **No second ask** once there's under 30s left. No single plate is started
+  with under 20s left.
+- **A wall clock on every call.** `_post` runs the request on its own thread
+  and abandons it at the limit, so a trickling answer can't hold it open.
+- **The harness waits 480s for the first turn** (`PT_START_TIMEOUT`). The
+  first turn waits for the book and then the montage; the old 320s cap was
+  shorter than the two together.
+
+Tests: `test_look_book.ABuildEndsInsideItsBudget` (4).
+
+**Result on this machine.**
+- THE FIFTH CORNER: the book was ready in 46s. Montage, 4 turns, a sighting
+  encounter, a photo. All green.
+- SWAT: the book was ready in 66s. Ghost on the riot street in every frame,
+  with no desert and no stranger.
+
+**Three false alarms in the harness and preflight, fixed:**
+- **`turn_01_view.png` was a montage shot.** The boot gate lifts once turn
+  one has landed behind the montage. The harness now also waits for the
+  Moment to hand over (`moment-active`) before it calls turn one playable.
+- **"SCAN never re-armed" after a sighting encounter.** The encounter hands
+  back to the world with a turn of its own. The harness gave SCAN 21s. It
+  now waits out a turn in flight (`turn-active`) for as long as any turn.
+- **demo_check blocked THE FIFTH CORNER on "level name is empty".** The
+  montage and the HUD fall back to the World's name ("SOMEWHERE"), so this
+  is now a note, not a failure.
+
+## 🎬 FIX: The opening montage is empty again, SWAT is SWAT, and the harness plays the game as it is
+
+Asked: *"did you see the pollution… a random character in the opening
+cutscene, then our hero, then he turns into a mix of the hero and the swat
+character"* and *"fix all remaining issues. playtest and fix the live game
+until its working flawlessly"*.
+
+### What was wrong in the game
+
+**SWAT was half desert.** SWAT's only World is `worlds/world.json`. At 18:05
+the merge in `_claude_cmd3_093` ("discard runtime world/prompt state") reset
+that file to git's copy, which is the old Horizon snapshot: Jason Fleece,
+the 1993 bible. The SWAT World (Ghost, the riot street) had never been
+committed. So the SWAT Experience ran with its own lore (the 2088 urban
+war) on top of the desert World file, and every part of the run mixed them:
+- the montage was desert;
+- the look book's twelve were riot androids and riot cops, in desert colours;
+- a riot-android plate was drawn beside Jason, and the two blended.
+
+Restored from the 14:47 copy, byte for byte. Left a note for the other
+session: `_claude_NOTE_swat_world.txt`.
+
+**A stranger stood in the opening montage.** The opening's four panels are
+written to be empty of people. In third person, though, two things undid
+that:
+- `generate_with_gemini` appended *"THE PLAYER CHARACTER IS IN THIS SHOT …
+  ignore any instruction below that demands an empty scene"*;
+- `game_identity.reconcile` deleted every line matching "empty of people",
+  including the montage's own rule.
+
+The model drew a person with no identity plate, so a stranger. Checked on
+the prompt actually sent: the empty-of-people line never reached the model.
+- `generate_with_gemini(environment_only=True)` keeps the anti-person rule
+  and skips both of those; the opening montage asks for it.
+- Rendered for SWAT and THE FIFTH CORNER afterwards: eight panels, nobody
+  in any of them.
+
+**The safety sanitizer garbled prompts.**
+- It replaced every "shot" with "fired at", so the montage read *"Establish
+  the fired at from scratch"* and *"THE PLAYER CHARACTER IS IN THIS fired at"*.
+- It matched inside words: "screenshot" became "screenfired at",
+  "medieval" became "medinegative", "Hispanic" became "Hisalarm", "shotgun"
+  became "fired atgun".
+
+Now it matches whole words only. "shot" is rewritten only when it's
+violence ("was shot", "shot him", "shot dead").
+
+**Every launch generated a montage for a run that was about to be thrown
+away.**
+- `window.StartMenu` was never set, and four callers asked for it, the
+  Cutscene's "is the menu open?" check among them. That check answered no
+  for the life of the page.
+- So the saved session's unfinished opening montage was generated at
+  launch, behind the menu (about 30 s of image calls). PLAY then threw it
+  away, and during the new look-book wait it competed with the book.
+
+Now `StartMenu` is on `window`. A cutscene that arrives before anything has
+started this launch is held, not generated. Every way into play resets the
+run anyway; Watch still gets it.
+
+**The look book stays out of test runs.** The level now waits for its book,
+so a unittest run that resets with a real key in the environment would spend
+on image calls and wait at each reset. `look_book.enabled()` is false while
+the authoring sandbox is engaged. Tests that exercise the book patch it in.
+
+### What was wrong in the harness (each one filed the game as broken)
+
+- **`demo_check --boot` counted the choices without pressing the FIST.**
+  The rows wait behind it, so "no choices on the first turn" failed every
+  healthy run. It now presses the fist, like `playtest_app` does.
+- **An encounter could resolve and still be reported as stuck.** The slate
+  is torn down the instant a choice lands, and Playwright reports that click
+  as a failure. The round was then counted as never taken: *"encounter
+  still going after 0 round(s) and 75s"* on a fight the server had
+  resolved. The harness now judges by what the screen did.
+- **A sighting that opens mid-turn is now played out.** Its encounter can
+  take the screen after the pre-turn check, while the rows behind the fist
+  are opening. That was filed as *"could not commit a 'choice'"*. The
+  harness now plays the fight out, then takes the turn.
+- **A tag hidden under the GOAL marker is skipped.** Such tags are hidden
+  on purpose (`.goal-shadowed`, no pointer events); the harness aimed at
+  one, timed out and crashed the run. It now aims only at tags that can
+  take a click.
+
+### Checked
+
+The harness (`playtest_app.py`) against the real server, on SWAT and on
+THE FIFTH CORNER, 3 turns each.
+- Every turn committed and resolved, with no black screens.
+- The look book was done before the level (49–65 s), and the opening
+  montage played.
+- A sighting encounter was played out and survived.
+- Every turn drew a flipbook of 4 painted frames.
+- No montage was generated at launch.
+- Frames checked by eye: SWAT is Ghost on the riot street throughout, and
+  THE FIFTH CORNER is Jason in the desert.
+
+Tests: `test_opening_montage` (8, new) and `test_look_book` pass. The
+wider suite has the same 33 failures with and without these changes (billing,
+pricing, editor and world-authoring tests).
+
+## 🎨 The level starts only when its look book is finished
+
+Asked: *"make sure the look book generation is completed BEFORE starting the
+level. Even if it adds to the wait times. we need to go into the experience
+with good data"*.
+
+**Before:** the book was shot in the background while the run began. The
+first turns — the opening text, the montage, the first frame, an early
+encounter — went without it if it wasn't done yet. With a book taking
+45–65 s, it usually wasn't.
+
+**Now, at the start of a run:**
+
+1. PLAY calls the new **`/api/look_book/prepare`** first. The server binds
+   the World the run will start in — the reset's own bind, under
+   `TURN_LOCK` — and starts that World's book.
+2. The client holds the opening black and shows the progress at its foot,
+   under the overture's title:
+   *BUILDING THE LOOK BOOK · 3/5 · SHOOTING THE SHEETS · 45S*, with a
+   five-segment bar.
+   - It polls every second, and the seconds count is the server's.
+   - The ceiling that lifts a stuck black screen is pushed out while the
+     book reports progress (`OpeningFade.extend`), so a long book doesn't
+     get cut off at 40 s.
+3. When the book is done, the reset runs and claims it. The opening text,
+   montage, first frame and roster all have the book from the first beat.
+   If it failed, the line says so and the level starts without it.
+
+**A guarantee for other callers.** `api_reset` also runs the prepare and
+waits (`prepare_level_look_book(..., wait=True)`). The client has already
+waited, so for it this returns at once. The harness, autoplay or anything
+else calling `/api/reset` directly gets the same guarantee. The wait happens
+outside `TURN_LOCK`, so other sessions' turns keep going.
+
+**The wait has a cap.** It stops after `SOMEWHERE_LOOK_BOOK_WAIT_S` (300 s by
+default); a stuck build can't hold a run forever.
+
+**Arriving in another World mid-run:**
+- A cutscene into another World binds it and starts its book, so the book is
+  shot during the montage.
+- `/api/cutscene/complete` waits for that book before drawing the first
+  frame there. The corner strip shows it over the montage's last shot.
+- A direct edge starts the book too, and that World's frames wait for it
+  (up to 120 s).
+
+**A book that's already right is kept.** A book GENERATE is shooting or has
+shot, or one prepared for a run that never started, is claimed rather than
+reshot. A later New Game still rolls a new roster.
+
+**Found while checking it: the saved run's opening could start the level.**
+At launch, the saved session's unfinished opening montage replays. During
+the new wait it kept playing, lifted the black with its first shot, then
+completed onto the old run (drawing an opening frame for a run being
+thrown away).
+- PLAY now takes it down first (`Cutscene.abandon`).
+- A montage abandoned while it was still being generated isn't completed
+  afterwards.
+- The opening black ignores anything painted while the level waits on its
+  book.
+
+Also fixed on the way: the page's class had the same name as the progress
+element's, so its rule faded the whole page to nothing. The gate's class is
+now `body.lookbook-gate`.
+
+Checked in a browser on a copy of this repo, PLAY on SWAT from the menu:
+- *BUILDING THE LOOK BOOK* 1/5 → 3/5 over the SWAT overture.
+- Book ready at 65 s; `/api/reset` only then.
+- `the run takes the book already shot for it` in the log.
+- The new run's montage played; the black held throughout.
+- The launch montage never completed.
+
+Tests: `TheLevelWaitsForItsBook` in `test_look_book` (64 pass). With the
+editor, cutscene, Experience, world-frame, run-isolation and goal suites,
+456 pass.
 
 ## 🎨 FIX: Each World keeps its own look book, and the editor shows the one you're on
 

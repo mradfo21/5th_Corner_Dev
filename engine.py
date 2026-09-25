@@ -157,6 +157,10 @@ sys.stdout.flush(); sys.stderr.flush()
 print("[ENGINE] About to import ai_provider_manager...", flush=True)
 sys.stdout.flush(); sys.stderr.flush()
 import ai_provider_manager
+# The provider the player chose in ACCOUNT. With OpenAI chosen, every Gemini
+# call below is answered by OpenAI (provider_bridge.py); guards that used to
+# ask "is there a Gemini key" ask provider_bridge.can_call_gemini_api().
+import provider_bridge
 print("[ENGINE] ai_provider_manager imported", flush=True)
 sys.stdout.flush(); sys.stderr.flush()
 
@@ -1604,6 +1608,9 @@ def apply_experience_cutscene(
         if _cutscene_arrives(dest):
             pending["arrival"] = True
             if _bind_world_prompts(to_world):
+                # Shoot the destination's look book during the montage; the
+                # arrival's first frame waits for it (api_cutscene_complete).
+                _look_book_for_arrival(session_id)
                 print(f"[EXPERIENCE GRAPH] cutscene {dest.get('name')!r} arrives in "
                       f"{to_world.get('name')!r} — its World is bound before the "
                       f"montage draws", flush=True)
@@ -1715,6 +1722,15 @@ def _cutscene_arrives(node: dict) -> bool:
     return str((node or {}).get("mood") or "").strip().lower() != "departure"
 
 
+def _look_book_for_arrival(session_id: str) -> None:
+    """The World just bound gets its look book (see look_book.ensure_for_level)."""
+    try:
+        import look_book
+        look_book.ensure_for_level(session_id or "default", reason="arrival")
+    except Exception as e:
+        logging.warning(f"[LOOK BOOK] arrival book not started: {e}")
+
+
 def _bind_world_prompts(dest: dict) -> bool:
     """Load a World snapshot into the live prompt file, keeping the run's cast.
 
@@ -1733,8 +1749,11 @@ def _bind_world_prompts(dest: dict) -> bool:
         return False
     prior_cast = None
     try:
-        if game_identity.character_enabled():
-            prior_cast = dict(game_identity.get_spec()[game_identity.CHARACTER_KEY])
+        # raw_spec, not get_spec: a run that is a Character reads it laid over
+        # the sheet, and writing THAT back would put the character in the file.
+        _raw = game_identity.raw_spec()
+        if game_identity.character_enabled(_raw):
+            prior_cast = dict(_raw[game_identity.CHARACTER_KEY])
     except Exception:
         prior_cast = None
     try:
@@ -1747,7 +1766,7 @@ def _bind_world_prompts(dest: dict) -> bool:
             import prompts_store
             now = None
             try:
-                now = dict(game_identity.get_spec()[game_identity.CHARACTER_KEY])
+                now = dict(game_identity.raw_spec()[game_identity.CHARACTER_KEY])
             except Exception:
                 now = None
             if now != prior_cast:
@@ -1772,6 +1791,12 @@ def _bind_world_prompts(dest: dict) -> bool:
 _WORLD_SCOPED_KEYS = (
     "level_goal", "goal_reached_turn", "_turn_goal_reached",
     "goal_name", "goal_why", "goal_look",
+    # The goal's spine and the thing inside it belong to the World it was
+    # drafted for: a stitch into another one must not carry the last place's
+    # secret, its claimant, or a prize that is not in the room any more.
+    "goal_truth", "goal_claim", "goal_cost", "goal_phase",
+    "goal_prize", "goal_prize_look", "goal_prize_verb",
+    "goal_boss_name", "goal_boss_kind", "goal_boss_look", "goal_boss_want", "goal_boss_defeated",
     "detection_witness",
     "environment_streak", "environment_streak_vocab",
     "recent_events", "narrator_recent", "narrator_beat",
@@ -1973,6 +1998,7 @@ def apply_experience_world(state: dict, world_id: str, session_id: str = "defaul
         # apply_experience_cutscene); a direct edge binds here.
         if not _bind_world_prompts(dest):
             return None
+        _look_book_for_arrival(session_id)
     state["experience_id"] = exp.get("id") or "default"
     state["experience_world_id"] = dest["id"]
     state["world_turn_count"] = 0
@@ -2000,7 +2026,7 @@ def apply_experience_world(state: dict, world_id: str, session_id: str = "defaul
             logging.warning(f"[EXPERIENCE GRAPH] lighting re-roll failed: {e}")
     # And the run's goal is this World's goal, not the last one's.
     try:
-        _goal_for_this_run(state, "")
+        _goal_for_this_run(state, "", session_id)
     except Exception as e:
         logging.warning(f"[EXPERIENCE GRAPH] goal for the new world failed: {e}")
     # Land on a picture of the destination so a world stitch isn't a black cut
@@ -2028,6 +2054,15 @@ def apply_experience_world(state: dict, world_id: str, session_id: str = "defaul
     if anchor_url:
         state["current_image_url"] = anchor_url
     _stitch_history(session_id, state, dest, anchor, montage_refs if anchor else None)
+    try:
+        import run_tape
+        run_tape.chapter(session_id, str(dest.get("name") or "A new place"), state)
+        if anchor or anchor_url:
+            run_tape.record(session_id, "opening", [anchor or anchor_url],
+                            prose=f"You are in {dest.get('name') or 'a new place'} now.",
+                            turn=state.get("turn_count"), state=state)
+    except Exception as _tape_err:
+        log_error(f"[TAPE] chapter not marked: {_tape_err}")
     print(f"[EXPERIENCE GRAPH] stitched into {dest.get('name')!r}: goal "
           f"{str(state.get('level_goal') or '')[:60]!r}, lighting "
           f"{str(state.get('time_of_day') or '')[:40]!r}, anchor "
@@ -2337,6 +2372,29 @@ def log_error(message: str):
 class _SkipImage(Exception):
     """Internal sentinel: skip inline image generation (feed path streams it)."""
     pass
+
+
+def _tape_action(choice: Any) -> str:
+    """A turn's choice as the tape says it: "Head for the culvert" -> "You
+    head for the culvert". The engine's own markers (the opening, a fight's
+    hold turn, a world stitch) are not something the player did."""
+    text = str(choice or "").strip()
+    if not text or text.startswith(("[", "__")) or text.lower() == "initialize simulation":
+        return ""
+    try:
+        import combat
+        return combat.you_go(text)
+    except Exception:
+        return text
+
+
+def _tape_death_cause(st: dict) -> str:
+    """What the death screen says killed you, for the tape's summary."""
+    enc = st.get("encounter") if isinstance(st.get("encounter"), dict) else {}
+    foe = ((enc.get("combat") or {}).get("foe") or {}) if enc else {}
+    if foe.get("name"):
+        return f"Killed by the {str(foe.get('name')).lower()}"
+    return ""
 
 
 def _to_web_image_url(image_path, session_id: str = 'default') -> Optional[str]:
@@ -2987,6 +3045,12 @@ def _ask(prompt: str, model="gemini", temp=1.0, tokens=90, image_path: str = Non
     # Get active provider from config
     provider = ai_provider_manager.get_text_provider()
     model_name = ai_provider_manager.get_text_model()
+    if provider_bridge.active():
+        # OpenAI chosen in ACCOUNT: build the Gemini request; the bridge
+        # answers it with the player's OpenAI key and models.
+        if provider != "gemini":
+            model_name = "gemini-3.1-flash-lite"
+        provider = "gemini"
     
     if provider == "gemini":
         return _ask_gemini(prompt, model_name, temp, tokens, image_path, use_lore, response_schema=response_schema)
@@ -3584,10 +3648,8 @@ Grade the FRAME, not the story: no watchers you cannot see, nobody implied by th
         api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
         
         # DEBUG: Log API key status for Vision
-        if not GEMINI_API_KEY:
-            print(f"[VISION ERROR] GEMINI_API_KEY is EMPTY or None!")
-        else:
-            print(f"[VISION DEBUG] Using API key: {GEMINI_API_KEY[:10]}...{GEMINI_API_KEY[-5:]}")
+        if not provider_bridge.can_call_gemini_api():
+            print(f"[VISION ERROR] no Gemini key and no OpenAI key to stand in")
 
         headers = {
             "x-goog-api-key": GEMINI_API_KEY,
@@ -4425,7 +4487,7 @@ def _detect_objects_gemini(image_bytes: bytes,
     import random as _random
     import time as _time
 
-    if not LLM_ENABLED or not GEMINI_API_KEY:
+    if not LLM_ENABLED or not provider_bridge.can_call_gemini_api():
         return []
 
     try:
@@ -4664,7 +4726,7 @@ def _perceive_danger(image_bytes: bytes = None,
     safe = {"level": 0, "reason": "", "direction": None,
             "threat_cx": None, "threat_cy": None}
 
-    if not LLM_ENABLED or not VISION_ENABLED or not GEMINI_API_KEY:
+    if not LLM_ENABLED or not VISION_ENABLED or not provider_bridge.can_call_gemini_api():
         return safe
     if not image_bytes:
         return safe
@@ -4932,7 +4994,7 @@ def _appraise_photo(image_path: str, max_items: int = 6) -> dict:
     import requests
 
     empty = {"items": [], "caption": "", "mood": ""}
-    if not LLM_ENABLED or not VISION_ENABLED or not GEMINI_API_KEY:
+    if not LLM_ENABLED or not VISION_ENABLED or not provider_bridge.can_call_gemini_api():
         return empty
 
     try:
@@ -5108,7 +5170,7 @@ def generate_directive(session_id: str = "default") -> dict:
         st = state or {}
 
     fb = _fallback_directive(st or {})
-    if not LLM_ENABLED or not GEMINI_API_KEY:
+    if not LLM_ENABLED or not provider_bridge.can_call_gemini_api():
         return fb
 
     try:
@@ -7370,7 +7432,10 @@ def _flipbook_fps_keyframes(end_state: str, frames: int) -> str:
     end_state = (end_state or "").strip()
     text = (
         "START (panel 1): the exact view in the START KEYFRAME reference, the "
-        "instant after it — same heading, same height, same place.\n"
+        "instant after it — same heading, same height, same place. The horizon "
+        "sits at the same height in the frame in every panel: on a body cam "
+        "that is the anchor the eye holds, and a horizon that jumps between "
+        "panels reads as a cut.\n"
     )
     text += (f"END (panel {frames}): {end_state}\n" if end_state else
              f"END (panel {frames}): the action completed, the view settled.\n")
@@ -7406,7 +7471,9 @@ def _flipbook_keyframes(who: str, end_state: str, frames: int,
     start = (
         f"START (panel 1) — {who} exactly as the START KEYFRAME reference shows "
         f"them: the same spot, the same stance, the camera in the same place "
-        f"behind them, the instant they begin this action.\n"
+        f"behind them, the instant they begin this action. Framed the way that "
+        f"reference frames them, too — {who} in the same part of the picture, "
+        f"at the same size on screen.\n"
     )
     if end_state:
         end = f"END (panel {frames}) — {end_state}\n"
@@ -7421,7 +7488,11 @@ def _flipbook_keyframes(who: str, end_state: str, frames: int,
     end += (
         f"Panel {frames} is shot from the SAME side as panel 1 — the camera "
         f"is still behind {who}, at the same height; it never crossed to "
-        f"their front on the way.\n"
+        f"their front on the way. AND THE SAME FRAMING: {who} is in the same "
+        f"part of the picture, at the same size on screen, as in panel 1. The "
+        f"place around them has changed; the shot has not. A panel {frames} "
+        f"that moves {who} across the frame or changes how big they are is "
+        f"the jolt a player sees at the end of every beat.\n"
     )
     # The render instruction at the foot of the prompt is the still path's,
     # and on a move it says "the camera has travelled … do not reproduce the
@@ -7441,7 +7512,9 @@ def _flipbook_keyframes(who: str, end_state: str, frames: int,
             + (", the camera travelling behind them the whole way" if travels
                else "")
             + ". Not a storyboard of the story: one move, sampled — and "
-            f"never a step back toward the START pose once it has been left.\n"
+            f"never a step back toward the START pose once it has been left. "
+            f"{who} stays in the same part of the frame at the same size the "
+            f"whole way through: it is the WORLD that slides past them.\n"
         )
     else:
         between = ""
@@ -8003,8 +8076,16 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
     # antagonist the brief had written never made it into the frame, because two
     # of its three references showed a place with nobody in it. Reported as "it
     # warped me back in time".
-    if prev_first and os.path.exists(prev_first) and not anchor:
+    # A turn where what the player wears just changed (characters.py) trades
+    # the wider view for the new thing itself: the fitted turnaround alone
+    # lost to the start keyframe's old helmet two turns running (2026-09-24
+    # harness), and the item's own plate is the most concrete "this, on them"
+    # there is. The reference budget is six, and the layout guide must stay.
+    new_gear = _wardrobe_change_plates(st)
+    if prev_first and os.path.exists(prev_first) and not anchor and not new_gear:
         flipbook_refs.append(prev_first)
+    for plate in new_gear:
+        flipbook_refs.append(plate)
     if prev_grid and os.path.exists(prev_grid) and len(flipbook_refs) < 2:
         flipbook_refs.append(prev_grid)
 
@@ -8046,6 +8127,12 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
             "is attached."
         )
     for extra in flipbook_refs[1:]:
+        if extra in new_gear:
+            reference_labels[extra] = (
+                f"NEW GEAR — {new_gear[extra]}, which the player has JUST put on. It is on "
+                "them from panel 1, worn exactly as the CHARACTER SHEET shows it. An "
+                "object reference only: not a scene, not a keyframe, not a second item.")
+            continue
         if extra == str(guide or ""):
             reference_labels[extra] = (
                 f"LAYOUT TEMPLATE — a blank {label} grid. Copy ONLY its panel "
@@ -8062,6 +8149,10 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
                 "move ago: context for what surrounds the subject. Not a "
                 "keyframe; do not return to this framing."
             )
+    if start_ref and _wardrobe_change_directive(st):
+        reference_labels[start_ref] += (
+            " The keyframe shows the OLD outfit: what the player wears changed "
+            "just now — take every garment from the CHARACTER SHEET, not from here.")
     if start_ref and game_identity.shows_character():
         who = game_identity.display_name()
         for plate in (identity_paths or []):
@@ -8153,6 +8244,15 @@ def _flipbook_generate(*, prompt_str: str, caption: str, choice: str,
             "raw",
         )
 
+    _wc_lead = _wardrobe_change_directive(st)
+    if _wc_lead and not flipbook_prompt.startswith(_wc_lead):
+        flipbook_prompt = _wc_lead + "\n\n" + flipbook_prompt
+    if new_gear:
+        # The look book's world sheet sits this one turn out. It takes its
+        # slots from the tail of the six, which is where the new gear rides,
+        # and a harness turn with a roster plate aboard dropped the helmet for
+        # the sheet (2026-09-24).
+        design_refs = None
     print(f"[FLIPBOOK] generating {label} grid ({frames} frames, "
           f"{_flipbook_seconds(frames, frame_ms):g}s) from "
           f"{len(flipbook_refs)} reference(s)"
@@ -8566,6 +8666,17 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
             spec=identity_spec,
         )
         
+        # A fitting landed at this turn's boundary (characters.py): the frame
+        # being continued shows the OLD outfit, and continuity copies it —
+        # the 2026-09-24 harness run put on a riot helmet and the next two
+        # turns still drew the old one. Said first, where it is read hardest.
+        try:
+            _wc = _wardrobe_change_directive(_load_state(session_id))
+            if _wc:
+                prompt_str = _wc + "\n\n" + prompt_str
+        except Exception as _wc_err:
+            print(f"[CHARACTERS] wardrobe line skipped: {_wc_err}", flush=True)
+
         # Inject world flavor and location for image model only.
         # Labelled "Visual tone" rather than "World flavor" on purpose — the
         # latter reads like a second scene description to hand off to, and
@@ -8681,6 +8792,11 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
         if not game_identity.is_viewfinder_spec(identity_spec):
             try:
                 import look_book
+                # A World the run just arrived in may still be having its book
+                # shot (look_book.ensure_for_level). Its frames wait for it
+                # rather than being drawn without — bounded, see wait_ready.
+                if look_book.building(session_id):
+                    look_book.wait_ready(session_id, timeout=120)
                 sheet = look_book.world_sheet(session_id)
                 if sheet:
                     design_ref_paths.append(sheet)
@@ -9151,6 +9267,20 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                     print(f"[IMG GENERATION] Flipbook sequence stands in for the still "
                           f"({flipbook_seq['frame_count']} frames)")
                     result_path = flipbook_seq['still_path']
+            # A flipbook turn whose grid did not come back stood a still in. That
+            # still is the whole render, twice the size of every panel around
+            # it, so it arrives as the one sharp frame in a run of soft ones —
+            # shrunk to a panel here (flipbook.match_panel_size).
+            if result_path and not locals().get("flipbook_seq"):
+                try:
+                    _fb_st = _load_state(session_id)
+                    if flipbook_active(_fb_st, identity_spec) and flipbook.match_panel_size(
+                            result_path, flipbook_settings(_fb_st)["frames"],
+                            like=_fb_st.get("flipbook_last_frame")):
+                        print(f"[IMG GENERATION] still stands in for the flipbook — "
+                              f"shrunk to panel size", flush=True)
+                except Exception:
+                    pass
             # Return canonical frame (always single image now)
             _last_image_path = result_path
             return (result_path, prompt_str, None)  # Return canonical frame for story logic
@@ -9266,7 +9396,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
             # SAFETY NET: if Krea failed (job error/timeout or missing key) but
             # Gemini is available, render the frame with Gemini so the world
             # never goes blank on a single bad turn.
-            if not result_path and GEMINI_API_KEY:
+            if not result_path and provider_bridge.can_call_gemini_api():
                 print(f"[IMG] Krea returned no image - falling back to Gemini for this frame", flush=True)
                 from gemini_image_utils import generate_with_gemini, generate_gemini_img2img
                 if prev_img_paths_list and frame_idx > 0:
@@ -9342,7 +9472,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
             # SAFETY NET: if fal failed (bad key, rate limit, etc.) but Gemini
             # is available, render the frame with Gemini so the world never
             # goes blank on a single bad turn.
-            if not result_path and GEMINI_API_KEY:
+            if not result_path and provider_bridge.can_call_gemini_api():
                 print(f"[IMG] fal returned no image - falling back to Gemini for this frame", flush=True)
                 from gemini_image_utils import generate_with_gemini, generate_gemini_img2img
                 if prev_img_paths_list and frame_idx > 0:
@@ -10278,6 +10408,11 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     else:
                         _feed_append(st, game_over_item)
                         _feed_append(st, game_over_choices)
+                        try:
+                            import run_tape
+                            run_tape.end(SID, "died", cause=_tape_death_cause(st))
+                        except Exception as _tape_err:
+                            log_error(f"[TAPE] death not marked: {_tape_err}")
                     _save_state(st, SID)
                     turn_state = st
                     _sync_ambient_state(st, SID)
@@ -10798,6 +10933,22 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                 _feed_append(st, item)
                 _save_state(st, session_id)
                 _sync_ambient_state(st, session_id)
+                _tape_turn = st.get('turn_count')
+                _tape_state = dict(st)
+            # ...and the whole beat on THE TAPE (run_tape.py): every panel,
+            # what the player did, the narration, and the prompt it came from
+            # — outside the state lock, it writes its own files.
+            try:
+                import run_tape
+                run_tape.record(
+                    session_id, "turn" if _tape_turn else "opening",
+                    (sequence or {}).get("frames") or [img_path],
+                    frame_ms=(sequence or {}).get("frame_ms"),
+                    action=_tape_action(choice), prose=dispatch or "",
+                    prompt=image_prompt or caption or "",
+                    turn=_tape_turn, state=_tape_state)
+            except Exception as _tape_err:
+                log_error(f"[TAPE] turn not recorded: {_tape_err}")
 
             if write_history:
                 # Write the absolute image path back into history so the NEXT turn's
@@ -11239,7 +11390,7 @@ def level_sheet_is_hollow(spec: Optional[dict] = None) -> bool:
     return not any(str(setting.get(f) or "").strip() for f in _LEVEL_ANCHOR_FIELDS)
 
 
-def _goal_for_this_run(new_state: dict, authored: str = "") -> str:
+def _goal_for_this_run(new_state: dict, authored: str = "", session_id: str = "") -> str:
     """The thing on the horizon this run is walking toward. Always something.
 
     A run with no goal has no shape: the montage establishes "toward
@@ -11267,6 +11418,19 @@ def _goal_for_this_run(new_state: dict, authored: str = "") -> str:
     landmark) still stands if the draft fails, which is worse but not broken.
     """
     authored = str(authored or "").strip()
+    # Whose look book the first goal draws its gear from. This read a bare
+    # `session_id` that was never in scope, so the NameError took the draw
+    # AND the draft down with it and the first goal fell back to the level's
+    # sentence cut to 34 characters: "The reinforced blast door at the"
+    # (22:00 playtest).
+    sid = str(session_id or "").strip()
+    if not sid:
+        try:
+            sid = _resolve_request_session_id()
+        except Exception:
+            sid = ""
+        if not sid or sid == "default":
+            sid = get_active_session_id() or "default"
     # GOAL-BODY v2
     # Chosen already for this run: a second call on the same reset, or a state
     # that already carries a line (kept verbatim, labelled without a model).
@@ -11281,6 +11445,7 @@ def _goal_for_this_run(new_state: dict, authored: str = "") -> str:
     # written back to the Level sheet either way (see the docstring above).
     written = str(game_identity.level_goal(fallback=False) or "").strip()
     rec = {}
+    gear = {}
     if LLM_ENABLED:
         lore = ""
         try:
@@ -11288,7 +11453,27 @@ def _goal_for_this_run(new_state: dict, authored: str = "") -> str:
             lore = _xs.lore_brief() or ""
         except Exception:
             pass  # no lore is a thinner draft, not a failed one
+        # THE FIRST GOAL DRAWS ITS GEAR TOO. Goals 2 and 3 go through
+        # goal.advance, which draws from the look book's table before it
+        # drafts the place; this one is built here instead, and without the
+        # same draw the opening lap was the only one that handed out an
+        # invented prize — a run whose first find was not one of the six
+        # pieces its own world had designed.
+        gear = {}
         try:
+            gear = _goal_mod.draw_gear(new_state, sid) or {}
+        except Exception as err:
+            log_error(f"[GOAL] no gear for the first goal ({err})")
+        try:
+            rec = _goal_mod.invent(
+                lore=lore,
+                world_prompt=str((new_state or {}).get("world_prompt") or ""),
+                authored=written,
+                holds=_goal_mod.as_prize(gear) if gear else None,
+                session_id=sid,
+            ) or {}
+        except TypeError:
+            # An older goal module without the gear arguments.
             rec = _goal_mod.invent(
                 lore=lore,
                 world_prompt=str((new_state or {}).get("world_prompt") or ""),
@@ -11297,9 +11482,21 @@ def _goal_for_this_run(new_state: dict, authored: str = "") -> str:
         except Exception as err:
             log_error(f"[GOAL] invent failed ({err})")
             rec = {}
+    # The drawn gear IS what is inside, whatever the draft came back with.
+    if gear and isinstance(rec, dict):
+        try:
+            rec["prize"] = _goal_mod.as_prize(gear)
+        except Exception:
+            pass
     if written:
+        # The author's words stay the goal; everything else the draft came
+        # back with rides along — the thing inside it, the one who holds it,
+        # and the spine. Hand-picking three keys here is why an authored
+        # World never had a prize to take and its tag pointed at the building
+        # the player was already standing in.
         line = _goal_mod.install(
-            new_state, {"name": rec.get("name") or "", "why": rec.get("why") or "",
+            new_state, {**rec, "name": rec.get("name") or "",
+                        "why": rec.get("why") or "",
                         "look": rec.get("look") or written}, line=written)
     elif rec:
         line = _goal_mod.install(new_state, rec)
@@ -11353,6 +11550,12 @@ def goal_directive(state: Optional[dict] = None) -> str:
     if not goal:
         return ""
     st = state if isinstance(state, dict) else {}
+    # IN THE ROOM WITH IT. The walk is over but the goal is not: what they came
+    # for is in here and they have not put their hands on it yet, so the beat
+    # is written around the thing rather than around "what comes after".
+    if _goal_mod.phase(st) == "prize":
+        return (f"WHAT THE PLAYER CAME HERE FOR: {goal}\n"
+                + _goal_mod.sight_directive(st))
     reached = int(st.get("goal_reached_turn") or 0)
     if reached:
         return (
@@ -11618,6 +11821,12 @@ def _apply_cached_opening_frame(
     if not tape or tape[-1] != web:
         tape.append(web)
     new_state["tape_frames"] = tape[-400:]
+    try:
+        import run_tape
+        run_tape.record(session_id, "opening", [web], prose=dispatch or "",
+                        prompt=visual or "", turn=0, state=new_state)
+    except Exception as _tape_err:
+        log_error(f"[TAPE] opening not recorded: {_tape_err}")
     hist = _load_history(session_id)
     if not hist:
         hist.append({
@@ -11693,7 +11902,7 @@ def _stage_opening_montage(
     import cutscene as _cutscene
 
     shot = game_identity.establishing_shot()
-    shot["goal"] = _goal_for_this_run(new_state, shot.get("goal"))
+    shot["goal"] = _goal_for_this_run(new_state, shot.get("goal"), session_id)
     slate = next((it for it in intro_items
                   if (it or {}).get("type") == "player_choice_prompt"), None)
     if slate:
@@ -12114,6 +12323,26 @@ def _finish_opening_montage(st: dict, session_id: str,
         if not tape or tape[-1] != web:
             tape.append(web)
         st["tape_frames"] = tape[-400:]
+    # THE TAPE opens the way the run did: the montage's establishing shots,
+    # then the arrival (the idle beat's panels, or the frame it landed on).
+    try:
+        import run_tape
+        # The prologue is read over the montage a sentence a shot, the way a
+        # title sequence is; whatever is left is the arrival's line.
+        _lines = [x for x in re.split(r"(?<=[.!?])\s+", str(pending.get("prologue") or "").strip()) if x]
+        for _i, _shot in enumerate(shots):
+            run_tape.record(session_id, "montage", [_shot.get("path") or _shot.get("url")],
+                            prose=_lines[_i] if _i < len(_lines) else "",
+                            prompt=str(_shot.get("camera") or ""), turn=0, state=st)
+        _arrive = list((seq_payload or {}).get("frames") or []) or ([img_path or web] if (img_path or web) else [])
+        if _arrive:
+            run_tape.record(session_id, "opening", _arrive,
+                            frame_ms=(seq_payload or {}).get("frame_ms"),
+                            prose=" ".join(_lines[len(shots):]) or str(pending.get("goal") or ""),
+                            prompt=st.get("current_image_prompt") or pending.get("goal") or "",
+                            turn=0, state=st)
+    except Exception as _tape_err:
+        log_error(f"[TAPE] opening not recorded: {_tape_err}")
 
     seed_vision_for = ""
     if img_path and os.path.exists(img_path):
@@ -12381,7 +12610,7 @@ def purge_run_media(session_id: str = "default") -> int:
     return removed
 
 
-def _perform_game_reset(start_world_id: str = "") -> List[Dict[str, Any]]:
+def _perform_game_reset(start_world_id: str = "", character_id: str = "") -> List[Dict[str, Any]]:
     global state, history, _last_image_path, _next_feed_item_id
     # Resolve THIS request's session id straight from Flask's request object
     # (see _resolve_request_session_id's docstring) rather than the shared
@@ -12413,6 +12642,13 @@ def _perform_game_reset(start_world_id: str = "") -> List[Dict[str, Any]]:
         # See purge_run_caches for what was surviving and what it looked like.
         purge_run_caches(SID, reason="new run")
         purge_run_media(SID)
+
+        # WHO THIS RUN IS (characters.py). Bound before anything below reads
+        # the cast sheet — the intro beat, the montage, the look book all ask
+        # game_identity who is on screen, and until the new state is saved the
+        # file on disk still says who the LAST run was. A reset that names no
+        # character (an older client, a harness) is the cast sheet, as before.
+        _char = _bind_character_for_reset(SID, character_id)
 
         # Reset state variables by loading a fresh copy and then clearing/setting specifics
         current_state_at_reset_start = _load_state(SID) 
@@ -12517,6 +12753,15 @@ def _perform_game_reset(start_world_id: str = "") -> List[Dict[str, Any]]:
         else:
             logging.info("_perform_game_reset: history.json does not exist, no need to clear.")
 
+        # THE TAPE (run_tape.py): the run that just ended is closed and a new
+        # one starts recording. Its frames were hard-linked into its own
+        # folder as they were shown, so the purge above did not take them.
+        try:
+            import run_tape
+            run_tape.begin(SID, new_state)
+        except Exception as _tape_err:
+            log_error(f"[TAPE] could not start the tape: {_tape_err}")
+
         # How the level starts.
         #
         # On the montage path NOTHING is resolved or rendered here. The montage
@@ -12542,7 +12787,7 @@ def _perform_game_reset(start_world_id: str = "") -> List[Dict[str, Any]]:
             # read `level_goal` off the run now (see run_goal), and a run
             # that opened without a cinematic used to have none at all.
             try:
-                _goal_for_this_run(new_state, "")
+                _goal_for_this_run(new_state, "", SID)
             except Exception as _goal_err:
                 log_error(f"[GOAL] no goal for this run: {_goal_err}")
             opening_slug, opening_rec = _cached_opening_frame(new_state)
@@ -12577,6 +12822,13 @@ def _perform_game_reset(start_world_id: str = "") -> List[Dict[str, Any]]:
                 if seed_url:
                     new_state["current_image_url"] = seed_url
 
+        if _char:
+            try:
+                import characters as _characters
+                _characters.bind_run(new_state, _char["id"])
+                _characters.note_world(new_state, str(new_state.get("experience_world_id") or ""))
+            except Exception as _char_err:
+                log_error(f"[CHARACTERS] could not bind the run: {_char_err}")
         new_state['feed_log'].extend(initial_items) # Add to the new state's new feed_log
         logging.info(f"_perform_game_reset: state['feed_log'] before _save_state (IDs): {[item['id'] for item in new_state['feed_log'] if item]}")
     
@@ -12588,8 +12840,8 @@ def _perform_game_reset(start_world_id: str = "") -> List[Dict[str, Any]]:
             history = new_history
         logging.info(f"_perform_game_reset: Game reset complete. {len(initial_items)} initial items generated and saved.")
     # The run's look book (look_book.py): a new run gets a new roster and a
-    # new cast, shot in the background while the montage plays. Nothing waits
-    # on it; frames rendered before it lands simply go without it.
+    # new cast. api_reset has already shot it (prepare_level_look_book) and
+    # this claims that one; a caller that skipped the prepare starts one here.
     try:
         import look_book
         look_book.reset_for_new_run(SID)
@@ -12616,6 +12868,66 @@ def _perform_game_reset(start_world_id: str = "") -> List[Dict[str, Any]]:
             )
     return initial_items
 
+def prepare_level_look_book(session_id: str, start_world_id: str = "",
+                            wait: bool = False) -> dict:
+    """Bind the World this run will start in and start its look book.
+
+    The bind is the reset's own (apply_experience_start, on a throwaway
+    state) so the book is shot for exactly the World the reset will load, and
+    it is done under TURN_LOCK like the reset's. The wait, when asked for,
+    happens OUTSIDE the lock: a minute of image calls must not stall every
+    other session's turns.
+    """
+    try:
+        import look_book
+    except Exception as e:
+        logging.warning(f"[LOOK BOOK] prepare skipped: {e}")
+        return {}
+    if not look_book.enabled():
+        return {"enabled": False}
+    with TURN_LOCK:
+        apply_experience_start({}, session_id, world_id=start_world_id)
+        try:
+            import worlds_store
+            bound = worlds_store.bound_slug()
+        except Exception:
+            bound = ""
+    # A World with no bible or a placeholder name gets them drafted once, into
+    # its own file, before its book is shot (world_gaps). Outside the lock:
+    # it is a model call. The reset rebinds from the World file, so it plays
+    # the same text the book was shot from.
+    if bound:
+        try:
+            import world_gaps
+            world_gaps.fill(bound, reason="new run")
+        except Exception as e:
+            logging.warning(f"[WORLD GAPS] skipped: {e}")
+    with TURN_LOCK:
+        look_book.prepare_for_level(session_id)
+    if wait:
+        look_book.wait_ready(session_id)
+    return look_book.summary(session_id)
+
+
+def _bind_character_for_reset(sid: str, character_id: str = "") -> Optional[dict]:
+    """Point this session at a character for the run about to be built (in
+    memory, at once — see characters.set_binding), or at nobody."""
+    try:
+        import characters
+    except Exception:
+        return None
+    rec = None
+    cid = str(character_id or "").strip()
+    if cid:
+        rec = characters.load(cid) if characters.valid_id(cid) else None
+        if not rec or rec.get("status") != characters.STATUS_READY or not rec.get("current_look"):
+            logging.warning(f"[CHARACTERS] reset asked for {cid!r}, which is not ready — "
+                            "playing the cast sheet")
+            rec = None
+    characters.set_binding(sid, rec["id"] if rec else "", rec.get("current_look", "") if rec else "")
+    return rec
+
+
 def api_reset():
     # Resolve THIS request's session id straight from Flask's request object
     # (see _resolve_request_session_id's docstring) rather than reading the
@@ -12631,12 +12943,22 @@ def api_reset():
     try:
         # The editor's GENERATE restarts the run in the World it drew.
         start_world_id = ""
+        character_id = ""
         try:
             body = request.get_json(silent=True) or {}
             start_world_id = str(body.get("world_id") or "").strip()
+            character_id = str(body.get("character_id") or "").strip()
         except Exception:
             start_world_id = ""
-        initial_items = _perform_game_reset(start_world_id)
+        # Bound before the look book is prepared: its roster is designed to
+        # look unlike the protagonist, and that is this run's character.
+        if character_id:
+            _bind_character_for_reset(SID, character_id)
+        # The level starts with its look book finished. The client prepares and
+        # waits for it before calling here (/api/look_book/prepare), so this is
+        # normally instant; it is the guarantee for any other caller.
+        prepare_level_look_book(SID, start_world_id, wait=True)
+        initial_items = _perform_game_reset(start_world_id, character_id=character_id)
         if not initial_items:
             logging.warning("api_reset: _perform_game_reset returned no items, but this might be okay if feed_log is now populated by it.")
             # Fallback to checking THIS session's on-disk feed_log if initial_items is empty from return
@@ -13704,7 +14026,7 @@ def _transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/webm",
             note["reason"] = reason
         return ""
 
-    if not LLM_ENABLED or not GEMINI_API_KEY:
+    if not LLM_ENABLED or not provider_bridge.can_call_gemini_api():
         return _why("disabled")
     if not audio_bytes or len(audio_bytes) < 512:
         return _why("too_short")
@@ -16917,6 +17239,16 @@ def api_cutscene_complete():
     from flask import jsonify, request
 
     sid = _resolve_request_session_id()
+    # A cutscene arriving in another World bound it (and started its look book)
+    # when the montage began. The first frame there waits for that book, here,
+    # before any lock is taken. The run's opening already waited in api_reset,
+    # so for it this returns at once.
+    try:
+        import look_book
+        if look_book.building(sid):
+            look_book.wait_ready(sid)
+    except Exception as _lb_err:
+        logging.warning(f"[LOOK BOOK] arrival wait skipped: {_lb_err}")
     # Collect the opening establishing flipbook, which has been rendering behind
     # the montage since /api/cutscene/play (see _spawn_opening_establishing) and
     # is usually already finished by now. If it is not, we hold here — it must be
@@ -16957,6 +17289,36 @@ def api_cutscene_complete():
             _save_state(st, sid)
             _sync_ambient_state(st, sid)
             return jsonify(out)
+        # THE REWARD (goal.py): the run reached what it came for, the montage
+        # showed it, and its last panel is where the player now stands — on the
+        # other side of it. Nothing to follow in the graph; the deposit is the
+        # whole point, so it is done here before complete_cutscene falls
+        # through to a bare "Look around" over the frame they were outside.
+        _pending_reward = st.get("pending_cutscene") or {}
+        if str(_pending_reward.get("mood") or "") == "reward":
+            st["pending_cutscene"] = None
+            st["experience_cutscene_id"] = ""
+            info = _goal_mod.finish_reward(st, sid, _pending_reward)
+            slate = _structure_choices_for_feed(
+                ([f"{str((info.get('prize') or {}).get('verb') or 'Take')} the "
+                  f"{(info.get('prize') or {}).get('name')}"]
+                 if (info.get("prize") or {}).get("name") else [])
+                + ["Look around", "Check the way out"],
+                info.get("inside") or "What do you do next?",
+                image_url=info.get("image_url") or st.get("current_image_url"),
+            )
+            _feed_append(st, slate)
+            st["choices"] = slate.get("choices")
+            _save_state(st, sid)
+            _sync_ambient_state(st, sid)
+            return jsonify({"ok": True, "kind": "goal_reward",
+                            "image_url": info.get("image_url"),
+                            "name": info.get("name"), "choices": slate,
+                            "board": info.get("board"),
+                            "phase": info.get("phase") or "",
+                            "prize": info.get("prize"),
+                            "next_goal": info.get("next") or "",
+                            "victory": bool(info.get("victory"))})
         info = complete_cutscene(st, sid)
         out = {"ok": True, "kind": (info or {}).get("kind") or "resume"}
         if info and info.get("kind") == "cutscene":
@@ -17012,6 +17374,12 @@ def api_encounter_travel():
     """POST /api/encounter/travel — walking time counts down the encounter clock."""
     import encounter as _encounter
     return _encounter.api_travel()
+
+
+def api_encounter_exchange():
+    """POST /api/encounter/exchange — throw the dice for a verb before the picture."""
+    import encounter as _encounter
+    return _encounter.api_exchange()
 
 
 def api_encounter_resolve():
@@ -18626,6 +18994,62 @@ def _look_book_story(state: dict) -> str:
         return ""
 
 
+def _wardrobe_change_plates(state: Optional[dict]) -> Dict[str, str]:
+    """{plate path: item name} for what was put on at this turn's boundary,
+    while the change is being drawn (see _wardrobe_change_directive)."""
+    if not _wardrobe_change_directive(state):
+        return {}
+    ch = (state or {}).get("look_changed") or {}
+    out: Dict[str, str] = {}
+    for p, name in zip(ch.get("plates") or [], ch.get("put_on") or []):
+        if p and os.path.exists(str(p)):
+            out[str(p)] = str(name)
+    return dict(list(out.items())[:1])
+
+
+def _wardrobe_change_directive(state: Optional[dict]) -> str:
+    """For the image model, the turn a new look is taken and the one after:
+    what changed on the player, said so the previous frame's outfit loses."""
+    ch = (state or {}).get("look_changed") or {}
+    if not ch:
+        return ""
+    try:
+        age = int((state or {}).get("turn_count") or 0) - int(ch.get("at") or 0)
+    except Exception:
+        age = 99
+    if age < 0 or age > 1:
+        return ""
+    bits = []
+    if ch.get("put_on"):
+        bits.append("NOW WEARING " + ", ".join(ch["put_on"]))
+    if ch.get("took_off"):
+        bits.append("NO LONGER WEARING " + ", ".join(ch["took_off"]))
+    if not bits:
+        return ""
+    who = str(ch.get("who") or "the player")
+    return (f"WARDROBE CHANGE — {who} is {'; '.join(bits)}. Draw them in it in "
+            "every panel, exactly as the CHARACTER SHEET shows it, even though the "
+            "previous frame shows the old outfit. Nothing else about them changes.")
+
+
+def _look_note_directive(state: dict) -> str:
+    """One line when the player's character changed what they wear since the
+    last beat (characters.sync_run_look set it at this turn's boundary): the
+    fitting has already changed the turnaround every frame is drawn from, and
+    the prose should know it too — "You are now wearing …"."""
+    line = str((state or {}).get("look_note") or "").strip()
+    if not line:
+        return ""
+    # The visual scene is what the picture is drawn from, and it beats every
+    # reference: told only to "mention it in passing", the prose did and the
+    # frames kept the old helmet (2026-09-24 harness). The beat shows it.
+    return (f"WHAT THE PLAYER IS WEARING CHANGED: {line} It is on them now and "
+            "never contradict it. This beat's visual_scene MUST show it plainly — "
+            "the camera catches it (a glance, a hand settling it, a turn of the head) "
+            "and names it with its look, so the picture draws the new gear rather "
+            "than what the last frame showed.\n")
+
+
 def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL", is_interaction: bool = False, subject: str = "", is_move: bool = False, environment_streak: int = 0, is_custom_action: bool = False) -> tuple[str, str, bool, list, Optional[bool]]:
     """
     Generate BOTH narrative dispatch AND vision dispatch in ONE API call.
@@ -18887,6 +19311,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             f"{condition_directive(state)}"
             f"STORY PHASE: {phase_str} — {phase_directive}\n"
             f"{goal_directive(state)}"
+            f"{_look_note_directive(state)}"
             f"{onscreen_directive(onscreen)}"
             f"{interaction_directive}"
             f"{_conversation_directive(state)}"
@@ -20260,11 +20685,11 @@ def advance_story_dynamics(session_id: str = 'default', risk_boost: int = 0) -> 
         detect_bias = (0.0, 0.05, 0.14, 0.24)[max(0, min(3, detect_level))]
         risk_bias = phase_bias + detect_bias + (0.15 if risk_boost else 0.0)
         fate = compute_fate(risk_bias)
-        # Persisted, not just returned. The encounter resolver rolls every
-        # exchange against `state["fate"]` (encounter.api_resolve) — and nothing
-        # ever wrote that key, so every fight ever played was rolled NORMAL
-        # whatever the turn's luck was, and the LUCKY/UNLUCKY columns of
-        # encounter_outcome_weights were dead weight. The fate of the turn a
+        # Persisted, not just returned. A fight rolls every round with
+        # `state["fate"]` as luck (encounter.fight_context: LUCKY +2, UNLUCKY
+        # -2 on every roll) — and nothing ever wrote that key, so every fight
+        # ever played was rolled NORMAL whatever the turn's luck was. The fate
+        # of the turn a
         # fight lands in is the fate it fights under.
         st["fate"] = fate
         _save_state(st, session_id)
@@ -20363,6 +20788,19 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         state_file_path = _get_state_path(session_id)
         generate_and_apply_choice(choice, state_path=str(state_file_path))
         state = _load_state(session_id)
+
+        # THE TURN BOUNDARY for the player's character: a fitting that landed
+        # since the last beat becomes this turn's look now — never mid-render —
+        # and the pack mirror follows the character (characters.py).
+        try:
+            import characters as _characters
+            _prev_look = state.get("look_id")
+            _look_line = _characters.sync_run_look(state, session_id)
+            if state.get("character_id") and state.get("look_id") != _prev_look:
+                import run_tape as _tape
+                _tape.note_look(session_id, state["character_id"], state["look_id"], _look_line, state)
+        except Exception as _char_err:
+            print(f"[CHARACTERS] look sync skipped: {_char_err}", flush=True)
         
         # Get previous vision and image
         # Use vision_analysis (actual image analysis) over vision_dispatch (narrative text)
@@ -20405,19 +20843,43 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         else:
             # Camera beat only. Choices are a later call after evolve lands.
             dispatch, vision_dispatch, player_alive, provisional_choices, relocated = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate, is_interaction=interaction, subject=subject, is_move=is_move, environment_streak=env_streak, is_custom_action=is_custom_action)
+        # Told once (see _look_note_directive).
+        state.pop("look_note", None)
         
         # SIMPLE DEATH SYSTEM: Just trust the LLM
         state['player_state']['alive'] = player_alive
 
         if not player_alive:
             print(f"[DEATH] Player killed by: {dispatch[:100]}...")
+            try:
+                import characters as _characters
+                _characters.note_death(state)
+            except Exception:
+                pass
 
         # The goal, same verdict system as death: the model's word, counted
         # once. A run used to have no record of reaching what it came for — a
         # traced run dove through the blast door it was staged toward and was
         # still being offered "Kick the blast door open" two turns later.
         goal_reached = bool(state.pop("_turn_goal_reached", False))
-        if goal_reached and player_alive and run_goal(state) \
+        # ...but the WALK has to have happened. The model will call the first
+        # beat of a brand new goal an arrival — a playtest lap was handed
+        # "Atmospheric Filtration Hub" and was inside it without one step,
+        # because the beat it read was the player walking out of the last
+        # place with its prize in hand. The player's own steps toward it
+        # (goal.approach, one per turn) are the thing that says how close they
+        # are; the model's word only confirms the last of them.
+        _near = True
+        try:
+            import goal as _goal_steps
+            _p = _goal_steps.progress(state)
+            _near = int(_p.get("steps") or 0) >= _goal_steps.APPROACH_STEPS - 1
+        except Exception:
+            _near = True
+        if goal_reached and not _near:
+            print("[GOAL] the model called it reached, but they have not walked "
+                  "there yet — ignored", flush=True)
+        if goal_reached and _near and player_alive and run_goal(state) \
                 and not state.get("goal_reached_turn"):
             state["goal_reached_turn"] = int(state.get("turn_count") or 0) + 1
             print(f"[GOAL] reached on turn {state['goal_reached_turn']}: "
@@ -21105,6 +21567,39 @@ def advance_turn(choice: str) -> dict:
 complete_tick = advance_turn
 
 # ───────── state management ──────────────────────────────────────────────────
+def adopt_current_look(session_id='default') -> str:
+    """Every beat that DRAWS the player starts on the character's current look.
+
+    The run used to take a fitting only at a choice turn (advance_turn_image_
+    fast). A goal cutscene, a fight, a photo or a conversation played before
+    the next choice still drew the look from before the fitting — the old
+    turnaround and the old wardrobe words — and the reward then chained that
+    into every turn after it. Called before the render starts, never during
+    one. Returns the look line ('' when nothing changed)."""
+    try:
+        import characters as _characters
+        st = _load_state(session_id)
+        if not isinstance(st, dict) or not st.get("character_id"):
+            return ""
+        rec = _characters.load(st["character_id"]) or {}
+        cur = rec.get("current_look") or ""
+        if not cur or cur == st.get("look_id"):
+            return ""
+        prev = st.get("look_id")
+        line = _characters.sync_run_look(st, session_id)
+        if st.get("look_id") != prev:
+            _save_state(st, session_id)
+            try:
+                import run_tape as _tape
+                _tape.note_look(session_id, st["character_id"], st["look_id"], line, st)
+            except Exception:
+                pass
+        return line
+    except Exception as e:
+        print(f"[CHARACTERS] adopt look skipped: {e}", flush=True)
+        return ""
+
+
 def get_state(session_id='default'):
     """Get current state for a session"""
     return _load_state(session_id)

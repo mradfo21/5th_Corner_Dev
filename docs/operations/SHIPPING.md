@@ -44,6 +44,16 @@ author leftovers. The smoke boot is mock-mode and does not spend keys.
 
 ## Keys on a shipped copy
 
-Put `GEMINI_API_KEY` in a `.env` beside the exe, or in
-`%APPDATA%\SOMEWHERE\.env`. A packaged build launched from Explorer inherits
-none of your shell. No key → offline mock, still playable.
+A friend never edits a file: on first launch ACCOUNT opens by itself, they
+pick Gemini or OpenAI, paste the key, and the sheet checks it with one real
+call. It lands in `%APPDATA%\SOMEWHERE\keys.env` (never the game folder, never
+the zip). `.env` beside the exe or in `%APPDATA%\SOMEWHERE\` still works for
+`GEMINI_API_KEY` / `OPENAI_API_KEY`. A packaged build launched from Explorer
+inherits none of your shell. No key → offline mock, still playable.
+
+`tools/publish_build.py` zips the build as `ABYSS/ABYSS.exe` (the name the /get
+page tells friends to run). To test what a friend gets: build with
+`tools/build_exe.py --out <temp>` so `dist/` is left alone, make the zip with
+`publish_build.py --dry-run --dist <temp>/SOMEWHERE`, unzip it outside the repo
+(the launcher looks three folders up for a `.env`), and run `ABYSS.exe` with
+`APPDATA` pointed at an empty folder.

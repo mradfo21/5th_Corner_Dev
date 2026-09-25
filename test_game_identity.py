@@ -676,6 +676,28 @@ class GameIdentityTestCase(_IdentityFixture):
         for gone in ("NEVER show your face", "NO PERSON VISIBLE", "camera operator"):
             self.assertNotIn(gone, out)
 
+    def test_reconcile_trims_sentences_not_whole_paragraphs(self):
+        """The goal cutscene is one long line. It carries an over-shoulder panel
+        and a "never" elsewhere, and reconcile used to drop the whole line —
+        the reward went out with no character and no brief in its text, and
+        the player in the goal scenes drifted from the one they built."""
+        self._set_character(wardrobe="cracked riot visor over the face, long trench coat")
+        self._set_mode("third_person")
+        import cutscene
+        prompt = cutscene.build_cutscene_prompt(
+            "reward", shot_brief="Wren reaches the hatch and never looks back.",
+            name="The Hatch", goal="the hatch")
+        self.assertNotIn("\n", prompt)
+        out = gi.apply("THIS FRAME:\n" + prompt + "\n\nKeep the grid.", "raw")
+        self.assertIn("the SHEET wins", out)
+        self.assertIn("cracked riot visor", out)
+        self.assertIn("never draw their bare face", out)
+        self.assertIn("Author direction", out)
+        self.assertIn("Panel 1", out)
+        # the one sentence that bans a third-person frame still goes
+        out2 = gi.reconcile("Show the dock at dawn. Never shoot over-the-shoulder. Keep the fog.")
+        self.assertEqual(out2, "Show the dock at dawn. Keep the fog.")
+
     def test_reconcile_is_a_noop_in_first_person(self):
         self._set_mode("first_person")
         text = "ABSOLUTELY NO PERSON VISIBLE — pure environmental shot."

@@ -165,38 +165,6 @@ class TestThePlayerIsNotTheEnemy(unittest.TestCase):
 class TestTheFightEscalates(unittest.TestCase):
     """Rounds used to be independent and identical, so a verb changed nothing."""
 
-    def test_pressing_a_confront_moves_the_other_body(self):
-        """A landed confront ALWAYS shows. It either finishes them where they
-        stand or staggers them; what it can never do is leave them `ready`.
-
-        That last case is the one the player felt: the slate promises "ONE
-        committed, extreme act - the thing that cannot be undone", the prose
-        wrote the skull crushing, and the state machine then said nothing had
-        happened and offered to do it again.
-        """
-        for seed in range(50):
-            with self.subTest(seed=seed):
-                self.assertIn(
-                    encounter.advance_enemy_state(
-                        "confront", "survive", "ready", rng=random.Random(seed)),
-                    ("down", "staggered"))
-
-    def test_a_committed_verb_can_end_it_where_it_stands(self):
-        """Not merely possible — the common case. Needing two landed blows to
-        win is what made an ordinary fight four rounds and two minutes long."""
-        downs = sum(
-            encounter.advance_enemy_state("confront", "survive", "ready",
-                                          rng=random.Random(s)) == "down"
-            for s in range(400))
-        self.assertGreater(downs, 200, "a decisive verb usually is not decisive")
-
-    def test_a_staggered_body_can_be_put_down(self):
-        rng = random.Random(1)
-        self.assertEqual(
-            encounter.advance_enemy_state("confront", "survive", "staggered", rng=rng),
-            "down",
-        )
-
     def test_putting_them_down_ends_the_encounter(self):
         self.assertTrue(
             encounter.encounter_releases("survive", {"enemy_state": "down"})
@@ -207,16 +175,6 @@ class TestTheFightEscalates(unittest.TestCase):
             encounter.encounter_releases("survive", {"enemy_state": "staggered"})
         )
 
-    def test_pressing_an_advantage_beats_opening_cold(self):
-        ready = encounter.encounter_outcome_weights("confront", enemy_state="ready")
-        stag = encounter.encounter_outcome_weights("confront", enemy_state="staggered")
-        self.assertGreater(stag["survive"], ready["survive"])
-        self.assertLess(stag["die"], ready["die"])
-
-    def test_opening_with_a_punch_is_not_a_coin_flip_on_death(self):
-        w = encounter.encounter_outcome_weights("confront", "hostile", "person")
-        self.assertLess(w["die"] / sum(w.values()), 0.15)
-
     def test_the_exchange_survives_a_normalize_round_trip(self):
         b = _brief()
         b["enemy_state"] = "staggered"
@@ -224,82 +182,6 @@ class TestTheFightEscalates(unittest.TestCase):
         again = encounter.normalize_encounter_brief(b)
         self.assertEqual(again["enemy_state"], "staggered")
         self.assertEqual(again["round_no"], 3)
-
-
-class TestAFightIsTwoExchangesAtTheOutside(unittest.TestCase):
-    """Reported as "encounters take far too long ... they need to last 1-2
-    turns max". Every round is a real generation, so a four-round fight was two
-    minutes of standing still, and the odds alone only ever made a long tail
-    less likely rather than impossible."""
-
-    def _play(self, lanes, kind="person", stance="hostile", seed=0, cap=12):
-        """One fight to its release. Returns (rounds, outcome, enemy_state)."""
-        rng = random.Random(seed)
-        state, cond = "ready", "ok"
-        for rnd in range(1, cap + 1):
-            rolled = encounter.roll_encounter_outcome(
-                lanes[(rnd - 1) % len(lanes)], stance=stance, kind=kind,
-                condition=cond, fate="NORMAL", rng=rng,
-                enemy_state=state, round_no=rnd)
-            if encounter.encounter_releases(rolled["outcome"], rolled):
-                return rnd, rolled["outcome"], rolled["enemy_state"]
-            state, cond = rolled["enemy_state"], rolled["condition"]
-        return cap + 1, "NEVER", state
-
-    def test_no_lane_can_run_past_the_cap(self):
-        for label, lanes, kind in (
-            ("confront", ["confront"], "person"),
-            ("evade", ["evade"], "person"),
-            ("parley", ["parley"], "person"),
-            ("rotating", ["confront", "evade", "parley"], "person"),
-            # The lane that could not settle anything: talking at a thing that
-            # does not talk. It has to end anyway.
-            ("creature parley", ["parley"], "creature"),
-            ("creature evade", ["evade"], "creature"),
-        ):
-            with self.subTest(lane=label):
-                worst = max(self._play(lanes, kind=kind, seed=s)[0]
-                            for s in range(400))
-                self.assertLessEqual(worst, encounter.ENCOUNTER_MAX_ROUNDS)
-
-    def test_most_fights_end_in_a_single_exchange(self):
-        one = sum(self._play(["confront"], seed=s)[0] == 1 for s in range(400))
-        self.assertGreater(one, 200)
-
-    def test_the_last_exchange_settles_whatever_the_dice_say(self):
-        """Not "is likely to" — the cap is the point."""
-        for lane, kind in (("confront", "person"), ("parley", "person"),
-                           ("evade", "person"), ("parley", "creature")):
-            with self.subTest(lane=lane, kind=kind):
-                for s in range(120):
-                    rolled = encounter.roll_encounter_outcome(
-                        lane, kind=kind, rng=random.Random(s),
-                        enemy_state="ready",
-                        round_no=encounter.ENCOUNTER_MAX_ROUNDS)
-                    self.assertTrue(
-                        encounter.encounter_releases(rolled["outcome"], rolled),
-                        f"{lane}/{kind} did not end on the last exchange")
-
-    def test_the_cap_never_rewrites_a_death(self):
-        """How a run ends is the roll's call, not a pacing rule's."""
-        rolled = encounter.roll_encounter_outcome(
-            "evade", rng=_Rigged(die=True), enemy_state="ready",
-            round_no=encounter.ENCOUNTER_MAX_ROUNDS)
-        self.assertEqual(rolled["outcome"], "die")
-        self.assertFalse(rolled["alive"])
-
-
-class _Rigged:
-    """An rng that always picks the last bucket — i.e. `die`."""
-
-    def __init__(self, die=True):
-        self.die = die
-
-    def random(self):
-        return 1.0 if self.die else 0.0
-
-    def uniform(self, a, b):
-        return b
 
 
 class TestTheActionBeatIsShotLikeAFight(unittest.TestCase):
@@ -882,35 +764,6 @@ class TestTheSlateOffersThreeDifferentAnswers(unittest.TestCase):
         self.assertEqual([c["lane"] for c in slate],
                          ["confront", "evade", "parley"])
 
-    def test_talking_can_settle_a_person_but_never_a_creature(self):
-        rng = random.Random(11)
-        person = {encounter.advance_enemy_state(
-            "parley", "survive", "ready", rng=rng,
-            stance="opportunistic", kind="person") for _ in range(200)}
-        self.assertIn("standing_down", person)
-
-        rng = random.Random(11)
-        creature = {encounter.advance_enemy_state(
-            "parley", "survive", "ready", rng=rng,
-            stance="hostile", kind="creature") for _ in range(200)}
-        self.assertNotIn("standing_down", creature)
-
-    def test_a_settled_body_stays_settled(self):
-        rng = random.Random(3)
-        for _ in range(50):
-            self.assertEqual(
-                encounter.advance_enemy_state("confront", "survive",
-                                              "standing_down", rng=rng),
-                "standing_down")
-
-    def test_peace_is_the_safest_lane_but_not_a_free_pass(self):
-        talk = encounter.encounter_outcome_weights("parley", stance="hostile")
-        hit = encounter.encounter_outcome_weights("confront", stance="hostile")
-        self.assertLess(talk["die"] + talk["wounded"],
-                        hit["die"] + hit["wounded"])
-        beast = encounter.encounter_outcome_weights("parley", kind="creature")
-        self.assertGreater(beast["wounded"], talk["wounded"])
-
     def test_a_clean_escape_or_parley_is_not_thrown_away(self):
         """The filter that swaps landscape choices for canned text only knew
         the old grappling verbs, so it replaced the model's real slate."""
@@ -980,67 +833,20 @@ class TestBeingSeenCostsYouTheFight(unittest.TestCase):
     inverse — it is here BECAUSE it followed you, so running is the one answer
     it has already solved for."""
 
-    def test_the_jump_is_worth_having(self):
-        hidden = encounter.encounter_outcome_weights("confront", detection=0)
-        hunted = encounter.encounter_outcome_weights("confront", detection=3)
-        self.assertGreater(hidden["survive"], hunted["survive"])
-        self.assertLess(hidden["die"], hunted["die"])
-
-    def test_you_cannot_outrun_what_followed_you_here(self):
-        hidden = encounter.encounter_outcome_weights("evade", detection=0)
-        hunted = encounter.encounter_outcome_weights("evade", detection=3)
-        self.assertGreater(hidden["escape"], hunted["escape"])
-
-    def test_escaping_gets_harder_every_rung_of_the_ladder(self):
-        escapes = [encounter.encounter_outcome_weights("evade", detection=d)["escape"]
-                   for d in range(4)]
-        self.assertEqual(escapes, sorted(escapes, reverse=True))
-        self.assertEqual(len(set(escapes)), 4)
-
-    def test_a_lane_that_cannot_kill_you_still_cannot(self):
-        """`die: 0` on the safe lanes is a design statement about the lane, not
-        a number that happened to round down. Being watched on the way in has
-        to cost you through escape and wounded, not quietly make talking to an
-        opportunist lethal."""
-        for lane, stance in (("parley", "opportunistic"),
-                             ("confront", "opportunistic")):
-            for level in range(4):
-                with self.subTest(lane=lane, detection=level):
-                    self.assertEqual(encounter.encounter_outcome_weights(
-                        lane, stance=stance, detection=level)["die"], 0)
-
-    def test_an_unknown_level_rolls_exactly_as_it_always_did(self):
-        """Encounter records written before this existed have no level on
-        them, and `hidden` is a real bonus rather than the baseline — so
-        defaulting an unknown to 0 would hand every legacy fight a stealth
-        advantage it never earned."""
-        for lane in encounter.ENCOUNTER_LANES:
-            with self.subTest(lane=lane):
-                self.assertEqual(
-                    encounter.encounter_outcome_weights(lane, detection=None),
-                    encounter.encounter_outcome_weights(lane))
-                self.assertNotEqual(
-                    encounter.encounter_outcome_weights(lane, detection=3),
-                    encounter.encounter_outcome_weights(lane))
-
-    def test_the_odds_never_go_negative_or_empty(self):
-        for lane in encounter.ENCOUNTER_LANES:
-            for stance in encounter.ENCOUNTER_STANCES:
-                for level in range(4):
-                    w = encounter.encounter_outcome_weights(
-                        lane, stance=stance, condition="wounded",
-                        fate="UNLUCKY", detection=level)
-                    self.assertTrue(all(v >= 0 for v in w.values()), w)
-                    self.assertGreater(sum(w.values()), 0)
-
     def test_the_fight_resolves_against_the_level_it_opened_on(self):
         """A multi-round exchange must not get easier because the dial cooled
         between rounds. You do not become un-followed halfway through being
         caught."""
-        src = (Path(__file__).parent / "encounter.py").read_text(
-            encoding="utf-8", errors="replace")
-        self.assertIn('opened_at = enc.get("detection")', src)
-        self.assertIn("detection=opened_at", src)
+        enc = {"detection": 3, "character": {"label": "A site foreman",
+                                             "stance": "hostile"}}
+        cooled = {"detection": 0, "player_state": {"alive": True}}
+        self.assertEqual(encounter.fight_context(cooled, enc)["detection"], 3)
+        # ...and the dice are thrown at it (roll_exchange is the one place a
+        # fight's round is rolled — api_exchange and api_resolve both): hunted
+        # is an ambush, whatever the dial says now.
+        got = encounter.roll_exchange(cooled, enc, "Put him down", "confront")
+        self.assertEqual(got["combat"]["init"]["surprise"], "foe")
+        self.assertEqual(encounter.fight_context(cooled, {})["detection"], None)
 
     def test_the_level_survives_the_rebuild_after_the_plate_lands(self):
         """align_brief_to_plate re-normalizes the brief from a fixed set of
@@ -1116,32 +922,36 @@ class TestWhatWalksUpIsWhatYouSaw(unittest.TestCase):
 
 class TestAFightActuallyEnds(unittest.TestCase):
     """`encounter_releases` only fires on escape, death, or the other body
-    going down, and `advance_enemy_state` is the only thing that reaches
-    "down". Walk the real roll loop so a change to either cannot quietly make
-    confrontations unwinnable."""
+    settled. Walk the real rules (encounter.roll_exchange, round after round,
+    each record carried into the next) so a change to either cannot quietly
+    make confrontations unwinnable."""
 
-    def _rounds_to_end(self, lane, trials=3000, cap=60):
+    def _rounds_to_end(self, lane, trials=1500, cap=60):
         rng = random.Random(1234)
         worst = 0
         for _ in range(trials):
-            enemy, cond, n = "ready", "ok", 0
+            st = {"player_state": {"alive": True, "hp": 30, "hp_max": 30}}
+            enc = {"character": {"label": "A foreman", "kind": "person",
+                                 "stance": "hostile"}, "detection": 1}
+            n = 0
             while n < cap:
                 n += 1
-                r = encounter.roll_encounter_outcome(
-                    lane, stance="hostile", kind="person", condition=cond,
-                    fate="NORMAL", enemy_state=enemy, round_no=n, rng=rng)
-                enemy, cond = r["enemy_state"], r["condition"]
-                if encounter.encounter_releases(r["outcome"], {"enemy_state": enemy}):
+                r = encounter.roll_exchange(st, enc, "Do it", lane, rng=rng)
+                rolled = r["rolled"]
+                if encounter.encounter_releases(rolled["outcome"], rolled):
                     break
+                enc = dict(enc, combat=r["after"], enemy_state=rolled["enemy_state"])
+                st["player_state"]["hp"] = r["exchange"]["you"]["hp"]
             else:
                 self.fail(f"{lane} never ended within {cap} rounds")
             worst = max(worst, n)
         return worst
 
     def test_every_lane_terminates(self):
+        import combat
         for lane in encounter.ENCOUNTER_LANES:
             with self.subTest(lane=lane):
-                self.assertLess(self._rounds_to_end(lane), 40)
+                self.assertLessEqual(self._rounds_to_end(lane), combat.COMBAT_MAX_ROUNDS)
 
     def test_putting_them_down_is_a_way_out(self):
         self.assertTrue(encounter.encounter_releases("survive", {"enemy_state": "down"}))
@@ -1150,71 +960,6 @@ class TestAFightActuallyEnds(unittest.TestCase):
     def test_talking_them_down_is_also_a_way_out(self):
         self.assertTrue(
             encounter.encounter_releases("survive", {"enemy_state": "standing_down"}))
-
-    def test_pressing_a_staggered_body_can_finish_it(self):
-        rng = random.Random(7)
-        got = {encounter.advance_enemy_state("confront", "survive", "staggered", rng=rng)
-               for _ in range(80)}
-        self.assertIn("down", got)
-
-    def test_pressing_the_same_verb_converges(self):
-        """A flat per-round chance has a long tail, and a playtest sat in it:
-        "crush his skull with boot" landed four times running, the prose said
-        the skull yielded and the player was standing over him, and the state
-        machine still said `staggered` with the Moment still open. However good
-        the individual beats are, a fight that does not answer reads as broken.
-        """
-        rng = random.Random(99)
-        unsettled = 0
-        for _ in range(3000):
-            enemy, cond = "ready", "ok"
-            for n in range(1, 5):
-                r = encounter.roll_encounter_outcome(
-                    "confront", stance="hostile", kind="person", condition=cond,
-                    fate="NORMAL", enemy_state=enemy, round_no=n, rng=rng)
-                enemy, cond = r["enemy_state"], r["condition"]
-                if encounter.encounter_releases(r["outcome"], {"enemy_state": enemy}):
-                    break
-            else:
-                unsettled += 1
-        # Was ~1 fight in 10 before the per-round gain; the harness caps its
-        # encounter probe at four exchanges and filed every one of those.
-        self.assertLess(unsettled / 3000.0, 0.04,
-                        f"{unsettled}/3000 fights still open after four "
-                        f"committed confronts")
-
-    def test_the_first_exchange_gets_the_base_odds(self):
-        """The gain is for pressing an advantage, not for swinging once."""
-        for base in (encounter.CONFRONT_STAGGER_CHANCE,
-                     encounter.CONFRONT_DOWN_CHANCE):
-            with self.subTest(base=base):
-                self.assertAlmostEqual(encounter._settle_chance(base, 1), base)
-
-    def test_two_committed_verbs_usually_finish_a_fight(self):
-        """What advance_enemy_state's docstring has always promised. At the
-        old 0.55/0.62 it happened about a third of the time, so the prose ran
-        away from the state machine: a playtest landed a crate to the face and
-        two skulls against monitors and the man was still `ready`."""
-        rng = random.Random(2024)
-        finished = 0
-        trials = 3000
-        for _ in range(trials):
-            enemy, cond = "ready", "ok"
-            for n in (1, 2):
-                r = encounter.roll_encounter_outcome(
-                    "confront", stance="hostile", kind="person", condition=cond,
-                    fate="NORMAL", enemy_state=enemy, round_no=n, rng=rng)
-                enemy, cond = r["enemy_state"], r["condition"]
-                if encounter.encounter_releases(r["outcome"], {"enemy_state": enemy}):
-                    finished += 1
-                    break
-        self.assertGreater(finished / trials, 0.6,
-                           f"only {finished}/{trials} fights ended in two verbs")
-
-    def test_the_gain_is_capped(self):
-        self.assertLessEqual(encounter._settle_chance(0.62, 50),
-                             encounter.ENEMY_STATE_MAX_CHANCE)
-
 
 class TestAFightKnowsWhatWorldItIsIn(unittest.TestCase):
     """An encounter is the one beat that does not render through
@@ -1416,6 +1161,196 @@ class TestThePlaceLockReadsWhatTheTurnActuallyWrote(unittest.TestCase):
         lock = self._lock({"choice": "Initialize Simulation"})
         self.assertEqual("", lock["description"])
         self.assertEqual("", lock["place_hold"])
+
+
+class TestEveryRoundCarriesThePlayersSheet(unittest.TestCase):
+    """"lots of wardrobe changes throughout the new sequence. verify for
+    encounter, goal, and rewards, we're using the character image in img2img
+    as well" (2026-09-23). Audited at the wire: turns, the standoff plate and
+    the reward all sent the sheet; every fight ROUND and the death reel did
+    not — ``hold_cast`` dropped it in the image layer, because a sheet in slot
+    1 recast the player and lost the challenger. Now it rides behind the cast
+    photograph, which keeps slot 1."""
+
+    def _wire(self, **kw):
+        import base64, io, tempfile, hashlib
+        import gemini_image_utils as giu
+        from PIL import Image
+        tmp = Path(tempfile.mkdtemp())
+        files = {}
+        for name, rgb in (("SHEET", (250, 0, 0)), ("PLATE", (0, 0, 250)), ("BOOK", (0, 250, 0))):
+            p = tmp / f"{name}.png"
+            Image.new("RGB", (64, 36), rgb).save(p)
+            files[name] = str(p)
+        by_hash = {hashlib.md5(open(v, "rb").read()).hexdigest(): k for k, v in files.items()}
+        sent = []
+
+        class R:
+            status_code = 200
+            text = ""
+            def raise_for_status(self): pass
+            def json(self):
+                b = io.BytesIO(); Image.new("RGB", (64, 36)).save(b, "PNG")
+                return {"candidates": [{"finishReason": "STOP", "content": {"parts": [
+                    {"inlineData": {"mimeType": "image/png",
+                                    "data": base64.b64encode(b.getvalue()).decode()}}]}}]}
+
+        def post(url, headers=None, json=None, timeout=None):
+            parts = json["contents"][0]["parts"]
+            sent.append([by_hash.get(hashlib.md5(base64.b64decode(p["inlineData"]["data"])).hexdigest(), "?")
+                         for p in parts if "inlineData" in p])
+            sent.append(parts[-1]["text"])
+            return R()
+
+        with mock.patch.object(giu, "GEMINI_API_KEY", "k"), \
+             mock.patch.object(giu.requests, "post", side_effect=post), \
+             mock.patch.object(game_identity, "character_reference_paths",
+                               return_value=[files["SHEET"]]):
+            giu.generate_gemini_img2img(
+                prompt="You drive the camera into his face.", caption="round",
+                reference_image_path=[files["PLATE"]], output_dir=tmp,
+                include_people=True, hold_cast=True, identity_paths=[files["SHEET"]],
+                cast_plates=[files["BOOK"]] if kw.get("book") else None)
+        return sent[0], sent[1]
+
+    def test_the_sheet_rides_behind_the_cast_photograph(self):
+        refs, prompt = self._wire()
+        self.assertEqual(refs, ["PLATE", "SHEET"])
+        self.assertIn("nothing on it goes on the other person", prompt)
+        self.assertNotIn("not a character-sheet recast", prompt)
+
+    def test_with_the_enemy_design_too_the_photograph_still_leads(self):
+        refs, _ = self._wire(book=True)
+        self.assertEqual(refs, ["PLATE", "SHEET", "BOOK"])
+
+
+class TestWhoTheStoryNamedIsWhoArrives(unittest.TestCase):
+    """bugs/20260923_225738: "A shifty figure in a black windbreaker darts
+    behind the van", "Sprint toward the shifty figure" on the slate — and the
+    travel clock opened a fight with the roster's riot officer in a yellow
+    hazmat suit. "the character we encountered that triggered the encounter
+    WASNT the character that appeared in the encounter."
+    """
+
+    BEAT = ("You advance through the downpour, your heavy boots splashing into "
+            "deep, oil-slicked puddles as you close the distance to the wreckage. "
+            "A shifty figure in a black windbreaker darts behind the van, dropping "
+            "a grease pencil in their haste to sabotage the scene before you arrive.")
+
+    def test_the_bug_beat_names_the_windbreaker(self):
+        got = encounter.story_subject(self.BEAT)
+        self.assertEqual(got["label"], "Shifty figure in a black windbreaker")
+        self.assertTrue(got["said"].startswith("A shifty figure"))
+
+    def test_people_who_are_not_there_do_not_count(self):
+        for beat in ("Inside is a vest left behind by the rival operative.",
+                     "Your own silhouette stretches across the sand.",
+                     "The guard lies dead in the gravel.",
+                     "Dust blows across the empty lot."):
+            self.assertIsNone(encounter.story_subject(beat), beat)
+
+    def _target(self, rows, **st):
+        with mock.patch.object(engine, "_load_history", return_value=rows), \
+             mock.patch.object(engine, "_load_state", return_value=dict({"turn_count": 1}, **st)):
+            return encounter.story_subject_target("t")
+
+    def test_the_newest_beat_is_the_target_and_beats_the_roster(self):
+        t = self._target([{"choice": "Head for the Smoldering Radio Van", "dispatch": self.BEAT}])
+        self.assertEqual(t["source"], "story")
+        self.assertIn("windbreaker", t["label"])
+        src = (Path(encounter.__file__)).read_text(encoding="utf-8")
+        body = src.split("def api_begin(", 1)[1]
+        # after the witness, before the brief's roster roll
+        self.assertLess(body.index("onscreen_threat_target(session_id, detection)"),
+                        body.index("story_subject_target(session_id)"))
+        self.assertLess(body.index("story_subject_target(session_id)"),
+                        body.index("build_encounter_brief("))
+
+    def test_a_fights_own_aftermath_and_the_last_foe_do_not_restart_it(self):
+        self.assertIsNone(self._target([{"choice": "[ENCOUNTER] A man", "dispatch": self.BEAT}]))
+        self.assertIsNone(self._target(
+            [{"choice": "Look around", "dispatch": self.BEAT}],
+            encounter_last_label="shifty figure in a black windbreaker", encounter_last_turn=1))
+
+    def test_the_brief_and_the_plate_are_told_it_is_them(self):
+        target = {"label": "Shifty figure in a black windbreaker", "source": "story",
+                  "said": "A shifty figure in a black windbreaker darts behind the van."}
+        seen = {}
+        def ask(prompt, **kw):
+            seen["prompt"] = prompt
+            return "{}"
+        with mock.patch.object(engine, "_ask", side_effect=ask), \
+             mock.patch.object(encounter, "roll_encounter_kind") as roll:
+            encounter.build_encounter_brief("t", target=target)
+        roll.assert_not_called()
+        self.assertIn("THE STORY HAS JUST PUT THIS CHARACTER IN FRONT OF THE PLAYER", seen["prompt"])
+        self.assertIn("darts behind the van", seen["prompt"])
+        plate = encounter.build_encounter_plate_prompt(
+            {"character": {"label": target["label"], "look": "black windbreaker"}},
+            img2img=True, target=target)
+        self.assertIn("step INTO it now", plate)
+        self.assertNotIn("has just struck it", plate)
+
+    def test_the_boss_is_not_told_the_player_hit_it(self):
+        plate = encounter.build_encounter_plate_prompt(
+            {"character": {"label": "Automated Signal Warden", "look": "wires"}},
+            img2img=True, target={"label": "Automated Signal Warden", "source": "boss"})
+        self.assertNotIn("has just struck it", plate)
+        self.assertIn("the one who holds this place", plate)
+
+
+class TestThePictureShowsTheRoundTheDicePlayed(unittest.TestCase):
+    """"it'll say i missed and the player is being damaged, while showing the
+    player damaging the enemy, it was backwards" (2026-09-23). The resolve
+    picture was drawn from the verb under an AGENCY LOCK that forbade the
+    enemy striking; the round's beats never reached it."""
+
+    def _round(self, you, foe):
+        beats = []
+        if you:
+            beats.append({"side": "you", "kind": "attack", "result": you, "crit": False})
+        if foe:
+            beats.append({"side": "foe", "kind": "strike", "result": foe,
+                          "move": "CRUSHING GRIP", "crit": False})
+        return {"beats": beats, "verb": "Stomp the Signal Warden's head"}
+
+    def test_a_miss_and_his_hit_are_told_that_way_round(self):
+        lines = encounter.exchange_story(self._round("miss", "hit"), "Ghost",
+                                         "The Signal Warden", "Stomp the Signal Warden's head")
+        self.assertIn("MISSES", lines[0])
+        self.assertIn("no contact", lines[0])
+        self.assertIn("The Signal Warden hits Ghost with crushing grip", lines[1])
+        self.assertIn("Ghost TAKES the blow", lines[1])
+
+    def test_the_prompt_carries_the_order_and_drops_the_agency_lock(self):
+        ex = self._round("miss", "hit")
+        p = encounter.build_encounter_resolve_prompt(
+            {"character": {"label": "Signal Warden", "look": "wires"}},
+            ex["verb"], "confront", "wounded", exchange=ex)
+        self.assertIn("WHAT HAPPENS, IN THIS ORDER", p)
+        self.assertLess(p.index("MISSES"), p.index("TAKES the blow"))
+        self.assertNotIn("AGENCY LOCK", p)
+        self.assertNotIn("receiving the hit", p)
+        self.assertNotIn("the instant the verb lands", p)
+        self.assertNotIn("The verb happened", p)
+
+    def test_his_miss_does_not_hurt_the_player_and_a_ko_is_a_ko(self):
+        lines = encounter.exchange_story(self._round("ko", "miss"), "Ghost", "The Warden", "Sever it")
+        self.assertIn("CONNECTS", lines[0])
+        self.assertIn("goes down", lines[0])
+        self.assertIn("untouched", lines[1])
+
+    def test_without_an_exchange_nothing_changes(self):
+        p = encounter.build_encounter_resolve_prompt(
+            {"character": {"label": "Signal Warden", "look": "wires"}},
+            "Stomp it", "confront", "survive")
+        self.assertIn("AGENCY LOCK", p)
+
+    def test_the_flipbook_animates_the_round_not_the_verb(self):
+        src = Path(encounter.__file__).read_text(encoding="utf-8")
+        self.assertIn("exchange=exchange,", src.split("def api_resolve(", 1)[1])
+        self.assertIn("story=\" \".join(exchange_story(", src)
+        self.assertIn("beat=(_clip(story, \"\", 700) if story else", src)
 
 
 if __name__ == "__main__":

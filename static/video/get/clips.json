@@ -1,0 +1,93 @@
+{
+  "note": "Written by tools/cut_clips.py from tools/get_clips.json. Real recordings of the game.",
+  "clips": [
+    {
+      "name": "hero",
+      "src": "/static/video/get/hero.mp4",
+      "src720": "/static/video/get/hero-720.mp4",
+      "poster": "/static/video/get/hero.jpg",
+      "label": "",
+      "sub": "SWAT \u00b7 Luka 'Grizzly' Novak",
+      "seconds": 15.0,
+      "bytes": 12829097,
+      "bytes720": 3393830
+    },
+    {
+      "name": "create",
+      "src": "/static/video/get/create.mp4",
+      "src720": "/static/video/get/create-720.mp4",
+      "poster": "/static/video/get/create.jpg",
+      "label": "Anyone.",
+      "sub": "Three people, each from one line",
+      "seconds": 19.4,
+      "bytes": 2343427,
+      "bytes720": 849711
+    },
+    {
+      "name": "wear",
+      "src": "/static/video/get/wear.mp4",
+      "src720": "/static/video/get/wear-720.mp4",
+      "poster": "/static/video/get/wear.jpg",
+      "label": "Armed.",
+      "sub": "Jason Fleece, piece by piece",
+      "seconds": 15.5,
+      "bytes": 3097356,
+      "bytes720": 762910
+    },
+    {
+      "name": "arrive",
+      "src": "/static/video/get/arrive.mp4",
+      "src720": "/static/video/get/arrive-720.mp4",
+      "poster": "/static/video/get/arrive.jpg",
+      "label": "Anywhere.",
+      "sub": "The FIFTH CORNER \u00b7 SWAT \u00b7 CYBER HORROR",
+      "seconds": 18.0,
+      "bytes": 10119976,
+      "bytes720": 2765414
+    },
+    {
+      "name": "act",
+      "src": "/static/video/get/act.mp4",
+      "src720": "/static/video/get/act-720.mp4",
+      "poster": "/static/video/get/act.jpg",
+      "label": "Anything.",
+      "sub": "SWAT \u00b7 CYBER HORROR",
+      "seconds": 22.8,
+      "bytes": 24289494,
+      "bytes720": 5361434
+    },
+    {
+      "name": "fight",
+      "src": "/static/video/get/fight.mp4",
+      "src720": "/static/video/get/fight-720.mp4",
+      "poster": "/static/video/get/fight.jpg",
+      "label": "Attack.",
+      "sub": "CYBER HORROR \u00b7 Jean-Luc de la Croix",
+      "seconds": 8.0,
+      "bytes": 6435007,
+      "bytes720": 1661282
+    },
+    {
+      "name": "goal",
+      "src": "/static/video/get/goal.mp4",
+      "src720": "/static/video/get/goal-720.mp4",
+      "poster": "/static/video/get/goal.jpg",
+      "label": "Arrive.",
+      "sub": "The FIFTH CORNER \u00b7 Jason Fleece",
+      "seconds": 16.7,
+      "bytes": 18198734,
+      "bytes720": 4157835
+    },
+    {
+      "name": "key",
+      "src": "/static/video/get/key.mp4",
+      "src720": "/static/video/get/key-720.mp4",
+      "poster": "/static/video/get/key.jpg",
+      "label": "Access.",
+      "sub": "",
+      "seconds": 15.5,
+      "bytes": 4003269,
+      "bytes720": 1170992
+    }
+  ]
+}

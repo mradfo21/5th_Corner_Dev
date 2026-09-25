@@ -13,6 +13,9 @@ FILES = sys.argv[1:] or [
     "static/js/reactor_renderer.js",
     "static/js/moments.js",
     "static/js/editor_graph.js",
+    "static/js/pack.js",
+    "static/js/characters.js",
+    "static/js/account.js",
 ]
 
 CHECK = """

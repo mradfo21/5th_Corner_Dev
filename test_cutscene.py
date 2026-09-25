@@ -674,6 +674,31 @@ class TestApproachMood(_Isolated):
         self.assertEqual(seen.get("image_size"), cutscene.GRID_RENDER_SIZE,
                          "the grid is sliced into four; it needs the pixels")
 
+    def test_the_opening_asks_twice_before_it_gives_up(self):
+        """No plate to crop means a render that does not come back is a run
+        with no first frame (2026-09-23: one timeout, a blank start)."""
+        out_dir = Path(self._tmpdir.name) / "shots_retry"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        grid = out_dir / "grid.png"
+        Image.new("RGB", (480, 360), (80, 40, 20)).save(grid)
+        answers = [None, str(grid)]
+
+        def fake_t2i(**kwargs):
+            return answers.pop(0)
+
+        with patch.object(engine, "_get_image_dir", return_value=str(out_dir)), \
+             patch.object(engine, "IMAGE_ENABLED", True), \
+             patch("gemini_image_utils.GEMINI_API_KEY", "k"), \
+             patch("gemini_image_utils.generate_with_gemini",
+                   side_effect=fake_t2i) as t2i, \
+             patch.object(engine, "_to_web_image_url",
+                          side_effect=lambda p, s: "/images/" + Path(p).name):
+            result = cutscene.generate_shots(
+                None, session_id="t", mood="approach",
+                plate_role="destination")
+        self.assertEqual(t2i.call_count, 2)
+        self.assertEqual(len(result["shots"]), 4)
+
     def test_the_opening_prompt_never_describes_the_cast(self):
         """Every panel of the opening is required to be empty of people, and
         `world_anchor` with the character in it opened the prompt by describing

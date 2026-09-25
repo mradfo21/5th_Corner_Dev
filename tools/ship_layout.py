@@ -30,6 +30,7 @@ RUNTIME_MODULES: Tuple[str, ...] = (
     "api_client",
     "autoplay",
     "billing",
+    "characters",
     "choices",
     "coinop",
     "cost_tracker",
@@ -50,6 +51,7 @@ RUNTIME_MODULES: Tuple[str, ...] = (
     "presence",
     "pricing",
     "prompt_layers",
+    "provider_bridge",
     "prompts_store",
     "render_jobs",
     "run_local",
@@ -69,6 +71,9 @@ BUNDLE_TREES: Tuple[Tuple[str, str], ...] = (
     ("static", "static"),
     ("prompts", "prompts"),
     ("models", "models"),
+    # The shipped starter character (characters.STARTERS_DIR), copied into
+    # the player's own characters/ the first time the roster is read.
+    ("assets/characters", "assets/characters"),
 )
 
 BUNDLE_FILES: Tuple[Tuple[str, str], ...] = (
@@ -99,6 +104,7 @@ WRITABLE_DIRS: Tuple[str, ...] = (
     "lore/text",
     "assets/references",
     "assets/music",
+    "characters",
     "playtest_results",
 )
 

@@ -4,6 +4,8 @@
     python tools/build_exe.py            # build
     python tools/build_exe.py --clean    # throw away previous output first
     python tools/build_exe.py --run      # build, then launch what came out
+    python tools/build_exe.py --out D    # build into D/SOMEWHERE, leaving dist/ (and any
+                                         # saves in a build you play from there) alone
 
 Output lands in `dist/SOMEWHERE/`. That whole folder is the app: `SOMEWHERE.exe`
 plus the interpreter, the libraries and the game's content. Move the folder, not
@@ -51,7 +53,14 @@ def main(argv=None) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--clean", action="store_true", help="Delete build/ and dist/ first.")
     ap.add_argument("--run", action="store_true", help="Launch the result when done.")
+    ap.add_argument("--out", default="", help="Build into OUT/SOMEWHERE instead of dist/SOMEWHERE.")
     args = ap.parse_args(argv)
+    global OUT
+    extra = []
+    if args.out:
+        dist = Path(args.out).resolve()
+        OUT = dist / "SOMEWHERE"
+        extra = ["--distpath", str(dist), "--workpath", str(dist.parent / (dist.name + "-work"))]
 
     _need("PyInstaller", "pyinstaller")
     _need("webview", "pywebview")
@@ -64,7 +73,7 @@ def main(argv=None) -> int:
     print(f"building from {SPEC.name} - this takes a few minutes")
     started = time.time()
     result = subprocess.run(
-        [sys.executable, "-m", "PyInstaller", "--noconfirm", str(SPEC)],
+        [sys.executable, "-m", "PyInstaller", "--noconfirm", *extra, str(SPEC)],
         cwd=ROOT,
     )
     if result.returncode != 0:
@@ -93,13 +102,15 @@ def main(argv=None) -> int:
     example = OUT / ".env.example"
     if not (OUT / ".env").exists():
         example.write_text(
-            "# Rename this file to  .env  and put your key in it.\n"
+            "# Easiest: open ACCOUNT in the game, choose Gemini or OpenAI, paste the key.\n"
+            "# Or rename this file to  .env  and put your key in it (either one works;\n"
+            "# with both, ACCOUNT picks which one plays).\n"
             "# SOMEWHERE also looks in the folder you launch it from, in the\n"
             "# two directories above this one, and in %APPDATA%\\SOMEWHERE\\.\n"
             "# Without a key the game still runs, in offline mode, on canned text.\n"
             "\n"
             "GEMINI_API_KEY=\n"
-            "# OPENAI_API_KEY=\n"
+            "OPENAI_API_KEY=\n"
             "# ANTHROPIC_API_KEY=\n"
             "# ELEVENLABS_API_KEY=\n",
             encoding="utf-8",

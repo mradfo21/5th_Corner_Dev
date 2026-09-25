@@ -27,7 +27,9 @@ import pricing
 
 ROOT = Path(__file__).parent.resolve()
 SESSIONS_DIR = ROOT / "sessions"
-ANALYTICS_DIR = SESSIONS_DIR / "_analytics"
+# SOMEWHERE_ANALYTICS_DIR: a ledger of its own (tools/film_run.py --first-launch
+# films a machine that has never spent anything).
+ANALYTICS_DIR = Path(os.environ.get("SOMEWHERE_ANALYTICS_DIR") or SESSIONS_DIR / "_analytics")
 DB_PATH = ANALYTICS_DIR / "usage.db"
 
 _lock = threading.Lock()
@@ -285,6 +287,27 @@ def _log_wire(model: str, payload: Any, response: Any, latency_ms: int) -> None:
         print(f"[COST TRACKER] wire log failed (non-fatal): {e}", flush=True)
 
 
+def _note_gemini_refusal(response: Any) -> None:
+    """A Gemini key out of quota or refused: tell the HUD (provider_bridge)."""
+    try:
+        import provider_bridge
+        status = getattr(response, "status_code", 0)
+        if status in (401, 403, 429):
+            provider_bridge.note_problem("gemini", status, provider_bridge._err_text(response))
+        elif status == 200:
+            provider_bridge.note_ok("gemini")
+    except Exception:
+        pass
+
+
+def _openai_answers_gemini() -> bool:
+    try:
+        import provider_bridge
+        return provider_bridge.active()
+    except Exception:
+        return False
+
+
 def _install_wire_meter() -> None:
     try:
         import requests
@@ -298,8 +321,9 @@ def _install_wire_meter() -> None:
         model = _gemini_model(str(url or "")) if str(method).upper() == "POST" else None
         t0 = time.time()
         response = original(self, method, url, *args, **kwargs)
-        if model:
+        if model and not getattr(response, "_bridged", False):
             _log_wire(model, kwargs.get("json"), response, int((time.time() - t0) * 1000))
+            _note_gemini_refusal(response)
         return response
 
     requests.Session.request = request
@@ -329,6 +353,10 @@ def record_usage(session_id: str, service_type: str, provider: str, model: str, 
     try:
         if success and _claim_wire_logged(service_type, provider, operation, output_units, model):
             return None  # this picture was already logged from the HTTP call
+        if provider == "gemini" and service_type in ("text", "image") and _openai_answers_gemini():
+            # OpenAI chosen in ACCOUNT: this "Gemini" call was answered by
+            # OpenAI, and provider_bridge logged it at OpenAI's model.
+            return None
         init_db()
         cost_usd = None
         if success:

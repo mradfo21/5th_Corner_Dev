@@ -12,7 +12,11 @@ history and the real design document.
 
 ## 1. What this is
 
-**SOMEWHERE** is an AI-driven first-person survival horror game where nothing is
+**ABYSS** (the player-facing name since 2026-09-25; it was GOD before that,
+and it is still SOMEWHERE in the code, the env vars and the `%APPDATA%\SOMEWHERE`
+folder, which hold players' keys and characters and are never renamed) — tagline
+"When you stare into the abyss, the abyss stares back." **SOMEWHERE** is an
+AI-driven first-person survival horror game where nothing is
 pre-drawn. Every frame is generated as you play. You are a photojournalist in
 1993 at the fence of a quarantined facility in the Four Corners desert — hence
 the repo name, *5th Corner*.
@@ -106,8 +110,11 @@ anywhere. Grep `add_url_rule` in `api.py` for the gameplay routes and
 | `api.py` | ~4.9k | The Flask app, route mounting, studio/admin/render/billing endpoints, credit gating |
 | `static/js/standalone.js` | ~27k | The entire game client |
 | `static/css/standalone.css` | ~14.6k | All of the UI |
-| `encounter.py` | ~4.1k | Confrontation Moments: briefs, lanes, plates, resolution |
-| `game_identity.py` | ~3k | The cast sheet — who you play as, the level, the camera |
+| `encounter.py` | ~5.6k | Confrontation Moments: briefs, lanes, plates, the roll (`roll_exchange`), resolution |
+| `combat.py` | ~900 | The fight's rules — d20 vs AC/DC, damage dice, initiative, morale, death saves, two HP bars — and the round as beats. The only place a fight is decided. Pure; `test_combat.py`; `tools/encounter_length_probe.py` for pacing |
+| `run_tape.py` | ~700 | THE TAPE: every run recorded as it plays (`sessions/<id>/runs/<run>/tape.json` + hard-linked frames that survive New Game's media purge), one pacing rule (`timing`) for the player and the export, and the export itself (shot pack zip: numbered frames, `shots.json` with each shot's first/last frame and video prompt, captions, MP4 animatic). Served under `/api/reel/`; the player is `Reel` in standalone.js; `test_run_tape.py` |
+| `game_identity.py` | ~3k | The cast sheet — the level, the camera, and who you play as when a run has no Character. `get_spec()` lays the run's Character over the character block; editors read and write `raw_spec()` |
+| `characters.py` | ~1.6k | CHARACTERS — the player as a thing the game owns, on disk in `characters/<id>/` (outside sessions, prompts and Worlds; a reset never touches it; a packaged build keeps it in `%APPDATA%\SOMEWHERE\characters`; every JSON write is fsynced with a `.bak` the reader falls back to). One line + pictures → a brief → a four-view A-pose TURNAROUND on a key colour (pro model, 2K, checked, one retry) → cut out → words READ OFF the render → idle hero + face sheet. The run points at one (`state.character_id` / `look_id`); the sim is shown only the turnaround. The pack lives on the character: items keep their plates, WEAR is a fitting (from the base look, cached by outfit), the run takes a new look at its next turn AND before every beat that draws the player (`engine.adopt_current_look`, `api._DRAWS_THE_PLAYER` — the reward, a fight, a photo); STYLE/CHANGE SOMETHING redraw the base and put what they wear back on over it. `/api/characters*`, `/api/character*`; screens in `static/js/characters.js` (PLAY → select/create → the picker) and the pack in `static/js/pack.js`. Starter: `assets/characters/`. `test_characters.py`; design record `docs/plans/CHARACTER_SYSTEM_PLAN.md` |
 | `cutscene.py` | ~1.1k | The 4-shot montage |
 | `look_book.py` | ~1.3k | The run's contact sheet: world sheet + one designed plate per roster entry, shot in the background at reset, attached to frames and encounters; the editor's Look Book desk shows and redoes each stage |
 | `choices.py` | ~940 | Choice generation, grounded in the current frame |
@@ -150,9 +157,11 @@ of day and the lighting line — is rolled once at reset, after the World bind,
 and never moves: the light is the run's identity, not a tension dial. The run
 also knows its goal (`level_goal`) and whether it has been reached
 (`goal_reached_turn`, the consequence model's verdict). The goal is one thing you can see — `goal.py`: a name, a why and a look invented at reset, drawn into the first frame, found on every settled picture (`/api/goal/sight`) and tagged by `GoalTag` in standalone.js. Injuries persist in
-the prose (the previous beat is always in the prompt), not as HP
-(`DAMAGE_SYSTEM_ENABLED` is off); the one mechanical flag,
-`player_state.condition`, is read only by the next fight's odds.
+the prose (the previous beat is always in the prompt), not as turn-by-turn HP
+(`DAMAGE_SYSTEM_ENABLED` is off). A FIGHT is played by tabletop rules
+(`combat.py` — d20s, two HP bars, see docs/MOMENTS.md); the player's HP lives
+in `player_state.hp` across the run and `player_state.condition` is derived
+from it.
 
 **Moments** (`docs/MOMENTS.md` — read it before touching any of them) are
 full-screen cinematics layered over a *paused, not destroyed* world.
@@ -220,6 +229,27 @@ earlier one.
   **both**; "wire it into the editor that is actually shipped" is a commit
   message in this repo for a reason.
 
+- **The /get page's clips** (`templates/download.html`, `static/video/get/`)
+  are real footage, re-shot with `python tools/refresh_get.py` whenever the
+  game changes: it films a run in each Experience (The FIFTH CORNER, SWAT,
+  CYBER HORROR), three characters being made, one character suited up piece
+  by piece (a `kit` from `tools/get_kit/`) and a first launch, in a sandbox
+  (`tools/film_run.py`), finds
+  each clip's moment in the film's timeline (`tools/get_shoot.json` names
+  moments — "last_fight", "create", "key" — never seconds), cuts candidates
+  with `tools/cut_clips.py` and opens a before/after review page;
+  `--publish` puts them on the site. Every clip word starts with A, for
+  ABYSS (Anyone. Armed. Anywhere. Anything. Attack. Arrive. Access.), and
+  `hide_characters` keeps the local "Ghost" (Call of Duty's character, in
+  Matt's roster only) out of every film's roster copy. If a game change renames a body class
+  the finder reads (`moment-encounter`, `char-open`, `keys-open`,
+  `pack-open`, `moment-cutscene`, `opening-overture`, `turn-active`) or a
+  harness log line (`battle rN: … them X->Y`, `created '…'`,
+  `CREATE: submitted`, `ACT: typing`, `WEAR: putting on` / `new pose
+  developed`, `GOAL: walking to` … `GOAL: took`, `ACCOUNT: choosing`,
+  `verdict:`), update `refresh_get.find` with it. Typed words (an ACT, a
+  character's line) are burned over the clip as a caption by `cut_clips`,
+  because the game's own input is too small to read in a clip.
 - `static/menu/background_loop.mp4` — the start menu's background film,
   played muted and looping under the title by `Signal` (standalone.js). Swap
   the file to swap the splash; absent, the menu is the black card. `*.mp4` is
@@ -235,6 +265,21 @@ that runs the whole loop offline in milliseconds.** That is how the suite stays
 fast and how the game still boots on a machine with no credentials — and also
 the single most common false alarm: mock mode looks broken because the prose is
 canned and there are no pictures. It says so at startup.
+
+**Which provider plays is the player's choice, in ACCOUNT** (PLAYS ON: Gemini
+or OpenAI, stored in `%APPDATA%\SOMEWHERE\account.json` beside `keys.env`).
+Gemini is the default: nothing below engages unless OpenAI was picked there
+and has a key, so a `.env` with both keys plays exactly as before.
+The game still speaks Gemini everywhere; with OpenAI chosen,
+`provider_bridge.py` hooks `requests.Session.request` and answers every Gemini
+`generateContent` POST with the matching OpenAI call (chat, images
+generate/edit, transcription), and `ai_provider_manager`'s getters report the
+Gemini wire so every path takes it. So a new Gemini call site works on OpenAI
+for free — but a new guard must ask `provider_bridge.can_call_gemini_api()`,
+not `GEMINI_API_KEY`, or it switches itself off for an OpenAI player. The
+bottom-left tag is `provider_bridge.backend_label()`. `test_provider_bridge`
+holds the invariants; `tools/film_run.py --first-launch gemini|openai` plays a
+friend's first launch (no key → ACCOUNT → paste → play) through `PT_ACCOUNT`.
 
 ---
 
@@ -422,6 +467,18 @@ it. Keep that; it is the reason the codebase is navigable at this size.
   suites posts `/api/reset` against the REAL `sessions/default` (the sandbox
   leaves sessions alone by design) — it wiped run 9 mid-investigation. Don't
   run the suites with a run you care about on screen.
+  A harness that boots its OWN server (`_claude_battle_run.py`,
+  `_claude_death_probe.py`) is not isolated by the separate port and session
+  either: every World bind — a reset, a level stitch — writes the World into
+  the ONE live prompt file (`worlds_store.load_world`), and every server on
+  the machine hot-reloads it. On 2026-09-23 a battle run beside a real
+  playtest swapped the place and the protagonist under the player ("i was
+  teleported to a random new location with a new character") and left the
+  live file on the riot-zone World. Such a harness must call
+  `authoring_sandbox.engage()` before it spawns the server, so the
+  `SOMEWHERE_*` paths the child inherits point at a temp copy. And a
+  `PT_CDP` playtest no longer "puts the page back" on `/standalone` at the
+  end: that loaded `default` on the harness's server, which wrote it.
 
 - **The loop trace, and what it left open.** On 2026-09-20 every handoff in
   the loop was traced in the source and then in four traced runs of the real
@@ -476,7 +533,10 @@ it. Keep that; it is the reason the codebase is navigable at this size.
     is active / boot the launcher in mock mode against this machine's active
     World). `test_standalone_e2e` used to be in that list and is not any more
     — it engages the authoring sandbox and plays the shipped Experience; the
-    same treatment would fix `test_exit_button`.
+    same treatment would fix `test_exit_button`. As of 2026-09-24 every
+    `test_standalone_e2e` test is red again: in mock mode the page never shows
+    a `.choice-btn` within 15 s. It fails the same way on a copy of the tree
+    from before the Characters build, so it predates that; not yet investigated.
 
 - **The live prompt file is a union of game doctrine and World authoring, and
   a World bind rewrites it.** Understand this before editing it: whatever you

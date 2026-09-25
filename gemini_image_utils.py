@@ -4,6 +4,7 @@ Uses Gemini 2.5 Flash Image for ultra-fast, high-quality image generation
 """
 
 import json
+import re
 import requests
 import base64
 from pathlib import Path
@@ -63,10 +64,10 @@ def save_pil_atomic(img, path, **kwargs) -> None:
 # CRITICAL DEBUG: Log API key status at import time
 if not GEMINI_API_KEY:
     print("[GEMINI INIT] CRITICAL: GEMINI_API_KEY is NOT SET! Images will not generate!")
-    print(f"[GEMINI INIT] Environment variable: {os.getenv('GEMINI_API_KEY', 'NOT SET')}")
-    print(f"[GEMINI INIT] Config.json value: {config.get('GEMINI_API_KEY', 'NOT SET')}")
+    print(f"[GEMINI INIT] Environment variable set: {bool(os.getenv('GEMINI_API_KEY'))}")
+    print(f"[GEMINI INIT] Config.json value set: {bool(config.get('GEMINI_API_KEY'))}")
 else:
-    print(f"[GEMINI INIT] GEMINI_API_KEY loaded: {GEMINI_API_KEY[:20]}...{GEMINI_API_KEY[-8:]}")
+    print("[GEMINI INIT] GEMINI_API_KEY loaded")
     print(f"[GEMINI INIT] Ready to generate images")
 
 # Google Gemini models
@@ -197,6 +198,16 @@ ZOOM_FACTOR = 1.10            # Reduced from 1.35 (if re-enabled, use subtle zoo
 USE_DOWNSAMPLED_FOR_IMG2IMG = True   # Set to False to use full-res references
 # ============================================================================
 
+# "shot" as violence, not as camera: "was shot", "been shot", "got shot",
+# "gets shot", "shot at", "shot dead", "shot him/her/them/you". The camera's
+# "shot" (establishing shot, the shot, shot 3) is left alone.
+_SHOT_VIOLENCE = re.compile(
+    r"\b((?:was|were|been|being|got|gets|get|is|are)\s+)shot\b"
+    r"|\bshot(?=\s+(?:at|dead|down|him|her|them|you|me|us|in\s+the)\b)",
+    re.IGNORECASE,
+)
+
+
 def _sanitize_for_safety(prompt: str) -> str:
     """
     Sanitize prompts to avoid Gemini safety blocks while keeping creative intent.
@@ -238,8 +249,11 @@ def _sanitize_for_safety(prompt: str) -> str:
         "unloads into": "strikes",
         "opens fire": "discharges weapon",
         "shoots": "fires at",
-        "shooting": "firing at",
-        "shot": "fired at",
+        # "shot" alone is not here: in these prompts it is nearly always the
+        # CAMERA's word ("establishing shot", "the shot", "shotlist"), and the
+        # old bare "shot" -> "fired at" turned the opening montage's own
+        # instructions into "Establish the fired at from scratch". Only the
+        # violent uses are rewritten (_SHOT_VIOLENCE below).
         "claws": "appendages",
         "teeth": "dental structures",
         "jaws": "mouth structures",
@@ -307,13 +321,19 @@ def _sanitize_for_safety(prompt: str) -> str:
     
     sanitized = prompt
     replacements_made = []
+    import re
     for unsafe, safe in replacements.items():
-        # Case-insensitive replacement
-        import re
-        pattern = re.compile(re.escape(unsafe), re.IGNORECASE)
+        # Whole words, case-insensitive. This used to match inside words, so
+        # "screenshot" became "screenfired at", "medieval" became
+        # "medinegative", "Hispanic" became "Hisalarm" and "shotgun" became
+        # "fired atgun" — in prompts nobody could see.
+        pattern = re.compile(r"\b" + re.escape(unsafe) + r"\b", re.IGNORECASE)
         if pattern.search(sanitized):
             replacements_made.append(f"{unsafe}->{safe}")
             sanitized = pattern.sub(safe, sanitized)
+    if _SHOT_VIOLENCE.search(sanitized):
+        replacements_made.append("shot (violent)->fired at")
+        sanitized = _SHOT_VIOLENCE.sub(lambda m: (m.group(1) or "") + "fired at", sanitized)
     
     if replacements_made:
         print(f"[SAFETY SANITIZE] Replaced {len(replacements_made)} terms to avoid content filter")
@@ -338,6 +358,7 @@ def generate_with_gemini(
     object_subject: bool = False,
     spec: dict | None = None,
     image_size: str | None = None,
+    environment_only: bool = False,
 ) -> str:
     """
     Generate an image using Google Gemini (Nano Banana).
@@ -357,6 +378,14 @@ def generate_with_gemini(
         object_subject: When True with ``portrait_mode``, the subject is a
             machine/object (monitor, radio). Emit a close-up of THAT object
             and keep the anti-person rule so the model cannot invent a face.
+        environment_only: The picture has NOBODY in it, whatever the camera
+            mode — the opening montage's cold-open panels. In third person
+            this used to get "THE PLAYER CHARACTER IS IN THIS SHOT ... ignore
+            any instruction that demands an empty scene" appended, and
+            game_identity.reconcile deleted the montage's own "EMPTY OF
+            PEOPLE" line, so a stranger with no identity plate stood in the
+            opening (reported: "a random character in the opening cutscene,
+            then our hero").
         
     Returns:
         Local path to the saved image (e.g., "/images/filename.png")
@@ -371,10 +400,15 @@ def generate_with_gemini(
         print(f"[GEMINI IMG] generate_with_gemini() CALLED - caption contains special characters", flush=True)
     print(f"[GEMINI IMG] API key available: {bool(GEMINI_API_KEY)}, length: {len(GEMINI_API_KEY) if GEMINI_API_KEY else 0}", flush=True)
     
-    if not GEMINI_API_KEY:
+    try:
+        import provider_bridge
+        _can_draw = provider_bridge.can_call_gemini_api()
+    except Exception:
+        _can_draw = bool(GEMINI_API_KEY)
+    if not _can_draw:
         print("[GEMINI IMG] FATAL: No API key! Cannot generate image!")
         return None
-    if not GEMINI_API_KEY or not GEMINI_API_KEY.strip():
+    if not _can_draw:
         raise ValueError(
             "ERROR: Google Gemini API key not configured!\n"
             "Get your key at: https://aistudio.google.com/apikey\n"
@@ -425,7 +459,7 @@ def generate_with_gemini(
     #                   character is the subject and the anti-person rule is
     #                   the exact opposite of what they asked for.
     #   neither       — first person; the shipped environment-only rule holds.
-    hero_mode = (not portrait_mode) and game_identity.shows_character(spec)
+    hero_mode = (not portrait_mode) and (not environment_only) and game_identity.shows_character(spec)
     if hero_mode:
         structured_prompt = structured_prompt + (
             "\n\nCRITICAL - THE PLAYER CHARACTER IS IN THIS SHOT:\n"
@@ -489,7 +523,9 @@ def generate_with_gemini(
     # camera directive from engine.build_image_prompt(); this pass rewrites the
     # first-person wording baked into the JSON template and the constant blocks
     # assembled around it. "raw" so we don't stack a second directive.
-    if not portrait_mode:
+    # An environment-only picture skips it: in third person, reconcile's whole
+    # job is deleting "no people" lines, which here are the point.
+    if not portrait_mode and not environment_only:
         structured_prompt = game_identity.apply(structured_prompt, "raw", spec)
 
     # Sanity bound only — see MAX_PROMPT_CHARS. Warn loudly if we ever hit it,
@@ -550,10 +586,17 @@ def generate_with_gemini(
         # Make the request with REDUCED timeout (30s) to prevent death sequence hangs
         # Gemini Pro can hang indefinitely on some prompts, especially death scenes
         max_retries = 1  # Reduced from 2 - don't waste time retrying slow calls
+        # ...but 30s is the flash model's budget. The opening montage is one
+        # gemini-3-pro-image render at 2K, which lands in 20-30s on a good day:
+        # on 2026-09-23 it came back at 30.0s, the call was abandoned, and the
+        # run opened with no montage and no first frame at all. A pro or 2K+
+        # render gets the same budget as an img2img call (see below).
+        _slow = "pro" in str(model or "").lower() or str(image_size or "").upper() in ("2K", "4K")
+        timeout_s = 75 if _slow else 30
         for attempt in range(max_retries):
             try:
                 print(f"[GOOGLE GEMINI] Sending API request (attempt {attempt + 1})...", flush=True)
-                response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+                response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_s)
                 print(f"[GOOGLE GEMINI] Got response, status: {response.status_code}", flush=True)
                 response.raise_for_status()
                 break
@@ -562,7 +605,7 @@ def generate_with_gemini(
                     print(f"[GOOGLE GEMINI] Timeout on attempt {attempt + 1}, retrying...")
                     continue
                 else:
-                    print(f"[GOOGLE GEMINI] ERROR: TIMEOUT after 30s - Gemini API not responding!")
+                    print(f"[GOOGLE GEMINI] ERROR: TIMEOUT after {timeout_s}s - Gemini API not responding!")
                     return None  # Graceful fallback instead of crash
         
         print(f"[GOOGLE GEMINI] Parsing JSON response...", flush=True)
@@ -996,6 +1039,7 @@ def generate_gemini_img2img(
     model: str | None = None,
     reference_labels: dict | None = None,
     lead_reference: str | None = None,
+    grid_motion: str | None = None,
     design_refs: list[str] | None = None,
 ) -> str:
     """
@@ -1109,12 +1153,30 @@ def generate_gemini_img2img(
     # labeled as the previous place, not as who to draw.
     if identity_paths and not hold_cast:
         image_paths = identity_paths + [p for p in image_paths if p not in identity_set]
+    elif identity_paths and hold_cast:
+        # A fight round: the cast photograph leads (it is who is in this shot
+        # and where they stand) and the player's sheet rides right behind it.
+        # This used to drop the sheet altogether — a sheet in slot 1 recast
+        # the player and lost the challenger — so every round and the death
+        # reel of every fight were drawn with nothing saying what the player
+        # wears, and the vest changed from round to round (2026-09-23: "lots
+        # of wardrobe changes … verify for encounter, goal, and rewards, we're
+        # using the character image in img2img"). Behind the photograph it
+        # holds the outfit without taking the cast.
+        rest = [p for p in image_paths if p not in identity_set]
+        image_paths = rest[:1] + identity_paths + rest[1:]
     # Close-up plates sit immediately behind the player's own sheet and ahead of
     # the continuity frames, for the same slot-order reason: trailing plates
     # lose. The player's sheet keeps slot 1 so the protagonist is never the one
     # recast; the discovered subject takes the next slot so their likeness beats
     # the forty pixels of them in the previous frame; place and light follow.
-    if cast_plates:
+    if cast_plates and hold_cast:
+        # Same slot rule for the fight: the photograph, the player's sheet,
+        # then the other person's design.
+        rest = [p for p in image_paths if p not in identity_set and p not in cast_set]
+        image_paths = (rest[:1] + [p for p in image_paths if p in identity_set]
+                       + cast_plates + rest[1:])
+    elif cast_plates:
         image_paths = (
             [p for p in image_paths if p in identity_set]
             + cast_plates
@@ -1442,7 +1504,11 @@ def generate_gemini_img2img(
             "COPY from the reference (non-negotiable):\n"
             "✅ BOTH faces, hair, clothes, gender, build — pixel-level likeness\n"
             "✅ The same place, light, materials, and sky\n"
-            "✅ The same two people. No third person. No character-sheet recast.\n"
+            "✅ The same two people. No third person drawn from the character sheet.\n"
+            + ("✅ The PLAYER's clothes are the ones on the CHARACTER SHEET, every "
+               "garment, exactly — the sheet is their outfit, not a new person, "
+               "and nothing on it goes on the other person.\n"
+               if identity_paths else "") +
             "\n"
             "CHANGE (required — a posed copy is a failure):\n"
             "→ BODY POSITION and CONTACT so the instruction's verb is visible\n"
@@ -1484,7 +1550,10 @@ def generate_gemini_img2img(
         flipbook_grid_note = (
             f"\n\nCRITICAL - {shape} GRID STRUCTURE:\n"
             f"Preserve the {shape} grid structure from the layout template. "
-            f"Each panel must show a slightly different moment in time. "
+            # A turn's grid is one short motion; a caller whose panels travel
+            # further (the goal reward's continuous take) says how far here,
+            # instead of being told every panel is only "slightly" later.
+            f"{grid_motion or 'Each panel must show a slightly different moment in time.'} "
             f"The output MUST be a {shape} grid of {rows * cols} panels."
         )
         structured_prompt = structured_prompt + flipbook_grid_note
@@ -1550,6 +1619,10 @@ def generate_gemini_img2img(
             "weight shifting, hands on the other body, a torso reacting. "
             "A posed conversation with no contact is a failure.\n"
             "Keep the same place and light."
+            + ("\nThe CHARACTER SHEET is the PLAYER's face and outfit: the "
+               "player wears exactly what it shows, every garment, in every "
+               "frame. It is not a third person, and nothing on it goes on the "
+               "other person." if identity_paths else "")
         )
     elif include_people:
         # Encounter / confrontation restage: KEEP the player AND ADD a new
@@ -1674,8 +1747,8 @@ def generate_gemini_img2img(
         )
     elif hold_cast:
         negative_emphasis = (
-            "\n\nNot a posed standoff, not a new face, not a character-sheet "
-            "recast, not a third person, not empty hands at a distance."
+            "\n\nNot a posed standoff, not a new face, not a third person, "
+            "not a change of the player's clothes, not empty hands at a distance."
         )
     elif include_people or game_identity.shows_character(spec):
         negative_emphasis = (

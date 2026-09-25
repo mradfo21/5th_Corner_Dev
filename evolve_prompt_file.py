@@ -124,6 +124,13 @@ def evolve_world_state(
     """
     api_key = _get_api_key()
     if not api_key:
+        try:
+            import provider_bridge   # OpenAI chosen in ACCOUNT answers this call
+            if provider_bridge.active():
+                api_key = "via-openai"
+        except Exception:
+            pass
+    if not api_key:
         print("[WORLD EVOLUTION V3] ERROR: No API key found!")
         return {"world_prompt": "", "evolution_summary": ""}
 

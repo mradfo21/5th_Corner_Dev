@@ -1,0 +1,29 @@
+{
+ "id": "base-40c293",
+ "kind": "base",
+ "parent": "",
+ "worn": [],
+ "status": "ready",
+ "body": "Mid-30s, athletic build, light skin, rugged face with light stubble, shaggy medium-length dirty blonde hair",
+ "garments": {
+  "neck": "Red patterned bandana tied around the neck, grey industrial gas mask hanging below it",
+  "torso": "White short-sleeved crewneck t-shirt",
+  "outer": "Blue denim utility vest with 'PRESS' printed in bold white letters on the chest and back, featuring front pockets",
+  "legs": "Dark blue straight-leg denim jeans",
+  "feet": "Brown leather lace-up work boots",
+  "held": "Vintage 35mm SLR camera with a black leather strap slung across the torso"
+ },
+ "wardrobe_line": "White t-shirt, blue denim PRESS vest, red bandana, grey gas mask, dark blue jeans, brown leather boots, 35mm camera",
+ "palette": "blue, white, red, brown, grey",
+ "check": {
+  "figures": 4,
+  "same_person_and_outfit": true,
+  "back_view_is_a_back": true,
+  "full_length": true,
+  "problem": ""
+ },
+ "created": 1790225656.805,
+ "finished": 1790225656.805,
+ "model": "gemini-3-pro-image",
+ "secs": 0
+}

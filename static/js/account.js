@@ -2,10 +2,13 @@
 // The sheet that opens on the right of the start menu. One surface for the
 // two ways GOD is paid for:
 //
-//   On this machine (the desktop app): your own keys. The sheet shows what
-//   they have cost this month (cost_tracker's estimate), the monthly limit,
-//   every provider key, and a CUSTOM key — any OpenAI-compatible address and
-//   model, which becomes the narrator.
+//   On this machine (the desktop app): your own keys. First, what the game
+//   plays on — a dropdown (Gemini or OpenAI) and that provider's key, checked
+//   with one real call the moment it is pasted (provider_bridge.check). Then
+//   what the keys have cost this month (cost_tracker's estimate), the
+//   monthly limit, and the optional keys (voice, live video, other picture
+//   models) plus a CUSTOM key — any OpenAI-compatible address and model,
+//   which becomes the narrator.
 //
 //   On a hosted server: a wallet that belongs to this browser (no sign-in).
 //   See the balance, ADD MONEY through Stripe Checkout, the limit, and the
@@ -28,6 +31,11 @@
   let onClose = null;
   let payHost = null;     // the node Stripe's embedded checkout is mounted in
   let embedded = null;    // that checkout, while it is up
+  let aiPick = "";        // the provider showing in the dropdown
+  let aiReplacing = false; // CHANGE pressed: show the paste field over a stored key
+  let aiChecking = false;
+  let aiPending = "";     // the key being checked, so the field keeps its dots meanwhile
+  let moreOpen = false;   // MORE KEYS expanded
 
   const $ = (id) => document.getElementById(id);
 
@@ -128,6 +136,79 @@
       }
       render();
       refreshUsage();
+    });
+  }
+
+  // ── what the game plays on ──────────────────────────────────────────
+  const AI_NAMES = { gemini: "Gemini", openai: "OpenAI" };
+  function aiInfo() { return (keys && keys.ai) || {}; }
+  function aiProvider(id) { return (aiInfo().providers || []).find((p) => p.id === id) || { id, set: false, check: {} }; }
+  function keyHint(id) {
+    const p = (keys && keys.providers || []).find((x) => x.id === id);
+    return p && p.hint && p.hint !== "set" ? p.hint : "";
+  }
+  function looksLike(v) {
+    v = String(v || "").trim();
+    if (v.startsWith("sk-")) return "openai";
+    if (v.startsWith("AIza")) return "gemini";
+    return "";
+  }
+
+  // Pick in the dropdown, or paste a key: saved, then proven with one call.
+  function choose(provider, value) {
+    return guarded(async () => {
+      aiChecking = !!value;
+      aiPending = value || "";
+      aiPick = provider;
+      setMsg("");
+      render();
+      try {
+        const body = { provider };
+        if (value) body.value = value;
+        const r = await call("/api/keys/provider", json("PUT", body));
+        keys = r;
+        aiReplacing = false;
+        const c = r.check;
+        if (value && c) setMsg(c.ok ? "Saved. " + AI_NAMES[provider] + " works." : "Saved, but it didn't work: " + c.message, c.ok ? "ok" : "error");
+        else if (!value) setMsg("");
+      } finally {
+        aiChecking = false;
+        aiPending = "";
+        render();
+        refreshUsage();
+      }
+    });
+  }
+
+  function checkAgain(provider) {
+    return guarded(async () => {
+      aiChecking = true;
+      render();
+      try {
+        const r = await call("/api/keys/check", json("POST", { provider }));
+        if (keys) keys.ai = r.ai;
+        const c = r.check || {};
+        setMsg(c.ok ? AI_NAMES[provider] + " works." : c.message || "That didn't work.", c.ok ? "ok" : "error");
+      } finally {
+        aiChecking = false;
+        render();
+      }
+    });
+  }
+
+  function removeAiKey(provider) {
+    return guarded(async () => {
+      keys = await call("/api/keys", json("PUT", { id: provider, value: "" }));
+      aiReplacing = false;
+      setMsg(AI_NAMES[provider] + " key removed.", "ok");
+      render();
+    });
+  }
+
+  function openKeyPage(provider) {
+    const url = aiProvider(provider).key_page;
+    call("/api/keys/open_page", json("POST", { provider })).catch(() => {
+      try { window.open(url, "_blank", "noopener"); } catch (_) {}
     });
   }
 
@@ -328,6 +409,87 @@
     return out;
   }
 
+  // ── what it plays on (this machine only) ────────────────────────────
+  function aiBlock() {
+    const out = h("section", { class: "acct-section acct-ai" });
+    const ai = aiInfo();
+    if (!aiPick) aiPick = ai.chosen || ai.provider || "gemini";
+    const pick = aiPick;
+    const name = AI_NAMES[pick];
+    const prov = aiProvider(pick);
+    out.appendChild(label("PLAYS ON"));
+
+    const select = h("select", { class: "acct-select", "aria-label": "Provider",
+      onchange: (e) => { const v = e.target.value; aiReplacing = false; setMsg(""); choose(v, ""); } },
+      ["gemini", "openai"].map((id) => h("option", { value: id, text: AI_NAMES[id], selected: id === pick })));
+    out.appendChild(h("div", { class: "acct-fields" }, [field("PROVIDER", select)]));
+
+    const hint = keyHint(pick);
+    if (prov.set && !aiReplacing) {
+      out.appendChild(h("div", { class: "acct-field acct-keyline" }, [
+        h("span", { class: "acct-field-name", text: "KEY" }),
+        h("span", { class: "acct-keyval" }, [
+          h("span", { class: "acct-dots", text: "••••" + (hint || "") }),
+          h("span", { class: "acct-stored", text: "saved" }),
+        ]),
+        h("div", { class: "acct-actions" }, [
+          word("CHANGE", () => { aiReplacing = true; setMsg(""); render(); }),
+          word("REMOVE", () => removeAiKey(pick)),
+        ]),
+      ]));
+    } else {
+      const secret = input({ type: "password", placeholder: "Paste your " + name + " key", "aria-label": name + " key" });
+      if (aiChecking) { secret.value = aiPending; secret.disabled = true; }
+      secret.addEventListener("input", () => {
+        const other = looksLike(secret.value);
+        if (other && other !== aiPick) {
+          aiPick = other;
+          const v = secret.value;
+          setMsg("That's an " + AI_NAMES[other] + " key — switched to " + AI_NAMES[other] + ".", "");
+          render();
+          const again = document.querySelector("#acct-body .acct-ai input[type=password]");
+          if (again) { again.value = v; again.focus(); }
+        }
+      });
+      const go = () => { if (secret.value.trim()) choose(aiPick, secret.value.trim()); };
+      onEnter(secret, go);
+      const acts = [word(aiChecking ? "CHECKING…" : "SAVE", go, "go")];
+      if (aiReplacing) acts.unshift(word("CANCEL", () => { aiReplacing = false; render(); }));
+      out.appendChild(h("div", { class: "acct-field" }, [
+        h("span", { class: "acct-field-name", text: "KEY" }), secret, h("div", { class: "acct-actions" }, acts),
+      ]));
+      setTimeout(() => { try { if (!aiChecking && (!prov.set || aiReplacing)) secret.focus(); } catch (_) {} }, 0);
+    }
+
+    // Where it stands: proven by a real call, not by a key being present.
+    const c = prov.check || {};
+    const live = ai.provider === pick && !ai.mock;
+    let line = null;
+    if (aiChecking) {
+      line = h("p", { class: "acct-status is-wait" }, [h("span", { class: "acct-dot", "aria-hidden": "true" }), h("span", { text: "Asking " + name + " for one line…" })]);
+    } else if (prov.set && c.at) {
+      const models = [c.text_model && "story " + c.text_model, c.image_model && "pictures " + c.image_model].filter(Boolean).join(" · ");
+      line = h("p", { class: "acct-status " + (c.ok ? "is-ok" : "is-bad") }, [
+        h("span", { class: "acct-dot", "aria-hidden": "true" }),
+        h("span", { text: c.ok ? ("Works" + (models ? " · " + models : "")) : (c.message || "Didn't work.") }),
+        word("CHECK", () => checkAgain(pick)),
+      ]);
+    } else if (prov.set) {
+      line = h("p", { class: "acct-status" }, [h("span", { text: "Not checked yet." }), word("CHECK", () => checkAgain(pick))]);
+    }
+    if (line) out.appendChild(line);
+    if (!prov.set && !aiChecking) {
+      out.appendChild(h("p", { class: "acct-note" }, [
+        "No " + name + " key yet. ",
+        h("button", { type: "button", class: "acct-link", text: "Get one at " + (pick === "openai" ? "platform.openai.com" : "aistudio.google.com") + " ↗", onclick: () => openKeyPage(pick) }),
+      ]));
+    } else if (!live && ai.provider && ai.provider !== pick) {
+      out.appendChild(h("p", { class: "acct-note is-warn", text: "Playing on " + AI_NAMES[ai.provider] + " until this key is saved." }));
+    }
+    out.appendChild(h("p", { class: "acct-note", text: "Story and pictures both come from " + name + ", billed to your key. The key stays on this PC." }));
+    return out;
+  }
+
   // ── keys (this machine only) ────────────────────────────────────────
   function keyValue(p) {
     if (p.problem) return { text: "Won't work", tone: "warn" };
@@ -338,10 +500,16 @@
 
   function keysBlock() {
     const out = h("section", { class: "acct-section" });
-    out.appendChild(label("KEYS"));
     const custom = (keys && keys.custom) || {};
-    (keys.providers || []).forEach((p) => {
-      if (p.id === "openai" && custom.set) return; // the custom key rides the OpenAI slot
+    const extras = (keys.providers || []).filter((p) => p.id !== "gemini" && p.id !== "openai");
+    const on = extras.filter((p) => p.set).length + (custom.set ? 1 : 0);
+    out.appendChild(row("More keys", moreOpen ? "Hide" : (on ? on + " on" : "Optional"), {
+      tone: on ? "on" : "", expandable: true, open: moreOpen,
+      onclick: () => { moreOpen = !moreOpen; openRow = null; render(); },
+    }));
+    if (!moreOpen) return out;
+    out.appendChild(h("p", { class: "acct-note", text: "Voice, live video, other picture models, or a narrator on your own server. None are needed to play." }));
+    extras.forEach((p) => {
       const v = keyValue(p);
       const isOpen = openRow === p.id;
       out.appendChild(row(p.label || p.id, v.text, {
@@ -435,7 +603,9 @@
 
   // ── views ────────────────────────────────────────────────────────────
   function homeView() {
-    const body = [moneyBlock()];
+    const body = [];
+    if (isLocal()) body.push(aiBlock());
+    body.push(moneyBlock());
     if (isLocal()) body.push(keysBlock());
     const recent = recentBlock();
     if (recent) body.push(recent);

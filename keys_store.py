@@ -337,6 +337,10 @@ def set_key(provider_id: str, value: str, path: Optional[Path] = None) -> Dict[s
         refresh_runtime_keys(only={env})
     else:
         refresh_runtime_keys(blank={env})
+    if env == "OPENAI_API_KEY":
+        # engine built its OpenAI client at import (the narrator path when
+        # ai_config names an OpenAI model); a key saved now must reach it.
+        _rebind_openai_client()
     lifted = lift_auto_mock_if_possible()
     status = public_status(editable=True)
     status["lifted_mock"] = lifted
@@ -452,7 +456,57 @@ def public_status(*, editable: bool) -> Dict[str, Any]:
         "store": "local account file" if editable else "host",
         "providers": providers,
         "custom": custom_status(editable=editable),
+        "ai": _ai_status(),
     }
+
+
+def _ai_status() -> Dict[str, Any]:
+    """Which provider plays the game (ACCOUNT's dropdown). No secrets."""
+    try:
+        import provider_bridge
+        return provider_bridge.describe()
+    except Exception:
+        return {}
+
+
+# A key pasted under the wrong provider is the likeliest first-run mistake:
+# the two look nothing alike, so say which one it is.
+def _looks_like(value: str) -> str:
+    v = (value or "").strip()
+    if v.startswith("sk-"):
+        return "openai"
+    if v.startswith("AIza"):
+        return "gemini"
+    return ""
+
+
+def choose_provider(provider_id: str, value: Optional[str] = None,
+                    path: Optional[Path] = None) -> Dict[str, Any]:
+    """ACCOUNT's dropdown: play on Gemini or OpenAI, optionally with a new key.
+
+    Saves the key (when one is given) and the choice. Choosing OpenAI while a
+    CUSTOM key holds the OpenAI slot needs a real OpenAI key, and replaces the
+    custom one. Never returns the secret.
+    """
+    import provider_bridge
+    provider_id = str(provider_id or "").strip().lower()
+    if provider_id not in provider_bridge.PROVIDER_IDS:
+        raise ValueError("choose Gemini or OpenAI")
+    value = (value or "").strip()
+    if value:
+        looks = _looks_like(value)
+        if looks and looks != provider_id:
+            other = provider_bridge.PROVIDER_LABELS[looks]
+            raise ValueError(f"that's an {other} key — pick {other} above, or paste your "
+                             f"{provider_bridge.PROVIDER_LABELS[provider_id]} key")
+        if provider_id == "openai" and custom_status(editable=False).get("set"):
+            clear_custom(path)
+        set_key(provider_id, value, path)
+    elif provider_id == "openai" and custom_status(editable=False).get("set"):
+        raise ValueError("the custom key is using the OpenAI slot — paste your OpenAI key to switch")
+    provider_bridge.set_provider(provider_id)
+    lift_auto_mock_if_possible()
+    return public_status(editable=True)
 
 
 def custom_status(*, editable: bool) -> Dict[str, Any]:

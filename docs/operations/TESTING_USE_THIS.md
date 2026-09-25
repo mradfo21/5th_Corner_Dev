@@ -32,6 +32,17 @@ Knobs: `PT_TURNS` (default 8), `PT_TURN_TIMEOUT` (default 90, raise to 150 when
 image generation is slow), `PT_TAG_INDEX` (which scanned object to pick),
 `PT_RELOAD=1` (reload the client first).
 
+PLAY opens the **character screen** before the picker (characters.py,
+static/js/characters.js). The harness picks `PT_CHARACTER` there (an id or a
+piece of the name; unset, whoever is selected — the one played last), checks
+their figure painted, and checks the run it starts IS that character
+(`/api/character`). `PT_PLAN` knows a `wear` verb: open the pack (B), put the
+first wearable thing on (or take one off), wait for the fitting, and check the
+figure changed; the turn after it must have taken the new look. Filed findings
+say which of those broke. `_claude_char_run.py` (untracked, the
+`_claude_battle_run.py` pattern) runs all of it headless on a server of its
+own against a COPY of the roster, so a test never lands on the player's.
+
 ## What each tool is for
 
 | Tool | Use it for |

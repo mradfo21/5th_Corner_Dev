@@ -147,6 +147,58 @@ MOODS: Dict[str, Dict[str, Any]] = {
              "wide of the new space as it is, now that they are in it"),
         ),
     },
+    # THE REWARD. Reaching the run's goal (goal.py) is the one thing the whole
+    # walk was for, and it used to end on an overlay card: "frankly it was
+    # boring. there was no climax" (played 2026-09-22). So it ends on a
+    # cinematic instead — the place in full, the way in, and the player put
+    # down on the OTHER SIDE of it, which is where the run carries on from.
+    # Four shots, no cast but the player, and the last one is the frame the
+    # next turn is generated from, so it has to be a place you can play in.
+    #
+    # It is ONE CONTINUOUS TAKE that starts on the frame the player is looking
+    # at. The first version was four unrelated cameras — a low hero wide at
+    # the foot of the structure, an insert, an over-shoulder, the room — and
+    # panel 1 put the player on the ground at the base of an oil rig he was
+    # standing ON TOP OF a second earlier, in a blue jacket instead of the
+    # PRESS vest he was wearing: "the cutscene with the goal reward uses a
+    # different character and loses continuity with the frame we were at …
+    # this needs to feel it continues the current frame" (2026-09-23). The
+    # spectacle stays; it is reached by the camera moving, not by cutting.
+    "reward": {
+        "label": "Reward",
+        "hint": "The goal, reached: one take from where you stand, through the way in, to the thing inside.",
+        "shots": (
+            ("continue", "The next instant",
+             "THE NEXT INSTANT OF THE START KEYFRAME, uncut: the same camera, "
+             "the same place and light, the player in the same spot and the "
+             "same pose, now turning toward the way in. The camera has just "
+             "begun to rise and pull back so the structure starts to loom "
+             "over them. A viewer cutting from the START KEYFRAME to this panel "
+             "sees one continuous shot"),
+            ("reach", "At the way in",
+             "the same take, seconds later and SOMEWHERE ELSE: the camera has "
+             "followed the player to the way in — a different part of the "
+             "structure from panel 1, closer, medium close — their hand on it "
+             "as it gives: the lock turning, the wheel, the seal, the last rung, "
+             "a light going green. Their sleeve, cuff and hand are the "
+             "CHARACTER SHEET's, unchanged. A panel that repeats panel 1's framing has "
+             "failed"),
+            ("through", "Over-shoulder push",
+             "still the same take, further on: OVER-THE-SHOULDER as the player "
+             "goes through, their shoulder and the back of their head hard in "
+             "the foreground — the same head, the same garment, the same logo "
+             "or patch the CHARACTER SHEET shows — and the place they are going "
+             "into opening ahead of them, filling most of the frame"),
+            ("prize", "The thing itself",
+             "THE PAYOFF FRAME, and it is playable: a medium-wide of the room "
+             "inside with THE OBJECT THE PLAYER CAME FOR clearly in it, lit "
+             "hotter than anything else in frame, and the player standing in "
+             "the near ground FACING it with open floor between them and it. "
+             "Eye level, no title, nothing between the player and the object "
+             "— this is the frame the game carries on from and the object is "
+             "the thing they will reach out and take"),
+        ),
+    },
     "departure": {
         "label": "Departure",
         "hint": "Leaving this place behind.",
@@ -213,6 +265,50 @@ GRID_ROWS = 2
 # back and the montage still renders, just smaller.
 GRID_RENDER_MODEL = "gemini-3-pro-image"
 GRID_RENDER_SIZE = "2K"
+
+# The reward plays INSIDE a run, over a frame the player is looking at, so it
+# is held to the game's own look and speed rather than the opening's: the play
+# image model at the same 2K grid, which is a panel about the size of a game
+# frame, and lands in a fraction of the time the pro model takes. Asked for as
+# "the same resolution as the game so it feels faster, an in game cutscene".
+# ``strength`` is how far the grid may travel from the frame it restages. The
+# reward has to travel: its four shots are a hero wide, the way in, going
+# through, and THE OTHER SIDE — and at the restaging default every panel came
+# back as the same doorway from the same spot (seen 2026-09-22), which makes
+# the payoff look like four copies of the frame the player was already on.
+# The play image model is the fast one, and at 2K its EDIT endpoint answers
+# 400 (seen 2026-09-22: "[GOOGLE GEMINI] ERROR: Edit error: HTTPError: 400 ...
+# gemini-3.1-flash-lite-image"), which drops the montage to the optical
+# fallback — four crops of the frame the player was already looking at.
+# Played back as "you didn't generate a new frame, you just cropped in". So the
+# reward renders on the same model every other cutscene does; what it borrows
+# from the game is the panel SIZE, not the model.
+#
+# Which was the wrong half to keep. On the pro model the reward came back in
+# its own light: goal frame, cutscene and the scene after "looked VERY
+# different, like they had new lighting" (played 2026-09-23), and its panels
+# were 1376x768 against the game's 672x376. The 400 was the play model at
+# **2K**; at the play model's own 1K — exactly the grid every flipbook turn is
+# drawn as, every turn, on the edit endpoint — it is the same render as the
+# frames either side of it. model None / size None = the play settings.
+_MOOD_RENDER: Dict[str, Dict[str, Any]] = {
+    "reward": {"model": None, "size": None, "strength": 0.72},
+}
+RESTAGE_STRENGTH = 0.42
+
+
+def render_strength(mood: str) -> float:
+    over = _MOOD_RENDER.get(normalize_mood(mood)) or {}
+    return float(over.get("strength") or RESTAGE_STRENGTH)
+
+
+def render_settings(mood: str) -> Tuple[Optional[str], str]:
+    """(model, image_size) for this mood — None model means the play default."""
+    over = _MOOD_RENDER.get(normalize_mood(mood)) or {}
+    if "model" in over:
+        # None, None is the play model at the play size (the reward).
+        return over.get("model"), (str(over["size"]) if over.get("size") else None)
+    return GRID_RENDER_MODEL, GRID_RENDER_SIZE
 
 # Optical crops (left, top, right, bottom) as fractions of the source plate.
 # Wide / medium / close / offset — a cheap stand-in for four camera moves.
@@ -611,6 +707,17 @@ def build_cutscene_prompt(
             "place with nobody in it; the person arrives after this montage, in a "
             "shot that is not yours to draw."
         )
+    elif mood == "reward":
+        bits.append(
+            "KEYFRAMES — THESE FOUR PANELS ARE ONE CONTINUOUS TAKE, in reading "
+            "order. The attached START KEYFRAME is the frame the player is "
+            "looking at right now: where the camera stands, where the player "
+            "stands and how. Panel 1 is the very next instant of it — same "
+            "camera, same place, same person, same pose beginning to move — "
+            "and from there ONE camera follows the player to the way in, through "
+            "it, and inside. Nothing between the panels is a cut to somewhere "
+            "unrelated, and the player never changes."
+        )
     else:
         bits.append(
             "Each panel is a different cinematic camera on the SAME moment and "
@@ -643,13 +750,43 @@ def build_cutscene_prompt(
             "reference's framing in those. Do not invent a different place, a "
             "different era or a different climate."
         )
+    elif mood == "reward":
+        # WHO the player is comes from the CHARACTER SHEET, not the keyframe.
+        # "The START KEYFRAME wins" made every reward a photocopy of whatever
+        # the last turn drew — and when that turn had already drifted (a bare
+        # face under what should be a visor, an older outfit from before a
+        # fitting), the reward locked the drift in and handed its last panel
+        # to every turn after it.
+        cover = ""
+        try:
+            import game_identity as _gi
+            cover = _gi.face_cover_clause()
+            who_line = _gi.protagonist_line() if _gi.character_reference_paths() else ""
+        except Exception:
+            who_line = ""
+        bits.append(
+            "THE PLAYER is the person standing where the START KEYFRAME puts "
+            "them — take their place, pose and the camera from it. WHO they "
+            "are — face, head, hair, build and EXACT clothing, every garment, "
+            "its colour, every logo, patch and strap — comes from the attached "
+            "CHARACTER SHEET, and it is the same in every panel they appear "
+            "in. Where the keyframe shows them differently from the sheet, "
+            "the SHEET wins. Keep the keyframe's place, materials and light "
+            "until the take goes inside; inside is the same world, lit by the "
+            "same hour."
+            + (f" THE PLAYER: {who_line}" if who_line else "")
+            + (f" {cover}" if cover else "")
+        )
     else:
         bits.append(
             "PLACE LOCK — HARD. The reference is the current photograph of this "
             "exact place. Keep the same location, architecture, materials, ground, "
             "sky, and light. Do not teleport. Do not invent a new set."
         )
-    if goal:
+    # The reward is the goal REACHED; the "never reached, keep it far off"
+    # line below is for every other montage and said the opposite of the
+    # reward's own brief in the same prompt.
+    if goal and mood != "reward":
         if opening:
             bits.append(
                 f"WHAT THE PLAYER CAME HERE FOR: {goal.rstrip('. ')}.\n"
@@ -724,7 +861,9 @@ def build_cutscene_prompt(
     bits.append(
         "A finished 1993 photograph in each panel. Empty hands, no text, "
         "no watermarks."
-        + (" Preserve the people and wardrobe already in the reference."
+        + ((" The player's face and wardrobe are the CHARACTER SHEET's."
+            if mood == "reward" else
+            " Preserve the people and wardrobe already in the reference.")
            if has_reference else "")
     )
     prompt = " ".join(bits)
@@ -882,9 +1021,8 @@ def generate_shots(
     )
     if want_gemini:
         try:
-            from gemini_image_utils import GEMINI_API_KEY
-            if not (GEMINI_API_KEY and str(GEMINI_API_KEY).strip()):
-                want_gemini = False
+            import provider_bridge
+            want_gemini = provider_bridge.can_call_gemini_api()
         except Exception:
             want_gemini = False
     if want_gemini:
@@ -907,9 +1045,18 @@ def generate_shots(
             )
             tod = ""
             try:
-                tod = str((engine.get_state(session_id) or {}).get("time_of_day") or "")
+                _st = engine.get_state(session_id) or {}
+                tod = str(_st.get("time_of_day") or "")
+                # Put on something since the frame on screen was drawn: that
+                # frame shows the old outfit, and every restage copies it.
+                if source_path is not None and plate_role != "destination":
+                    _wc = engine._wardrobe_change_directive(_st)
+                    if _wc:
+                        prompt = f"{prompt} {_wc}"
             except Exception:
                 tod = ""
+            _render_model, _render_size = render_settings(mood)
+            _render_strength = render_strength(mood)
 
             # Deliberately NO character identity plate for the opening montage.
             # It was added when the last panel was a generated hero shot — without
@@ -919,42 +1066,122 @@ def generate_shots(
             # plate beat, which is already locked to her.
             identity_plates = ([] if plate_role == "destination"
                                else _identity_plates())
+            if mood == "reward" and identity_plates:
+                # The reward's close panels read the face; at 150 px on the
+                # turnaround it is a few pixels, and a masked character came
+                # back bare-faced. The look's own face sheet rides behind it.
+                try:
+                    import game_identity as _gi_f
+                    identity_plates += [f for f in _gi_f.face_reference_paths()
+                                        if f not in identity_plates]
+                except Exception:
+                    pass
             if source_path is None:
                 # The opening. No plate exists yet and none is wanted: this IS
                 # the run's first render, and the place it establishes comes
                 # from the lore (see mystery_shotlist) and the Level sheet,
                 # which engine._ensure_level_sheet_is_filled guarantees says
                 # something before we get here.
-                grid_file = generate_with_gemini(
-                    prompt=prompt,
-                    caption=stem + "_grid",
-                    world_prompt=(shot_brief or "")[:200] or None,
-                    time_of_day=tod,
-                    hd_mode=False,
-                    output_dir=output_dir,
-                    # See GRID_RENDER_SIZE.
-                    model=GRID_RENDER_MODEL,
-                    image_size=GRID_RENDER_SIZE,
-                )
+                # ONE retry. The opening has no plate to crop, so a render
+                # that does not come back is not a thinner montage — it is a
+                # run with no first frame at all (2026-09-23: one timeout and
+                # the loop stood on a blank start for two and a half minutes).
+                grid_file = None
+                for _try in range(2):
+                    grid_file = generate_with_gemini(
+                        prompt=prompt,
+                        caption=stem + "_grid",
+                        world_prompt=(shot_brief or "")[:200] or None,
+                        time_of_day=tod,
+                        hd_mode=False,
+                        output_dir=output_dir,
+                        # See GRID_RENDER_SIZE / render_settings.
+                        model=_render_model,
+                        image_size=_render_size,
+                        # Four unpeopled panels. Without this a third-person run
+                        # appended "the player character is in this shot" and
+                        # stripped the montage's "empty of people" line, and the
+                        # opening showed a stranger (see generate_with_gemini).
+                        environment_only=True,
+                    )
+                    if grid_file and Path(grid_file).exists():
+                        break
+                    if _try == 0:
+                        print("[CUTSCENE] the opening grid did not come back — "
+                              "asking once more", flush=True)
             else:
+                # THE THING INSIDE rides along with the reward: the gear's own
+                # cut-out, flattened on grey (look_book.gear_ref_for), so the
+                # object lit in the last panel is the object the find card and
+                # the pack then show — not a second design of the same name.
+                refs: List[str] = [str(source_path)]
+                ref_labels: Dict[str, str] = {}
+                reward = mood == "reward"
+                if reward:
+                    # The frame on screen is where the take STARTS, and the
+                    # person in it is the player. Unlabelled, it went out under
+                    # the encounter restage ("the confrontation photograph …
+                    # copy BOTH faces … hands on the other body") with nothing
+                    # saying it was a beginning, and the grid opened somewhere
+                    # else on someone else.
+                    ref_labels[str(source_path)] = (
+                        "START KEYFRAME — the frame the player is looking at right "
+                        "now, and the start of this take. Panel 1 is the next "
+                        "instant of it: same camera, same place, same light. The "
+                        "person in it is THE PLAYER: take where they stand and "
+                        "how. Their face, head and every garment come from the "
+                        "CHARACTER SHEET — where this frame shows them "
+                        "differently, the sheet wins.")
+                    try:
+                        import goal as _goal_ref
+                        import look_book as _lb_ref
+                        _pz = _goal_ref.prize(engine.get_state(session_id) or {})
+                        _ref = (_lb_ref.gear_ref_for(session_id, _pz.get("name"))
+                                if _pz.get("kind") else None)
+                        if _ref and Path(_ref).exists():
+                            refs.append(_ref)
+                            ref_labels[_ref] = (
+                                f"THE THING INSIDE — {_pz['name']}: this exact object, "
+                                "shown here on a plain grey card. It is what the LAST "
+                                "panel is of, standing in the room, lit hotter than "
+                                "anything else: copy its shape, materials, colours and "
+                                "wear exactly. Never copy the grey card, and it appears "
+                                "in no other panel.")
+                            print(f"[CUTSCENE] the reward's last panel is drawn "
+                                  f"against {_pz['name']!r}'s plate", flush=True)
+                    except Exception:
+                        logging.exception("[CUTSCENE] prize plate not attached")
                 grid_file = generate_gemini_img2img(
                     prompt=prompt,
                     caption=stem + "_grid",
-                    reference_image_path=str(source_path),
-                    strength=0.42,
+                    reference_image_path=refs if len(refs) > 1 else str(source_path),
+                    reference_labels=ref_labels or None,
+                    strength=_render_strength,
                     world_prompt=(shot_brief or "")[:200] or None,
                     time_of_day=tod,
                     hd_mode=False,
                     output_dir=output_dir,
-                    is_flipbook=False,
-                    include_people=True,
+                    # The reward continues the frame on screen, which is what a
+                    # flipbook turn does: the START KEYFRAME in slot 1 and the
+                    # keyframe continuity contract. Every other restage keeps
+                    # the encounter's "same cast, new pose".
+                    is_flipbook=reward,
+                    flipbook_grid=(GRID_ROWS, GRID_COLS) if reward else None,
+                    grid_motion=(
+                        "The panels are seconds apart and the take TRAVELS: after "
+                        "panel 1 the camera and the player move on, so each panel "
+                        "is further along the way in than the last and no two "
+                        "share a framing.") if reward else None,
+                    lead_reference=str(source_path) if reward else None,
+                    include_people=not reward,
                     # See GRID_RENDER_SIZE: four panels sliced out of one
                     # generation need the render to be big enough that a
-                    # quarter of it is still a photograph.
-                    model=GRID_RENDER_MODEL,
-                    image_size=GRID_RENDER_SIZE,
+                    # quarter of it is still a photograph. render_settings
+                    # holds the reward to the game's own model and speed.
+                    model=_render_model,
+                    image_size=_render_size,
                     identity_paths=identity_plates or None,
-                    hold_cast=True,
+                    hold_cast=not reward,
                 )
             if grid_file and Path(grid_file).exists():
                 grid_path = Path(grid_file)
@@ -1049,8 +1276,18 @@ def play_for_session(
     # /api/worlds/<slug>/frame, and resolving that back to a path is something
     # resolve_source_path cannot do — so routing it through the client would
     # leave the opening with no reference at all.
-    staged = engine.get_state(session_id) or {}
-    staged = staged.get("pending_cutscene") or {}
+    live_state = engine.get_state(session_id) or {}
+    # THE REWARD is asked for by one word from the client (mood="reward"); what
+    # the four shots are OF comes off the run's goal, here, so the client never
+    # has to know (goal.reward_brief).
+    if mood == "reward":
+        try:
+            import goal as _goal_mod
+            shot_brief = shot_brief or _goal_mod.reward_brief(live_state)
+            name = name or (_goal_mod.record(live_state).get("name") or "")
+        except Exception as _rw:
+            print(f"[CUTSCENE] reward brief failed: {_rw}", flush=True)
+    staged = live_state.get("pending_cutscene") or {}
     staged_plate = ""
     if staged.get("cutscene_id") == cutscene_id:
         staged_plate = str(staged.get("source_path") or "")
@@ -1172,7 +1409,8 @@ def play_for_session(
         "cutscene_id": play_id,
         "name": name or MOODS[mood]["label"],
         "mood": mood,
-        "graph": bool(node),
+        # See the pending stamp below: the reward completes through the server.
+        "graph": bool(node) or mood == "reward",
         "to_world": dest_world,
         **generated,
     }
@@ -1242,7 +1480,11 @@ def play_for_session(
                 "shots": payload["shots"],
                 "duration_ms": payload["duration_ms"],
                 "source": payload["source"],
-                "graph": bool(node),
+                # The reward has no graph node, but it still has somewhere to
+                # be afterwards — inside the place it just showed — so it
+                # completes through the server like a graph hop does
+                # (engine.api_cutscene_complete -> goal.finish_reward).
+                "graph": bool(node) or mood == "reward",
                 "opening": opening_stamp,
             }
             if opening_stamp and not keep.get("opening"):
