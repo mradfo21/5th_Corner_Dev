@@ -11,6 +11,8 @@ wrote its save to disk. Mock mode keeps it offline and free.
 from __future__ import annotations
 
 import json
+import os
+import secrets
 import subprocess
 import sys
 import time
@@ -23,18 +25,22 @@ APP = ROOT / "dist" / "SOMEWHERE"
 EXE = APP / "SOMEWHERE.exe"
 PORT = 5093
 BASE = f"http://127.0.0.1:{PORT}"
+# The exe arms local_guard; handing it the token is how this script knocks.
+LAUNCH_TOKEN = secrets.token_urlsafe(32)
+LAUNCH = {"X-Launch-Token": LAUNCH_TOKEN}
 
 
 def post(path: str, payload: dict) -> dict:
     req = urllib.request.Request(
         BASE + path, data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
+        headers={"Content-Type": "application/json", **LAUNCH}, method="POST")
     with urllib.request.urlopen(req, timeout=120) as r:
         return json.loads(r.read())
 
 
 def get(path: str) -> dict:
-    with urllib.request.urlopen(BASE + path, timeout=30) as r:
+    with urllib.request.urlopen(urllib.request.Request(BASE + path, headers=LAUNCH),
+                                timeout=30) as r:
         return json.loads(r.read())
 
 
@@ -67,7 +73,7 @@ def main() -> int:
         return 1
 
     proc = subprocess.Popen([str(EXE), "--mock", "--windowed", "--port", str(PORT)],
-                            cwd=APP)
+                            cwd=APP, env=dict(os.environ, SOMEWHERE_LAUNCH_TOKEN=LAUNCH_TOKEN))
     try:
         deadline = time.time() + 120
         while time.time() < deadline:

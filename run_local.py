@@ -71,7 +71,11 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--config", type=str, default=None, help="Path to a .env-style file to load before startup.")
     parser.add_argument("--backend", type=str, default=None, choices=["gemini", "openai", "anthropic", "mock"],
                          help="Force a specific text/vision backend for this run (overrides ai_config.json).")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind (default 0.0.0.0).")
+    # 127.0.0.1 unless asked: 0.0.0.0 put a keyless, unguarded game server on
+    # every network the machine joined (M1). Production binds with gunicorn in
+    # start_production.sh and never reads this.
+    parser.add_argument("--host", type=str, default=os.environ.get("HOST", "127.0.0.1"),
+                        help="Host to bind (default 127.0.0.1; 0.0.0.0 to serve the LAN).")
     return parser.parse_args(argv)
 
 

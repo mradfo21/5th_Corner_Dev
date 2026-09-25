@@ -68,21 +68,23 @@ mock mode, and the current safety settings all ship as they are.
 
 ## M1 — Harden the local app
 
-Today `CORS(app)` (api.py:30) allows every origin and there is no token or Host
+Before M1, `CORS(app)` (api.py:30) allowed every origin and there is no token or Host
 check, so the `remote_addr == 127.0.0.1` guards pass for any browser tab on the
 machine. A page can find the port via `/api/health`, then `PUT /api/keys/custom`
 with a blank key: `keys_store.set_custom` (keys_store.py:575) reuses the stored
 OpenAI key and points the narrator at the attacker's address.
 
-- [ ] Per-launch token: play.py mints `secrets.token_urlsafe(32)`, loads `/standalone?launch=<token>`; the server trades it for an HttpOnly `SameSite=Strict` cookie; a `before_request` guard rejects `/api/*` (websocket upgrades included) without the cookie or an `X-Launch-Token` header. Pass the token to the render child (render_jobs.py) via env. Armed like `enable_shutdown()`, so hosted mode is unaffected
-- [ ] Host allowlist: only `127.0.0.1:<port>` / `localhost:<port>` (blocks DNS rebinding)
-- [ ] Remove app-wide CORS; if needed, hosted-only and only for `https://www.5th-corner.com`
-- [ ] `set_custom` never reuses a stored key when the address changes
-- [ ] Validate names in all four `/api/archives/<name>` routes (api.py:2165, 2210, 2227, 2244); resolve and require the path to stay under `archives/` (Windows backslash traversal)
-- [ ] `run_local.py --host` defaults to `127.0.0.1` (line 74)
-- [ ] Frozen builds read `.env` only from AppData and beside the exe (drop the three-parents walk in `play._env_candidates`)
-- [ ] Rotate `somewhere.log` (10 MB × 3); redact key-shaped strings (`AIza…`, `sk-…`) before writing
-- [ ] `test_local_guard.py` (no cookie → 403, bad Host → 403, archive traversal → 400, custom address doesn't inherit the key) and `tools/drive_by.html`
+- [x] Per-launch token: play.py mints `secrets.token_urlsafe(32)`, loads `/standalone?launch=<token>`; the server trades it for an HttpOnly `SameSite=Strict` cookie; a `before_request` guard rejects `/api/*` (websocket upgrades included) without the cookie or an `X-Launch-Token` header. Pass the token to the render child (render_jobs.py) via env. Armed like `enable_shutdown()`, so hosted mode is unaffected
+- [x] Host allowlist: only `127.0.0.1:<port>` / `localhost:<port>` (blocks DNS rebinding)
+- [x] Remove app-wide CORS; if needed, hosted-only and only for `https://www.5th-corner.com`
+- [x] `set_custom` never reuses a stored key when the address changes
+- [x] Validate names in all four `/api/archives/<name>` routes (api.py:2165, 2210, 2227, 2244); resolve and require the path to stay under `archives/` (Windows backslash traversal)
+- [x] `run_local.py --host` defaults to `127.0.0.1` (line 74)
+- [x] Frozen builds read `.env` only from AppData and beside the exe (drop the three-parents walk in `play._env_candidates`)
+- [x] Rotate `somewhere.log` (10 MB × 3); redact key-shaped strings (`AIza…`, `sk-…`) before writing
+- [x] `test_local_guard.py` (21 tests) (no cookie → 403, bad Host → 403, archive traversal → 400, custom address doesn't inherit the key) and `tools/drive_by.html`
+
+Done 2026-09-25 on `dist/m1-local-guard` (CHANGELOG, "A web page on the player's machine could take their key…"). Also: every guarded prefix includes `/images/` and `/audio/`; play.py's leftover-server reaper only stops servers from its own checkout.
 
 ## M2 — Saves out of the install folder
 
@@ -163,3 +165,4 @@ for real API calls.
   `baf7376` (ignore rules), `c4d0a46` (the game work) and the M0 commit after
   it, then pushed. Identity chosen: ABYSS / `5thCorner.ABYSS` / `%APPDATA%\ABYSS`.
   `_claude_runner.py` (START_CLAUDE.bat) was still running; stopping it is Matt's.
+- **2026-09-25** — M1 done on `dist/m1-local-guard`: local_guard.py, safe_log.py, archive traversal (a hosted hole too), set_custom, run_local host, frozen .env. Verified with test_local_guard, the guarded app from outside, three harness turns, and drive_by.html in a real browser.

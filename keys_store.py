@@ -564,7 +564,13 @@ def _set_narrator(provider: str, model: str) -> None:
 
 def set_custom(address: Any, model: Any, value: Any, path: Optional[Path] = None) -> Dict[str, Any]:
     """Save the custom key and make it the narrator. A blank key is allowed
-    (a local server needs none)."""
+    (a local server needs none).
+
+    A blank key keeps the stored one ONLY for the address it was stored for
+    (changing the model, say). It used to keep it for any address, so one
+    request naming a new address sent the player's OpenAI key there with every
+    prompt — the hole local_guard.py closes from the outside; this closes it
+    from the inside."""
     address = _validate_address(address)
     model = _validate_model(model)
     key = _validate_value(value if isinstance(value, str) else "", "openai")
@@ -572,7 +578,8 @@ def set_custom(address: Any, model: Any, value: Any, path: Optional[Path] = None
     with _LOCK:
         current = _read_env_file(target)
         if not key:
-            key = current.get("OPENAI_API_KEY") or CUSTOM_NO_KEY
+            same_place = (current.get(CUSTOM_ADDRESS_ENV) or "").strip() == address
+            key = (current.get("OPENAI_API_KEY") if same_place else "") or CUSTOM_NO_KEY
         values = {CUSTOM_ADDRESS_ENV: address, CUSTOM_MODEL_ENV: model, "OPENAI_API_KEY": key}
         current.update(values)
         for env, val in values.items():

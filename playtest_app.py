@@ -1567,10 +1567,12 @@ FLIPBOOK_DRAIN = r"""
 
 def frame_bytes(origin, url):
     """Fetch one generated frame off the running server."""
-    from urllib.request import urlopen
+    from urllib.request import Request, urlopen
     from urllib.parse import urljoin
+    import local_guard
+    headers = local_guard.client_headers(__import__('pathlib').Path(__file__).resolve().parent)
     try:
-        with urlopen(urljoin(origin + "/", url), timeout=20) as r:
+        with urlopen(Request(urljoin(origin + "/", url), headers=headers), timeout=20) as r:
             return r.read()
     except Exception:
         return None

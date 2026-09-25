@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 from flask import Flask, request, jsonify, send_file, make_response, render_template, redirect
-from flask_cors import CORS
 import engine
 import ai_provider_manager
 import bug_report
@@ -27,7 +26,54 @@ import keys_store
 import billing
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+
+
+# ═══════════════════════════════════════════════════════════════════
+# WHO MAY ASK (local_guard.py)
+#
+# First before_request on purpose: a refused caller must not start a
+# watchdog entry, adopt a look, or touch a wallet on its way to the 403.
+# Inert unless play.py armed it, so hosted and run_local.py are unchanged.
+# ═══════════════════════════════════════════════════════════════════
+
+import local_guard
+
+
+@app.before_request
+def _local_guard():
+    why = local_guard.check(request)
+    if why is None:
+        return None
+    return jsonify({"success": False, "error": "Forbidden",
+                    "detail": "This game only answers its own window."}), 403
+
+
+# Cross-origin reads were allowed from EVERY origin (`CORS(app)`), which is
+# what let any web page read the desktop app's answers. Now only the site's own
+# origins may, and only on a hosted server: the desktop app answers nobody
+# cross-origin. CORS_ORIGINS (comma-separated) overrides the list.
+_CORS_ORIGINS = tuple(
+    o.strip().rstrip("/") for o in (
+        os.environ.get("CORS_ORIGINS")
+        or "https://www.5th-corner.com,https://5th-corner.com").split(",")
+    if o.strip())
+
+
+@app.after_request
+def _cors_and_launch_cookie(response):
+    if local_guard.armed():
+        if local_guard.wants_cookie(request):
+            local_guard.set_cookie(response)
+        return response
+    origin = (request.headers.get("Origin") or "").rstrip("/")
+    if origin and origin in _CORS_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers.add("Vary", "Origin")
+        if request.method == "OPTIONS":
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = (
+                request.headers.get("Access-Control-Request-Headers") or "Content-Type")
+    return response
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -2162,14 +2208,37 @@ def api_list_archives():
         return error_response("Failed to list archives", str(e))
 
 
+_ARCHIVE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _archive_dir(archive_name: str):
+    r"""archives/<archive_name>, or None when the name could leave archives/.
+
+    Flask's <archive_name> stops at '/', not at '\', and Windows reads both:
+    `DELETE /api/archives/..%5Cworlds` was rmtree('archives/..\worlds') — the
+    authoring folder, on any server, hosted included. So the name is held to
+    the characters an archive is actually named with, and the resolved path
+    must still sit directly under archives/."""
+    name = str(archive_name or "")
+    if not _ARCHIVE_NAME.match(name) or ".." in name:
+        return None
+    root = Path("archives").resolve()
+    path = (root / name).resolve()
+    if path.parent != root:
+        return None
+    return Path("archives") / name
+
+
 @app.route('/api/archives/<archive_name>', methods=['GET'])
 def api_get_archive(archive_name):
     """
     Get detailed information about a specific archive.
     Returns: Full archive metadata, state, and history
     """
+    archive_path = _archive_dir(archive_name)
+    if archive_path is None:
+        return error_response("Bad archive name", code=400)
     try:
-        archive_path = Path("archives") / archive_name
         if not archive_path.exists():
             return error_response(f"Archive '{archive_name}' not found", code=404)
         
@@ -2210,10 +2279,13 @@ def api_get_archive(archive_name):
 @app.route('/api/archives/<archive_name>/images/<filename>', methods=['GET'])
 def api_serve_archive_image(archive_name, filename):
     """Serve an image from an archived session"""
+    archive_path = _archive_dir(archive_name)
+    if archive_path is None:
+        return error_response("Bad archive name", code=400)
     try:
         # Prevent path traversal
-        safe_filename = Path(filename).name
-        image_path = Path("archives") / archive_name / "images" / safe_filename
+        safe_filename = Path(filename.replace("\\", "/")).name
+        image_path = archive_path / "images" / safe_filename
         
         if not image_path.exists():
             return error_response("Image not found", code=404)
@@ -2227,10 +2299,13 @@ def api_serve_archive_image(archive_name, filename):
 @app.route('/api/archives/<archive_name>/tapes/<filename>', methods=['GET'])
 def api_serve_archive_tape(archive_name, filename):
     """Serve a GIF tape from an archived session"""
+    archive_path = _archive_dir(archive_name)
+    if archive_path is None:
+        return error_response("Bad archive name", code=400)
     try:
         # Prevent path traversal
-        safe_filename = Path(filename).name
-        tape_path = Path("archives") / archive_name / "images" / safe_filename
+        safe_filename = Path(filename.replace("\\", "/")).name
+        tape_path = archive_path / "images" / safe_filename
         
         if not tape_path.exists():
             return error_response("Tape not found", code=404)
@@ -2247,8 +2322,10 @@ def api_delete_archive(archive_name):
     Delete an archived session permanently.
     WARNING: This cannot be undone!
     """
+    archive_path = _archive_dir(archive_name)
+    if archive_path is None:
+        return error_response("Bad archive name", code=400)
     try:
-        archive_path = Path("archives") / archive_name
         if not archive_path.exists():
             return error_response(f"Archive '{archive_name}' not found", code=404)
         

@@ -340,6 +340,13 @@ $env:PT_TURNS="3"; $env:PT_TURN_TIMEOUT="150"
 Start-Process -FilePath python -ArgumentList "-u","playtest_app.py" -RedirectStandardOutput _pt_out.txt -RedirectStandardError _pt_err.txt
 ```
 
+**The desktop app only answers its own window** (`local_guard.py`, since
+2026-09-25): a `curl` or script against a running `play.py` gets 403 unless it
+sends `X-Launch-Token` from `logs/launch.json` (`local_guard.client_headers()`
+does it). `run_local.py` and hosted servers are unguarded. Never aim an attack
+check at a `play.py` using the real `%APPDATA%` key store (`SOMEWHERE_KEYS_PATH`
+to a scratch file first).
+
 `playtest_app.py` attaches over CDP and plays the real native app: start menu,
 experience picker, SCAN, MOVE TO, INTERACT, PHOTO, ACT, CAMP, encounters. It
 detects black screens, stalls, dead buttons, console errors and spurious

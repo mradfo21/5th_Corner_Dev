@@ -65,14 +65,16 @@ def _capture_output() -> None:
     """
     if not FROZEN:
         return
+    import safe_log  # rotates at 10 MB and blanks key-shaped strings (M1)
+
     log = ROOT / "logs" / "somewhere.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
     try:
-        stream = open(log, "a", encoding="utf-8", buffering=1)
+        stream = safe_log.RotatingRedactingStream(log)
     except OSError:
         return
     sys.stdout = sys.stderr = stream
-    stream.write(f"\n{'=' * 60}\n{time.strftime('%Y-%m-%d %H:%M:%S')}  SOMEWHERE\n")
+    stream.write(f"\n{'=' * 60}\n{time.strftime('%Y-%m-%d %H:%M:%S')}  "
+                 f"{NAME} {app_identity.VERSION}\n")
 
 # Shown while the engine imports. Dark screen + the mint bar — no wordmark.
 # The start menu is where ABYSS appears, once. The status phrase
@@ -109,6 +111,13 @@ def _stop_other_play_instances() -> int:
     A leftover ``run_local.py`` on :5020 used to keep serving yesterday's JS
     while this window thought it was the current build. Set
     SOMEWHERE_KEEP_OTHERS=1 to skip.
+
+    Only servers started from THIS checkout (its absolute path in the command
+    line). It used to take any ``run_local.py`` on the machine, and with one
+    git worktree per session that meant launching the game in one killed the
+    server another session's e2e suite was driving — it did, on 2026-09-25.
+    A launch now picks a free port, so a leftover elsewhere cannot serve this
+    window stale JS anyway.
     """
     if os.environ.get("SOMEWHERE_KEEP_OTHERS", "").strip().lower() in ("1", "true", "yes"):
         return 0
@@ -142,8 +151,7 @@ def _stop_other_play_instances() -> int:
                 if pid in (0, my_pid):
                     continue
                 kind = "play.py" if play in cmd else (
-                    "run_local.py" if local in cmd or "run_local.py" in cmd else ""
-                )
+                    "run_local.py" if local in cmd else "")
                 if not kind:
                     continue
                 try:
@@ -163,6 +171,8 @@ def _stop_other_play_instances() -> int:
                 pid = int(parts[0])
                 cmd = parts[1] if len(parts) > 1 else ""
                 if pid == my_pid:
+                    continue
+                if str(ROOT) not in cmd:
                     continue
                 kind = "play.py" if str(ROOT / "play.py") in cmd else "run_local.py"
                 try:
@@ -188,18 +198,19 @@ def free_port(preferred: int | None = None) -> int:
         return s.getsockname()[1]
 
 
-def wait_for_health(url: str, timeout_s: float = 90.0) -> bool:
+def wait_for_health(url: str, timeout_s: float = 90.0, headers: dict | None = None) -> bool:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=2):
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers or {}),
+                                        timeout=2):
                 return True
         except Exception:
             time.sleep(0.25)
     return False
 
 
-def start_server(port: int, mock: bool, backend: str | None) -> str:
+def start_server(port: int, mock: bool, backend: str | None, token: str) -> str:
     """Boot the same Flask app production runs, on a background thread."""
     import run_local
 
@@ -224,6 +235,11 @@ def start_server(port: int, mock: bool, backend: str | None) -> str:
     # call these, so a visitor cannot stop the process or write API keys.
     api.enable_shutdown()
     api.enable_local_keys()
+    # And answer nobody but this window (local_guard.py): no web page on the
+    # machine can reach the run, the keys, or the EXIT button.
+    import local_guard
+    local_guard.arm(token, port)
+    local_guard.write_launch_file(ROOT, token, port)
 
     threading.Thread(
         target=lambda: api.app.run(host="127.0.0.1", port=port, debug=False,
@@ -233,13 +249,13 @@ def start_server(port: int, mock: bool, backend: str | None) -> str:
     return resolved
 
 
-def run_window(game_url: str, health_url: str, fullscreen: bool) -> int:
+def run_window(game_url: str, health: tuple, fullscreen: bool) -> int:
     try:
         import webview
     except ImportError:
         print("[play] pywebview missing - opening a browser tab instead. "
               "For the real thing: pip install pywebview")
-        return run_browser(game_url, health_url)
+        return run_browser(game_url, health)
 
     import api as server
 
@@ -274,7 +290,7 @@ def run_window(game_url: str, health_url: str, fullscreen: bool) -> int:
 
     def hand_over() -> None:
         # The splash is already on screen; this only decides when to leave it.
-        if not wait_for_health(health_url):
+        if not wait_for_health(health[0], headers=health[1]):
             window.load_html(
                 SPLASH.replace('id="s"', 'id="s" class="err"').replace(
                     "warming the engine", "engine did not start - see console"))
@@ -338,9 +354,14 @@ def _env_candidates() -> list[Path]:
             out.append(p)
 
     add(ROOT / ".env")                       # shipped beside the exe
-    add(Path.cwd() / ".env")                 # wherever it was launched from
-    for parent in list(ROOT.parents)[:3]:    # the repo, when running from dist/
-        add(parent / ".env")
+    if not FROZEN:
+        # A packaged build reads its keys from beside the exe and from
+        # %APPDATA% only: an installed game walking up the folders above it,
+        # or reading the folder it was launched from, would pick up whatever
+        # .env happens to be lying there (M1).
+        add(Path.cwd() / ".env")             # wherever it was launched from
+        for parent in list(ROOT.parents)[:3]:  # the repo, when running from dist/
+            add(parent / ".env")
     if os.environ.get("APPDATA"):            # where an installed copy should look
         add(app_identity.appdata_root() / ".env")
     return out
@@ -406,12 +427,12 @@ def _fatal(message: str) -> None:
         pass
 
 
-def run_browser(game_url: str, health_url: str) -> int:
+def run_browser(game_url: str, health: tuple) -> int:
     import webbrowser
 
-    wait_for_health(health_url)
+    wait_for_health(health[0], headers=health[1])
     webbrowser.open(game_url)
-    print(f"[play] serving {game_url}  (Ctrl+C to stop)")
+    print(f"[play] serving {game_url.split('&launch=')[0]}  (Ctrl+C to stop)")
     try:
         while True:
             time.sleep(1)
@@ -476,22 +497,30 @@ def main(argv=None) -> int:
         _warn_no_keys()
 
     port = free_port(args.port)
+    import local_guard
+    import safe_log
+    token = local_guard.mint()
+    safe_log.add_secret(token)
     try:
-        backend = start_server(port, args.mock, args.backend)
+        backend = start_server(port, args.mock, args.backend, token)
     except Exception:
         import traceback
         traceback.print_exc()
         if FROZEN:
             _fatal(f"The engine failed to start.\n\nSee logs\\somewhere.log")
         raise
-    game_url = f"http://127.0.0.1:{port}/standalone?fresh={boot}"
+    shown_url = f"http://127.0.0.1:{port}/standalone?fresh={boot}"
+    # The launch URL is the one place the token travels; the page trades it
+    # for a cookie on this first load (local_guard.py). Never printed.
+    game_url = f"{shown_url}&{local_guard.QUERY}={token}"
     health_url = f"http://127.0.0.1:{port}/api/health"
+    health = (health_url, {local_guard.HEADER: token})
 
-    print(f"{NAME}  |  backend {backend}  |  {game_url}")
+    print(f"{NAME} {app_identity.VERSION}  |  backend {backend}  |  {shown_url}")
 
     if args.browser:
-        return run_browser(game_url, health_url)
-    return run_window(game_url, health_url, fullscreen=not args.windowed)
+        return run_browser(game_url, health)
+    return run_window(game_url, health, fullscreen=not args.windowed)
 
 
 if __name__ == "__main__":
