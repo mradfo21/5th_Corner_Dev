@@ -72,6 +72,44 @@ class WhatGetOffers(unittest.TestCase):
         self.assertNotEqual(app_identity.RELEASES_REPO, "mradfo21/5th_Corner_Dev")
 
 
+class ClipsPlayOnAPhone(unittest.TestCase):
+    """iPhone Safari refuses video served as application/octet-stream (what
+    GitHub release files are), so /get's clips come through /get/media as
+    video/mp4 with byte ranges — and only clip-shaped names are served."""
+
+    def setUp(self):
+        import tempfile
+        from flask import Flask
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        d = __import__("pathlib").Path(self._tmp.name)
+        (d / "hero-720.mp4").write_bytes(b"\x00" * 5000)
+        (d / "clips.json").write_text('{"base": "https://github.com/x/y/releases/download/t", '
+                                      '"clips": [{"name": "hero", "src720": "x"}]}', encoding="utf-8")
+        p = patch.object(downloads, "CLIPS_DIR", d)
+        p.start()
+        self.addCleanup(p.stop)
+        app = Flask(__name__)
+        app.register_blueprint(downloads.downloads_bp)
+        self.client = app.test_client()
+
+    def test_a_clip_is_video_with_ranges(self):
+        r = self.client.get("/get/media/hero-720.mp4", headers={"Range": "bytes=0-99"})
+        self.assertEqual(r.status_code, 206)
+        self.assertEqual(r.headers["Content-Type"], "video/mp4")
+        self.assertEqual(len(r.get_data()), 100)
+
+    def test_only_clip_names(self):
+        for bad in ("../app.py", "clips.json", "x.exe", "hero.mp4.exe", "..%2Fapi.py"):
+            self.assertEqual(self.client.get("/get/media/" + bad).status_code, 404, bad)
+
+    def test_a_published_clip_goes_through_this_server(self):
+        (downloads.CLIPS_DIR / "hero-720.mp4").unlink()
+        (downloads.CLIPS_DIR / "hero.mp4").write_bytes(b"x")
+        clips = downloads.load_clips()
+        self.assertEqual(clips["hero"]["src720"], "/get/media/hero-720.mp4")
+
+
 class TheSiteServesDownloadsOnly(unittest.TestCase):
     """SITE_MODE=downloads: the hosted service is /get and nothing playable."""
 

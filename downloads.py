@@ -316,7 +316,10 @@ def load_clips() -> dict:
     def where(filename: str) -> str:
         if (CLIPS_DIR / filename).is_file():
             return f"/static/video/get/{filename}"
-        return f"{base}/{filename}" if base else ""
+        # Through this server, not straight from GitHub: release files come
+        # back as application/octet-stream, which Chrome sniffs and plays and
+        # iPhone Safari refuses — on a phone the page was stills only.
+        return f"/get/media/{filename}" if base else ""
 
     clips = []
     for c in data.get("clips") or []:
@@ -332,6 +335,18 @@ def load_clips() -> dict:
                       "poster": f"/static/video/get/{name}.jpg" if (CLIPS_DIR / f"{name}.jpg").is_file() else ""})
     hero = next((c for c in clips if c["name"] == "hero"), None)
     return {"hero": hero, "clips": [c for c in clips if c["name"] != "hero"]}
+
+
+_MEDIA_NAME = re.compile(r"^[a-z0-9_-]{1,40}(-720)?\.mp4$")
+
+
+def _clips_base() -> str:
+    try:
+        data = json.loads((CLIPS_DIR / "clips.json").read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    base = str(data.get("base") or "").rstrip("/")
+    return base if base.startswith("https://github.com/") else ""
 
 
 # ── routes ────────────────────────────────────────────────────────────
@@ -361,6 +376,51 @@ def download_page():
         page_url=base + "/get",
         og_image=base + og,
     )
+
+
+@downloads_bp.route("/get/media/<name>", methods=["GET"])
+def get_media(name: str):
+    """One /get clip, as video/mp4 with byte ranges, from wherever it lives.
+
+    A local copy (the dev machine) is sent with Flask's own range support; on
+    the site the published release file is streamed through, with the Range
+    header passed on and the answer labelled as video. Only clip-shaped names
+    are served, and only from the release clips.json names."""
+    from flask import Response, abort, request, send_file, stream_with_context
+    if not _MEDIA_NAME.match(name or ""):
+        abort(404)
+    local = CLIPS_DIR / name
+    if local.is_file():
+        return send_file(str(local), mimetype="video/mp4", conditional=True, max_age=86400)
+    base = _clips_base()
+    if not base:
+        abort(404)
+    import requests
+    headers = {"User-Agent": "5th-corner-download-page"}
+    if request.headers.get("Range"):
+        headers["Range"] = request.headers["Range"]
+    try:
+        up = requests.get(f"{base}/{name}", headers=headers, stream=True,
+                          timeout=(5, 30), allow_redirects=True)
+    except requests.RequestException:
+        abort(502)
+    if up.status_code not in (200, 206):
+        up.close()
+        abort(404 if up.status_code == 404 else 502)
+    out = {"Content-Type": "video/mp4", "Accept-Ranges": "bytes",
+           "Cache-Control": "public, max-age=86400"}
+    for h in ("Content-Length", "Content-Range", "ETag", "Last-Modified"):
+        if up.headers.get(h):
+            out[h] = up.headers[h]
+
+    def body():
+        try:
+            for chunk in up.iter_content(chunk_size=256 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            up.close()
+    return Response(stream_with_context(body()), status=up.status_code, headers=out)
 
 
 @downloads_bp.route("/api/builds/latest", methods=["GET"])
