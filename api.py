@@ -51,6 +51,53 @@ def _local_guard():
                     "detail": "This game only answers its own window."}), 403
 
 
+# /get — the download page, its build API and the asset redirects
+# (downloads.py). Harmless in the desktop app; the reason the site exists.
+import downloads as _downloads
+app.register_blueprint(_downloads.downloads_bp)
+
+
+# SITE_MODE=downloads: the hosted service is the download site and nothing
+# else (Distribution MVP, M5). Until hosted play is isolated per visitor
+# (post-MVP), a public server that answers /api/reset or /api/choose spends
+# 5th Corner's provider keys on anyone who finds it and shares one run
+# between strangers. So in this mode only what the site needs is answered;
+# every playable route is a 404 and / goes to /get.
+_SITE_ALLOW = ("/get", "/download", "/api/builds/latest", "/api/health",
+               "/api/bug/intake", "/admin", "/api/admin", "/static/",
+               "/pricing", "/privacy", "/terms", "/licenses", "/webhook/stripe",
+               "/favicon.ico", "/robots.txt")
+
+
+def _site_mode() -> str:
+    return (os.environ.get("SITE_MODE") or "").strip().lower()
+
+
+@app.before_request
+def _downloads_only_site():
+    if _site_mode() != "downloads":
+        return None
+    path = request.path or "/"
+    if path == "/":
+        from flask import redirect
+        return redirect("/get", code=302)
+    if path.startswith(_SITE_ALLOW):
+        return None
+    return jsonify({"success": False, "error": "Not found"}), 404
+
+
+@app.route("/licenses", methods=["GET"])
+def licenses_page():
+    """The third-party notices a build carries (tools/third_party_notices.py
+    writes THIRD-PARTY-NOTICES.txt beside the exe). Plain text, as written."""
+    import paths
+    notices = paths.install_root() / "THIRD-PARTY-NOTICES.txt"
+    if not notices.is_file():
+        return ("Third-party notices are generated into each release build "
+                "(tools/third_party_notices.py).", 404, {"Content-Type": "text/plain; charset=utf-8"})
+    return send_file(str(notices), mimetype="text/plain; charset=utf-8")
+
+
 # Cross-origin reads were allowed from EVERY origin (`CORS(app)`), which is
 # what let any web page read the desktop app's answers. Now only the site's own
 # origins may, and only on a hosted server: the desktop app answers nobody

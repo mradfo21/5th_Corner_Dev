@@ -72,5 +72,30 @@ class WhatGetOffers(unittest.TestCase):
         self.assertNotEqual(app_identity.RELEASES_REPO, "mradfo21/5th_Corner_Dev")
 
 
+class TheSiteServesDownloadsOnly(unittest.TestCase):
+    """SITE_MODE=downloads: the hosted service is /get and nothing playable."""
+
+    @classmethod
+    def setUpClass(cls):
+        import api
+        cls.client = api.app.test_client()
+
+    def test_playable_routes_are_gone_and_the_site_remains(self):
+        with patch.dict("os.environ", {"SITE_MODE": "downloads"}),              patch.object(downloads, "latest_build", lambda force=False: downloads._empty()):
+            r = self.client.get("/")
+            self.assertEqual((r.status_code, r.headers.get("Location")), (302, "/get"))
+            for path in ("/get", "/api/builds/latest", "/api/health"):
+                self.assertEqual(self.client.get(path).status_code, 200, path)
+            for path in ("/standalone", "/play", "/studio", "/lobby", "/api/keys", "/images/x.png"):
+                self.assertEqual(self.client.get(path).status_code, 404, path)
+            for path in ("/api/reset", "/api/choose", "/api/keys/custom"):
+                self.assertEqual(self.client.post(path, json={}).status_code, 404, path)
+
+    def test_without_the_mode_nothing_changes(self):
+        with patch.dict("os.environ", {}, clear=False) as env:
+            env.pop("SITE_MODE", None)
+            self.assertEqual(self.client.get("/standalone").status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main()
