@@ -72,7 +72,7 @@
       "label": "Anyone.",
       "hold": 0.9,
       "poster_at": 0.93,
-      "sub": "Three people, each from one line",
+      "sub": "Any hero you can describe.",
       "max_each": 2.5,
       "reveal_hold": 3.0,
       "caption_box": [
@@ -92,7 +92,8 @@
       "each": true,
       "max_each": 4.5,
       "hold": 1.2,
-      "poster_at": 0.2
+      "poster_at": 0.2,
+      "sub": "Three worlds. No two runs alike."
     },
     "act": {
       "film": [
@@ -121,7 +122,8 @@
       "max_each": 8,
       "tail": 4.5,
       "hold": 0.5,
-      "poster_at": 0.12
+      "poster_at": 0.12,
+      "sub": "Type any move. It happens."
     },
     "wear": {
       "film": "wear",
@@ -132,7 +134,7 @@
       "reveal": 3.0,
       "hold": 0.8,
       "poster_at": 0.85,
-      "sub": "Jason Fleece, piece by piece",
+      "sub": "Loot it. Wear it. Wield it.",
       "fits": [
         1,
         2,
@@ -149,7 +151,8 @@
       "label": "Attack.",
       "tail": 8,
       "hold": 0.6,
-      "poster_at": 0.55
+      "poster_at": 0.55,
+      "sub": "Roll to hit. Roll to survive."
     },
     "goal": {
       "film": [
@@ -162,7 +165,8 @@
       "hold": 0.7,
       "poster_at": 0.6,
       "walk_max": 9,
-      "reward_max": 14
+      "reward_max": 14,
+      "sub": "Find the goal. Claim the prize."
     },
     "key": {
       "film": "key",
@@ -176,7 +180,7 @@
         820,
         461
       ],
-      "sub": false
+      "sub": "Bring your own AI key."
     }
   },
   "hide_characters": [
