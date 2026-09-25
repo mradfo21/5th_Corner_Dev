@@ -98,7 +98,9 @@ body.past-splash .top .ui-btn { opacity: 1; transform: none; pointer-events: aut
      0.84x the width shows two thirds of the 16:9 frame (the whole frame was
      too small, 1.12x too tight, the full screen height a quarter). The name
      and DOWNLOAD sit in its fade. */
-  .splash { height: auto; min-height: 0; display: flex; flex-direction: column; align-items: stretch; padding: 0 0 36px; }
+  .splash { height: auto; min-height: 100svh; display: flex; flex-direction: column; align-items: stretch;
+            padding: calc(env(safe-area-inset-top, 0px) + 64px) 0 calc(env(safe-area-inset-bottom, 0px) + 22px); }
+  /* ^ the 64px is the fixed top bar: 5TH CORNER sits on black, above the film */
   .splash .film { position: relative; inset: auto; width: 100%; height: min(75svh, 84vw); }
   .splash .film video { transform: none; }
   .splash .film::after {
@@ -106,7 +108,10 @@ body.past-splash .top .ui-btn { opacity: 1; transform: none; pointer-events: aut
     background: linear-gradient(180deg, rgba(2,5,4,0.35) 0%, rgba(2,5,4,0) 18%, rgba(2,5,4,0) 66%, var(--bg) 100%);
   }
   .splash::after { background: none; }
-  .hero { margin-top: 20px; }   /* below the film, not over it: there is room now */
+  .hero { margin-top: 20px; flex: 1; }   /* below the film, not over it: there is room now */
+  /* The build line waits at the bottom of the first screen; the reel is below it. */
+  .hero .meta { margin-top: auto; padding-top: 24px; }
+  .hero .brand { margin-top: auto; }   /* the name + DOWNLOAD centred between the film and the build line */
   .splash .cue { display: none; }
   /* While the splash is all there is, the first clip below stays under a
      black gradient; the first scroll lifts it, so the reel is something you
