@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Build the double-click SOMEWHERE app.
+"""Build the double-click ABYSS app.
 
     python tools/build_exe.py            # build
     python tools/build_exe.py --clean    # throw away previous output first
     python tools/build_exe.py --run      # build, then launch what came out
-    python tools/build_exe.py --out D    # build into D/SOMEWHERE, leaving dist/ (and any
+    python tools/build_exe.py --out D    # build into D/ABYSS, leaving dist/ (and any
                                          # saves in a build you play from there) alone
 
-Output lands in `dist/SOMEWHERE/`. That whole folder is the app: `SOMEWHERE.exe`
+Output lands in `dist/ABYSS/`. That whole folder is the app: `ABYSS.exe`
 plus the interpreter, the libraries and the game's content. Move the folder, not
 just the exe.
 
@@ -30,8 +30,11 @@ except ImportError:
     from tools.ship_layout import stamp_factory
 
 ROOT = Path(__file__).resolve().parent.parent
-SPEC = ROOT / "SOMEWHERE.spec"
-OUT = ROOT / "dist" / "SOMEWHERE"
+sys.path.insert(0, str(ROOT))
+from app_identity import APP_NAME  # noqa: E402
+
+SPEC = ROOT / "ABYSS.spec"
+OUT = ROOT / "dist" / APP_NAME
 
 
 def _need(mod: str, pip_name: str | None = None) -> None:
@@ -53,13 +56,13 @@ def main(argv=None) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--clean", action="store_true", help="Delete build/ and dist/ first.")
     ap.add_argument("--run", action="store_true", help="Launch the result when done.")
-    ap.add_argument("--out", default="", help="Build into OUT/SOMEWHERE instead of dist/SOMEWHERE.")
+    ap.add_argument("--out", default="", help="Build into OUT/ABYSS instead of dist/ABYSS.")
     args = ap.parse_args(argv)
     global OUT
     extra = []
     if args.out:
         dist = Path(args.out).resolve()
-        OUT = dist / "SOMEWHERE"
+        OUT = dist / APP_NAME
         extra = ["--distpath", str(dist), "--workpath", str(dist.parent / (dist.name + "-work"))]
 
     _need("PyInstaller", "pyinstaller")
@@ -80,7 +83,7 @@ def main(argv=None) -> int:
         print("\nbuild FAILED", file=sys.stderr)
         return result.returncode
 
-    exe = OUT / "SOMEWHERE.exe"
+    exe = OUT / f"{APP_NAME}.exe"
     if not exe.exists():
         print(f"\nbuild reported success but {exe} is missing", file=sys.stderr)
         return 1
@@ -105,8 +108,7 @@ def main(argv=None) -> int:
             "# Easiest: open ACCOUNT in the game, choose Gemini or OpenAI, paste the key.\n"
             "# Or rename this file to  .env  and put your key in it (either one works;\n"
             "# with both, ACCOUNT picks which one plays).\n"
-            "# SOMEWHERE also looks in the folder you launch it from, in the\n"
-            "# two directories above this one, and in %APPDATA%\\SOMEWHERE\\.\n"
+            "# ABYSS also looks in %APPDATA%\\ABYSS\\ (where ACCOUNT keeps its keys).\n"
             "# Without a key the game still runs, in offline mode, on canned text.\n"
             "\n"
             "GEMINI_API_KEY=\n"
@@ -123,7 +125,7 @@ def main(argv=None) -> int:
     print(f"  {exe}")
     print(f"  folder is {_folder_size(OUT)}")
     print(f"  writable: {'yes' if writable else 'NO - saves will fail here'}")
-    print("\nShip the whole SOMEWHERE folder, not just the .exe.")
+    print(f"\nShip the whole {APP_NAME} folder, not just the .exe.")
 
     if args.run:
         subprocess.Popen([str(exe)], cwd=OUT)

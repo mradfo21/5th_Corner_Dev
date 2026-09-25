@@ -39,7 +39,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 ROOT = Path(__file__).resolve().parent
-CACHE_DIR = ROOT / ".cache" / "replay"
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
+CACHE_DIR = _paths.data_root() / ".cache" / "replay"
 
 MODE_OFF, MODE_RECORD, MODE_REPLAY = "off", "record", "replay"
 
@@ -88,7 +89,12 @@ def looks_like_a_stub(result: Any) -> bool:
 
 
 def mode() -> str:
-    raw = str(os.getenv("SOMEWHERE_REPLAY", MODE_RECORD)).strip().lower()
+    # A packaged build defaults to OFF: recording keeps every paid answer on
+    # disk with no bound, which is what makes a studio replay free and what
+    # would slowly fill a player's drive (M2). SOMEWHERE_REPLAY still wins.
+    import sys
+    default = MODE_OFF if getattr(sys, "frozen", False) else MODE_RECORD
+    raw = str(os.getenv("SOMEWHERE_REPLAY", default)).strip().lower()
     if raw in ("off", "0", "no", "false", "none"):
         return MODE_OFF
     if raw in ("replay", "play", "reuse"):
@@ -323,7 +329,7 @@ def _replay_image(found: dict, kwargs: dict, args: tuple, func: Callable) -> Opt
     except Exception:
         destination_dir = None
     if destination_dir is None:
-        destination_dir = ROOT / "images"
+        destination_dir = _paths.data_root() / "images"
     try:
         destination_dir.mkdir(parents=True, exist_ok=True)
         target = destination_dir / filename

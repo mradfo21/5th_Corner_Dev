@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 ROOT = Path(__file__).parent.resolve()
-LIMITS_PATH = ROOT / "sessions" / "_analytics" / "usage_limits.json"
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
+LIMITS_PATH = _paths.data_root() / "sessions" / "_analytics" / "usage_limits.json"
 
 _lock = threading.Lock()
 _limits_path: Optional[Path] = None

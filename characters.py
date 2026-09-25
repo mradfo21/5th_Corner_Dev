@@ -79,7 +79,7 @@ def _default_dir() -> Path:
     it. A roster an older build kept beside the exe is carried over once."""
     if not getattr(sys, "frozen", False):
         return ROOT / "characters"
-    dest = app_identity.appdata_root() / "characters"
+    dest = app_identity.data_dir() / "characters"
     old = ROOT / "characters"
     try:
         if not dest.exists() and old.is_dir() and any(old.iterdir()):

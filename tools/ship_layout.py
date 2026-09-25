@@ -57,6 +57,7 @@ RUNTIME_MODULES: Tuple[str, ...] = (
     "run_local",
     "scene_audio",
     "tunables",
+    "updater",
     "usage_limits",
     "veo_video_utils",
     "voice_design",

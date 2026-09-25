@@ -64,7 +64,8 @@ def game_title() -> str:
 
 
 def releases_repo() -> str:
-    return (os.getenv("GAME_RELEASES_REPO") or "mradfo21/5th_Corner_Dev").strip()
+    import app_identity
+    return (os.getenv("GAME_RELEASES_REPO") or app_identity.RELEASES_REPO).strip()
 
 
 def _empty(source: str = "none") -> dict:
@@ -113,9 +114,17 @@ def _pick_asset(release: dict) -> dict | None:
               if str(a.get("name", "")).lower().endswith(BUILD_EXTS)]
     if not assets:
         return None
-    # A Windows build first (that is what tools/build_exe.py makes), then the
-    # biggest file, which is the game rather than a stray checksum or patch.
-    assets.sort(key=lambda a: (_platform_for(a["name"]) != "windows", -int(a.get("size") or 0)))
+    # The installer first (Velopack's *-Setup.exe: installs, updates itself,
+    # Start Menu shortcut — M5), then a Windows build, then the biggest file,
+    # which is the game rather than a stray checksum or patch. Velopack's
+    # *.nupkg update packages are for the updater, never for /get.
+    assets = [a for a in assets if not str(a["name"]).lower().endswith(".nupkg")] or assets
+
+    def rank(a):
+        name = str(a["name"]).lower()
+        return (not name.endswith("-setup.exe"), _platform_for(a["name"]) != "windows",
+                "portable" in name, -int(a.get("size") or 0))
+    assets.sort(key=rank)
     return assets[0]
 
 
@@ -159,7 +168,9 @@ def _from_github() -> dict | None:
         asset = _pick_asset(rel)
         if not asset:
             continue
-        version = (rel.get("tag_name") or "").removeprefix("build-") or rel.get("name")
+        # "build-2026.09.21-c6d8e7f" (publish_build) or "v0.1.0-beta.1" (a release tag).
+        tag = rel.get("tag_name") or ""
+        version = tag.removeprefix("build-").removeprefix("v") or rel.get("name")
         if asset.get("browser_download_url"):
             _asset_urls[int(asset["id"])] = asset["browser_download_url"]
         entry = {
@@ -172,7 +183,10 @@ def _from_github() -> dict | None:
             history.append(entry)
             continue
         notes = rel.get("body") or ""
-        sha = re.search(r"sha256[:\s]+([0-9a-f]{64})", notes, re.I)
+        # GitHub publishes each asset's digest ("sha256:<hex>"); older
+        # releases carried it in the notes instead.
+        sha = re.fullmatch(r"sha256:([0-9a-f]{64})", str(asset.get("digest") or ""), re.I) \
+            or re.search(r"sha256[:\s]+([0-9a-f]{64})", notes, re.I)
         out.update({
             "ok": True,
             "version": version,
@@ -187,6 +201,7 @@ def _from_github() -> dict | None:
                 "filename": asset.get("name"),
                 "size_bytes": asset.get("size"),
                 "platform": _platform_for(asset.get("name", "")),
+                "installer": str(asset.get("name", "")).lower().endswith("setup.exe"),
                 "sha256": sha.group(1) if sha else None,
                 "downloads": asset.get("download_count"),
             },

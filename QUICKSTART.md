@@ -31,7 +31,7 @@ dependency inside it. No install required on the target.
 python tools/build_exe.py --clean --run
 ```
 
-Output is `dist/SOMEWHERE/`. **Ship the whole folder, not just the `.exe`** —
+Output is `dist/ABYSS/`. **Ship the whole folder, not just the `.exe`** —
 the interpreter, the libraries and the game's content all live beside it. Around
 530 MB and a few minutes to build; mediapipe and OpenCV are most of the weight,
 and both are needed because the SCAN tool runs its detector on-device.
@@ -39,8 +39,11 @@ and both are needed because the SCAN tool runs its detector on-device.
 What is allowed in that folder (and what must never be) is listed in
 `tools/ship_layout.py`. Walkthrough: **[docs/operations/SHIPPING.md](docs/operations/SHIPPING.md)**.
 
-Saved games land in `dist/SOMEWHERE/sessions/`. A windowed build has no console,
-so anything it prints goes to `dist/SOMEWHERE/logs/somewhere.log`.
+A build never writes into its own folder (an update replaces it): saved games,
+characters, keys and logs land in `%APPDATA%\ABYSS\` (`paths.py`), and a
+windowed build's output goes to `%APPDATA%\ABYSS\logs\somewhere.log`. For
+players, the build ships as an installer that updates itself —
+**[docs/operations/RELEASING.md](docs/operations/RELEASING.md)**.
 
 ## Set up API keys
 
@@ -51,7 +54,7 @@ by itself.
 **The player's way: ACCOUNT → PLAYS ON.** Choose Gemini or OpenAI in the
 dropdown, paste that key, SAVE. The sheet proves the key with one real call
 ("Works · story … · pictures …", or why not), stores it in
-`%APPDATA%\SOMEWHERE\keys.env` and the choice in `account.json` beside it.
+`%APPDATA%\ABYSS\keys.env` and the choice in `account.json` beside it.
 Either provider plays the whole game — story and pictures. With OpenAI chosen,
 `provider_bridge.py` answers every Gemini-format call with the matching OpenAI
 one; the bottom-left `backend:` tag names the provider actually answering.
@@ -70,11 +73,13 @@ narrator set there.
 
 The `.env` is looked for in these places, first one wins:
 
-1. beside `play.py` (or beside `SOMEWHERE.exe` in a build)
-2. the folder you launched from
-3. up to three directories above — so a build in `dist/SOMEWHERE` finds the
-   repo's `.env` without anyone copying secrets into a shippable folder
-4. `%APPDATA%\SOMEWHERE\.env` — where an installed copy should keep it
+1. beside `play.py` (or beside `ABYSS.exe` in a build)
+2. from source only: the folder you launched from, and up to three directories
+   above
+3. `%APPDATA%\ABYSS\.env` — where an installed copy keeps it
+
+A packaged build reads only 1 and 3: an installed game must not pick up
+whatever `.env` happens to lie in the folders above it (M1).
 
 **A packaged build launched from Explorer inherits none of your shell's
 environment.** If `GEMINI_API_KEY` is only exported in your terminal, the app

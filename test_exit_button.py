@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -25,6 +26,12 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 
+# play.py arms local_guard; a parent that spawns it hands down the token
+# (SOMEWHERE_LAUNCH_TOKEN) so it can knock like the window does.
+LAUNCH_TOKEN = secrets.token_urlsafe(32)
+LAUNCH = {"X-Launch-Token": LAUNCH_TOKEN}
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -34,14 +41,15 @@ def free_port() -> int:
 def post(url: str, payload: dict | None = None, timeout: float = 10.0):
     req = urllib.request.Request(
         url, data=json.dumps(payload or {}).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
+        headers={"Content-Type": "application/json", **LAUNCH}, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, json.loads(r.read())
 
 
 def alive(base: str) -> bool:
     try:
-        with urllib.request.urlopen(base + "/api/health", timeout=2):
+        with urllib.request.urlopen(urllib.request.Request(
+                base + "/api/health", headers=LAUNCH), timeout=2):
             return True
     except Exception:
         return False
@@ -81,7 +89,8 @@ class TheLocalAppStopsWhenAsked(unittest.TestCase):
     def setUp(self):
         self.port = free_port()
         self.base = f"http://127.0.0.1:{self.port}"
-        env = dict(os.environ, PORT=str(self.port), STORYGEN_BACKEND="mock")
+        env = dict(os.environ, PORT=str(self.port), STORYGEN_BACKEND="mock",
+                   SOMEWHERE_LAUNCH_TOKEN=LAUNCH_TOKEN)
         # play.py is what arms the route, so the launcher is what gets booted.
         self.proc = subprocess.Popen(
             [sys.executable, "-u", "play.py", "--mock", "--browser",
@@ -345,7 +354,8 @@ class PressingItInABrowserActuallyQuits(unittest.TestCase):
         cls.proc = subprocess.Popen(
             [sys.executable, "-u", "play.py", "--mock", "--browser",
              "--port", str(cls.port)],
-            cwd=str(ROOT), env=dict(os.environ, MOCK_MODE="1"),
+            cwd=str(ROOT), env=dict(os.environ, MOCK_MODE="1",
+                                    SOMEWHERE_LAUNCH_TOKEN=LAUNCH_TOKEN),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         deadline = time.time() + 90
@@ -368,7 +378,7 @@ class PressingItInABrowserActuallyQuits(unittest.TestCase):
         if not alive(self.base):
             self.fail("the app was not running when this test started")
         self.page = self.browser.new_page()
-        self.page.goto(f"{self.base}/standalone?mode=play")
+        self.page.goto(f"{self.base}/standalone?mode=play&launch={LAUNCH_TOKEN}")
         # Wait for the opening scene to land before touching anything. The cold
         # open puts a full-screen ceremony over the rail, and a click during it
         # is swallowed rather than queued — which is also true for the player.

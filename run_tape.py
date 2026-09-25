@@ -58,7 +58,8 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import unquote, urlparse
 
 ROOT = Path(__file__).resolve().parent
-SESSIONS_ROOT = ROOT / "sessions"
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
+SESSIONS_ROOT = _paths.data_root() / "sessions"
 
 KEEP_RUNS = 24          # finished runs kept per session, newest first
 MAX_SHOTS = 800         # a runaway run stops recording, it does not fill a disk

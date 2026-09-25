@@ -127,3 +127,9 @@ _pt_err.txt
 # Local launchers for the retired agent command runner (_claude_runner.py).
 START_CLAUDE*.bat
 MERGE_AND_RUN.bat
+
+# Stamped by the release workflow from the tag (tools/stamp_version.py); never committed.
+_version.py
+
+# Velopack output (tools/release_local.py, the release workflow).
+/Releases/

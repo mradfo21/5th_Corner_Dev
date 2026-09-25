@@ -156,6 +156,7 @@ body.past-splash .top .ui-btn { opacity: 1; transform: none; pointer-events: aut
 .getit .get { margin-top: 0; }
 .steps { list-style: none; margin: 34px 0 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 12px 34px; font-family: var(--font-display); font-size: 22px; letter-spacing: 0.08em; color: var(--ink); }
 .steps li span { font-family: var(--font-mono); font-size: 12px; color: var(--accent); margin-right: 10px; letter-spacing: 0.1em; vertical-align: 3px; }
+#sha-v { word-break: break-all; font-size: 12px; }
 .steps code { font-family: var(--font-mono); font-size: 14px; letter-spacing: 0; color: var(--text); background: rgba(216,240,228,0.07); padding: 2px 7px; border-radius: 4px; vertical-align: 2px; }
 .steps li.lit { color: var(--accent); }
 .fine { margin: 18px 0 0; max-width: 36em; font-size: 13px; color: var(--faint); }
@@ -234,14 +235,16 @@ details.news li span.alt { color: var(--dim); }
     <a class="get js-get" id="end-get" href="/get/latest">DOWNLOAD</a>
     <div class="meta" id="meta-end"></div>
     <ol class="steps" id="steps">
-      <li id="s1"><span>01</span>Unzip</li>
-      <li id="s2"><span>02</span>Run <code>{{ title }}.exe</code></li>
+      <li id="s1"><span>01</span><b class="js-step1">Run the installer</b></li>
+      <li id="s2"><span>02</span><b class="js-step2">Open {{ title }} from the Start menu</b></li>
       <li id="s3"><span>03</span>Paste a Gemini or OpenAI key</li>
     </ol>
     <p class="fine">Your own key draws the story and the pictures, and stays on your PC. Get one at
       <a href="https://aistudio.google.com/apikey" rel="noopener" target="_blank">aistudio.google.com</a> or
       <a href="https://platform.openai.com/api-keys" rel="noopener" target="_blank">platform.openai.com</a>.</p>
     <p class="fine">Windows may warn you: <b>More info → Run anyway</b>.</p>
+    <p class="fine">Windows 10 or 11, 64-bit · about 1.5 GB free · an internet connection. It updates
+      itself, and never in the middle of a run. <span id="sha" hidden>SHA-256 <code id="sha-v"></code></span></p>
     <details class="news" id="news-box" hidden>
       <summary><span class="lnk">what's new</span></summary>
       <ul id="news"></ul>
@@ -294,6 +297,12 @@ details.news li span.alt { color: var(--dim); }
     const vm = String(BUILD.version || "").match(/^(\d{4}\.\d{2}\.\d{2})-?(.*)$/);
     const bits = [`<b>BUILD ${esc(vm ? vm[1] : BUILD.version)}</b>`, "WINDOWS"];
     if (dl.size_bytes) bits.push(mb(dl.size_bytes));
+    if (dl.sha256) { $("#sha-v").textContent = dl.sha256; $("#sha").hidden = false; }
+    if (!dl.installer) {
+      // A zip build (publish_build): the old steps.
+      $(".js-step1").textContent = "Unzip";
+      $(".js-step2").innerHTML = "Run <code>" + esc(TITLE) + ".exe</code>";
+    }
     if (BUILD.published_at) bits.push(ago(BUILD.published_at).toUpperCase());
     $("#meta").innerHTML = $("#meta-end").innerHTML = bits.join("<i>·</i>");
     const hl = BUILD.highlights || [];
@@ -356,7 +365,8 @@ details.news li span.alt { color: var(--dim); }
   const say = (t, b, ms = 6500) => { $("#toast-t").textContent = t; $("#toast-b").textContent = b; $("#toast").classList.add("on"); clearTimeout(tt); tt = setTimeout(() => $("#toast").classList.remove("on"), ms); };
   $$(".js-get").forEach((a) => a.addEventListener("click", () => {
     if (!ok) return;
-    say("DOWNLOADING", `${TITLE}${dl.size_bytes ? ", " + mb(dl.size_bytes) : ""}. Unzip it, then run ${TITLE}.exe.`);
+    say("DOWNLOADING", `${TITLE}${dl.size_bytes ? ", " + mb(dl.size_bytes) : ""}. ` +
+        (dl.installer ? "Run it to install; it keeps itself up to date." : `Unzip it, then run ${TITLE}.exe.`));
     $("#s1").classList.add("lit"); setTimeout(() => $("#s1").classList.remove("lit"), 12000);
   }));
   async function copy(text, msg) {

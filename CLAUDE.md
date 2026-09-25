@@ -32,7 +32,8 @@ fresh slate of actions written against **what is actually visible in the
 picture**, not against a script.
 
 This repo is **the game plus the studio that authors it**. Same process, same
-Flask app. `dist/SOMEWHERE/` (built by `tools/build_exe.py`) is what a player
+Flask app. `dist/ABYSS/` (built by `tools/build_exe.py`, shipped as an
+installer — `docs/operations/RELEASING.md`) is what a player
 gets; everything else is the workshop.
 
 It is a **desktop app**, not a website: `play.py` boots a Flask server and wraps
@@ -296,7 +297,7 @@ python run_local.py --mock --no-browser --port 5001   # bare server; e2e suites 
 
 Keys go in `.env` (`GEMINI_API_KEY`, optionally `OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, ElevenLabs, Stripe). `python tools/build_exe.py --clean --run`
-produces `dist/SOMEWHERE/`; what may go in that folder is listed once in
+produces `dist/ABYSS/`; what may go in that folder is listed once in
 `tools/ship_layout.py`.
 
 Logs: `logs/somewhere.log`, plus structured run logs in `logs/play/*.jsonl`.
@@ -339,6 +340,13 @@ Start-Process -FilePath python -ArgumentList "play.py" -RedirectStandardOutput l
 $env:PT_TURNS="3"; $env:PT_TURN_TIMEOUT="150"
 Start-Process -FilePath python -ArgumentList "-u","playtest_app.py" -RedirectStandardOutput _pt_out.txt -RedirectStandardError _pt_err.txt
 ```
+
+**The desktop app only answers its own window** (`local_guard.py`, since
+2026-09-25): a `curl` or script against a running `play.py` gets 403 unless it
+sends `X-Launch-Token` from `logs/launch.json` (`local_guard.client_headers()`
+does it). `run_local.py` and hosted servers are unguarded. Never aim an attack
+check at a `play.py` using the real `%APPDATA%` key store (`SOMEWHERE_KEYS_PATH`
+to a scratch file first).
 
 `playtest_app.py` attaches over CDP and plays the real native app: start menu,
 experience picker, SCAN, MOVE TO, INTERACT, PHOTO, ACT, CAMP, encounters. It

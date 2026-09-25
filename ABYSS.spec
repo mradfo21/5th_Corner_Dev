@@ -16,6 +16,7 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files
 import sys
 sys.path.insert(0, str(Path(SPECPATH).resolve()))
 from tools.ship_layout import bundle_datas, runtime_modules
+from app_identity import APP_NAME  # the exe and its folder: ABYSS/ABYSS.exe
 
 # Local modules that are imported lazily or by name, so the dependency graph
 # walker cannot see them from play.py.
@@ -24,7 +25,8 @@ LOCAL = runtime_modules()
 # Third-party packages that ship data files or resolve plugins at runtime.
 datas, binaries, hiddenimports = [], [], list(LOCAL)
 for pkg in ("google.genai", "mediapipe", "cv2", "anthropic", "openai",
-            "imageio_ffmpeg", "replicate", "stripe", "flask_sock", "webview"):
+            "imageio_ffmpeg", "replicate", "stripe", "flask_sock", "webview",
+            "velopack"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -72,7 +74,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="SOMEWHERE",
+    name=APP_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -82,7 +84,7 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    icon=None,
+    icon=str(Path(SPECPATH).resolve() / "assets" / "icon" / "abyss.ico"),
     # Flatten the payload next to the exe instead of the default `_internal`
     # subfolder. Every module here resolves its data as "beside me"
     # (`Path(__file__).parent`), so this makes the packaged layout identical to
@@ -98,5 +100,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="SOMEWHERE",
+    name=APP_NAME,
 )

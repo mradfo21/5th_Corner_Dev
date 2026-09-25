@@ -55,6 +55,7 @@ import argparse
 import base64
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -69,6 +70,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).parent.resolve()
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
 
 # Colors for the annotated frames / GIF overlay.
 BOX_COLOR = (0, 255, 170)
@@ -103,6 +105,15 @@ MODE_PRESETS = {
 # HTTP
 # ──────────────────────────────────────────────────────────────────────
 
+
+def _launch() -> dict:
+    """The desktop app's launch token, for a render this app started: the
+    child inherits SOMEWHERE_LAUNCH_TOKEN (local_guard.py). Empty against
+    run_local.py or a hosted server, which do not ask for one."""
+    token = (os.environ.get("SOMEWHERE_LAUNCH_TOKEN") or "").strip()
+    return {"X-Launch-Token": token} if token else {}
+
+
 class Client:
     def __init__(self, base: str, session_id: str):
         self.base = base.rstrip("/")
@@ -117,7 +128,7 @@ class Client:
 
     def get(self, path: str, timeout: int = 30):
         req = urllib.request.Request(self._url(path), method="GET",
-                                     headers={"X-Session-Id": self.session_id})
+                                     headers={"X-Session-Id": self.session_id, **_launch()})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
 
@@ -127,7 +138,8 @@ class Client:
         data = json.dumps(payload).encode()
         req = urllib.request.Request(
             self._url(path), data=data, method="POST",
-            headers={"Content-Type": "application/json", "X-Session-Id": self.session_id},
+            headers={"Content-Type": "application/json", "X-Session-Id": self.session_id,
+                     **_launch()},
         )
         t0 = time.time()
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -138,7 +150,8 @@ class Client:
         frame belongs to a non-default session, so don't append another one."""
         url = path if path.startswith("http") else self.base + path
         try:
-            with urllib.request.urlopen(url, timeout=timeout) as resp:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=_launch()),
+                                        timeout=timeout) as resp:
                 return resp.read()
         except Exception:
             return None
@@ -1566,7 +1579,7 @@ def parse_args(argv=None):
     if not args.session:
         args.session = f"{args.mode}{stamp}"
     if not args.out:
-        args.out = str(ROOT / "playtest_results" / f"{args.mode}_run_{stamp}")
+        args.out = str(_paths.data_root() / "playtest_results" / f"{args.mode}_run_{stamp}")
     return args
 
 

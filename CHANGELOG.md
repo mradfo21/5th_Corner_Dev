@@ -1,5 +1,83 @@
 # 🔧 CHANGELOG - September 25, 2026
 
+## 📦 NEW: ABYSS installs, updates itself, keeps your things when it does, and bug reports reach us
+
+The distribution plan (docs/plans/DISTRIBUTION_MVP_PLAN.md), M2–M5: the steps from "a folder you copy to a friend" to "a stranger clicks Download and it keeps itself current".
+
+**Saves had to leave the install folder first (M2).** Every module finds its data with `Path(__file__).parent`, and the spec flattens the build so that is the exe's folder (`contents_directory="."`). So a packaged ABYSS wrote every session, tape, World, log and cache beside `ABYSS.exe`. An installer update replaces that folder, which would have taken all of it.
+- `paths.py` names two roots. `install_root()` holds the program and its factory files. `data_root()` is everything the game writes: the repo when run from source (so development is unchanged), `%APPDATA%\ABYSS` in a build.
+- A write-path inventory found about thirty writers anchored to the install folder. Only some had an override, and `SESSIONS_DIR`, the one that looked right, was read by two modules and written by none. Those writers now ask the data root:
+  - the engine's sessions, archives, vision cache and turn signals;
+  - run_tape; session audio and music;
+  - usage limits, cost tracking and hosted billing;
+  - `ai_config.json` and `pricing.json`;
+  - the voice cache, levels, the replay cache, bug captures, play logs and renders.
+- A build works from the data root, so every relative path (`"sessions"`, `"archives"`, `world_state.json`, the evolution log) lands there too.
+- Factory files the game also rewrites (the live prompt file, `ai_config`, `pricing`, the shipped Worlds) are seeded into the data root. An update refreshes one only while the player's copy is still byte-for-byte the factory copy it was seeded from (`.factory.json`). A World the player bound or edited stays theirs.
+- `%APPDATA%\SOMEWHERE` is copied into `%APPDATA%\ABYSS` once, the first time. It is copied rather than moved, so an older build still finds its keys.
+- The replay cache recorded every paid answer to disk with no bound. That is right in the studio and slowly fills a player's drive, so a build defaults it to off.
+
+**A tag makes a release (M3).**
+- `.github/workflows/release.yml` runs the gate, stamps the version (`tools/stamp_version.py` → `_version.py` → `/api/health`, the log header, bug reports) and builds.
+- It then runs the smoke test with the install folder read-only, writes `THIRD-PARTY-NOTICES.txt` (74 packages, plus the GPLv3 ffmpeg build named exactly and the PyInstaller bootloader exception), and packs with Velopack.
+- It signs when the Azure Artifact Signing secrets exist and publishes to the new public `mradfo21/abyss-releases` when `RELEASES_TOKEN` exists. Without either it still runs and keeps the build as an artifact.
+- `.github/workflows/ci.yml` runs on every push and PR. Its list is the 59 suites green at today's baseline (59 of 78; the 19 red are named in `tools/ci_suites.txt`) plus the new ones. A green suite stays green.
+- `tools/release_local.py` does the same steps on this machine.
+- The spec is `ABYSS.spec`, the build is `dist/ABYSS/ABYSS.exe`, and it has an icon: the teal screen and the falling figure from the 5th Corner logo, a stand-in.
+
+**Updates are offered, never forced (M4).**
+- `updater.boot()` is the first line `play.py` runs, where Velopack's install and update hooks live. Once the window is up, `updater.start()` checks the releases repo in the background and downloads a newer build quietly.
+- The start menu then shows **UPDATE READY — RESTART** in the bottom-right margin, lit like a hovered EXIT. Pressing it leaves through the EXIT path, so a render or a paid stream is released first.
+- Not pressing it is always fine: Velopack applies it at the next launch. It never appears once a run has started. The build tag shows the real version.
+- `ABYSS_UPDATE_REPO` can name a local folder of packed releases, which is how an update is rehearsed without publishing anything.
+
+**Bug reports reach us (M5).**
+- After a capture, the game lists exactly what would be sent and asks. Only OK sends.
+- Every text file is redacted (`safe_log`) and `build.json` carries the version. The zip is capped at 10 MB, with the biggest images dropped first.
+- The site's `POST /api/bug/intake` answers 413 over the cap and 429 past six reports an hour from one address. It stores what it takes and posts a summary to `BUG_WEBHOOK_URL`.
+- A desktop app is not an intake, and a hosted server does not send. Every route has a 64 MB request cap now.
+- `/get` hands out `*-Setup.exe` first, then the portable zip, and never an update package.
+
+**How it was checked.**
+- **Saves out of the install folder.** `tools/smoke_exe.py` denied create/write on `dist/ABYSS` for this user (icacls) and fingerprinted all 5,622 files before and after. The built exe then booted in 9 s, reset and played two turns ("1993. You are Jason Fleece, Freelance photojournalist…"), and saved to a scratch data root. PASS, install folder untouched.
+  - The ACL itself took two tries. Generic `W` carries SYNCHRONIZE, and `D`/`DC` (delete) block CreateProcess too; with either denied, Windows refuses to start the exe ("Access is denied"). So it denies `(WD,AD,WEA,WA)`, and the fingerprint catches any deletion.
+- **Install and update, the whole way.** `tools/release_local.py` packed 0.1.0-beta.1 and 0.1.0-beta.2 side by side. The beta.2 update package is **2 MB** against beta.1's 240 MB: Velopack found 3 of 5,626 files changed.
+  - `tools/rehearse_update.py` then ran beta.1's real `Setup.exe --silent` into a scratch folder, with a scratch `APPDATA`, no API key and `ABYSS_UPDATE_REPO` pointing at the local releases. The install hook ran, the shortcuts were made and the uninstall entry was written.
+  - The app came up and said `0.1.0-beta.1`. A run was started. The updater answered `ready -> 0.1.0-beta.2` about 70 s later.
+  - `POST /api/update/apply` took it down. It came back by itself 90 s later on a new port, saying `0.1.0-beta.2`, and the run's `state.json` was byte-identical. It then uninstalled cleanly. PASS, three runs in a row.
+- **The button on screen.** The first on-screen check passed on `#start-update:not([hidden])` while its screenshot showed only ACCOUNT. With no key, ACCOUNT opens by itself and the start menu sits behind it at `visibility: hidden`. The check now closes ACCOUNT like a player and waits for real visibility. The screenshot (`_claude_pull/update_ready.png`) shows UPDATE READY — RESTART in the bottom-right margin above `BUILD 0.1.0-BETA.1`.
+- **Not yet checked:** the gate green on GitHub's own runner, since the push is waiting on the `workflow` scope; a signed build; publishing to `abyss-releases`; a clean machine (Windows Sandbox).
+- **Suites.** `test_paths` (12), `test_bug_send` (9) and `test_local_guard` (21) are green. The CI gate ran on this branch at 60/61, and the one red was `test_characters` asserting the old SOMEWHERE folder; it is fixed.
+
+## 🔒 FIXED: A web page on the player's machine could take their key, quit the game, or delete the Worlds
+
+From the distribution audit (docs/plans/DISTRIBUTION_MVP_PLAN.md, M1): before ABYSS goes to strangers, the server it runs on 127.0.0.1 has to answer its own window and nobody else. It answered everybody.
+
+**The mechanism.** `CORS(app)` allowed every origin, and the key routes' guard was `request.remote_addr == 127.0.0.1`. A fetch from any tab in any browser on the machine comes from 127.0.0.1, so it passed. A page could find the port (`/api/health` answered anyone), then `PUT /api/keys/custom` with a new address and a blank key. `keys_store.set_custom` took the blank key to mean "keep the stored one", so it sent the player's OpenAI key, and every prompt after it, to the page's server. The same page could `POST /api/shutdown`.
+
+A second, worse hole turned up in the archive routes, on hosted servers too. Flask's `<archive_name>` stops at `/` but not at `\`, and Windows treats both as separators. So `DELETE /api/archives/..%5Cworlds` was `rmtree('archives/..\worlds')`.
+
+**What changed.**
+- `local_guard.py`. Each launch, play.py mints a token and loads `/standalone?…&launch=<token>`. That first response trades the token for an HttpOnly, SameSite=Strict cookie. Requests to `/api/`, `/ws/`, `/images/` or `/audio/` without the cookie or the `X-Launch-Token` header get a 403. The Host header must be `127.0.0.1:<port>` or `localhost:<port>`, which stops DNS rebinding.
+  - It is armed like `enable_shutdown()`: only play.py arms it. Hosted gunicorn, `run_local.py` and every e2e suite are unchanged.
+  - The render child inherits the token through `SOMEWHERE_LAUNCH_TOKEN`. A parent that spawns play.py can hand it one the same way (`test_exit_button`, `tools/smoke_exe.py`). A harness attached over CDP reads `logs/launch.json`.
+- CORS: none on the desktop app. On a hosted server, only the site's origins (`CORS_ORIGINS`, default `www.5th-corner.com` / `5th-corner.com`).
+- `set_custom` keeps a stored key only for the address it was stored for.
+- The archive routes go through `_archive_dir`: a safe name, and the resolved path must sit directly under `archives/`.
+- `run_local.py --host` defaults to `127.0.0.1`. It was `0.0.0.0`, which put an unguarded server on every network the laptop joined.
+- A packaged build reads `.env` only from beside the exe and from `%APPDATA%`. It no longer reads the launch folder or three parents up.
+- `safe_log.py`. The windowed build's `somewhere.log` rotates at 10 MB (3 kept) and blanks key-shaped strings and the launch token before writing. The bug button attaches that file.
+- play.py's leftover-server reaper now stops only servers started from its own checkout. It used to take any `run_local.py` on the machine. With one worktree per session, that meant launching the game in one worktree killed another session's e2e server. It did, during this work.
+
+**How it was checked.**
+- `test_local_guard.py` has 21 tests: every guarded prefix refuses a stranger; a wrong Host is refused even with the token; the launch URL sets a Strict HttpOnly cookie and the page is in from then on; no origin is answered cross-site on the desktop and only the site's on a host; unarmed needs nothing; `..\victim` survives DELETE and GET; a new address does not inherit the key; key shapes are redacted; the log rotates.
+- The real app, launched with the guard armed, from outside: `/api/health` 403, `PUT /api/keys/custom` 403, `POST /api/shutdown` 403, `Host: evil.example` with the right token 403, the right token 200. No token anywhere in the log.
+- `playtest_app.py` played three turns of the guarded window (mock). They resolved in 5.9 s and 5.7 s with no console errors, and the server log shows no 403 the window caused. The two harness flags (no SCAN tags in mock, frame unchanged) came up identically on the unguarded build.
+- `tools/drive_by.html` was served from another origin and opened in a real browser against both builds.
+  - Unguarded: it read `/api/health`, and its `PUT /api/keys/custom` came back **200** and rewrote the key store (`OPENAI_BASE_URL=https://attacker.invalid/v1`, the narrator switched to `openai/m`). That was my machine's real store; it has been put back, and the lesson is in memory: sandbox the stores before any attack run.
+  - Guarded, on a scratch key store: all eight attacks 403 in the server log (the CORS reads, the preflight, the text/plain POST, both shutdowns, the `<img>`, the WebSocket, the `localhost` name). The app kept running, and the key file's hash did not change.
+- `test_billing`, `test_provider_bridge` and `test_characters` pass. `test_render_mode`'s four failures are the same four before and after this change.
+
 ## 🎨 The game is ABYSS, every /get word starts with A, and one character suits up in the pack
 
 Matt: "can you re-name the app, across the entire app, to "ABYSS" instead of god. "when you stare into the abyss, the abyss stares back" is a good tag line." And: "the only section that doesn't feel good is the wear it section. we need to show more examples across a single character (not call of duty's ghost guy since i bet thats copyrighted)". And: "keep going on the alliteration … so that every big header section is an A".

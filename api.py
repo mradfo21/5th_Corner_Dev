@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 from flask import Flask, request, jsonify, send_file, make_response, render_template, redirect
-from flask_cors import CORS
 import engine
 import ai_provider_manager
 import bug_report
@@ -27,7 +26,104 @@ import keys_store
 import billing
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+# No request body over 64 MB (a character photo, a bug frame and a studio
+# plate are all well under it): past this Flask answers 413 before reading.
+app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_MB", "64")) * 1024 * 1024
+
+
+# ═══════════════════════════════════════════════════════════════════
+# WHO MAY ASK (local_guard.py)
+#
+# First before_request on purpose: a refused caller must not start a
+# watchdog entry, adopt a look, or touch a wallet on its way to the 403.
+# Inert unless play.py armed it, so hosted and run_local.py are unchanged.
+# ═══════════════════════════════════════════════════════════════════
+
+import local_guard
+
+
+@app.before_request
+def _local_guard():
+    why = local_guard.check(request)
+    if why is None:
+        return None
+    return jsonify({"success": False, "error": "Forbidden",
+                    "detail": "This game only answers its own window."}), 403
+
+
+# /get — the download page, its build API and the asset redirects
+# (downloads.py). Harmless in the desktop app; the reason the site exists.
+import downloads as _downloads
+app.register_blueprint(_downloads.downloads_bp)
+
+
+# SITE_MODE=downloads: the hosted service is the download site and nothing
+# else (Distribution MVP, M5). Until hosted play is isolated per visitor
+# (post-MVP), a public server that answers /api/reset or /api/choose spends
+# 5th Corner's provider keys on anyone who finds it and shares one run
+# between strangers. So in this mode only what the site needs is answered;
+# every playable route is a 404 and / goes to /get.
+_SITE_ALLOW = ("/get", "/download", "/api/builds/latest", "/api/health",
+               "/api/bug/intake", "/admin", "/api/admin", "/static/",
+               "/pricing", "/privacy", "/terms", "/licenses", "/webhook/stripe",
+               "/favicon.ico", "/robots.txt")
+
+
+def _site_mode() -> str:
+    return (os.environ.get("SITE_MODE") or "").strip().lower()
+
+
+@app.before_request
+def _downloads_only_site():
+    if _site_mode() != "downloads":
+        return None
+    path = request.path or "/"
+    if path == "/":
+        from flask import redirect
+        return redirect("/get", code=302)
+    if path.startswith(_SITE_ALLOW):
+        return None
+    return jsonify({"success": False, "error": "Not found"}), 404
+
+
+@app.route("/licenses", methods=["GET"])
+def licenses_page():
+    """The third-party notices a build carries (tools/third_party_notices.py
+    writes THIRD-PARTY-NOTICES.txt beside the exe). Plain text, as written."""
+    import paths
+    notices = paths.install_root() / "THIRD-PARTY-NOTICES.txt"
+    if not notices.is_file():
+        return ("Third-party notices are generated into each release build "
+                "(tools/third_party_notices.py).", 404, {"Content-Type": "text/plain; charset=utf-8"})
+    return send_file(str(notices), mimetype="text/plain; charset=utf-8")
+
+
+# Cross-origin reads were allowed from EVERY origin (`CORS(app)`), which is
+# what let any web page read the desktop app's answers. Now only the site's own
+# origins may, and only on a hosted server: the desktop app answers nobody
+# cross-origin. CORS_ORIGINS (comma-separated) overrides the list.
+_CORS_ORIGINS = tuple(
+    o.strip().rstrip("/") for o in (
+        os.environ.get("CORS_ORIGINS")
+        or "https://www.5th-corner.com,https://5th-corner.com").split(",")
+    if o.strip())
+
+
+@app.after_request
+def _cors_and_launch_cookie(response):
+    if local_guard.armed():
+        if local_guard.wants_cookie(request):
+            local_guard.set_cookie(response)
+        return response
+    origin = (request.headers.get("Origin") or "").rstrip("/")
+    if origin and origin in _CORS_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers.add("Vary", "Origin")
+        if request.method == "OPTIONS":
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = (
+                request.headers.get("Access-Control-Request-Headers") or "Content-Type")
+    return response
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -265,6 +361,58 @@ def api_bug_list():
         return error_response("Failed to list bug captures", str(e))
 
 
+@app.route('/api/bug/preview', methods=['GET'])
+def api_bug_preview():
+    """What SEND would upload for one capture — the client shows this list
+    and asks before anything leaves the machine (bug_send.py)."""
+    import bug_send
+    files = bug_send.manifest(request.args.get('id') or '')
+    if files is None:
+        return error_response("No such capture", code=404)
+    return jsonify({"ok": True, "files": files, "intake": bug_send.INTAKE_URL})
+
+
+@app.route('/api/bug/send', methods=['POST'])
+def api_bug_send():
+    """Send one capture to 5th Corner. Desktop only; the player pressed SEND."""
+    if not _shutdown_armed:
+        return error_response("Only the desktop app sends bug reports", code=403)
+    import bug_send
+    data = request.get_json(silent=True) or {}
+    try:
+        return jsonify(bug_send.send(str(data.get('id') or ''), str(data.get('note') or '')))
+    except FileNotFoundError:
+        return error_response("No such capture", code=404)
+    except Exception as e:  # noqa: BLE001 — offline, intake down
+        return error_response("Could not send the report", str(e)[:200], code=502)
+
+
+@app.route('/api/bug/intake', methods=['POST'])
+def api_bug_intake():
+    """Where desktop copies send their captures (hosted site only).
+
+    Size-capped, rate-limited per address, stored, and summarised to the
+    private webhook. The zip is kept, never unpacked here."""
+    import bug_send
+    if local_guard.armed():
+        return error_response("Not an intake", code=404)
+    if (request.content_length or 0) > bug_send.MAX_BYTES + 256 * 1024:
+        return error_response("Report too large", code=413)
+    ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "?").split(",")[0].strip()
+    if not bug_send.rate_ok(ip):
+        return error_response("Too many reports from here; try again in an hour", code=429)
+    upload = request.files.get("report")
+    if upload is None:
+        return error_response("No report attached", code=400)
+    data = upload.read(bug_send.MAX_BYTES + 1)
+    if len(data) > bug_send.MAX_BYTES:
+        return error_response("Report too large", code=413)
+    result = bug_send.receive(data, str(request.form.get("note") or ""),
+                              str(request.headers.get("X-ABYSS-Version") or ""), ip,
+                              engine.DATA)
+    return jsonify(result)
+
+
 # Optional flask-sock (live TALK websocket). Never let its absence break boot.
 try:
     from flask_sock import Sock
@@ -286,8 +434,12 @@ def _build_info():
     the new commit is not live no matter what the dashboard shows.
     """
     commit = (os.getenv("RENDER_GIT_COMMIT") or "").strip()
+    import app_identity
     return {
-        "commit": commit or None,
+        # The release a desktop build was cut from (the tag, stamped into
+        # _version.py by the release workflow); "0.1.0-dev" from source.
+        "version": app_identity.VERSION,
+        "commit": commit or getattr(app_identity, "COMMIT", None) or None,
         "commit_short": commit[:7] if commit else None,
         "branch": (os.getenv("RENDER_GIT_BRANCH") or "").strip() or None,
         "uptime_s": round(time.time() - _BOOTED_AT, 1),
@@ -590,8 +742,8 @@ _WALLET_FREE_PREFIXES = (
     "/api/lobby/heartbeat", "/api/lobby/leave", "/api/lobby/create", "/api/sessions",
     "/api/state/save",
     "/api/reactor/usage", "/api/talk/end", "/api/cutscene/complete",
-    "/api/bug/capture", "/api/replay/", "/api/shutdown", "/api/admin",
-    "/api/reel/",
+    "/api/bug/", "/api/replay/", "/api/shutdown", "/api/admin",
+    "/api/reel/", "/api/update",
 )
 
 
@@ -1557,7 +1709,7 @@ def _standalone_asset_version():
     latest = 0
     for path in candidates:
         try:
-            latest = max(latest, os.path.getmtime(path))
+            latest = max(latest, os.path.getmtime(Path(__file__).resolve().parent / path))
         except Exception:
             pass
     stamp = str(int(latest)) if latest else "0"
@@ -2162,14 +2314,37 @@ def api_list_archives():
         return error_response("Failed to list archives", str(e))
 
 
+_ARCHIVE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _archive_dir(archive_name: str):
+    r"""archives/<archive_name>, or None when the name could leave archives/.
+
+    Flask's <archive_name> stops at '/', not at '\', and Windows reads both:
+    `DELETE /api/archives/..%5Cworlds` was rmtree('archives/..\worlds') — the
+    authoring folder, on any server, hosted included. So the name is held to
+    the characters an archive is actually named with, and the resolved path
+    must still sit directly under archives/."""
+    name = str(archive_name or "")
+    if not _ARCHIVE_NAME.match(name) or ".." in name:
+        return None
+    root = Path("archives").resolve()
+    path = (root / name).resolve()
+    if path.parent != root:
+        return None
+    return Path("archives") / name
+
+
 @app.route('/api/archives/<archive_name>', methods=['GET'])
 def api_get_archive(archive_name):
     """
     Get detailed information about a specific archive.
     Returns: Full archive metadata, state, and history
     """
+    archive_path = _archive_dir(archive_name)
+    if archive_path is None:
+        return error_response("Bad archive name", code=400)
     try:
-        archive_path = Path("archives") / archive_name
         if not archive_path.exists():
             return error_response(f"Archive '{archive_name}' not found", code=404)
         
@@ -2210,10 +2385,13 @@ def api_get_archive(archive_name):
 @app.route('/api/archives/<archive_name>/images/<filename>', methods=['GET'])
 def api_serve_archive_image(archive_name, filename):
     """Serve an image from an archived session"""
+    archive_path = _archive_dir(archive_name)
+    if archive_path is None:
+        return error_response("Bad archive name", code=400)
     try:
         # Prevent path traversal
-        safe_filename = Path(filename).name
-        image_path = Path("archives") / archive_name / "images" / safe_filename
+        safe_filename = Path(filename.replace("\\", "/")).name
+        image_path = archive_path / "images" / safe_filename
         
         if not image_path.exists():
             return error_response("Image not found", code=404)
@@ -2227,10 +2405,13 @@ def api_serve_archive_image(archive_name, filename):
 @app.route('/api/archives/<archive_name>/tapes/<filename>', methods=['GET'])
 def api_serve_archive_tape(archive_name, filename):
     """Serve a GIF tape from an archived session"""
+    archive_path = _archive_dir(archive_name)
+    if archive_path is None:
+        return error_response("Bad archive name", code=400)
     try:
         # Prevent path traversal
-        safe_filename = Path(filename).name
-        tape_path = Path("archives") / archive_name / "images" / safe_filename
+        safe_filename = Path(filename.replace("\\", "/")).name
+        tape_path = archive_path / "images" / safe_filename
         
         if not tape_path.exists():
             return error_response("Tape not found", code=404)
@@ -2247,8 +2428,10 @@ def api_delete_archive(archive_name):
     Delete an archived session permanently.
     WARNING: This cannot be undone!
     """
+    archive_path = _archive_dir(archive_name)
+    if archive_path is None:
+        return error_response("Bad archive name", code=400)
     try:
-        archive_path = Path("archives") / archive_name
         if not archive_path.exists():
             return error_response(f"Archive '{archive_name}' not found", code=404)
         
@@ -3021,7 +3204,7 @@ def _list_active_sessions():
     sweeper to decide which designed voices belong to a live story vs a
     session that's been reset/deleted."""
     try:
-        sessions_dir = Path(__file__).parent / "sessions"
+        sessions_dir = engine.DATA / "sessions"
         if not sessions_dir.exists():
             return []
         return [p.name for p in sessions_dir.iterdir() if p.is_dir()]
@@ -5918,6 +6101,39 @@ def api_shutdown():
           flush=True)
     threading.Thread(target=_quit_process, name="quit", daemon=True).start()
     return jsonify({"status": "closing", "stopped": stopped})
+
+
+# ═══════════════════════════════════════════════════════════════════
+# UPDATES (desktop app only) — updater.py, Distribution MVP M4
+# ═══════════════════════════════════════════════════════════════════
+#
+# The start menu asks GET /api/update; when an installed build has downloaded
+# a newer version it shows UPDATE READY — RESTART. Pressing it is the only way
+# an update is applied mid-session, and it leaves through the EXIT path, so a
+# render or a paid stream is released first. Hosted servers answer
+# "not-installed" and never apply anything.
+
+
+@app.route("/api/update", methods=["GET"])
+def api_update_status():
+    import updater
+    return jsonify(updater.status())
+
+
+@app.route("/api/update/apply", methods=["POST"])
+def api_update_apply():
+    if not _shutdown_armed:
+        return error_response("Updates are applied by the desktop app",
+                              "This server does not update itself.", code=403)
+    import updater
+    problem = updater.apply()
+    if problem:
+        return error_response("Could not apply the update", problem, code=409)
+    stopped = _release_compute()
+    print(f"[UPDATE] restarting into the new version; stopped: "
+          f"{', '.join(stopped) or 'nothing running'}", flush=True)
+    threading.Thread(target=_quit_process, name="quit-for-update", daemon=True).start()
+    return jsonify({"status": "restarting"})
 
 
 # ═══════════════════════════════════════════════════════════════════

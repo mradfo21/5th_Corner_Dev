@@ -28,7 +28,8 @@ import prompt_layers
 import prompts_store
 
 ROOT = Path(__file__).parent.resolve()
-LEVELS_DIR = ROOT / "levels"
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
+LEVELS_DIR = _paths.data_root() / "levels"
 
 
 def _slug(name: str) -> str:

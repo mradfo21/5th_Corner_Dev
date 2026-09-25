@@ -49,7 +49,6 @@ except Exception:  # noqa: BLE001
 
 log = logging.getLogger("billing")
 
-TITLE = app_identity.LEGACY_DATA_DIR_NAME
 # A new name: the old email cookie ("somewhere_account") is ignored.
 COOKIE = "somewhere_wallet"
 _KEY_RE = re.compile(r"^w_[0-9a-f]{32}$")
@@ -88,6 +87,7 @@ _LOCK = threading.Lock()
 _store_path: Optional[Path] = None
 _local_app = False
 ROOT = Path(__file__).resolve().parent
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
 
 
 def mark_local_app() -> None:
@@ -158,8 +158,8 @@ def _default_store_path() -> Path:
     # Hosted: keep wallets on the game volume so a redeploy does not wipe them.
     # Local play.py / run_local.py stay in the user profile (BYOK, not a cashier).
     if not _local_app:
-        return ROOT / "sessions" / "_analytics" / "billing.json"
-    return app_identity.appdata_root() / "billing.json"
+        return _paths.data_root() / "sessions" / "_analytics" / "billing.json"
+    return app_identity.data_dir() / "billing.json"
 
 
 def _path() -> Path:

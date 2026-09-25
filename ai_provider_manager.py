@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 ROOT = Path(__file__).parent.resolve()
-AI_CONFIG_PATH = ROOT / "ai_config.json"
+import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
+AI_CONFIG_PATH = _paths.data_root() / "ai_config.json"  # seeded from the build (paths.FACTORY_FILES)
 CONFIG_LOCK = threading.Lock()
 
 # Cache the config in memory

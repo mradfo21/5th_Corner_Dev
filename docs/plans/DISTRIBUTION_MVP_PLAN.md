@@ -68,46 +68,48 @@ mock mode, and the current safety settings all ship as they are.
 
 ## M1 — Harden the local app
 
-Today `CORS(app)` (api.py:30) allows every origin and there is no token or Host
+Before M1, `CORS(app)` (api.py:30) allowed every origin and there is no token or Host
 check, so the `remote_addr == 127.0.0.1` guards pass for any browser tab on the
 machine. A page can find the port via `/api/health`, then `PUT /api/keys/custom`
 with a blank key: `keys_store.set_custom` (keys_store.py:575) reuses the stored
 OpenAI key and points the narrator at the attacker's address.
 
-- [ ] Per-launch token: play.py mints `secrets.token_urlsafe(32)`, loads `/standalone?launch=<token>`; the server trades it for an HttpOnly `SameSite=Strict` cookie; a `before_request` guard rejects `/api/*` (websocket upgrades included) without the cookie or an `X-Launch-Token` header. Pass the token to the render child (render_jobs.py) via env. Armed like `enable_shutdown()`, so hosted mode is unaffected
-- [ ] Host allowlist: only `127.0.0.1:<port>` / `localhost:<port>` (blocks DNS rebinding)
-- [ ] Remove app-wide CORS; if needed, hosted-only and only for `https://www.5th-corner.com`
-- [ ] `set_custom` never reuses a stored key when the address changes
-- [ ] Validate names in all four `/api/archives/<name>` routes (api.py:2165, 2210, 2227, 2244); resolve and require the path to stay under `archives/` (Windows backslash traversal)
-- [ ] `run_local.py --host` defaults to `127.0.0.1` (line 74)
-- [ ] Frozen builds read `.env` only from AppData and beside the exe (drop the three-parents walk in `play._env_candidates`)
-- [ ] Rotate `somewhere.log` (10 MB × 3); redact key-shaped strings (`AIza…`, `sk-…`) before writing
-- [ ] `test_local_guard.py` (no cookie → 403, bad Host → 403, archive traversal → 400, custom address doesn't inherit the key) and `tools/drive_by.html`
+- [x] Per-launch token: play.py mints `secrets.token_urlsafe(32)`, loads `/standalone?launch=<token>`; the server trades it for an HttpOnly `SameSite=Strict` cookie; a `before_request` guard rejects `/api/*` (websocket upgrades included) without the cookie or an `X-Launch-Token` header. Pass the token to the render child (render_jobs.py) via env. Armed like `enable_shutdown()`, so hosted mode is unaffected
+- [x] Host allowlist: only `127.0.0.1:<port>` / `localhost:<port>` (blocks DNS rebinding)
+- [x] Remove app-wide CORS; if needed, hosted-only and only for `https://www.5th-corner.com`
+- [x] `set_custom` never reuses a stored key when the address changes
+- [x] Validate names in all four `/api/archives/<name>` routes (api.py:2165, 2210, 2227, 2244); resolve and require the path to stay under `archives/` (Windows backslash traversal)
+- [x] `run_local.py --host` defaults to `127.0.0.1` (line 74)
+- [x] Frozen builds read `.env` only from AppData and beside the exe (drop the three-parents walk in `play._env_candidates`)
+- [x] Rotate `somewhere.log` (10 MB × 3); redact key-shaped strings (`AIza…`, `sk-…`) before writing
+- [x] `test_local_guard.py` (21 tests) (no cookie → 403, bad Host → 403, archive traversal → 400, custom address doesn't inherit the key) and `tools/drive_by.html`
+
+Done 2026-09-25 on `dist/m1-local-guard` (CHANGELOG, "A web page on the player's machine could take their key…"). Also: every guarded prefix includes `/images/` and `/audio/`; play.py's leftover-server reaper only stops servers from its own checkout.
 
 ## M2 — Saves out of the install folder
 
-- [ ] Frozen play.py sets the existing overrides to `%APPDATA%\ABYSS\…` before importing `api`: `SESSIONS_DIR`, `SOMEWHERE_WORLDS_DIR`, `SOMEWHERE_EXPERIENCES_DIR`, `SOMEWHERE_CHARACTERS_DIR`, `SOMEWHERE_PROMPTS_PATH`, `SOMEWHERE_KEYS_PATH`, `SOMEWHERE_TUNABLES_PATH`, `REFERENCES_DIR`, `SOMEWHERE_ANALYTICS_DIR`
-- [ ] `paths.py` for the rest: no override yet for `archives`, `logs`, `levels`, `lore`, `bugs`, `tapes`, `playtest_results`, `assets/music`; hard-coded `"sessions"` in api.py (12), engine.py (5), cost_tracker.py (ignores `SESSIONS_DIR`), scene_audio.py, coinop.py, usage_limits.py, billing.py
-- [ ] Seed factory content at first run (move `stamp_factory` logic into startup); on update refresh factory files, never the player's
-- [ ] One-time migration of `%APPDATA%\SOMEWHERE\` into the new root
-- [ ] `tools/smoke_exe.py` runs the build with its folder read-only (`icacls /deny`) and fails on any write there
+- [x] Frozen play.py sets the existing overrides to `%APPDATA%\ABYSS\…` before importing `api`: `SESSIONS_DIR`, `SOMEWHERE_WORLDS_DIR`, `SOMEWHERE_EXPERIENCES_DIR`, `SOMEWHERE_CHARACTERS_DIR`, `SOMEWHERE_PROMPTS_PATH`, `SOMEWHERE_KEYS_PATH`, `SOMEWHERE_TUNABLES_PATH`, `REFERENCES_DIR`, `SOMEWHERE_ANALYTICS_DIR`
+- [x] `paths.py` for the rest: no override yet for `archives`, `logs`, `levels`, `lore`, `bugs`, `tapes`, `playtest_results`, `assets/music`; hard-coded `"sessions"` in api.py (12), engine.py (5), cost_tracker.py (ignores `SESSIONS_DIR`), scene_audio.py, coinop.py, usage_limits.py, billing.py
+- [x] Seed factory content at first run (move `stamp_factory` logic into startup); on update refresh factory files, never the player's
+- [x] One-time migration of `%APPDATA%\SOMEWHERE\` into the new root
+- [x] `tools/smoke_exe.py` runs the build with its folder read-only (`icacls /deny`) and fails on any write there
 
 ## M3 — Build pipeline
 
-- [ ] `.github/workflows/release.yml` on `v*` tags, `windows-latest`: checkout → Python 3.12 → install from lock → mock test suite → `tools/build_exe.py --clean` → `tools/smoke_exe.py` → sign → Velopack pack → upload to the releases repo
-- [ ] Stamp the tag into `_version.py`; show it in `/api/health`, window title, log header, bug reports
-- [ ] Sign with Azure Artifact Signing via Velopack `--azureTrustedSignFile`; credentials as GitHub secrets; CI holds no game API keys
-- [ ] Generate `THIRD-PARTY-NOTICES.txt` (pip-licenses) plus the GPLv3 notice and source link for imageio-ffmpeg's bundled ffmpeg (kept: render/video export use it)
-- [ ] Real exe name and icon in the spec (`name`, `icon`); rename the spec `ABYSS.spec`
-- [ ] Keep `build_exe.py` / `publish_build.py` working locally as a fallback
+- [x] `.github/workflows/release.yml` on `v*` tags (written; first run waits on the `workflow` scope and RELEASES_TOKEN), `windows-latest`: checkout → Python 3.12 → install from lock → mock test suite → `tools/build_exe.py --clean` → `tools/smoke_exe.py` → sign → Velopack pack → upload to the releases repo
+- [x] Stamp the tag into `_version.py`; show it in `/api/health`, window title, log header, bug reports
+- [ ] (wired, waits on the Azure account) Sign with Azure Artifact Signing via Velopack `--azureTrustedSignFile`; credentials as GitHub secrets; CI holds no game API keys
+- [x] Generate `THIRD-PARTY-NOTICES.txt` (pip-licenses) plus the GPLv3 notice and source link for imageio-ffmpeg's bundled ffmpeg (kept: render/video export use it)
+- [x] Real exe name and icon in the spec (`name`, `icon`); rename the spec `ABYSS.spec`
+- [x] Keep `build_exe.py` / `publish_build.py` working locally as a fallback
 
 ## M4 — Installer and updates (Velopack)
 
-- [ ] `velopack.App().run()` at the very top of play.py
-- [ ] `vpk pack --packId 5thCorner.ABYSS --packVersion <tag> --packDir dist/ABYSS --mainExe ABYSS.exe --icon <ico> --framework webview2`
-- [ ] Channels: `beta` (friends) and `stable` (public link)
-- [ ] Background update check at launch; "UPDATE READY — RESTART" on the start menu; never interrupts a run; "later" always allowed
-- [ ] Portable zip stays as a secondary download ("no auto-update")
+- [x] `velopack.App().run()` at the very top of play.py
+- [x] `vpk pack --packId 5thCorner.ABYSS --packVersion <tag> --packDir dist/ABYSS --mainExe ABYSS.exe --icon <ico> --framework webview2`
+- [x] Channels: `beta` (friends) and `stable` (public link)
+- [x] Background update check at launch; "UPDATE READY — RESTART" on the start menu; never interrupts a run; "later" always allowed
+- [x] Portable zip stays as a secondary download ("no auto-update")
 
 ## G — Gateway (pay-as-you-go, no key needed)
 
@@ -127,12 +129,18 @@ tracks) + SFX (30) $1.74 (38%), text $0.14 (3%).
 
 ## M5 — Site and feedback
 
-- [ ] `SITE_MODE=downloads` on the site service: `/` → `/get`; `/standalone`, `/play`, `/lobby`, `/studio` and gameplay `/api/*` return 404; keep `/get*`, `/api/builds/latest`, `/api/health`, bug intake, `/admin` (token)
+- [x] (code; set on Render at the sync) `SITE_MODE=downloads` on the site service: `/` → `/get`; `/standalone`, `/play`, `/lobby`, `/studio` and gameplay `/api/*` return 404; keep `/get*`, `/api/builds/latest`, `/api/health`, bug intake, `/admin` (token)
 - [ ] Remove AI provider keys from the site service (they live only on the gateway)
-- [ ] /get: prefer `*-Setup.exe` in `downloads._pick_asset`; system requirements (Windows 10/11 64-bit, ~1.5 GB); SHA-256
-- [ ] `/privacy`, `/terms` (EULA, 18+), `/licenses`; first-launch 18+ confirmation (Gemini API terms)
-- [ ] `POST /api/bug/intake`: 10 MB cap, per-IP rate limit, `MAX_CONTENT_LENGTH`; store + forward a summary to a private Discord webhook held server-side
-- [ ] Bug button "Send to 5th Corner": preview what's included, redact key-shaped strings, opt-in every time; startup-failure splash offers "send crash log"
+- [x] /get: prefer `*-Setup.exe` in `downloads._pick_asset` (SHA-256 and system requirements still to show); system requirements (Windows 10/11 64-bit, ~1.5 GB); SHA-256
+- [x] `/licenses`
+- Dropped: a first-launch 18+ click-through. Built on 2026-09-25 and removed
+  the same day. With BYOK the age requirement binds the key holder, whom
+  Google/OpenAI already checked; a self-declared click verifies nothing and
+  put a second gate in front of a first launch. The 18+ question belongs in
+  the gateway's signup (G), where it becomes ours, and in the Terms.
+- [ ] `/privacy`, `/terms` (EULA, 18+) — need the legal entity and contact
+- [x] `POST /api/bug/intake` (code; the private webhook and deploy wait on the Render sync): 10 MB cap, per-IP rate limit, `MAX_CONTENT_LENGTH`; store + forward a summary to a private Discord webhook held server-side
+- [x] Bug button "Send to 5th Corner": preview what's included, redact key-shaped strings, opt-in every time; startup-failure splash offers "send crash log"
 
 ## M6 — Release candidate
 
@@ -163,3 +171,37 @@ for real API calls.
   `baf7376` (ignore rules), `c4d0a46` (the game work) and the M0 commit after
   it, then pushed. Identity chosen: ABYSS / `5thCorner.ABYSS` / `%APPDATA%\ABYSS`.
   `_claude_runner.py` (START_CLAUDE.bat) was still running; stopping it is Matt's.
+- **2026-09-25** — M1 done on `dist/m1-local-guard`: local_guard.py, safe_log.py, archive traversal (a hosted hole too), set_custom, run_local host, frozen .env. Verified with test_local_guard, the guarded app from outside, three harness turns, and drive_by.html in a real browser.
+- **2026-09-25** — M2–M4 done and M5's client side, on `dist/m2-data-root`
+  (CHANGELOG, "ABYSS installs, updates itself…"). Proven: the exe plays from a
+  read-only install folder; beta.1 installed from its real Setup.exe updated
+  itself to beta.2 on screen and kept the run (`tools/rehearse_update.py`,
+  PASS x3). Public releases repo `mradfo21/abyss-releases` created; `main`
+  fast-forwarded to M0. Waiting on Matt: the `workflow` scope for the push,
+  RELEASES_TOKEN, Azure signing, key rotation, the Render sync (gateway,
+  SITE_MODE, intake webhook, legal pages).
+
+## Where it stands: ready to try deploying (2026-09-25)
+
+Proven on this machine: a packaged build from a read-only folder; the real
+installer; an update from beta.1 to beta.2 offered on screen and applied with
+the run kept; the local server refusing web pages; /get serving the installer.
+What is left, in order:
+
+1. **Matt:** `gh auth refresh -h github.com -s workflow`, so the branch with
+   `.github/workflows/` can be pushed; then the PR `dist/m2-data-root` → `main`
+   runs CI for the first time on GitHub's runner.
+2. **Matt:** rotate the leaked OpenAI / Discord / Replicate keys (M0).
+3. **Matt:** a fine-grained PAT (Contents: read/write on `abyss-releases` only)
+   as the `RELEASES_TOKEN` secret — or publish from this machine with
+   `python tools/release_local.py v0.1.0-beta.1 --publish`.
+4. First beta: tag `v0.1.0-beta.1` on `main`; install from `/get` in Windows
+   Sandbox (the "Done means" list); send to friends. Unsigned until 5.
+5. **Matt:** Azure Artifact Signing (1–20 business days) → the six `AZURE_*`
+   secrets; the next tag is signed.
+6. **Render sync:** set `SITE_MODE=downloads` (the service becomes /get only),
+   `BUG_WEBHOOK_URL`, `GAME_RELEASES_REPO` if not the default; point
+   www.5th-corner.com/get at it; check whether the game service auto-deploys
+   `main` (it was fast-forwarded to `cd86149` on 2026-09-25).
+7. G (pay-as-you-go gateway) — the only milestone not started; everything
+   above ships a BYOK beta without it.

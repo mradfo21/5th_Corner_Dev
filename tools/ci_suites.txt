@@ -1,0 +1,87 @@
+# The CI gate (tools/ci_suite.py): every suite green on 2026-09-25's baseline
+# (59 of 78 modules, run one by one in mock mode), plus the suites added since.
+# A suite on this list stays green. Red at baseline, and so NOT here yet —
+# fix one, then add it:
+#   test_camp_companions
+#   test_coinop
+#   test_conversation_moments
+#   test_cutscene
+#   test_editor_graph_e2e
+#   test_editor_lands_e2e
+#   test_editor_responsiveness
+#   test_exit_button
+#   test_goal_sight
+#   test_local_vision_e2e
+#   test_look_book
+#   test_movement_mode_e2e
+#   test_opening_montage
+#   test_realtime_e2e
+#   test_render_mode
+#   test_scene_audio
+#   test_standalone_e2e
+#   test_world_authoring
+#   test_world_stitch
+
+test_analytics_api
+test_authoring_sandbox
+test_billing
+test_bug_report
+test_ceremony_hud
+test_characters
+test_choices_robustness
+test_combat
+test_concurrent_sessions
+test_cost_tracker
+test_danger_simulation
+test_detect_filter
+test_director
+test_editor_is_manual
+test_editor_wiring
+test_encounter
+test_encounter_custom_action
+test_encounter_fight
+test_encounter_roster
+test_encounter_sighting
+test_experience_graph
+test_experience_mode
+test_fal_provider
+test_feed_engine
+test_flipbook
+test_game_identity
+test_interact_dive_options
+test_interact_plate_handoff
+test_keys_store
+test_krea_provider
+test_local_vision
+test_move_moves_the_camera
+test_narrator_grounding
+test_object_permanence
+test_outbound_dns
+test_playtest_interactive
+test_pricing
+test_prompts_store
+test_provider_bridge
+test_providers
+test_replay_cache
+test_run_goal
+test_run_isolation
+test_run_tape
+test_scene_objects
+test_simulation_pacing
+test_somewhere_snapshot
+test_talk_voice
+test_third_person_orbit
+test_transition_types
+test_turn_memory
+test_usage_limits
+test_viewfinder
+test_voice_design
+test_watch_overlay
+test_world_drift
+test_world_frames
+test_world_gaps
+test_world_regen
+test_local_guard
+test_paths
+test_bug_send
+test_downloads
