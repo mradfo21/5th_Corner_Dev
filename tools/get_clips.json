@@ -26,7 +26,7 @@
     "create": {
       "label": "Anyone.",
       "poster_at": 0.93,
-      "sub": "Three people, each from one line",
+      "sub": "Any hero you can describe.",
       "segments": [
         {
           "from": 11.79,
@@ -147,7 +147,7 @@
     "arrive": {
       "label": "Anywhere.",
       "poster_at": 0.2,
-      "sub": "The FIFTH CORNER · SWAT · CYBER HORROR",
+      "sub": "Three worlds. No two runs alike.",
       "segments": [
         {
           "from": 100.07,
@@ -193,7 +193,7 @@
     "act": {
       "label": "Anything.",
       "poster_at": 0.12,
-      "sub": "SWAT · CYBER HORROR",
+      "sub": "Type any move. It happens.",
       "segments": [
         {
           "from": 418.49,
@@ -251,7 +251,7 @@
     "wear": {
       "label": "Arm.",
       "poster_at": 0.85,
-      "sub": "Jason Fleece, piece by piece",
+      "sub": "Loot it. Wear it. Wield it.",
       "segments": [
         {
           "from": 150.43,
@@ -297,7 +297,7 @@
     "fight": {
       "label": "Attack.",
       "poster_at": 0.55,
-      "sub": "CYBER HORROR · Jean-Luc de la Croix",
+      "sub": "Roll to hit. Roll to survive.",
       "segments": [
         {
           "from": 390.28,
@@ -311,7 +311,7 @@
     "goal": {
       "label": "Arrive.",
       "poster_at": 0.6,
-      "sub": "The FIFTH CORNER · Jason Fleece",
+      "sub": "Find the goal. Claim the prize.",
       "segments": [
         {
           "from": 454.19,
@@ -369,7 +369,8 @@
           "hold": 0.8,
           "src": "key"
         }
-      ]
+      ],
+      "sub": "Bring your own AI key."
     }
   }
 }
