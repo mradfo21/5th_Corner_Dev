@@ -205,6 +205,30 @@ body.char-open #xp-picker { visibility: hidden; }
   transform: translateY(-2px) rotate(45deg); transition: transform 0.25s ease; align-self: center;
 }
 .char-screen.cs-style-open .cs-style-caret { transform: translateY(1px) rotate(225deg); }
+
+/* ── VOICE, under STYLE (characters.js paintVoice) ─────────────────────── */
+.cs-voice-line {
+  display: inline-flex !important; align-items: baseline; gap: 12px; align-self: flex-start;
+  margin-top: 0; padding: 6px 0 !important;
+  font: 300 9px/1 var(--cs-mono) !important; letter-spacing: 0.3em; color: var(--cs-quiet) !important;
+  transition: color 0.2s ease;
+}
+.cs-voice-line[hidden] { display: none !important; }
+.cs-voice-line:hover, .cs-voice-line:focus-visible, .char-screen.cs-voice-playing .cs-voice-line { color: var(--cs-ink) !important; outline: none; }
+.cs-voice-line.cs-voice-wait .cs-voice-v { animation: cs-note-breathe 2.4s ease-in-out infinite; }
+/* A play mark, and while they speak, a level: three bars, no icon font. */
+.cs-voice-mark {
+  width: 0; height: 0; align-self: center;
+  border-left: 5px solid currentColor; border-top: 3px solid transparent; border-bottom: 3px solid transparent;
+}
+.char-screen.cs-voice-playing .cs-voice-mark {
+  width: 9px; height: 7px; border: 0;
+  background: linear-gradient(currentColor, currentColor) 0 100% / 1px 60% no-repeat,
+              linear-gradient(currentColor, currentColor) 4px 100% / 1px 100% no-repeat,
+              linear-gradient(currentColor, currentColor) 8px 100% / 1px 40% no-repeat;
+  color: var(--cs-mint); animation: cs-voice-level 0.5s steps(2) infinite alternate;
+}
+@keyframes cs-voice-level { to { transform: scaleY(0.55); } }
 .cs-style { display: none; flex-direction: column; gap: 10px; margin-top: 22px; order: 3; }
 .char-screen.cs-style-open .cs-style { display: flex; animation: cs-textin 0.4s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
 .char-screen.cs-style-open[data-mode="select"] .cs-roster { display: none; }

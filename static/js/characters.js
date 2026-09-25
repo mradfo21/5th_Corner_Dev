@@ -87,6 +87,7 @@
     watching: "",            // the id whose drawing the screen is following
     pollT: null,
     changing: false,         // the CHANGE SOMETHING line is open
+    heard: {},               // character id -> the voice url already played by itself
     busy: false,
     offline: false,
     t0: 0,
@@ -266,6 +267,8 @@
       '  <div class="cs-head"><div class="cs-eyebrow"></div><div class="cs-name"></div><div class="cs-tag"></div>' +
       '  <button type="button" class="cs-style-line" aria-expanded="false"><span class="cs-style-k">STYLE</span>' +
       '<span class="cs-style-v"></span><i class="cs-style-caret" aria-hidden="true"></i></button>' +
+      '  <button type="button" class="cs-voice-line" hidden><span class="cs-style-k">VOICE</span>' +
+      '<span class="cs-voice-v"></span><i class="cs-voice-mark" aria-hidden="true"></i></button>' +
       '  <div class="cs-note" aria-live="polite"></div>' +
       '  <div class="cs-error" role="alert"></div></div>' +
       '  <div class="cs-roster" role="listbox" aria-label="Your characters"></div>' +
@@ -312,6 +315,7 @@
     });
     who.addEventListener("input", () => paintActions());
     $(".cs-style-line").addEventListener("click", toggleStyle);
+    $(".cs-voice-line").addEventListener("click", voiceClick);
     $(".cs-style-reset").addEventListener("click", () => {
       $(".cs-style-in").value = S.defaultStyle || "";
       styleInput();
@@ -465,6 +469,7 @@
   function hide() {
     if (!root) return;
     S.open = false;
+    stopVoice();
     stopPoll();
     stopDev();
     root.classList.remove("on", "cs-enter", "cs-swapping");
@@ -572,6 +577,7 @@
     paintFigure();
     paintDev();
     paintStyle();
+    paintVoice();
     paintActions();
   }
   // The roster is built once per list and then updated in place: rebuilt on
@@ -755,6 +761,95 @@
   // to rewrite. On a character: REDRAW IN THIS STYLE (the same person, only
   // the rendering changes — characters.restyle). On the create screen: what
   // the new one will be drawn in.
+  // ── VOICE ────────────────────────────────────────────────────────────────
+  // Who you are sounds like someone, and it is the voice the run is narrated
+  // in (the narrator is you, speaking into a tape). Designed from words when
+  // the brief lands (characters.design_voice); heard for the first time at
+  // the reveal, once, by itself; after that on a click. Only where a voice
+  // can be designed (a Gemini key): elsewhere the line is not drawn at all.
+  let voiceAudio = null;
+  function stopVoice() {
+    if (voiceAudio) { try { voiceAudio.pause(); } catch (_) {} voiceAudio = null; }
+    if (root) root.classList.remove("cs-voice-playing");
+  }
+  function playVoice(c) {
+    const v = c && c.voice;
+    if (!v || !v.url) return;
+    stopVoice();
+    const a = new Audio(v.url);
+    voiceAudio = a;
+    const end = () => { if (voiceAudio === a) stopVoice(); };
+    a.addEventListener("ended", end);
+    a.addEventListener("error", end);
+    a.addEventListener("playing", () => { if (voiceAudio === a && root) root.classList.add("cs-voice-playing"); });
+    a.play().catch(end);
+  }
+  function hearFresh() {
+    const c = current();
+    if (!S.open || S.mode !== "select" || !c || c.id !== S.fresh) return;
+    const url = c.voice && c.voice.url;
+    if (!url || S.heard[c.id] === url) return;
+    S.heard[c.id] = url;
+    playVoice(c);
+  }
+  function voiceLabel(v) {
+    if (!v) return "";
+    if (v.status === "designing") return "FINDING IT\u2026";
+    if (v.status === "failed") return "COULD NOT FIND IT \u2014 TRY AGAIN";
+    if (v.status !== "ready") return "GIVE THEM ONE";
+    const first = String(v.description || "").split(/[.:;]/)[0].replace(/^(a|an|the)\s+/i, "");
+    const words = first.trim().split(/\s+/);
+    return (words.slice(0, 5).join(" ") + (words.length > 5 ? "\u2026" : "")).toUpperCase();
+  }
+  function paintVoice() {
+    if (!root) return;
+    const c = current();
+    const line = $(".cs-voice-line");
+    const show = S.mode === "select" && c && c.voice && c.voice.can && c.status === "ready";
+    line.hidden = !show;
+    if (!show) { stopVoice(); return; }
+    setText($(".cs-voice-v"), voiceLabel(c.voice));
+    line.classList.toggle("cs-voice-wait", c.voice.status === "designing");
+    line.title = c.voice.status === "ready" ? (c.voice.line ? `\u201c${c.voice.line}\u201d` : "Hear them") : "";
+  }
+  async function voiceClick() {
+    const c = current();
+    if (!c || !c.voice) return;
+    if (c.voice.status === "ready") {
+      if (voiceAudio) { stopVoice(); return; }
+      snd("select");
+      playVoice(c);
+      return;
+    }
+    if (c.voice.status === "designing") return;
+    changeVoice(c, "");
+  }
+  // A line in CHANGE SOMETHING that is about how they sound.
+  function aboutTheVoice(t) {
+    return /\b(voice|voices|accent|sounds?|sounding|speaks?|speaking|talks?|pitch|deeper|higher|raspier|husk(y|ier)|drawl|lisp|whisper(y|s)?)\b/i.test(t);
+  }
+  async function changeVoice(c, change) {
+    if (S.busy) return;
+    S.busy = true;
+    stopVoice();
+    try {
+      const res = await api("POST", `/api/characters/${c.id}/voice`, { change });
+      const i = S.list.findIndex((x) => x.id === c.id);
+      if (i >= 0) S.list[i] = Object.assign({}, S.list[i], res.character);
+      closeChange();
+      // Heard by itself once it lands, like a new character's.
+      S.fresh = c.id;
+      delete S.heard[c.id];
+      snd("submit");
+      paint();
+      startPoll();
+    } catch (e) {
+      showError("Could not change their voice: " + (e.message || ""));
+    } finally {
+      S.busy = false;
+    }
+  }
+
   function isDefault(txt) {
     const t = String(txt || "").trim();
     return !t || t === String(S.defaultStyle || "").trim();
@@ -891,7 +986,8 @@
     if (!S.open || polling) return;
     polling = true;
     try {
-      const busyOnes = S.list.filter((c) => c.status === "drawing" || (c.job && c.job.kind) || c.id === S.watching);
+      const busyOnes = S.list.filter((c) => c.status === "drawing" || (c.job && c.job.kind) || c.id === S.watching ||
+        (c.voice && c.voice.status === "designing"));
       if (!busyOnes.length) { stopPoll(); return; }
       for (const c of busyOnes) {
         let got;
@@ -919,12 +1015,14 @@
             if (ok) { S.fresh = got.id; snd("itemReveal"); } else snd("error");
             S.sel = Math.max(0, S.list.findIndex((x) => x.id === got.id));
             swapTo(() => setMode("select"));
+            setTimeout(hearFresh, 700);
           };
           if (ok) { finishDev(reveal); paintDev(); } else reveal();
           continue;
         }
       }
       paint();
+      hearFresh();
     } finally {
       polling = false;
     }
@@ -941,6 +1039,7 @@
     S.sel = to;
     S.styleOpen = false;
     S.changing = false;
+    stopVoice();
     snd("focusTick");
     paint();
   }
@@ -1041,6 +1140,7 @@
     const c = current();
     const change = $(".cs-change-in").value.trim();
     if (!c || !change || S.busy) return;
+    if (aboutTheVoice(change) && c.voice && c.voice.can) { changeVoice(c, change); return; }
     S.busy = true;
     try {
       const res = await api("POST", `/api/characters/${c.id}/revise`, { change });

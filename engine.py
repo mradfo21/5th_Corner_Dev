@@ -284,8 +284,11 @@ except Exception as _ve:
     VOICES_CONFIG = {}
 
 DEFAULT_VOICE_ID = (os.getenv("SOMEWHERE_VOICE") or "").strip()
-NARRATOR_VOICE_ID = (os.getenv("SOMEWHERE_NARRATOR_VOICE")
-                     or VOICES_CONFIG.get("narrator_voice") or "").strip()
+# Only an explicit pick (env, or the editor's tunable). Empty means "the
+# run's character, else voices.json's narrator" — seeding this from
+# voices.json made the roster's narrator look like a choice somebody made,
+# and a choice wins over the character's own voice.
+NARRATOR_VOICE_ID = (os.getenv("SOMEWHERE_NARRATOR_VOICE") or "").strip()
 
 # The narrator's pace, as a number the editor's `narrator_speed` tunable can
 # move (1.0 = as the model reads it). ElevenLabs took it as a voice setting;
@@ -353,12 +356,33 @@ def _default_voice_id() -> str:
     return (VOICES_CONFIG.get("default_voice") or "Algieba").strip()
 
 
+def _run_character_voice() -> str:
+    """The voice designed for the run's character, if it has one on this key.
+
+    The narrator is "you, speaking into a tape" (narrator_direction), so a
+    run played as a character is narrated in THEIR voice — the one the
+    character creator designed and let the player hear at the reveal. A
+    character without a usable one (made on another key, before voices, or
+    expiring) is sent to get one, and the roster speaks meanwhile."""
+    try:
+        st = _load_state(get_active_session_id()) or {}
+        cid = str(st.get("character_id") or "")
+        if not cid:
+            return ""
+        import characters as _chars
+        return _chars.ensure_voice(cid)
+    except Exception:
+        return ""
+
+
 def _narrator_voice_id() -> str:
-    """Who reads the story: the editor's pick, else voices.json's narrator."""
+    """Who reads the story: the editor's pick, else the run's character,
+    else voices.json's narrator."""
     picked = (NARRATOR_VOICE_ID or "").strip()
     if picked and _valid_voice_id(picked):
         return picked
-    return (VOICES_CONFIG.get("narrator_voice") or _default_voice_id()).strip()
+    return (_run_character_voice() or VOICES_CONFIG.get("narrator_voice")
+            or _default_voice_id()).strip()
 
 
 def get_voice_registry() -> dict:
@@ -397,6 +421,8 @@ def _valid_voice_id(voice_id) -> str:
             return vid
     except Exception:
         pass
+    if vid.startswith("voice_") and vid == _run_character_voice():
+        return vid
     return ""
 
 
@@ -670,7 +696,10 @@ def resolve_cast(character: str) -> dict:
     if key == "narrator":
         entry["voice_id"] = _narrator_voice_id()
         entry["speed"] = _narrator_speed()
-    pace = _pace_words(entry.get("speed"))
+    # A designed voice (a character's own) carries its pace in the voice
+    # itself — Google: permanent traits in the design, the style short — and
+    # "slowly" on top of an "unhurried" voice read a 25-word line in 23 s.
+    pace = "" if str(entry.get("voice_id") or "").startswith("voice_") else _pace_words(entry.get("speed"))
     if pace:
         entry["style"] = ((entry.get("style") or "Say this") + ", " + pace).strip(", ")
     if not entry.get("voice_id"):
@@ -17268,7 +17297,8 @@ def api_narrator_say():
         if not _speech_available():
             return jsonify({"error": "no voice on this key", "text": text}), 503
         cast = resolve_cast(data.get("character"))
-        voice_id = _valid_voice_id(data.get("voice_id")) or cast.get("voice_id")             or _narrator_voice_id()
+        voice_id = (_valid_voice_id(data.get("voice_id")) or cast.get("voice_id")
+                    or _narrator_voice_id())
         style = str(data.get("style") or cast.get("style") or "")[:400]
         audio = _tts_synthesize(text, voice_id, {"style": style})
         if not audio:

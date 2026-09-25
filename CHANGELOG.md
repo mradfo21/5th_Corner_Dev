@@ -1,5 +1,36 @@
 # 🔧 CHANGELOG - September 25, 2026
 
+## ✅ NEW: A character is designed a voice when they are made, and it narrates their runs
+
+Matt: *"focus on google see if we can use their new TTS that just came out this week … to get the best voice possible and then include that as part of the character creator"*, and then *"make sure custom character voicing is working and that we're generating good voices with character context as a default, that we're hearing it work in game, and that we're in good shape for rolling this into pricing and accounts."*
+
+**Why the character's voice is the narrator's.** The narrator is not an announcer. `narrator_direction` opens *"You are {self}, speaking into a tape you are not sure anyone will ever play"*: it is the protagonist. So a run played as a character is narrated in the voice the character creator designed for them, and a new character's first line, at the reveal, is them saying who they are into that tape.
+
+**What changed.**
+- **The brief writes how they sound.** The text call that already names a character (`_BRIEF`) now also returns `voice` and `voice_line`. `voice` uses the shape of Google's own example: one sentence, archetype first, then age, timbre and texture, accent, pacing. Their example is *"A world-weary 1940s noir private detective in his late 50s with a gravelly baritone voice, subtle Mid-Atlantic accent, and unhurried, deliberate pacing."* Permanent traits only: no emotion of the moment, and never a real person or celebrity, even if the player named one. There is no extra call; the brief was being made anyway.
+- **Two takes, and the closer one is kept.** Gemini 3.8 voice design (released 2026-09-23) has no seed and no "give me variations", and one description can come back as different people. So `voice_design.design_character_voice` designs two takes side by side. A listener model hears each design's own sample against the description and keeps the closer one; the other is deleted, since it would hold one of the project's 200 slots for a year. Character voices are named `[chr]`, which the session-voice sweep never touches.
+- **The record keeps what survives.** That is the description, plus the id, the key it was made on (a fingerprint, never the key), its expiry and the line. `voice.wav` is that line in that voice, for the screens. A voice made on another key, or within a day of expiring, is not used: it is designed again from the description (`ensure_voice`, at most once a minute), and the roster narrates meanwhile.
+- **The narrator's precedence** is the editor's explicit pick, then the run's character, then voices.json. `NARRATOR_VOICE_ID` is no longer seeded from voices.json. Seeded, the roster's narrator looked like a choice somebody made, and a choice beats every character's own voice.
+- **The delivery is short and the same everywhere:** "low and unhurried, close to the microphone, tired", for the reveal line and every narrator line. Google's guidance for designed voices is that extra direction "increases drift". For the same reason a designed voice no longer gets the narrator's "slowly" on top of its own pace; "slowly" on an "unhurried" voice read a 25-word line in 23 s.
+- **The screen** has a `VOICE` line under `STYLE`, in the same type. It shows the voice in five words ("STOIC NAVAJO ELDER IN HIS…"), plays on a click with a three-bar level while it speaks, reads "finding it…" while it's designed, and plays once by itself at a new character's reveal. CHANGE SOMETHING takes voice changes too: a line about the voice ("older and slower, a thinner, drier voice") redesigns the voice instead of redrawing the body. Where no voice can be designed (mock mode, an OpenAI key) the line is not drawn at all.
+- **The narrator's subtitle lets clicks through.** It took them all along, which went unnoticed while it was a few seconds of timed text. Spoken, a line holds the bar up for 15–25 s, and the native-app harness found it on top of the action wheel: *"the fist would not press … top: narrator-line"*. Only its stop button takes a click now.
+- **Pricing:** every voice event is priced (design as `gemini-3.8-flash-tts:voice_design`, lines as `gemini-3.8-flash-tts`, both token-billed as the API reports). The price list shows "A character's own voice". Hosted wallets are gated by default (every new POST route is), and the background design is charged to the wallet that made the character (billing's thread inheritance).
+
+**How it was checked, on the real Gemini key, with every WAV transcribed and described by Gemini.**
+- **A new character through the real route.** The line was "An old Navajo sheep rancher in his seventies who has watched the facility lights from his porch for thirty years."
+  - The brief named him **Hosteen Yazzie** and wrote *"A stoic Navajo elder in his mid-seventies with a deep, gravelly baritone, a soft-spoken Southwestern Native American cadence, and slow, deliberate pacing."*
+  - His reveal line: *"Those lights have been burning thirty years. Tonight, they finally went out."* Heard as *"male, raspy, low-pitched, dry, steady and deliberate"*, clean.
+  - The voice was ready at about 45 s, the portrait at 47 s.
+- **Two takes.** The listener kept the take *"with a more authentic, natural, and gravelly texture"* and the other was deleted. Only the two live `[chr]` voices remained stored in the project.
+- **A voice change.** "older and slower, a thinner, drier voice worn by age" rewrote the description to "late seventies … thin, dry baritone worn by age … extremely slow", and the new voice came back that way.
+- **The starter, Jason,** predates voices and was given one on demand: *"A dry, stubborn photojournalist in his mid-thirties with a gravelly, low-mid baritone, a flat Midwestern cadence…"*, saying *"Everybody else took the safe shot. I went over the fence for mine."*
+- **In the native game** (playtest_app, `PT_CHARACTER=hosteen`):
+  - Every narrator line was spoken in his voice (`voice_6ymp…`). Transcribed: *"The observation shack is vibrating like it's trying to shake itself off the cliff. I didn't build these to keep people out. They built them to stay inside."*, heard as *"older male, gritty texture, slow pace"*, no artifacts.
+  - The first run found the subtitle blocking the fist. After the fix, three turns committed, including an encounter, with no black screens and no console errors.
+- **Cost.** In the ledger, 11 spoken lines cost $0.051 (about half a cent each) and 6 design takes $0.13. A character's voice is about $0.045, paid once. None unpriced.
+- **Not solved:** designed voices skew younger than asked. The listener heard the mid-seventies rancher as 50-ish in every take. Age is in the description; the model underplays it.
+- `test_character_voice` (22) joins the CI gate.
+
 ## 🔊 FIXED: Every voice speaks on the player's one key — ElevenLabs is gone
 
 From the release planning: *"right now there is no solution for eleven labs. what can we use from google / openai … so that there is no need for multiple accounts?"* and then *"switching away from elevenlabs, even if that means losing certain audio features. i think we'll want as few providers as possible to start."* The plan is `docs/plans/ONE_KEY_AUDIO_PLAN.md`; this is its A0, A1, A2, A4 and half of A5.

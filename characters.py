@@ -438,7 +438,7 @@ def file_path(cid: str, rel: str) -> Optional[Path]:
     sources, nothing else, no traversal."""
     if not valid_id(cid) or not re.fullmatch(
             r"(looks/[a-z0-9][a-z0-9-]{0,63}/[a-z_]+\.(png|jpg)|items/[a-z0-9_-]+\.(png|jpg)|"
-            r"sources/source_\d+\.(png|jpg|jpeg|webp|gif))", str(rel or "")):
+            r"sources/source_\d+\.(png|jpg|jpeg|webp|gif)|voice\.wav)", str(rel or "")):
         return None
     p = char_dir(cid) / rel
     return p if p.is_file() else None
@@ -502,6 +502,7 @@ def card(rec: dict, *, full: bool = False) -> Dict[str, Any]:
         # what the look being drawn has so far — the screen shows the
         # turnaround the moment it lands, and the idle after
         "dev": _look_files(cid, job.get("look") or "") if job.get("look") else {},
+        "voice": voice_card(rec),
     }
     if full:
         look = load_look(cid, look_id) or {}
@@ -613,7 +614,9 @@ Return JSON:
  "tagline": "one short line under the name, ending with a full stop (e.g. Freelance photojournalist.)",
  "demeanor": "2-5 words",
  "who": "ONE paragraph for an image model, head to toe: age, build, skin, face, hair; then EVERY garment top to bottom with colour, material and wear; then everything carried, slung or holstered on the body. No setting, no pose, no lighting.",
- "held": "what they hold in a relaxed hero pose, as a short phrase (e.g. 'a battered brass helmet tucked under one arm'), or 'empty hands'"}}"""
+ "held": "what they hold in a relaxed hero pose, as a short phrase (e.g. 'a battered brass helmet tucked under one arm'), or 'empty hands'",
+ "voice": "{voice_rule}",
+ "voice_line": "{line_rule}"}}"""
 
 _SURPRISE = """Invent ONE memorable player character for a cinematic, photoreal survival game — someone a player would be excited to BE. Grounded and specific, not a fantasy cliche; a real job or life, a look you could draw from a single line. Vary widely: age, build, gender, origin, era of clothing.
 Return JSON: {"concept": "one or two sentences in the player's own voice, e.g. 'A salvage diver in her forties. Patched olive canvas suit, brass helmet under one arm, rope and hook at the hip.'"}"""
@@ -652,10 +655,11 @@ def _expand(rec: dict, sources: List[Path]) -> dict:
         parts += [{"text": "A picture the player gave of this character — who they are, not how to frame them:"},
                   _img_part(p, 1024)]
     parts.append({"text": _BRIEF.format(concept=concept.replace('"', "'"),
-                                        with_pics=" (pictures attached)" if sources else "")})
+                                        with_pics=" (pictures attached)" if sources else "",
+                                        voice_rule=VOICE_RULE, line_rule=LINE_RULE)})
     out = _text_json(parts, "character_brief", temperature=0.6)
     return {k: str(out.get(k) or "").strip() for k in
-            ("name", "pronouns", "role", "tagline", "demeanor", "who", "held")}
+            ("name", "pronouns", "role", "tagline", "demeanor", "who", "held", "voice", "voice_line")}
 
 
 # ── ② the turnaround ────────────────────────────────────────────────────────
@@ -1339,11 +1343,20 @@ def start_draw(cid: str, *, concept: Optional[str] = None, wait: bool = False) -
                 for k in ("pronouns", "tagline", "role"):
                     if brief.get(k):
                         r[k] = brief[k]
+                if brief.get("voice"):
+                    v = dict(r.get("voice") or {})
+                    v.update(description=brief["voice"][:900],
+                             line=(brief.get("voice_line") or v.get("line") or "")[:200])
+                    r["voice"] = v
                 first = str(r.get("name") or "").split(" ")[0]
                 if first and r["job"].get("stage") == "turnaround":
                     r["job"]["line"] = f"Drawing {first} from every side…"
                     r["job"]["progress"] = max(float(r["job"].get("progress") or 0), 0.2)
             _update(cid, named)
+            # ~2 s of design and ~5 s of speech, beside a ~25 s drawing: the
+            # voice is ready long before the portrait is.
+            if brief.get("voice"):
+                design_voice(cid)
         tb = threading.Thread(target=write_brief, daemon=True)
         tb.start()
         try:
@@ -1445,6 +1458,196 @@ def revise(cid: str, change: str, *, wait: bool = False) -> dict:
     if not rec or not rec.get("base_look") or not change:
         raise ValueError("nothing to change")
     return _start_fit(cid, [], changes=[change], rebase=True, wait=wait)
+
+
+# ── ⑤ the voice ─────────────────────────────────────────────────────────────
+# Who you are sounds like someone. The narrator of every run is "you, speaking
+# into a tape" (narrator_direction), so the character's voice IS the
+# narrator's for the runs they play (engine._narrator_voice_id). It is
+# designed from words (Gemini voice design, voice_design.design_character_voice)
+# when the brief lands, and it is heard for the first time at the reveal,
+# saying their own line in the narrator's delivery.
+#
+# What the record keeps: the DESCRIPTION (the voice itself — it survives a
+# new key, a new Google project, a year's expiry, a trade), the id it was
+# last designed as and on which key, and the line. voice.wav is that line in
+# that voice, for the screens.
+
+VOICE_FILE = "voice.wav"
+VOICE_READY, VOICE_DESIGNING, VOICE_FAILED = "ready", "designing", "failed"
+# How the line at the reveal is read: the same delivery as the narrator, so
+# what the player hears is what their run will sound like.
+# Short and the same on every line, by Google's own guidance for designed
+# voices: extra direction "increases drift", and age, accent and timbre
+# belong in the voice, never here. voices.json's narrator carries the same.
+VOICE_LINE_STYLE = "low and unhurried, close to the microphone, tired"
+# Google's shape for a designed voice: ONE sentence, archetype first, then
+# age, timbre and texture, accent, pacing ("A world-weary 1940s noir private
+# detective in his late 50s with a gravelly baritone voice, subtle
+# Mid-Atlantic accent, and unhurried, deliberate pacing." — their example).
+VOICE_RULE = ("how they SOUND, for a voice designer: ONE sentence, archetype first, then "
+              "age, the timbre and texture of the voice, accent or regional cadence, and "
+              "pacing (e.g. 'A dry-humoured salvage diver in her late forties with a low, "
+              "slightly rasped alto, a coastal Maine accent, and clipped, unhurried pacing.'). "
+              "Permanent traits only: no emotion of the moment, no scene, and never a "
+              "celebrity or real person, even if the player named one")
+LINE_RULE = ("ONE line they would say into a tape recorder about who they are or why they "
+             "came, first person, under 14 words, in their own voice (e.g. 'Nobody sends a "
+             "diver down there twice. They sent me three times.')")
+
+_VOICE_WORDS = """You write how a PLAYER CHARACTER sounds, for a voice designer. Who they are:
+{who}
+
+{change}Return JSON:
+{{"voice": "{voice_rule}",
+ "line": "{line_rule}"}}"""
+
+_VOICE_TRIES: Dict[str, float] = {}
+
+
+def _gender(rec: dict) -> str:
+    pr = str(rec.get("pronouns") or "").lower()
+    return "male" if pr.startswith("he") else "female" if pr.startswith("she") else ""
+
+
+def voice_usable(rec: dict) -> str:
+    """The voice id to speak in, or "": designed, on THIS key, not about to
+    expire (a voice id names nothing in another Google project)."""
+    v = (rec or {}).get("voice") or {}
+    vid = str(v.get("id") or "")
+    if v.get("status") != VOICE_READY or not vid.startswith("voice_"):
+        return ""
+    try:
+        import voice_design
+        if v.get("fingerprint") and v.get("fingerprint") != voice_design.key_fingerprint():
+            return ""
+    except Exception:
+        return ""
+    exp = str(v.get("expires") or "")
+    if exp and exp[:10] <= time.strftime("%Y-%m-%d", time.gmtime(time.time() + 86400)):
+        return ""
+    return vid
+
+
+def _voice_words(rec: dict, change: str = "") -> Dict[str, str]:
+    """The description and the line, written for a character whose brief
+    predates voices (the starter, anyone made before 2026-09-25) or changed
+    by a line from CHANGE SOMETHING ("a deeper voice")."""
+    who = "\n".join(f"{k}: {rec[k]}" for k in ("name", "pronouns", "role", "tagline", "demeanor", "concept", "who")
+                    if rec.get(k))
+    have = ((rec.get("voice") or {}).get("description") or "")
+    ch = ""
+    if change:
+        ch = (f"Their voice now: {have}\nChange it: {change}\nKeep everything the change does not "
+              f"touch. Keep the line unless the change is about what they say.\n\n") if have else \
+             f"The player asked for: {change}\n\n"
+    out = _text_json([{"text": _VOICE_WORDS.format(who=who[:2400], change=ch, voice_rule=VOICE_RULE,
+                                                   line_rule=LINE_RULE)}],
+                     "character_voice", temperature=0.6)
+    return {"description": str(out.get("voice") or "").strip()[:900],
+            "line": str(out.get("line") or "").strip()[:200]}
+
+
+def design_voice(cid: str, *, change: str = "", wait: bool = False) -> dict:
+    """Give a character their voice, or a new one. Background unless
+    ``wait``. Quietly nothing where no voice can be designed (mock mode, an
+    OpenAI key): the narrator then speaks in the roster's voice."""
+    try:
+        import voice_design
+    except Exception:
+        return load(cid) or {}
+    if not voice_design.is_available():
+        return load(cid) or {}
+    rec = load(cid)
+    if not rec:
+        raise ValueError("no such character")
+    if ((rec.get("voice") or {}).get("status") == VOICE_DESIGNING
+            and time.time() - float((rec.get("voice") or {}).get("started") or 0) < 90):
+        return rec
+    _update(cid, lambda r: r.update(voice=dict(r.get("voice") or {}, status=VOICE_DESIGNING,
+                                               started=_now(), error="")))
+
+    def work():
+        r0 = load(cid) or {}
+        v0 = dict(r0.get("voice") or {})
+        try:
+            words = {"description": v0.get("description") or "", "line": v0.get("line") or ""}
+            if change or len(words["description"]) < 20:
+                got = _voice_words(r0, change)
+                words = {k: got.get(k) or words.get(k) or "" for k in ("description", "line")}
+            if len(words["description"]) < 20:
+                raise RuntimeError("no words for their voice")
+            made = voice_design.design_character_voice(r0.get("name") or cid, words["description"],
+                                                       _gender(r0))
+            if not made or not made.get("id"):
+                raise RuntimeError("the voice could not be designed")
+            wav = None
+            if words["line"]:
+                import speech
+                wav = speech.synthesize(words["line"], made["id"], VOICE_LINE_STYLE)
+            if wav:
+                _write_atomic(char_dir(cid) / VOICE_FILE, wav)
+            old = v0.get("id") or ""
+
+            def put(r):
+                r["voice"] = {"description": words["description"], "line": words["line"],
+                              "id": made["id"], "expires": made.get("expire_time") or "",
+                              "fingerprint": made.get("fingerprint") or "",
+                              "model": voice_design.MODEL, "status": VOICE_READY,
+                              "takes": made.get("takes") or 1,
+                              "picked_because": made.get("picked_because") or "",
+                              "designed": _now(), "error": ""}
+            _update(cid, put)
+            if old and old != made["id"]:
+                voice_design.delete_character_voice(old)
+            print(f"[CHARACTERS] {cid} has a voice ({made['id']}): {words['description'][:90]!r}",
+                  flush=True)
+        except Exception as e:  # noqa: BLE001
+            reason = str(e)[:200]
+            _update(cid, lambda r: r.update(voice=dict(r.get("voice") or {}, status=VOICE_FAILED,
+                                                       error=reason)))
+            print(f"[CHARACTERS] {cid}: no voice ({reason})", flush=True)
+
+    if wait:
+        work()
+    else:
+        threading.Thread(target=work, daemon=True, name=f"voice-{cid}").start()
+    return load(cid) or {}
+
+
+def ensure_voice(cid: str) -> str:
+    """The voice id to narrate in right now, or "" — and, when the character
+    has none usable (never designed, another key, expiring), start designing
+    one in the background, at most once a minute each."""
+    rec = load(cid) if valid_id(cid) else None
+    if not rec:
+        return ""
+    vid = voice_usable(rec)
+    if vid:
+        return vid
+    if (rec.get("voice") or {}).get("status") == VOICE_DESIGNING:
+        return ""
+    if time.time() - _VOICE_TRIES.get(cid, 0) < 60:
+        return ""
+    _VOICE_TRIES[cid] = time.time()
+    try:
+        design_voice(cid)
+    except Exception:
+        pass
+    return ""
+
+
+def voice_card(rec: dict) -> Dict[str, Any]:
+    v = rec.get("voice") or {}
+    try:
+        import voice_design
+        can = voice_design.is_available()
+    except Exception:
+        can = False
+    return {"status": v.get("status") or "", "line": v.get("line") or "",
+            "description": v.get("description") or "",
+            "url": file_url(rec["id"], VOICE_FILE) if v.get("status") == VOICE_READY else "",
+            "can": can}
 
 
 # ── fittings ────────────────────────────────────────────────────────────────
@@ -2129,6 +2332,22 @@ def api_revise(cid):
         rec = revise(cid, str(_body().get("change") or ""))
     except ValueError as e:
         return _bad(str(e))
+    return _ok(character=card(rec, full=True))
+
+
+def api_voice(cid):
+    """POST {change?} -> their voice designed (again), or changed by a line
+    ("a deeper voice, from Glasgow"). The screens poll the card."""
+    rec = load(cid) if valid_id(cid) else None
+    if not rec:
+        return _bad("no such character", 404)
+    try:
+        import voice_design
+        if not voice_design.is_available():
+            return _bad(voice_design.unavailable_reason() or "voices are designed on a Gemini key", 409)
+    except Exception:
+        return _bad("no voice design here", 409)
+    rec = design_voice(cid, change=str(_body().get("change") or "")[:300])
     return _ok(character=card(rec, full=True))
 
 
