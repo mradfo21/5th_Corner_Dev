@@ -84,3 +84,4 @@ test_world_regen
 test_local_guard
 test_paths
 test_bug_send
+test_downloads
