@@ -12,7 +12,7 @@
     "hero": {
       "label": "",
       "poster_at": 0.04,
-      "sub": "SWAT \u00b7 Luka 'Grizzly' Novak",
+      "sub": "SWAT · Luka 'Grizzly' Novak",
       "segments": [
         {
           "from": 475.16,
@@ -144,56 +144,10 @@
         }
       ]
     },
-    "wear": {
-      "label": "Armed.",
-      "poster_at": 0.85,
-      "sub": "Jason Fleece, piece by piece",
-      "segments": [
-        {
-          "from": 150.43,
-          "to": 155.7,
-          "squeeze": true,
-          "hold": 0.8,
-          "max": 2.2,
-          "src": "wear"
-        },
-        {
-          "from": 213.91,
-          "to": 217.02,
-          "src": "wear"
-        },
-        {
-          "from": 222.95,
-          "to": 228.12,
-          "squeeze": true,
-          "hold": 0.8,
-          "max": 2.2,
-          "src": "wear"
-        },
-        {
-          "from": 280.34,
-          "to": 283.45,
-          "src": "wear"
-        },
-        {
-          "from": 289.39,
-          "to": 294.69,
-          "squeeze": true,
-          "hold": 0.8,
-          "max": 2.2,
-          "src": "wear"
-        },
-        {
-          "from": 348.92,
-          "to": 352.01,
-          "src": "wear"
-        }
-      ]
-    },
     "arrive": {
       "label": "Anywhere.",
       "poster_at": 0.2,
-      "sub": "The FIFTH CORNER \u00b7 SWAT \u00b7 CYBER HORROR",
+      "sub": "The FIFTH CORNER · SWAT · CYBER HORROR",
       "segments": [
         {
           "from": 100.07,
@@ -239,7 +193,7 @@
     "act": {
       "label": "Anything.",
       "poster_at": 0.12,
-      "sub": "SWAT \u00b7 CYBER HORROR",
+      "sub": "SWAT · CYBER HORROR",
       "segments": [
         {
           "from": 418.49,
@@ -294,10 +248,56 @@
         }
       ]
     },
+    "wear": {
+      "label": "Armed.",
+      "poster_at": 0.85,
+      "sub": "Jason Fleece, piece by piece",
+      "segments": [
+        {
+          "from": 150.43,
+          "to": 155.7,
+          "squeeze": true,
+          "hold": 0.8,
+          "max": 2.2,
+          "src": "wear"
+        },
+        {
+          "from": 213.91,
+          "to": 217.02,
+          "src": "wear"
+        },
+        {
+          "from": 222.95,
+          "to": 228.12,
+          "squeeze": true,
+          "hold": 0.8,
+          "max": 2.2,
+          "src": "wear"
+        },
+        {
+          "from": 280.34,
+          "to": 283.45,
+          "src": "wear"
+        },
+        {
+          "from": 289.39,
+          "to": 294.69,
+          "squeeze": true,
+          "hold": 0.8,
+          "max": 2.2,
+          "src": "wear"
+        },
+        {
+          "from": 348.92,
+          "to": 352.01,
+          "src": "wear"
+        }
+      ]
+    },
     "fight": {
       "label": "Attack.",
       "poster_at": 0.55,
-      "sub": "CYBER HORROR \u00b7 Jean-Luc de la Croix",
+      "sub": "CYBER HORROR · Jean-Luc de la Croix",
       "segments": [
         {
           "from": 390.28,
@@ -311,7 +311,7 @@
     "goal": {
       "label": "Arrive.",
       "poster_at": 0.6,
-      "sub": "The FIFTH CORNER \u00b7 Jason Fleece",
+      "sub": "The FIFTH CORNER · Jason Fleece",
       "segments": [
         {
           "from": 454.19,

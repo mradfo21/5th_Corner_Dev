@@ -81,22 +81,6 @@
         0.25
       ]
     },
-    "wear": {
-      "film": "wear",
-      "moment": "wear",
-      "label": "Armed.",
-      "all": true,
-      "pick_max": 2.2,
-      "reveal": 3.0,
-      "hold": 0.8,
-      "poster_at": 0.85,
-      "sub": "Jason Fleece, piece by piece",
-      "fits": [
-        1,
-        2,
-        3
-      ]
-    },
     "arrive": {
       "film": [
         "run",
@@ -138,6 +122,22 @@
       "tail": 4.5,
       "hold": 0.5,
       "poster_at": 0.12
+    },
+    "wear": {
+      "film": "wear",
+      "moment": "wear",
+      "label": "Armed.",
+      "all": true,
+      "pick_max": 2.2,
+      "reveal": 3.0,
+      "hold": 0.8,
+      "poster_at": 0.85,
+      "sub": "Jason Fleece, piece by piece",
+      "fits": [
+        1,
+        2,
+        3
+      ]
     },
     "fight": {
       "film": [

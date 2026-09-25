@@ -24,17 +24,6 @@
       "bytes720": 849711
     },
     {
-      "name": "wear",
-      "src": "/static/video/get/wear.mp4",
-      "src720": "/static/video/get/wear-720.mp4",
-      "poster": "/static/video/get/wear.jpg",
-      "label": "Armed.",
-      "sub": "Jason Fleece, piece by piece",
-      "seconds": 15.5,
-      "bytes": 3097356,
-      "bytes720": 762910
-    },
-    {
       "name": "arrive",
       "src": "/static/video/get/arrive.mp4",
       "src720": "/static/video/get/arrive-720.mp4",
@@ -55,6 +44,17 @@
       "seconds": 22.8,
       "bytes": 24289494,
       "bytes720": 5361434
+    },
+    {
+      "name": "wear",
+      "src": "/static/video/get/wear.mp4",
+      "src720": "/static/video/get/wear-720.mp4",
+      "poster": "/static/video/get/wear.jpg",
+      "label": "Armed.",
+      "sub": "Jason Fleece, piece by piece",
+      "seconds": 15.5,
+      "bytes": 3097356,
+      "bytes720": 762910
     },
     {
       "name": "fight",
