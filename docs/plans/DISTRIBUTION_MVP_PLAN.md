@@ -205,3 +205,10 @@ What is left, in order:
    `main` (it was fast-forwarded to `cd86149` on 2026-09-25).
 7. G (pay-as-you-go gateway) — the only milestone not started; everything
    above ships a BYOK beta without it.
+- **2026-09-25, evening** — **0.1.0-beta.1 shipped** by the release workflow
+  from a tag on `main`; the published installer installs, runs, plays real
+  turns and reaches the live update feed. `/get` is live on the game's Render
+  service (https://fiveth-corner-dev-1a00.onrender.com/get) with its clips
+  from `mradfo21/abyss-media`. `main` protected (PR + suites). Left for Matt:
+  `SITE_MODE=downloads` and a new `ADMIN_TOKEN` on Render, the key rotation,
+  `get.5th-corner.com` DNS, Azure signing, Windows Sandbox test.

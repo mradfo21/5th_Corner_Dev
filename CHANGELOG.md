@@ -1,5 +1,28 @@
 # 🔧 CHANGELOG - September 25, 2026
 
+## 🚀 SHIPPED: ABYSS 0.1.0-beta.1 — built by a tag, installed from GitHub, served from /get
+
+The first distributed build. It was tagged on `main` after PR #158 went green, and the release workflow did everything itself in 10½ minutes on GitHub's runner: install from the lock, the gate, the build, the smoke test with the install folder read-only, the notices, the Velopack pack and the publish. The result is https://github.com/mradfo21/abyss-releases/releases/tag/v0.1.0-beta.1: a 216 MB `Setup.exe`, a portable zip and the update feed, each with GitHub's SHA-256.
+
+**How it was checked, from the outside in.**
+- The published `Setup.exe` was downloaded, installed silently into a scratch folder and started. It said `0.1.0-beta.1` from `3ef816e`, its updater reached the live feed and answered `current`, and it uninstalled cleanly.
+- The same installed build, given the repo's Gemini and ElevenLabs keys (handed to the process, never printed), was played by `playtest_app.py` over CDP.
+  - Turn 1 resolved in 14.7 s, turn 2 in 24.8 s ("…the metallic drip of viscous fluid echoes in the stillness, suggesting you are no longer alone"), with frame continuity 0.75 and 0.86 and no console errors.
+  - The on-device detector loaded from the install folder and tagged `computer monitor, desk, metal container`. TALK reported `ready`.
+  - The harness's SCAN → MOVE TO on turn 3 missed because the tags faded before it clicked the fourth one. That is harness timing, not the build.
+
+**The site.** The game's Render service (`5th_Corner_Dev`, which auto-deploys `main`) now serves `/get`: https://fiveth-corner-dev-1a00.onrender.com/get.
+- It shows the installer, its version, size and SHA-256, and the "what's new" headings from the tag.
+- The page showed no gameplay at first. `load_clips` skips any clip whose mp4 is not on disk, and the mp4s are not in git. They are now release files on the public `mradfo21/abyss-media` (clips-2026-09-25), `clips.json` records the base, and `tools/publish_clips.py` does it for the next shoot.
+- After #161 deployed, all 8 clips were on the live page, with the first three streaming from the media repo at `readyState 4`.
+- **Not yet set on Render:** `SITE_MODE=downloads`, so the hosted game is still public and on 5th Corner's keys. The auto-mode safety check will not let an agent edit a live service's environment, so that change and a new `ADMIN_TOKEN` are Matt's.
+
+**Also today.**
+- `main` is protected: changes go through a PR, and the `suites` check must pass first.
+- CLAUDE.md section 3 says how work reaches `main` (#159).
+- `cv2` has one provider (#160).
+- The first-launch 18+ click-through was built and removed the same day: with players on their own keys it verified nothing (see the plan).
+
 ## 📦 NEW: ABYSS installs, updates itself, keeps your things when it does, and bug reports reach us
 
 The distribution plan (docs/plans/DISTRIBUTION_MVP_PLAN.md), M2–M5: the steps from "a folder you copy to a friend" to "a stranger clicks Download and it keeps itself current".
