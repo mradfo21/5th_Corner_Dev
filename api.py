@@ -696,7 +696,7 @@ _WALLET_FREE_PREFIXES = (
     "/api/state/save",
     "/api/reactor/usage", "/api/talk/end", "/api/cutscene/complete",
     "/api/bug/", "/api/replay/", "/api/shutdown", "/api/admin",
-    "/api/reel/", "/api/update",
+    "/api/reel/", "/api/update", "/api/consent",
 )
 
 
@@ -6054,6 +6054,51 @@ def api_shutdown():
           flush=True)
     threading.Thread(target=_quit_process, name="quit", daemon=True).start()
     return jsonify({"status": "closing", "stopped": stopped})
+
+
+# ═══════════════════════════════════════════════════════════════════
+# THE 18+ QUESTION — age_gate.js, Distribution MVP M5
+# ═══════════════════════════════════════════════════════════════════
+#
+# Asked once on a packaged build's first launch and remembered in the data
+# root (the window is in private mode; browser storage forgets). From source
+# it is never required unless ABYSS_AGE_GATE=1, so the suites and the harness
+# never meet it.
+
+def _consent_path():
+    return engine.DATA / "consent.json"
+
+
+def _consent_required() -> bool:
+    import paths
+    return bool(paths.FROZEN or os.environ.get("ABYSS_AGE_GATE") == "1")
+
+
+@app.route("/api/consent", methods=["GET"])
+def api_consent_status():
+    data = {}
+    try:
+        data = json.loads(_consent_path().read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — never asked yet
+        pass
+    return jsonify({"required": _consent_required(),
+                    "confirmed": bool(data.get("adult_confirmed_at"))})
+
+
+@app.route("/api/consent", methods=["POST"])
+def api_consent_confirm():
+    body = request.get_json(silent=True) or {}
+    if body.get("adult") is not True:
+        return error_response("Only a confirmation is recorded", code=400)
+    import app_identity
+    rec = {"adult_confirmed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+           "version": app_identity.VERSION}
+    path = _consent_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(rec), encoding="utf-8")
+    os.replace(tmp, path)
+    return jsonify({"ok": True})
 
 
 # ═══════════════════════════════════════════════════════════════════

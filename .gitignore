@@ -133,3 +133,5 @@ _version.py
 
 # Velopack output (tools/release_local.py, the release workflow).
 /Releases/
+# The 18+ answer (api /api/consent); from source the data root is the repo.
+/consent.json

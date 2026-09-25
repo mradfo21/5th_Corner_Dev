@@ -137,6 +137,32 @@ class UnarmedIsUnchanged(_Case):
         self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "https://www.5th-corner.com")
 
 
+class TheAgeQuestion(_Case):
+    """A packaged build asks once (age_gate.js); from source it never does."""
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        p = patch.object(self.api.engine, "DATA", Path(self._tmp.name))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_from_source_it_is_not_asked(self):
+        os.environ.pop("ABYSS_AGE_GATE", None)
+        with patch("paths.FROZEN", False):
+            self.assertFalse(self.client.get("/api/consent").get_json()["required"])
+
+    def test_a_build_asks_once_and_remembers(self):
+        with patch("paths.FROZEN", True):
+            c = self.client.get("/api/consent").get_json()
+            self.assertEqual((c["required"], c["confirmed"]), (True, False))
+            self.assertEqual(self.client.post("/api/consent", json={"adult": False}).status_code, 400)
+            self.assertEqual(self.client.post("/api/consent", json={"adult": True}).status_code, 200)
+            self.assertTrue(self.client.get("/api/consent").get_json()["confirmed"])
+        self.assertTrue((Path(self._tmp.name) / "consent.json").is_file())
+
+
 class ArchivesStayInArchives(_Case):
     """Relative to the working directory, like the routes themselves."""
 

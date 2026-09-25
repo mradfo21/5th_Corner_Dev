@@ -9499,6 +9499,57 @@ body.xp-open:has(#xp-exit) #start-exit { visibility: hidden; pointer-events: non
 .start-exit.arming { color: var(--ink); }
 .start-exit:focus-visible { outline: 1px solid var(--ink-line); outline-offset: 2px; }
 
+/* The first-launch 18+ question (age_gate.js). Covers the whole menu,
+   ACCOUNT included, in the menu's own type: nothing behind it is reachable. */
+.age-gate {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: rgba(11, 11, 10, 0.985);
+}
+.age-gate[hidden] { display: none; }
+.age-card { max-width: 560px; text-align: center; }
+.age-kicker {
+  margin: 0 0 18px;
+  font: 300 10px/1 var(--menu-font-mono);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--ink-quiet);
+}
+.age-q {
+  margin: 0;
+  font: 300 clamp(24px, 3.2vw, 36px)/1.25 var(--menu-font-display);
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+.age-note {
+  margin: 18px auto 0;
+  max-width: 440px;
+  font: 400 14px/1.6 var(--menu-font-display);
+  color: var(--ink-nav);
+}
+.age-actions { display: flex; justify-content: center; gap: 36px; margin-top: 40px; flex-wrap: wrap; }
+.age-btn {
+  height: 44px;
+  padding: 0 4px;
+  font: 300 11px/1 var(--menu-font-mono);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--ink-quiet);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 0.25s ease;
+}
+.age-btn.age-yes { color: var(--ink); border-bottom: 1px solid var(--ink-line); }
+.age-btn:hover, .age-btn:focus-visible { color: var(--ink-hi); }
+.age-btn:focus-visible { outline: 1px solid var(--ink-line); outline-offset: 4px; }
+.age-btn:disabled { opacity: 0.5; cursor: default; }
+
 /* UPDATE READY — RESTART (update_notice.js). The build tag's margin, one row
    up, lit like a hovered EXIT: it is the one thing on the menu that is news. */
 .start-update {
