@@ -126,7 +126,7 @@
     "wear": {
       "film": "wear",
       "moment": "wear",
-      "label": "Armed.",
+      "label": "Arm.",
       "all": true,
       "pick_max": 2.2,
       "reveal": 3.0,

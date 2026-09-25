@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{{ title }}</title>
-<meta name="description" content="When you stare into the abyss, the abyss stares back. A generative adventure game with unlimited possibility.">
+<meta name="description" content="Stare into the abyss. The abyss stares back. A generative adventure game with unlimited possibility.">
 <meta name="theme-color" content="#020504">
 <meta property="og:type" content="website">
 <meta property="og:title" content="{{ title }}">
-<meta property="og:description" content="When you stare into the abyss, the abyss stares back.">
+<meta property="og:description" content="Stare into the abyss. The abyss stares back.">
 <meta property="og:url" content="{{ page_url }}">
 <meta property="og:image" content="{{ og_image }}">
 <meta name="twitter:card" content="summary_large_image">
@@ -91,10 +91,12 @@ body.past-splash .top .ui-btn { opacity: 1; transform: none; pointer-events: aut
   animation: settle 2s var(--ease) both;
 }
 /* The line under the name, the game's own mono, quiet. */
+/* One line, always: the size follows the width so the 44 characters fit
+   (a mono cap plus its tracking is ~0.76em; 44 of them ~34em). */
 .tagline {
-  margin: clamp(10px, 1.6vw, 20px) 0 0; max-width: 34em;
-  font-family: var(--font-mono); font-size: clamp(11px, 1.15vw, 15px); line-height: 1.5;
-  letter-spacing: 0.26em; text-indent: 0.26em; text-transform: uppercase;
+  margin: clamp(10px, 1.6vw, 20px) 0 0; white-space: nowrap;
+  font-family: var(--font-mono); font-size: min(13px, calc((100vw - 32px) / 34)); line-height: 1.5;
+  letter-spacing: 0.2em; text-indent: 0.2em; text-transform: uppercase;
   color: rgba(216,240,228,0.78); text-shadow: 0 1px 14px rgba(0,0,0,0.9);
 }
 @keyframes settle { from { letter-spacing: 0.5em; text-indent: 0.5em; filter: blur(9px); opacity: 0; } 30% { opacity: 1; } to { letter-spacing: 0.22em; text-indent: 0.22em; filter: blur(0); } }
@@ -212,7 +214,7 @@ details.news li span.alt { color: var(--dim); }
     </div>
     <div class="hero">
       <h1 class="brand">{{ title }}</h1>
-      <p class="tagline rise" style="--d:0.45s">When you stare into the abyss, the abyss stares back.</p>
+      <p class="tagline rise" style="--d:0.45s">Stare into the abyss. The abyss stares back.</p>
       <a class="get rise js-get" id="hero-get" href="/get/latest" style="--d:0.6s">DOWNLOAD</a>
       <div class="meta rise" id="meta" style="--d:0.8s"></div>
       <p class="elsewhere rise" id="elsewhere" style="--d:0.9s" hidden></p>
