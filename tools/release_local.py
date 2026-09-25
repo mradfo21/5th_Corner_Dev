@@ -69,7 +69,7 @@ def main(argv=None) -> int:
                 "--packDir", str(app), "--mainExe", f"{app_identity.APP_NAME}.exe",
                 "--packTitle", app_identity.APP_NAME, "--packAuthors", app_identity.PUBLISHER,
                 "--icon", str(ROOT / "assets" / "icon" / "abyss.ico"), "--channel", channel,
-                "--framework", "webview2", "--shortcuts", "StartMenuRoot,Desktop",
+                "--runtime", "win-x64", "--framework", "webview2", "--shortcuts", "StartMenuRoot,Desktop",
                 "--outputDir", str(RELEASES)]
         sign = (os.environ.get("ABYSS_SIGN_FILE") or "").strip()
         if sign:

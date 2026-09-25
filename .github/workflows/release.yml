@@ -125,7 +125,7 @@ jobs:
           vpk pack --packId ${{ env.PACK_ID }} --packVersion ${{ steps.v.outputs.version }}
           --packDir dist/ABYSS --mainExe ABYSS.exe --packTitle ABYSS --packAuthors "5th Corner"
           --icon assets/icon/abyss.ico --channel ${{ steps.v.outputs.channel }}
-          --framework webview2 --shortcuts StartMenuRoot,Desktop
+          --runtime win-x64 --framework webview2 --shortcuts StartMenuRoot,Desktop
           --releaseNotes notes.md --outputDir Releases ${{ steps.sign.outputs.args }}
 
       - name: Keep the build

@@ -88,28 +88,28 @@ Done 2026-09-25 on `dist/m1-local-guard` (CHANGELOG, "A web page on the player's
 
 ## M2 — Saves out of the install folder
 
-- [ ] Frozen play.py sets the existing overrides to `%APPDATA%\ABYSS\…` before importing `api`: `SESSIONS_DIR`, `SOMEWHERE_WORLDS_DIR`, `SOMEWHERE_EXPERIENCES_DIR`, `SOMEWHERE_CHARACTERS_DIR`, `SOMEWHERE_PROMPTS_PATH`, `SOMEWHERE_KEYS_PATH`, `SOMEWHERE_TUNABLES_PATH`, `REFERENCES_DIR`, `SOMEWHERE_ANALYTICS_DIR`
-- [ ] `paths.py` for the rest: no override yet for `archives`, `logs`, `levels`, `lore`, `bugs`, `tapes`, `playtest_results`, `assets/music`; hard-coded `"sessions"` in api.py (12), engine.py (5), cost_tracker.py (ignores `SESSIONS_DIR`), scene_audio.py, coinop.py, usage_limits.py, billing.py
-- [ ] Seed factory content at first run (move `stamp_factory` logic into startup); on update refresh factory files, never the player's
-- [ ] One-time migration of `%APPDATA%\SOMEWHERE\` into the new root
-- [ ] `tools/smoke_exe.py` runs the build with its folder read-only (`icacls /deny`) and fails on any write there
+- [x] Frozen play.py sets the existing overrides to `%APPDATA%\ABYSS\…` before importing `api`: `SESSIONS_DIR`, `SOMEWHERE_WORLDS_DIR`, `SOMEWHERE_EXPERIENCES_DIR`, `SOMEWHERE_CHARACTERS_DIR`, `SOMEWHERE_PROMPTS_PATH`, `SOMEWHERE_KEYS_PATH`, `SOMEWHERE_TUNABLES_PATH`, `REFERENCES_DIR`, `SOMEWHERE_ANALYTICS_DIR`
+- [x] `paths.py` for the rest: no override yet for `archives`, `logs`, `levels`, `lore`, `bugs`, `tapes`, `playtest_results`, `assets/music`; hard-coded `"sessions"` in api.py (12), engine.py (5), cost_tracker.py (ignores `SESSIONS_DIR`), scene_audio.py, coinop.py, usage_limits.py, billing.py
+- [x] Seed factory content at first run (move `stamp_factory` logic into startup); on update refresh factory files, never the player's
+- [x] One-time migration of `%APPDATA%\SOMEWHERE\` into the new root
+- [x] `tools/smoke_exe.py` runs the build with its folder read-only (`icacls /deny`) and fails on any write there
 
 ## M3 — Build pipeline
 
-- [ ] `.github/workflows/release.yml` on `v*` tags, `windows-latest`: checkout → Python 3.12 → install from lock → mock test suite → `tools/build_exe.py --clean` → `tools/smoke_exe.py` → sign → Velopack pack → upload to the releases repo
-- [ ] Stamp the tag into `_version.py`; show it in `/api/health`, window title, log header, bug reports
-- [ ] Sign with Azure Artifact Signing via Velopack `--azureTrustedSignFile`; credentials as GitHub secrets; CI holds no game API keys
-- [ ] Generate `THIRD-PARTY-NOTICES.txt` (pip-licenses) plus the GPLv3 notice and source link for imageio-ffmpeg's bundled ffmpeg (kept: render/video export use it)
-- [ ] Real exe name and icon in the spec (`name`, `icon`); rename the spec `ABYSS.spec`
-- [ ] Keep `build_exe.py` / `publish_build.py` working locally as a fallback
+- [x] `.github/workflows/release.yml` on `v*` tags (written; first run waits on the `workflow` scope and RELEASES_TOKEN), `windows-latest`: checkout → Python 3.12 → install from lock → mock test suite → `tools/build_exe.py --clean` → `tools/smoke_exe.py` → sign → Velopack pack → upload to the releases repo
+- [x] Stamp the tag into `_version.py`; show it in `/api/health`, window title, log header, bug reports
+- [ ] (wired, waits on the Azure account) Sign with Azure Artifact Signing via Velopack `--azureTrustedSignFile`; credentials as GitHub secrets; CI holds no game API keys
+- [x] Generate `THIRD-PARTY-NOTICES.txt` (pip-licenses) plus the GPLv3 notice and source link for imageio-ffmpeg's bundled ffmpeg (kept: render/video export use it)
+- [x] Real exe name and icon in the spec (`name`, `icon`); rename the spec `ABYSS.spec`
+- [x] Keep `build_exe.py` / `publish_build.py` working locally as a fallback
 
 ## M4 — Installer and updates (Velopack)
 
-- [ ] `velopack.App().run()` at the very top of play.py
-- [ ] `vpk pack --packId 5thCorner.ABYSS --packVersion <tag> --packDir dist/ABYSS --mainExe ABYSS.exe --icon <ico> --framework webview2`
-- [ ] Channels: `beta` (friends) and `stable` (public link)
-- [ ] Background update check at launch; "UPDATE READY — RESTART" on the start menu; never interrupts a run; "later" always allowed
-- [ ] Portable zip stays as a secondary download ("no auto-update")
+- [x] `velopack.App().run()` at the very top of play.py
+- [x] `vpk pack --packId 5thCorner.ABYSS --packVersion <tag> --packDir dist/ABYSS --mainExe ABYSS.exe --icon <ico> --framework webview2`
+- [x] Channels: `beta` (friends) and `stable` (public link)
+- [x] Background update check at launch; "UPDATE READY — RESTART" on the start menu; never interrupts a run; "later" always allowed
+- [x] Portable zip stays as a secondary download ("no auto-update")
 
 ## G — Gateway (pay-as-you-go, no key needed)
 
@@ -131,10 +131,10 @@ tracks) + SFX (30) $1.74 (38%), text $0.14 (3%).
 
 - [ ] `SITE_MODE=downloads` on the site service: `/` → `/get`; `/standalone`, `/play`, `/lobby`, `/studio` and gameplay `/api/*` return 404; keep `/get*`, `/api/builds/latest`, `/api/health`, bug intake, `/admin` (token)
 - [ ] Remove AI provider keys from the site service (they live only on the gateway)
-- [ ] /get: prefer `*-Setup.exe` in `downloads._pick_asset`; system requirements (Windows 10/11 64-bit, ~1.5 GB); SHA-256
+- [x] /get: prefer `*-Setup.exe` in `downloads._pick_asset` (SHA-256 and system requirements still to show); system requirements (Windows 10/11 64-bit, ~1.5 GB); SHA-256
 - [ ] `/privacy`, `/terms` (EULA, 18+), `/licenses`; first-launch 18+ confirmation (Gemini API terms)
-- [ ] `POST /api/bug/intake`: 10 MB cap, per-IP rate limit, `MAX_CONTENT_LENGTH`; store + forward a summary to a private Discord webhook held server-side
-- [ ] Bug button "Send to 5th Corner": preview what's included, redact key-shaped strings, opt-in every time; startup-failure splash offers "send crash log"
+- [x] `POST /api/bug/intake` (code; the private webhook and deploy wait on the Render sync): 10 MB cap, per-IP rate limit, `MAX_CONTENT_LENGTH`; store + forward a summary to a private Discord webhook held server-side
+- [x] Bug button "Send to 5th Corner": preview what's included, redact key-shaped strings, opt-in every time; startup-failure splash offers "send crash log"
 
 ## M6 — Release candidate
 
@@ -166,3 +166,11 @@ for real API calls.
   it, then pushed. Identity chosen: ABYSS / `5thCorner.ABYSS` / `%APPDATA%\ABYSS`.
   `_claude_runner.py` (START_CLAUDE.bat) was still running; stopping it is Matt's.
 - **2026-09-25** — M1 done on `dist/m1-local-guard`: local_guard.py, safe_log.py, archive traversal (a hosted hole too), set_custom, run_local host, frozen .env. Verified with test_local_guard, the guarded app from outside, three harness turns, and drive_by.html in a real browser.
+- **2026-09-25** — M2–M4 done and M5's client side, on `dist/m2-data-root`
+  (CHANGELOG, "ABYSS installs, updates itself…"). Proven: the exe plays from a
+  read-only install folder; beta.1 installed from its real Setup.exe updated
+  itself to beta.2 on screen and kept the run (`tools/rehearse_update.py`,
+  PASS x3). Public releases repo `mradfo21/abyss-releases` created; `main`
+  fast-forwarded to M0. Waiting on Matt: the `workflow` scope for the push,
+  RELEASES_TOKEN, Azure signing, key rotation, the Render sync (gateway,
+  SITE_MODE, intake webhook, legal pages).
