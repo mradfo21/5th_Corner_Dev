@@ -59,7 +59,8 @@ _asset_urls: dict[int, str] = {}
 
 
 def game_title() -> str:
-    return (os.getenv("GAME_TITLE") or "ABYSS").strip() or "ABYSS"
+    import app_identity
+    return (os.getenv("GAME_TITLE") or app_identity.APP_NAME).strip() or app_identity.APP_NAME
 
 
 def releases_repo() -> str:

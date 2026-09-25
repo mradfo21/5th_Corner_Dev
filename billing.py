@@ -40,6 +40,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import app_identity
+
 try:
     import stripe  # type: ignore
 except Exception:  # noqa: BLE001
@@ -47,7 +49,7 @@ except Exception:  # noqa: BLE001
 
 log = logging.getLogger("billing")
 
-TITLE = "SOMEWHERE"
+TITLE = app_identity.LEGACY_DATA_DIR_NAME
 # A new name: the old email cookie ("somewhere_account") is ignored.
 COOKIE = "somewhere_wallet"
 _KEY_RE = re.compile(r"^w_[0-9a-f]{32}$")
@@ -157,10 +159,7 @@ def _default_store_path() -> Path:
     # Local play.py / run_local.py stay in the user profile (BYOK, not a cashier).
     if not _local_app:
         return ROOT / "sessions" / "_analytics" / "billing.json"
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        return Path(appdata) / TITLE / "billing.json"
-    return Path.home() / ".somewhere" / "billing.json"
+    return app_identity.appdata_root() / "billing.json"
 
 
 def _path() -> Path:

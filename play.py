@@ -40,8 +40,10 @@ os.chdir(ROOT)
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-TITLE = "SOMEWHERE"   # the folder in %APPDATA% (keys, characters, account): never renamed
-NAME = "ABYSS"        # what the player sees: the window, the dialogs
+import app_identity
+
+TITLE = app_identity.LEGACY_DATA_DIR_NAME  # the %APPDATA% folder (keys, characters, account) until M2 moves it
+NAME = app_identity.APP_NAME               # what the player sees: the window, the dialogs
 
 # Directories the game writes into. Bundled builds ship them empty; stamp_factory
 # in tools/ship_layout.py creates the same set beside the exe.
@@ -339,9 +341,8 @@ def _env_candidates() -> list[Path]:
     add(Path.cwd() / ".env")                 # wherever it was launched from
     for parent in list(ROOT.parents)[:3]:    # the repo, when running from dist/
         add(parent / ".env")
-    appdata = os.environ.get("APPDATA")
-    if appdata:                              # where an installed copy should look
-        add(Path(appdata) / TITLE / ".env")
+    if os.environ.get("APPDATA"):            # where an installed copy should look
+        add(app_identity.appdata_root() / ".env")
     return out
 
 

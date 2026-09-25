@@ -64,6 +64,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import app_identity
 import authoring_sandbox as _sandbox
 
 _sandbox.guard()  # before the path below is computed — a test never writes a real character
@@ -78,9 +79,7 @@ def _default_dir() -> Path:
     it. A roster an older build kept beside the exe is carried over once."""
     if not getattr(sys, "frozen", False):
         return ROOT / "characters"
-    appdata = os.environ.get("APPDATA")
-    home = (Path(appdata) / "SOMEWHERE") if appdata else (Path.home() / ".somewhere")
-    dest = home / "characters"
+    dest = app_identity.appdata_root() / "characters"
     old = ROOT / "characters"
     try:
         if not dest.exists() and old.is_dir() and any(old.iterdir()):
