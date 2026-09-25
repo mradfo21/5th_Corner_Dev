@@ -70,6 +70,11 @@ body.past-splash .top .ui-btn { opacity: 1; transform: none; pointer-events: aut
 /* ---------- film: a real recording, filling its frame ---------- */
 .film { position: absolute; inset: 0; overflow: hidden; background: #050a08; }
 .film video, .film img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+/* The still is a real <img>, not the video's poster: iPhone Safari draws a
+   poster stretched to the frame (object-fit is ignored until the video plays).
+   The video fades in over it once it is actually playing. */
+.film video { opacity: 0; transition: opacity 0.5s ease; }
+.film video.live { opacity: 1; }
 
 /* ---------- splash ---------- */
 .splash { position: relative; isolation: isolate; height: 100svh; min-height: 560px; display: grid; place-items: center; overflow: hidden; }
@@ -127,7 +132,13 @@ body.past-splash .top .ui-btn { opacity: 1; transform: none; pointer-events: aut
 .meta { margin-top: 12px; font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.06em; color: rgba(216,240,228,0.5); text-shadow: 0 1px 8px rgba(0,0,0,0.85); display: flex; flex-wrap: wrap; justify-content: center; gap: 2px 12px; }
 .meta b { font-weight: 400; color: rgba(216,240,228,0.8); }
 .meta i { font-style: normal; opacity: 0.4; }
-.elsewhere { margin: 12px 0 0; font-size: 14px; color: rgba(216,240,228,0.6); text-shadow: 0 1px 10px rgba(0,0,0,0.9); }
+/* The platforms it runs on, as marks under DOWNLOAD (Windows only, for now). */
+.platforms { margin-top: 14px; display: flex; justify-content: center; gap: 18px; }
+.plat { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 10px; transition: background 0.2s var(--ease); }
+.plat svg { width: 22px; height: 22px; fill: rgba(216,240,228,0.8); filter: drop-shadow(0 1px 10px rgba(0,0,0,0.9)); transition: fill 0.2s var(--ease); }
+.plat:hover { background: rgba(142,255,193,0.08); }
+.plat:hover svg, .plat:focus-visible svg { fill: #fff; }
+.plat:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(142,255,193,0.35); }
 .lnk { font-family: var(--font-display); font-size: 16px; letter-spacing: 0.2em; color: rgba(216,240,228,0.5); background: none; border: none; padding: 4px 6px; cursor: pointer; text-decoration: none; transition: color 0.22s var(--ease); }
 .lnk:hover, .lnk:focus-visible { color: var(--accent); outline: none; }
 .cue { position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); transform: translateX(-50%); width: 1px; height: 44px; overflow: hidden; }
@@ -210,14 +221,16 @@ details.news li span.alt { color: var(--dim); }
 <main>
   <section class="splash" aria-label="{{ title }}">
     <div class="film" aria-hidden="true">
-      {% if hero %}<video id="hero-video" data-src="{{ hero.src }}" data-src720="{{ hero.src720 }}" poster="{{ hero.poster }}" muted loop playsinline preload="auto"></video>{% endif %}
+      {% if hero %}{% if hero.poster %}<img class="still" src="{{ hero.poster }}" alt="">{% endif %}<video id="hero-video" data-src="{{ hero.src }}" data-src720="{{ hero.src720 }}" muted loop playsinline preload="auto"></video>{% endif %}
     </div>
     <div class="hero">
       <h1 class="brand">{{ title }}</h1>
       <p class="tagline rise" style="--d:0.45s">Stare into the abyss. The abyss stares back.</p>
       <a class="get rise js-get" id="hero-get" href="/get/latest" style="--d:0.6s">DOWNLOAD</a>
+      <div class="platforms rise" id="platforms" style="--d:0.7s" aria-label="Available for">
+        <a class="plat js-get" href="/get/latest" title="Windows 10 and 11, 64-bit" aria-label="Download for Windows"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 3h8.4v8.4H3zM12.6 3H21v8.4h-8.4zM3 12.6h8.4V21H3zM12.6 12.6H21V21h-8.4z"/></svg></a>
+      </div>
       <div class="meta rise" id="meta" style="--d:0.8s"></div>
-      <p class="elsewhere rise" id="elsewhere" style="--d:0.9s" hidden></p>
     </div>
     <div class="cue" aria-hidden="true"></div>
   </section>
@@ -226,7 +239,8 @@ details.news li span.alt { color: var(--dim); }
     {% for c in clips %}
     <figure class="clip{% if loop.index is even %} odd{% endif %}">
       <div class="frame film">
-        <video data-src="{{ c.src }}" data-src720="{{ c.src720 }}" poster="{{ c.poster }}" muted loop playsinline preload="none" aria-label="{{ c.label or c.name }} — recorded in the game"></video>
+        {% if c.poster %}<img class="still" src="{{ c.poster }}" alt="" loading="lazy">{% endif %}
+        <video data-src="{{ c.src }}" data-src720="{{ c.src720 }}" muted loop playsinline preload="none" aria-label="{{ c.label or c.name }} — recorded in the game"></video>
         {% if c.label %}<figcaption class="word">{{ c.label }}{% if c.sub %}<small class="sub">{{ c.sub }}</small>{% endif %}</figcaption>{% endif %}
       </div>
     </figure>
@@ -267,6 +281,10 @@ details.news li span.alt { color: var(--dim); }
   const BUILD = {{ build_json|safe }};
   const TITLE = {{ title|tojson }};
   const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // A clip shows over its still only once it has frames to show.
+  document.addEventListener("playing", (e) => {
+    if (e.target && e.target.tagName === "VIDEO") e.target.classList.add("live");
+  }, true);
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -284,7 +302,6 @@ details.news li span.alt { color: var(--dim); }
     return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   };
   const ua = navigator.userAgent || "";
-  const onWindows = /Windows/.test(ua) && !/Phone/.test(ua);
   const onMobile = /Android|iPhone|iPad|iPod/.test(ua) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(ua));
 
   if (!ok) {
@@ -292,12 +309,13 @@ details.news li span.alt { color: var(--dim); }
     $("#hero-get").textContent = "SOON";
     $("#end-get").textContent = "SOON";
     $("#top-get").hidden = true;
+    $("#platforms").hidden = true;
     $("#steps").hidden = true;
     $$(".fine").forEach((n) => { n.hidden = true; });
   } else {
     // "2026.09.21-c6d8e7f": the date is what a person reads; the commit is a detail.
     const vm = String(BUILD.version || "").match(/^(\d{4}\.\d{2}\.\d{2})-?(.*)$/);
-    const bits = [`<b>BUILD ${esc(vm ? vm[1] : BUILD.version)}</b>`, "WINDOWS"];
+    const bits = [`<b>BUILD ${esc(vm ? vm[1] : BUILD.version)}</b>`];
     if (dl.size_bytes) bits.push(mb(dl.size_bytes));
     if (dl.sha256) { $("#sha-v").textContent = dl.sha256; $("#sha").hidden = false; }
     if (!dl.installer) {
@@ -315,12 +333,6 @@ details.news li span.alt { color: var(--dim); }
         return `<li><span class="${tag === "FIXED" ? "" : "alt"}">${esc(tag)}</span><div>${esc(text.charAt(0).toUpperCase() + text.slice(1))}</div></li>`;
       }).join("");
       $("#news-box").hidden = false;
-    }
-    if (!onWindows) {
-      const el = $("#elsewhere");
-      el.hidden = false;
-      el.innerHTML = `Windows only${onMobile ? " — " : ". "}<button class="lnk" type="button" id="copy" style="padding:0 4px">copy the link</button> for your PC.`;
-      $("#copy").addEventListener("click", () => copy(location.origin + "/get", "Open it on your PC."));
     }
   }
 
