@@ -133,17 +133,15 @@ def test_saving_menu_direction_clears_a_stale_preview(tmp_path, monkeypatch):
     assert (music / "menu_preview.wav").exists()
 
 
-def test_is_available_sees_a_key_set_after_import(monkeypatch):
-    """KEYS can land after scene_audio imported. A module-level snapshot
-    left Generate disabled forever."""
+def test_an_old_elevenlabs_key_does_not_turn_generation_back_on(monkeypatch):
+    """Music and SFX were ElevenLabs; nothing on the player's key makes them
+    now (docs/plans/ONE_KEY_AUDIO_PLAN.md). A keys.env that still carries
+    the old key must not bring back a Generate button that cannot work."""
     monkeypatch.delenv("MOCK_MODE", raising=False)
     monkeypatch.delenv("STORYGEN_BACKEND", raising=False)
-    monkeypatch.setattr(scene_audio, "ELEVENLABS_API_KEY", "")
-    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
-    assert scene_audio._api_key() == ""
     monkeypatch.setenv("ELEVENLABS_API_KEY", "sk_" + "a" * 40)
-    assert scene_audio._api_key() == "sk_" + "a" * 40
-    assert scene_audio.is_available()
+    assert not scene_audio.is_available()
+    assert scene_audio.unavailable_reason()
 
 
 def test_build_portrait_prompt_uses_cinematic_anchor():
@@ -563,14 +561,14 @@ def test_companions_endpoint_lists_roster():
 
 def test_resolve_voice_reuses_companion_voice_id():
     # Continuing-story: talking to a known companion must reuse their stored
-    # ElevenLabs voice_id instead of designing a fresh one every scene.
+    # voice_id instead of designing a fresh one every scene.
     sid = "test_companion_voice_reuse"
     st = engine._load_state(sid) or {}
     st["companions"] = {}
     st["characters"] = {}
     st["world_prompt"] = "a flooded subway"
     engine._save_state(st, sid)
-    preset = "cjVigY5qzO86Huf0OWal"  # Eric — known voices.json id
+    preset = "Algenib"  # a Gemini voice from voices.json
     seed = "a low gravelly wary male voice mid-40s tired analog horror."
     engine._record_companion_voice(sid, {"label": "Kane", "kind": "person"}, {
         "voice_id": preset,
@@ -578,7 +576,7 @@ def test_resolve_voice_reuses_companion_voice_id():
         "source": "designed",
         "status": "ready",
         "cache_key": "deadbeefdeadbeef",
-        "model": "eleven_ttv_v3",
+        "model": "gemini-3.8-flash-tts",
     })
     resolved = engine.resolve_voice_for_subject(
         {"label": "Kane", "kind": "person"}, sid, world_prompt="somewhere else"
@@ -799,11 +797,12 @@ def test_both_voice_and_text_conversations_are_remembered():
 
 def test_a_conversation_nobody_spoke_in_does_not_cost_a_turn():
     js = (Path(__file__).parent / "static/js/standalone.js").read_text(encoding="utf-8")
-    worth = js[js.index("function worthATurn(seconds) {"):]
+    worth = js[js.index("function worthATurn() {"):]
     worth = worth[:worth.index("\n    }")]
     assert 'transcript.some((ln) => ln.role === "user")' in worth
-    # Voice is the exception: the SDK's user transcript can be late or absent.
-    assert 'mode === "voice"' in worth
+    # No exception for voice any more: every line the player says, typed or
+    # dictated, passes through addLine (the ElevenLabs SDK's did not).
+    assert 'mode === "voice"' not in worth
 
 
 def test_speaking_from_inside_another_moment_does_not_double_spend():
@@ -812,7 +811,7 @@ def test_speaking_from_inside_another_moment_does_not_double_spend():
     js = (Path(__file__).parent / "static/js/standalone.js").read_text(encoding="utf-8")
     assert "function nestedInAnotherMoment()" in js
     assert "window.Moments.depth() > 1" in js
-    guard = js[js.index("if (worthATurn(releasedDuration)"):]
+    guard = js[js.index("if (worthATurn()"):]
     guard = guard[:guard.index("}")]
     assert "!nestedInAnotherMoment()" in guard
     assert "!state.awaitingResolution" in guard

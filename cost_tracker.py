@@ -432,10 +432,12 @@ def track(session_id: str, service_type: str, provider: str, model: str, **kwarg
     Context manager for call sites where units aren't known until after the
     call completes:
 
-        with cost_tracker.track(session_id, "voice", "elevenlabs", "tts") as t:
-            audio = synthesize(text)
-            t["output_units"] = len(text)
-            t["unit_type"] = "characters"
+        with cost_tracker.track(session_id, "voice", "gemini",
+                                "gemini-3.8-flash-tts") as t:
+            audio, usage = synthesize(text)
+            t["input_units"] = usage["prompt_tokens"]
+            t["output_units"] = usage["audio_tokens"]
+            t["unit_type"] = "tokens"
 
     Records on exit either way (success=False + error_message on exception).
     """

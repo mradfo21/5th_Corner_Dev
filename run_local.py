@@ -52,10 +52,6 @@ def _load_env_file(path: Path) -> None:
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
-        elif key == "ELEVENLABS_API_KEY" and value.startswith("sk_"):
-            current = (os.environ.get(key) or "").strip()
-            if current and not current.startswith("sk_"):
-                os.environ[key] = value
     print(f"[run_local] Loaded env vars from {path}")
 
 

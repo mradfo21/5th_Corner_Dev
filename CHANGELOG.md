@@ -1,5 +1,38 @@
 # 🔧 CHANGELOG - September 25, 2026
 
+## 🔊 FIXED: Every voice speaks on the player's one key — ElevenLabs is gone
+
+From the release planning: *"right now there is no solution for eleven labs. what can we use from google / openai … so that there is no need for multiple accounts?"* and then *"switching away from elevenlabs, even if that means losing certain audio features. i think we'll want as few providers as possible to start."* The plan is `docs/plans/ONE_KEY_AUDIO_PLAN.md`; this is its A0, A1, A2, A4 and half of A5.
+
+**The mechanism worth knowing: a keyless install talked on one account.** TALK and the narrator were ElevenLabs Convai agents opened from the page. `engine.py` shipped a PUBLIC default agent id, "so voice works out of the box with NO secret at all". It did, on whoever owned the agent: every player without an ElevenLabs key (every player, since ACCOUNT only asks for Gemini or OpenAI) would have held their conversations and heard every narrator line on that one account. The narrator was an agent session per line, its "first message" being the line, fed a synthetic silent microphone so the SDK would connect at all. Music, ambience, foley, the consequence bed and the stock stingers were ElevenLabs too: 38% of a measured run's cost, and silent on any install without that second key.
+
+**What changed.**
+- **`speech.py` speaks every line.** Gemini 3.8 Flash TTS on the player's key; with OpenAI chosen, provider_bridge answers the same request with `/v1/audio/speech` (`gpt-4o-mini-tts`), each of Gemini's 30 voices mapped to the nearest of OpenAI's 13. Lines are cached on disk by (text, voice, delivery, model), so a repeat is free.
+- **The client plays files, not sessions.** `VoiceOut` in standalone.js is one POST to `/api/narrator/say` per line and one `<audio>`. The narrator fetches the next line while this one plays, and holds each caption until its voice actually starts. `ElevenSDK`, the silent mic, the output-level polling and the connect timeouts are deleted.
+- **TALK is the text conversation it already had, answered aloud.** `/api/talk/session` picks the character's voice and delivery. Each `/api/talk/message` reply is spoken in that voice, and MUTE silences them. There is no per-minute meter: each line is logged where it is made, so an open panel costs nothing.
+- **Holding to speak is not back yet.** Dictation is wired to the ACT box, and pointing it at `#talk-input` needs a mic control in the TALK panel, which goes through the design pass first.
+- **A voice per character is designed from words, on Gemini** (`voice_design.py`, `POST /v1beta/voices`, released 2026-09-23). The budget, coalescing, refcount, LRU and sweep machinery is unchanged underneath. The cap is Google's 200 stored voices per project (evicted at 180). The stored description is now the voice's permanent traits only; the moment's feeling goes in each line's delivery. OpenAI players get a roster voice with the whole brief as `instructions`: OpenAI cannot design a voice from words.
+- **`voices.json` names Gemini voices** (the narrator is Charon). An ElevenLabs-era id on a saved companion or in localStorage's `talk_voice_id` now names nothing and falls to the roster. The narrator's pace knob became words ("slowly") instead of a number, so it still does something.
+- **Music and sound effects go quiet until their step.** `scene_audio` keeps everything that plays files already on disk: an uploaded loop, local stock, designer WAVs. `_generate_music` is the one seam Lyria (same Gemini key) plugs into. No provider on either key makes foley, so that waits on a sound library.
+- **ElevenLabs is out of ACCOUNT, keys, billing, pricing, tunables, render.yaml, the build's keys template and the docs.** A keys.env that still holds the key keeps it word for word and ignores it.
+
+**Found by listening — the direction was read aloud.** The first version put each line's delivery in the prompt the way Google's one-adverb example does ("Say cheerfully: …"), stretched to a sentence. The live check came back long: 47 s of audio for a 32-word answer. Transcribing the WAV with Gemini gave the reason: *"Say this in character. An older voice for a person called Old Rancher. Timber, gravelly, worn…"*, then the line. The tries after that:
+- Markdown headings (`### DIRECTOR'S NOTES` / `### TRANSCRIPT`) fixed TALK, but still leaked on 2 of 4 narrator probes.
+- A system instruction is refused ("Developer instruction is not enabled for this model").
+- The Interactions API's `speech_metadata.style` field went 6 for 6 clean with the same long directions, so Gemini lines go through it. OpenAI's `instructions` is already its own field.
+- As a last line, a line far longer than its words is said again plain (`_sounds_read_aloud`).
+
+**How it was checked, on the real Gemini key.** A server from the branch, a reset, then the real routes. Every WAV was transcribed by Gemini:
+- The narrator (Charon) said *"Horizon built these primary extraction rigs in 1989 to bleed the Mesa dry. Why are the pressure valves still hissing if the power was cut months ago?"*: 14 s of audio, made in 6.0 s, transcript word for word, no direction. The same line again came from the cache in 0.03 s.
+- TALK with an "old rancher": mode `voice`, the roster voice Vindemiatrix straight away, a voice being designed behind it.
+  - *"Keep your head down. The red dust is starting to taste like copper again."* (7 s, made in 4.1 s)
+  - Asked "Who else is out here?": *"Just the ghosts of the company, and folks like you who think they're going to find something worth dying for…"* (16 s)
+  - Asked "What's behind the second gate?": *"Ain't no gate left. Just a hole where the earth started bleeding…"* (12 s)
+  - By the fourth line his own designed voice (`voice_yjh3…`) was ready and said it again. None of the four carried its direction.
+- `voice_design` created, listed and deleted real voices; none were left stored.
+- **Not checked:** the OpenAI path against the real API (the repo's OpenAI key answers `credit_balance_exhausted`; it is unit-tested), a turn loop in the native app with ears on it, and the free Gemini tier.
+- New `test_speech` (15) joins the CI gate. `test_talk_voice` (19) is rewritten around what must hold now: nothing reaches ElevenLabs, no agent id ships, voice means the key can speak, captions wait for their voice. `test_voice_design` 67 + 1 live, `test_conversation_moments` 42/42, the gate's billing/pricing/keys/editor suites green.
+
 ## 🚀 SHIPPED: ABYSS 0.1.0-beta.1 — built by a tag, installed from GitHub, served from /get
 
 The first distributed build. It was tagged on `main` after PR #158 went green, and the release workflow did everything itself in 10½ minutes on GitHub's runner: install from the lock, the gate, the build, the smoke test with the install folder read-only, the notices, the Velopack pack and the publish. The result is https://github.com/mradfo21/abyss-releases/releases/tag/v0.1.0-beta.1: a 216 MB `Setup.exe`, a portable zip and the update feed, each with GitHub's SHA-256.

@@ -173,10 +173,11 @@ class AnalyticsApiTestCase(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.get_json()["ok"])
 
-    def test_talk_end_records_talk_agent_voice_usage(self):
-        # /api/talk/end is the only server-side signal ElevenLabs' TALK
-        # conversational agent (a client<->agent websocket) ever gives us —
-        # the client reports how long the channel was actually connected.
+    def test_talk_end_does_not_bill_the_conversation_length(self):
+        # TALK was a hosted voice agent billed by the connected minute, and
+        # /api/talk/end was where those minutes were logged. Its lines are
+        # Gemini TTS calls now (speech.py), each metered where it is spoken,
+        # so logging the conversation's length as well would bill it twice.
         res = self.client.post(
             "/api/talk/end",
             json={"voice_id": "", "session_id": "s1", "duration_seconds": 17.5},
@@ -184,10 +185,7 @@ class AnalyticsApiTestCase(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.get_json()["ok"])
         events = cost_tracker.get_session_detail("s1")["events"]
-        talk_events = [e for e in events if e["service_type"] == "voice" and e["model"] == "talk_agent"]
-        self.assertEqual(len(talk_events), 1)
-        self.assertEqual(talk_events[0]["provider"], "elevenlabs")
-        self.assertEqual(talk_events[0]["output_units"], 17.5)
+        self.assertEqual([e for e in events if e["service_type"] == "voice"], [])
 
     def test_talk_end_zero_duration_records_nothing(self):
         res = self.client.post("/api/talk/end", json={"voice_id": "", "session_id": "s1"})

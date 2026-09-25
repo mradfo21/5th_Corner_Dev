@@ -139,7 +139,7 @@ anywhere. Grep `add_url_rule` in `api.py` for the gameplay routes and
 | `local_vision.py` | | On-device MediaPipe detector for SCAN (falls back to Gemini) |
 | `ai_provider_manager.py` | | Text/vision/image routing across providers |
 | `prompts_store.py` / `worlds_store.py` / `experience_store.py` | | The authoring stores |
-| `scene_audio.py` / `voice_design.py` | | Generated music, ambience, foley, ElevenLabs voices |
+| `speech.py` / `voice_design.py` / `scene_audio.py` | | Every spoken line (Gemini TTS; OpenAI through the bridge), a voice designed per character from words (Gemini only), and music/ambience/foley — which nothing on the player's key generates since ElevenLabs left (`docs/plans/ONE_KEY_AUDIO_PLAN.md`) |
 | `render_jobs.py` | | Unattended playthroughs on the heavy models |
 | `coinop.py` / `billing.py` / `cost_tracker.py` / `pricing.py` | | Credits, Stripe, spend accounting |
 | `authoring_sandbox.py` | | Guard that stops a test run overwriting live authoring data |
@@ -187,8 +187,9 @@ first-class node in the Experience graph. Encounter deliberately does **not**
 restore the paused world: if you survive, the aftermath is what you walk into.
 
 **Companions and props** persist. Every character you talk to is saved with a
-stable portrait file and an ElevenLabs voice id plus the description needed to
-regenerate it. The jeep is a prop, generated once and reused forever as an
+stable portrait file and a voice id (a Gemini voice, or one designed for them)
+plus the description needed to regenerate it — the description is what
+survives a new key or a new provider. The jeep is a prop, generated once and reused forever as an
 img2img reference so it looks identical every visit.
 
 **Continuity** is img2img. A turn continues the last frame unless the action
@@ -312,7 +313,8 @@ python run_local.py --mock --no-browser --port 5001   # bare server; e2e suites 
 ```
 
 Keys go in `.env` (`GEMINI_API_KEY`, optionally `OPENAI_API_KEY`,
-`ANTHROPIC_API_KEY`, ElevenLabs, Stripe). `python tools/build_exe.py --clean --run`
+`ANTHROPIC_API_KEY`, Stripe). There is no ElevenLabs key any more: voices are
+TTS on the same key as everything else. `python tools/build_exe.py --clean --run`
 produces `dist/ABYSS/`; what may go in that folder is listed once in
 `tools/ship_layout.py`.
 
@@ -590,8 +592,8 @@ it. Keep that; it is the reason the codebase is navigable at this size.
   accuracy first — the ledger is wrong both ways today — then showing players
   what they pay for, then taking money; tracked in its §2 tables),
   `FATE_ROLL_VISUAL_PLAN.md`,
-  `ONE_KEY_AUDIO_PLAN.md` (every sound on one Gemini or OpenAI key; its A0 —
-  a keyless install talks to a public ElevenLabs agent — blocks release),
+  `ONE_KEY_AUDIO_PLAN.md` (ElevenLabs is gone; voices are TTS on the one key;
+  music (Lyria), a sound library and TALK push-to-talk are its open steps),
   `TRADING_PLAN.md` (characters and worlds shared as PNG cards and codes;
   design pass first),
   `PROMPT_TRIM_PROPOSAL.md` (see above — the tests assumed it), and the "fully

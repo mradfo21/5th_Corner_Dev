@@ -18,6 +18,9 @@ hands the caller a Gemini-shaped response:
     /v1/images/edits when the request carries reference images (identity
     plates, the previous frame), cropped to the aspect ratio asked for
   * spoken audio (dictation)           -> /v1/audio/transcriptions
+  * a spoken line (``responseModalities: AUDIO``, speech.py) -> /v1/audio/speech,
+    the Gemini voice mapped to the nearest OpenAI one (OPENAI_VOICE_FOR) and
+    the delivery passed as ``instructions``
 
 The same hook sits where cost_tracker already meters Gemini at the wire, so a
 call site added later is covered without anyone remembering this file. With
@@ -65,6 +68,25 @@ OPENAI_IMAGE_PREFS = (
     "gpt-image-2.5-flare", "gpt-image-2", "gpt-image-1.5", "gpt-image-1-mini", "gpt-image-1",
 )
 OPENAI_TRANSCRIBE_PREFS = ("gpt-transcribe", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1")
+# The only OpenAI speech model that takes free-text direction (`instructions`);
+# tts-1 / tts-1-hd read flat and know 9 of the 13 voices.
+OPENAI_TTS_MODEL = "gpt-4o-mini-tts"
+
+# Gemini's 30 voices onto OpenAI's 13, by gender and weight, so a character
+# cast on Gemini keeps roughly their register on OpenAI. A designed voice
+# (voice_…) has no OpenAI twin; it reads as cedar with its delivery as the
+# instruction. OpenAI cannot design a voice from words (2026-09-25).
+OPENAI_VOICE_FOR = {
+    "Charon": "onyx", "Puck": "verse", "Fenrir": "ash", "Orus": "echo",
+    "Enceladus": "cedar", "Iapetus": "echo", "Umbriel": "ballad", "Algieba": "cedar",
+    "Algenib": "onyx", "Rasalgethi": "fable", "Alnilam": "ash", "Schedar": "echo",
+    "Achird": "verse", "Zubenelgenubi": "ballad", "Sadachbia": "verse", "Sadaltager": "fable",
+    "Zephyr": "nova", "Kore": "coral", "Leda": "shimmer", "Aoede": "marin",
+    "Callirrhoe": "marin", "Autonoe": "nova", "Despina": "sage", "Erinome": "coral",
+    "Laomedeia": "shimmer", "Achernar": "sage", "Gacrux": "coral", "Pulcherrima": "marin",
+    "Vindemiatrix": "sage", "Sulafat": "marin",
+}
+OPENAI_DEFAULT_VOICE = "cedar"
 
 # Picture quality for OpenAI. "medium" matches what Gemini Flash draws for
 # the price; "low" is faster. SOMEWHERE_OPENAI_IMAGE_QUALITY overrides.
@@ -721,6 +743,42 @@ def _transcribe_call(key: str, payload: Dict[str, Any], timeout: float) -> Tuple
     return 200, _gemini_ok([{"text": text.strip()}], model)
 
 
+def _speech_voice(payload: Dict[str, Any]) -> str:
+    vc = (((payload.get("generationConfig") or {}).get("speechConfig") or {}).get("voiceConfig") or {})
+    name = str(((vc.get("prebuiltVoiceConfig") or {}).get("voiceName")) or vc.get("voice") or "")
+    return OPENAI_VOICE_FOR.get(name, OPENAI_DEFAULT_VOICE)
+
+
+def _speech_call(key: str, payload: Dict[str, Any], timeout: float) -> Tuple[int, Dict[str, Any]]:
+    import speech
+    prompt = ""
+    for _, parts in _parts_of(payload):
+        for p in parts:
+            if isinstance(p.get("text"), str):
+                prompt += p["text"]
+    style, text = speech.split_prompt(prompt)
+    if not text:
+        return 400, _gemini_error(400, "nothing to say")
+    body: Dict[str, Any] = {"model": OPENAI_TTS_MODEL, "voice": _speech_voice(payload),
+                            "input": text[:4096], "response_format": "wav"}
+    if style:
+        body["instructions"] = style
+    t0 = time.time()
+    r = _post_openai(key, "/audio/speech", json_body=body, timeout=timeout)
+    ms = int((time.time() - t0) * 1000)
+    if not r.ok:
+        _record("voice", OPENAI_TTS_MODEL, ok=False, latency_ms=ms, error=_err_text(r))
+        note_problem("openai", r.status_code, _err_text(r))
+        return r.status_code, _gemini_error(r.status_code, _err_text(r))
+    raw = r.content or b""
+    # 24 kHz 16-bit mono: 48,000 bytes a second after the 44-byte header.
+    _record("voice", OPENAI_TTS_MODEL, ok=True, latency_ms=ms,
+            out=round(max(0, len(raw) - 44) / 48000.0, 2), unit="seconds")
+    return 200, _gemini_ok([{"inlineData": {"mimeType": "audio/wav",
+                                            "data": base64.b64encode(raw).decode("ascii")}}],
+                           OPENAI_TTS_MODEL)
+
+
 _SIZES = {"landscape": "1536x1024", "portrait": "1024x1536", "square": "1024x1024"}
 
 # The exact frame for each ratio the game asks Gemini for. GPT Image 2 and
@@ -893,6 +951,11 @@ def _is_image_request(model: str, payload: Dict[str, Any]) -> bool:
     return "image" in (model or "").lower() and "vision" not in (model or "").lower()
 
 
+def _is_speech_request(payload: Dict[str, Any]) -> bool:
+    mods = ((payload.get("generationConfig") or {}).get("responseModalities") or [])
+    return any(str(m).upper() == "AUDIO" for m in mods)
+
+
 def _is_audio_request(payload: Dict[str, Any]) -> bool:
     for _, parts in _parts_of(payload):
         for p in parts:
@@ -913,6 +976,8 @@ def answer_gemini_request(url: str, payload: Dict[str, Any], timeout: Optional[f
     if isinstance(timeout, tuple) and timeout:
         t = float(max(x for x in timeout if isinstance(x, (int, float))) or 0)
     try:
+        if _is_speech_request(payload):
+            return _speech_call(key, payload, max(t, TEXT_TIMEOUT_FLOOR))
         if _is_image_request(model, payload):
             return _image_call(key, payload, max(t, IMAGE_TIMEOUT_FLOOR))
         if _is_audio_request(payload):

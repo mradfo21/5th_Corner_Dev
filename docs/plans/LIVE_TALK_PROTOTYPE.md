@@ -1,8 +1,8 @@
 # TALK refactor — vision-grounded persona + Gemini Live audio prototype
 
 **Status:**
-- **Flavor A (vision-grounded persona)** — shipped, on by default. Every TALK session, ElevenLabs or text, now includes the current on-screen frame as part of the character's persona.
-- **Flavor B (Gemini Live native audio replacing ElevenLabs)** — opt-in probe behind `TALK_LIVE_API=1`. Not wired into the default `/api/talk/session` path. Not manually validated (no mic/speaker in the cloud env).
+- **Flavor A (vision-grounded persona)** — shipped, on by default. Every TALK session now includes the current on-screen frame as part of the character's persona.
+- **Flavor B (Gemini Live native audio)** — would replace TALK's turn-by-turn spoken answers (since 2026-09-25, `speech.py`; ElevenLabs is gone) with a duplex conversation; — opt-in probe behind `TALK_LIVE_API=1`. Not wired into the default `/api/talk/session` path. Not manually validated (no mic/speaker in the cloud env).
 
 ## Why this exists (significance)
 

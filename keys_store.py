@@ -22,15 +22,23 @@ import app_identity
 
 
 # Providers the live app already calls. Gemini is the default Play/Watch
-# path (text + stills + Veo). The others unlock catalogue entries or
-# optional layers (voice, realtime).
+# path (text + stills + voices + Veo); OpenAI can stand in for all of it
+# (provider_bridge.py). The others unlock catalogue entries or optional
+# layers (a Claude narrator, Krea stills, realtime video).
+#
+# ElevenLabs was listed here until 2026-09-25 (voices, music, world sound).
+# The game runs on one key now: voices come from the key you play on, music
+# returns with Lyria, sound effects are gone (docs/plans/ONE_KEY_AUDIO_PLAN.md).
+# A keys.env that still holds its line is read past (not a known name), never
+# applied or shown, and carried over untouched when the file is rewritten —
+# see _RETIRED_ENV.
 PROVIDERS: List[Dict[str, Any]] = [
     {
         "id": "gemini",
         "env": "GEMINI_API_KEY",
         "label": "Gemini",
-        "blurb": "Play, Watch, and default images. The live path.",
-        "roles": ("play", "watch", "image", "text", "voice-live"),
+        "blurb": "Play, Watch, default images and voices. The live path.",
+        "roles": ("play", "watch", "image", "text", "voice", "voice-live"),
         "required": True,
     },
     {
@@ -65,20 +73,18 @@ PROVIDERS: List[Dict[str, Any]] = [
         "roles": ("realtime",),
         "required": False,
     },
-    {
-        "id": "elevenlabs",
-        "env": "ELEVENLABS_API_KEY",
-        "label": "ElevenLabs",
-        "blurb": "Voice, music, world sound, and talk agents. Paste the sk_ secret, not the key ID from the dashboard list.",
-        "roles": ("voice", "music", "sound"),
-        "required": False,
-    },
 ]
 
 PLAY_KEY_ENVS = ("GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 
 _ENV_BY_ID = {p["id"]: p["env"] for p in PROVIDERS}
 _KNOWN_ENV = {p["env"] for p in PROVIDERS}
+
+# Names a player's keys.env may still carry from a provider the game dropped.
+# Never loaded into the process and never listed; kept byte-for-byte when the
+# file is rewritten, because the file is the player's and an sk_ secret is
+# shown once — deleting it on the next unrelated save would lose it for good.
+_RETIRED_ENV = ("ELEVENLABS_API_KEY",)
 
 # A CUSTOM key: any service that speaks the OpenAI chat API (a local model
 # server, OpenRouter, a lab's own endpoint). It rides the OpenAI slot the
@@ -95,13 +101,10 @@ _KNOWN_ENV |= {CUSTOM_ADDRESS_ENV, CUSTOM_MODEL_ENV}
 _RUNTIME_ATTRS = (
     ("engine", "GEMINI_API_KEY", "GEMINI_API_KEY"),
     ("engine", "OPENAI_API_KEY", "OPENAI_API_KEY"),
-    ("engine", "ELEVENLABS_API_KEY", "ELEVENLABS_API_KEY"),
     ("gemini_image_utils", "GEMINI_API_KEY", "GEMINI_API_KEY"),
     ("krea_image_utils", "KREA_API_KEY", "KREA_API_KEY"),
     ("fal_image_utils", "FAL_API_KEY", "FAL_API_KEY"),
-    ("scene_audio", "ELEVENLABS_API_KEY", "ELEVENLABS_API_KEY"),
     ("veo_video_utils", "GEMINI_API_KEY", "GEMINI_API_KEY"),
-    ("voice_design", "API_KEY", "ELEVENLABS_API_KEY"),
 )
 
 _LOCK = threading.Lock()
@@ -192,6 +195,22 @@ def _read_env_file(path: Path) -> Dict[str, str]:
     return out
 
 
+def _retired_lines(path: Path) -> List[str]:
+    """The lines of a retired provider's key, exactly as the file has them."""
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    out = []
+    for raw in text.splitlines():
+        key = raw.strip().partition("=")[0].strip()
+        if key in _RETIRED_ENV:
+            out.append(raw.strip())
+    return out
+
+
 def _atomic_write_env(path: Path, values: Dict[str, str]) -> None:
     if _is_forbidden_store_path(path):
         raise ValueError("refusing to write API keys inside the project tree")
@@ -204,6 +223,10 @@ def _atomic_write_env(path: Path, values: Dict[str, str]) -> None:
         val = (values.get(env) or "").strip()
         if val:
             lines.append(f"{env}={val}")
+    retired = _retired_lines(path)
+    if retired:
+        lines.append("# No longer used by the game; kept because it is yours.")
+        lines.extend(retired)
     payload = "\n".join(lines) + "\n"
     fd, tmp = tempfile.mkstemp(prefix="keys.", suffix=".tmp", dir=str(path.parent))
     try:
@@ -284,20 +307,6 @@ def _validate_value(raw: str, provider_id: str = "") -> str:
         raise ValueError("invalid key")
     if len(value) < _MIN_KEY_LEN or len(value) > _MAX_KEY_LEN:
         raise ValueError("invalid key")
-    if provider_id == "elevenlabs":
-        if value.startswith("sk_"):
-            return value
-        if value.startswith("agent_"):
-            raise ValueError(
-                "that's an agent id. ElevenLabs API keys start with sk_ — "
-                "shown only when you create or rotate a key."
-            )
-        if len(value) in (32, 64) and all(c in "0123456789abcdefABCDEF" for c in value):
-            raise ValueError(
-                "that's the key ID from the dashboard list, not the key. "
-                "Create or rotate a key and copy the sk_ secret."
-            )
-        raise ValueError("ElevenLabs API keys start with sk_")
     return value
 
 
@@ -351,7 +360,7 @@ def refresh_runtime_keys(*, only: Optional[set] = None, blank: Optional[set] = N
     Only touch the names we were asked to. A previous version wrote EVERY
     cached attr from getenv on every save, which blanked keys that still
     lived in config.json / process env because they were not in keys.env —
-    including the ElevenLabs secret TALK needs to mint a signed URL.
+    including, at the time, the voice provider's secret TALK needed.
     """
     blank = blank or set()
     for mod_name, attr, env_name in _RUNTIME_ATTRS:
@@ -366,12 +375,6 @@ def refresh_runtime_keys(*, only: Optional[set] = None, blank: Optional[set] = N
         value = (os.environ.get(env_name) or "").strip()
         if value:
             setattr(mod, attr, value)
-    engine = sys.modules.get("engine")
-    if engine is not None and hasattr(engine, "elevenlabs_key_problem"):
-        try:
-            engine._ELEVENLABS_KEY_PROBLEM = engine.elevenlabs_key_problem()
-        except Exception:
-            pass
 
 
 def lift_auto_mock_if_possible() -> bool:
@@ -421,16 +424,6 @@ def public_status(*, editable: bool) -> Dict[str, Any]:
             hint = mask_hint(os.environ.get(env, ""))
         problem = ""
         usable = present
-        if spec["id"] == "elevenlabs" and present:
-            val = (os.environ.get(env) or "").strip()
-            if not val.startswith("sk_"):
-                usable = False
-                if val.startswith("agent_"):
-                    problem = "that's an agent id, not the sk_ secret"
-                elif len(val) in (32, 64) and all(c in "0123456789abcdefABCDEF" for c in val):
-                    problem = "that's the key ID, not the sk_ secret"
-                else:
-                    problem = "ElevenLabs keys start with sk_"
         providers.append({
             "id": spec["id"],
             "label": spec["label"],

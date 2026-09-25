@@ -30,7 +30,7 @@ class PricingTestCase(unittest.TestCase):
                 "gemini:gemini-3-pro-image": {"unit_type": "images", "per_unit": 0.134, "sizes": {"1K": 0.134, "4K": 0.24}},
                 "openai:old-style": {"unit_type": "tokens", "input_per_1k": 0.15, "output_per_1k": 0.6},
                 "krea:krea-2/medium": {"unit_type": "images", "per_unit": 0.02},
-                "elevenlabs:tts": {"unit_type": "characters", "per_1k": 0.18},
+                "voicebox:tts": {"unit_type": "characters", "per_1k": 0.18},
                 "reactor:default": {"unit_type": "seconds", "per_unit": None},
             }
         })
@@ -58,7 +58,7 @@ class PricingTestCase(unittest.TestCase):
         self.assertAlmostEqual(cost, 0.02)
 
     def test_character_rate(self):
-        cost = pricing.estimate_cost("elevenlabs", "tts", "characters", input_units=500)
+        cost = pricing.estimate_cost("voicebox", "tts", "characters", input_units=500)
         self.assertAlmostEqual(cost, 0.09)
 
     def test_unpriced_null_rate_returns_none(self):
@@ -114,6 +114,27 @@ class PricingTestCase(unittest.TestCase):
         pricing.save_pricing(table)
         cost = pricing.estimate_cost("gemini", "gemini-3.1-flash-lite", "tokens", input_units=10_000, output_units=200)
         self.assertLess(cost, 0.01)
+
+    def test_shipped_voices_are_priced_on_the_key_you_play_on(self):
+        """One key (docs/plans/ONE_KEY_AUDIO_PLAN.md): a spoken line is a
+        Gemini TTS call, or an OpenAI one through the bridge, and both have a
+        rate. A retired provider's rows would only price what nothing logs."""
+        import json as _json
+        from pathlib import Path as _P
+        table = _json.loads((_P(__file__).parent / "pricing.json").read_text(encoding="utf-8"))
+        self.assertFalse([k for k in table["rates"] if k.startswith("elevenlabs:")])
+        pricing.save_pricing(table)
+        # A minute of speech is 1,500 audio tokens out: about a cent and a half.
+        minute = pricing.estimate_cost("gemini", "gemini-3.8-flash-tts", "tokens",
+                                       input_units=0, output_units=1500)
+        self.assertAlmostEqual(minute, 0.0135)
+        self.assertLess(pricing.estimate_cost("gemini", "gemini-3.8-flash-lite-tts", "tokens",
+                                              input_units=0, output_units=1500), minute)
+        self.assertIsNotNone(pricing.estimate_cost(
+            "gemini", "gemini-3.8-flash-tts:voice_design", "tokens",
+            input_units=237, output_units=655 + 947))
+        self.assertAlmostEqual(pricing.estimate_cost("openai", "gpt-4o-mini-tts", "seconds",
+                                                     output_units=60), 0.015)
 
 
 if __name__ == "__main__":

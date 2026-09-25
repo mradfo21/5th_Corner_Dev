@@ -38,16 +38,20 @@ class TestNarratorVoiceAnswersToTheEditor(unittest.TestCase):
     """`narrator_voice_id` is the editor's, and it has to win.
 
     voices.json ships a `cast.narrator` entry, and every caller resolved
-    `cast["voice_id"] or ELEVENLABS_NARRATOR_VOICE_ID`. The cast entry is always
+    `cast["voice_id"] or NARRATOR_VOICE_ID`. The cast entry is always
     present, so the second half of that expression was dead code and the picker
     in the Narrator window could never change anything.
     """
 
+    # The picks below are real voices.json names other than the shipped
+    # narrator: the engine refuses an id no voice model can speak in, so a
+    # made-up placeholder would fall straight back to the registry.
+
     def setUp(self):
-        self.original = engine.ELEVENLABS_NARRATOR_VOICE_ID
+        self.original = engine.NARRATOR_VOICE_ID
 
     def tearDown(self):
-        engine.ELEVENLABS_NARRATOR_VOICE_ID = self.original
+        engine.NARRATOR_VOICE_ID = self.original
 
     def test_the_shipped_registry_does_name_a_narrator(self):
         """If this ever stops being true the bug above cannot happen — and this
@@ -57,15 +61,15 @@ class TestNarratorVoiceAnswersToTheEditor(unittest.TestCase):
                         "voices.json is expected to cast a narrator")
 
     def test_changing_the_voice_changes_who_speaks(self):
-        engine.ELEVENLABS_NARRATOR_VOICE_ID = "SOMEONEELSE"
-        self.assertEqual(engine.resolve_cast("narrator")["voice_id"], "SOMEONEELSE")
-        self.assertEqual(engine._segment_voice("narrator"), "SOMEONEELSE")
+        engine.NARRATOR_VOICE_ID = "Fenrir"
+        self.assertEqual(engine.resolve_cast("narrator")["voice_id"], "Fenrir")
+        self.assertEqual(engine._segment_voice("narrator"), "Fenrir")
 
     def test_the_registry_still_supplies_the_delivery(self):
         """Only WHO is editor-owned. How they read — stability, speed — is still
         the cast sheet's, or picking a voice would silently flatten the
         performance as well."""
-        engine.ELEVENLABS_NARRATOR_VOICE_ID = "SOMEONEELSE"
+        engine.NARRATOR_VOICE_ID = "Fenrir"
         entry = engine.resolve_cast("narrator")
         shipped = (engine.VOICES_CONFIG.get("cast") or {})["narrator"]
         for key in ("stability", "speed"):
@@ -75,23 +79,23 @@ class TestNarratorVoiceAnswersToTheEditor(unittest.TestCase):
     def test_nothing_moves_until_someone_moves_it(self):
         """The global is seeded from voices.json, so an untouched install has to
         behave exactly as it did before any of this."""
-        engine.ELEVENLABS_NARRATOR_VOICE_ID = (
+        engine.NARRATOR_VOICE_ID = (
             engine.VOICES_CONFIG.get("narrator_voice") or "")
         self.assertEqual(engine.resolve_cast("narrator")["voice_id"],
                          (engine.VOICES_CONFIG.get("cast") or {})["narrator"]["voice_id"])
 
     def test_other_characters_are_not_hijacked(self):
         """Only the narrator is editor-cast. A warden must stay the warden."""
-        engine.ELEVENLABS_NARRATOR_VOICE_ID = "SOMEONEELSE"
+        engine.NARRATOR_VOICE_ID = "Fenrir"
         warden = (engine.VOICES_CONFIG.get("cast") or {}).get("warden") or {}
         if warden.get("voice_id"):
             self.assertEqual(engine.resolve_cast("warden")["voice_id"],
                              warden["voice_id"])
 
     def test_an_unknown_character_falls_back_to_the_chosen_narrator(self):
-        engine.ELEVENLABS_NARRATOR_VOICE_ID = "SOMEONEELSE"
+        engine.NARRATOR_VOICE_ID = "Fenrir"
         self.assertEqual(engine.resolve_cast("a passing stranger")["voice_id"],
-                         "SOMEONEELSE")
+                         "Fenrir")
 
     def test_the_registry_is_not_handed_out_to_be_mutated(self):
         """resolve_cast used to return the live dict out of VOICES_CONFIG."""
@@ -103,12 +107,12 @@ class TestNarratorVoiceAnswersToTheEditor(unittest.TestCase):
     def test_the_tunable_reaches_the_global_the_engine_reads(self):
         """The link between the store and the module. Both halves work in
         isolation; this is the join."""
-        tunables._apply_one("narrator_voice_id", "FROMTHEEDITOR")
+        tunables._apply_one("narrator_voice_id", "Orus")
         try:
             self.assertEqual(engine.resolve_cast("narrator")["voice_id"],
-                             "FROMTHEEDITOR")
+                             "Orus")
         finally:
-            engine.ELEVENLABS_NARRATOR_VOICE_ID = self.original
+            engine.NARRATOR_VOICE_ID = self.original
 
 
 class TestNarratorPromptIsActuallyRead(unittest.TestCase):

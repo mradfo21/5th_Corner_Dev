@@ -50,8 +50,8 @@ Full background: [RENDER_STORAGE_LIMITATION.md](RENDER_STORAGE_LIMITATION.md).
 
 All of them are declared in `render.yaml` with comments explaining what breaks
 without each one. The short version: `GEMINI_API_KEY` is the one that matters;
-`KREA_API_KEY` backs the default image provider; `ELEVENLABS_API_KEY` is needed
-for narrator audio but *not* for TALK, which works against a public agent id;
+`KREA_API_KEY` backs the default image provider; voices (the narrator and TALK)
+are Gemini TTS on the same `GEMINI_API_KEY`, with no key of their own;
 `REACTOR_API_KEY` is only for the realtime renderer. Everything degrades rather
 than crashing — with no keys at all the service boots into mock mode.
 

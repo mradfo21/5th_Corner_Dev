@@ -127,7 +127,7 @@ def main(argv=None) -> int:
                ABYSS_NO_UPDATE_CHECK="1", SOMEWHERE_KEEP_OTHERS="1")
     for k in ("SESSIONS_DIR", "SOMEWHERE_KEYS_PATH", "SOMEWHERE_PROMPTS_PATH",
               "SOMEWHERE_WORLDS_DIR", "SOMEWHERE_EXPERIENCES_DIR", "GEMINI_API_KEY",
-              "OPENAI_API_KEY", "ELEVENLABS_API_KEY"):
+              "OPENAI_API_KEY"):
         env.pop(k, None)
     before = _fingerprint(APP)
     proc = None

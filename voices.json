@@ -1,39 +1,49 @@
 {
-  "_comment": "Voice registry for the TALK mechanic + narrator stream. Data-driven so new voices/characters can be added with NO code change. `id` values are ElevenLabs voice IDs. Env ELEVENLABS_VOICE_ID overrides `default_voice`; ELEVENLABS_NARRATOR_VOICE_ID overrides `narrator_voice`.",
+  "_comment": "Voice registry for TALK and the narrator. `id` values are Gemini TTS prebuilt voice names (gemini-3.8-flash-tts); a designed voice is a `voice_…` id from voice_design.py and is never listed here. On OpenAI, provider_bridge.OPENAI_VOICE_FOR maps each name to the nearest of OpenAI's 13. A cast entry's `style` is the delivery, said in words: Gemini reads it as direction, OpenAI as `instructions`. SOMEWHERE_VOICE / SOMEWHERE_NARRATOR_VOICE override the defaults.",
 
-  "default_voice": "cjVigY5qzO86Huf0OWal",
-  "narrator_voice": "7iNwWER0ovqC4pJZP3G7",
+  "default_voice": "Algieba",
+  "narrator_voice": "Charon",
 
   "voices": [
-    { "id": "cjVigY5qzO86Huf0OWal", "name": "Eric", "tag": "smooth, trustworthy", "gender": "male" },
-    { "id": "nPczCjzI2devNBz1zQrb", "name": "Brian", "tag": "deep, resonant", "gender": "male" },
-    { "id": "N2lVS1w4EtoT3dr4eOWO", "name": "Callum", "tag": "husky trickster", "gender": "male" },
-    { "id": "JBFqnCBsd6RMkjVDRZzb", "name": "George", "tag": "warm storyteller", "gender": "male" },
-    { "id": "onwK4e9ZLuTAKqWW03F9", "name": "Daniel", "tag": "steady broadcaster", "gender": "male" },
-    { "id": "SOYHLrjzK2X1ezoPC6cr", "name": "Harry", "tag": "fierce, threatening", "gender": "male" },
-    { "id": "pqHfZKP75CvOlQylNhV4", "name": "Bill", "tag": "wise, weathered", "gender": "male" },
-    { "id": "EXAVITQu4vr4xnSDxMaL", "name": "Sarah", "tag": "mature, reassuring", "gender": "female" },
-    { "id": "pFZP5JQG7iQjIQuC4Bku", "name": "Lily", "tag": "velvety actress", "gender": "female" },
-    { "id": "XrExE9yKIg1WjnnlVkGX", "name": "Matilda", "tag": "knowledgeable, clinical", "gender": "female" },
-    { "id": "SAz9YHcvj6GT2YYXdXww", "name": "River", "tag": "neutral, synthetic", "gender": "neutral" },
-    { "id": "7iNwWER0ovqC4pJZP3G7", "name": "Narrator", "tag": "the archive voice", "gender": "male" }
+    { "id": "Charon", "name": "Charon", "tag": "informative, low", "gender": "male" },
+    { "id": "Algenib", "name": "Algenib", "tag": "gravelly", "gender": "male" },
+    { "id": "Enceladus", "name": "Enceladus", "tag": "breathy", "gender": "male" },
+    { "id": "Algieba", "name": "Algieba", "tag": "smooth", "gender": "male" },
+    { "id": "Fenrir", "name": "Fenrir", "tag": "excitable", "gender": "male" },
+    { "id": "Orus", "name": "Orus", "tag": "firm", "gender": "male" },
+    { "id": "Iapetus", "name": "Iapetus", "tag": "clear", "gender": "male" },
+    { "id": "Umbriel", "name": "Umbriel", "tag": "easy-going", "gender": "male" },
+    { "id": "Alnilam", "name": "Alnilam", "tag": "firm", "gender": "male" },
+    { "id": "Schedar", "name": "Schedar", "tag": "even", "gender": "male" },
+    { "id": "Sadaltager", "name": "Sadaltager", "tag": "knowledgeable", "gender": "male" },
+    { "id": "Zubenelgenubi", "name": "Zubenelgenubi", "tag": "casual", "gender": "male" },
+    { "id": "Kore", "name": "Kore", "tag": "firm", "gender": "female" },
+    { "id": "Gacrux", "name": "Gacrux", "tag": "mature", "gender": "female" },
+    { "id": "Achernar", "name": "Achernar", "tag": "soft", "gender": "female" },
+    { "id": "Vindemiatrix", "name": "Vindemiatrix", "tag": "gentle", "gender": "female" },
+    { "id": "Sulafat", "name": "Sulafat", "tag": "warm", "gender": "female" },
+    { "id": "Despina", "name": "Despina", "tag": "smooth", "gender": "female" },
+    { "id": "Erinome", "name": "Erinome", "tag": "clear", "gender": "female" },
+    { "id": "Leda", "name": "Leda", "tag": "youthful", "gender": "female" },
+    { "id": "Zephyr", "name": "Zephyr", "tag": "bright, synthetic", "gender": "neutral" },
+    { "id": "Autonoe", "name": "Autonoe", "tag": "bright, announcer", "gender": "neutral" }
   ],
 
   "by_kind": {
-    "person": "cjVigY5qzO86Huf0OWal",
-    "character": "JBFqnCBsd6RMkjVDRZzb",
-    "creature": "N2lVS1w4EtoT3dr4eOWO",
-    "animal": "N2lVS1w4EtoT3dr4eOWO",
-    "machine": "SAz9YHcvj6GT2YYXdXww"
+    "person": "Algieba",
+    "character": "Umbriel",
+    "creature": "Enceladus",
+    "animal": "Enceladus",
+    "machine": "Zephyr"
   },
 
   "cast": {
-    "narrator": { "voice_id": "7iNwWER0ovqC4pJZP3G7", "stability": 0.55, "speed": 0.85, "description": "The disembodied archive voice that frames the world." },
-    "man":      { "voice_id": "cjVigY5qzO86Huf0OWal", "description": "A generic man's voice." },
-    "woman":    { "voice_id": "EXAVITQu4vr4xnSDxMaL", "description": "A generic woman's voice." },
-    "elder":    { "voice_id": "pqHfZKP75CvOlQylNhV4", "description": "A wise, weathered old voice." },
-    "creature": { "voice_id": "N2lVS1w4EtoT3dr4eOWO", "stability": 0.35, "description": "Something not quite human." },
-    "machine":  { "voice_id": "SAz9YHcvj6GT2YYXdXww", "stability": 0.7, "description": "A synthetic PA / terminal voice." },
-    "warden":   { "voice_id": "SOYHLrjzK2X1ezoPC6cr", "description": "A hostile authority figure." }
+    "narrator": { "voice_id": "Charon", "style": "Read this as the narrator of a 1993 documentary about something that should not have happened: low, unhurried, close to the microphone, tired and certain", "description": "The disembodied archive voice that frames the world." },
+    "man":      { "voice_id": "Algieba", "style": "Say this plainly, a man speaking under his breath", "description": "A generic man's voice." },
+    "woman":    { "voice_id": "Kore", "style": "Say this plainly, a woman speaking under her breath", "description": "A generic woman's voice." },
+    "elder":    { "voice_id": "Gacrux", "style": "Say this slowly, old and weathered, as if remembering", "description": "A wise, weathered old voice." },
+    "creature": { "voice_id": "Enceladus", "style": "Whisper this hoarsely, wrong and not quite human, with long breaths between words", "description": "Something not quite human." },
+    "machine":  { "voice_id": "Zephyr", "style": "Say this flat and even, a recorded announcement over a cheap PA speaker", "description": "A synthetic PA / terminal voice." },
+    "warden":   { "voice_id": "Algenib", "style": "Say this hard and clipped, an authority who expects to be obeyed", "description": "A hostile authority figure." }
   }
 }

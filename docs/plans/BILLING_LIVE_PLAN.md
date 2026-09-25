@@ -4,6 +4,10 @@
 `docs/LAUNCH_PAYMENTS.md`. Track progress in the table in
 > §2; each row moves open → in progress → done (commit) → verified (the test
 > or check that proved it).
+>
+> Since 2026-09-25 there is no ElevenLabs provider (docs/plans/ONE_KEY_AUDIO_PLAN.md):
+> voices are Gemini TTS logged by `speech.py`, music and SFX are not generated. The
+> ElevenLabs rows below are history; there is nothing of theirs left to reconcile.
 
 ---
 

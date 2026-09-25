@@ -69,6 +69,7 @@ test_run_tape
 test_scene_objects
 test_simulation_pacing
 test_somewhere_snapshot
+test_speech
 test_talk_voice
 test_third_person_orbit
 test_transition_types

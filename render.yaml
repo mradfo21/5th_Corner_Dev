@@ -90,47 +90,12 @@ services:
       # secret used only server-side to mint short-lived browser tokens.
       - key: REACTOR_API_KEY
         sync: false
-      # ElevenLabs — powers the SCAN "TALK" mechanic (speak to people/characters
-      # the scanner flags as able to talk) AND the NARRATOR stream (a voice that
-      # frames the world, optionally as a multi-voice cast).
-      #   • TALK voice works OUT OF THE BOX with no secret: the default AGENT_ID
-      #     below is a PUBLIC conversational agent the browser connects to by id.
-      #   • ELEVENLABS_API_KEY is needed for (a) NARRATOR audio — text-to-speech
-      #     has no public path — and (b) pointing AGENT_ID at a PRIVATE agent
-      #     (the server mints short-lived signed URLs; the key never reaches the
-      #     browser). Without the key, TALK still speaks and the narrator degrades
-      #     to on-screen subtitles.
-      #   • Voice registry + narrator cast live in voices.json (committed).
-      #     ELEVENLABS_VOICE_ID / ELEVENLABS_NARRATOR_VOICE_ID / ELEVENLABS_TTS_MODEL
-      #     optionally override the defaults.
-      - key: ELEVENLABS_API_KEY
-        sync: false
-      - key: ELEVENLABS_AGENT_ID
-        value: "agent_1601kxh3rz2hej9swfs75dv33q78"
-      # "0" if you repoint AGENT_ID at an agent that does NOT allow prompt/
-      # first-message overrides in its Security settings (else the widget errors;
-      # dynamic variables still keep it story-aware).
-      - key: ELEVENLABS_ALLOW_OVERRIDES
-        value: "1"
-      # Dynamic per-character voices (voice_design.py + DYNAMIC_VOICES_PLAN.md).
-      # When ON and ELEVENLABS_API_KEY is set, every SCAN subject gets a voice
-      # DESIGNED from its own description (label + kind + scene + persona) via
-      # ElevenLabs Voice Design, cached per session, and DELETED at session
-      # end so the workspace's voice-slot quota stays bounded.
-      # The first TALK line uses a hashed-per-subject fallback voice (so
-      # different characters already sound different immediately); the
-      # designed voice hot-swaps in for the NEXT AI turn without truncating
-      # the current one. Set to "0" to fully disable (falls back to today's
-      # by_kind roster only).
-      - key: ELEVENLABS_DYNAMIC_VOICES
-        value: "1"
-      # Optional tuning (all safe defaults; unset uses the value in parens):
-      #   ELEVENLABS_TTV_MODEL              (eleven_ttv_v3)
-      #   ELEVENLABS_DESIGN_BUDGET_PER_SESSION (8)   — cap per session
-      #   ELEVENLABS_DESIGN_CONCURRENCY        (3)   — process-wide semaphore
-      #   ELEVENLABS_VOICE_SOFT_CAP            (auto from /v1/user/subscription)
-      #   ELEVENLABS_VOICE_SWEEP_HOURS         (6)   — orphan sweep cadence
-      #   ELEVENLABS_VOICE_MAX_AGE_HOURS       (24)  — orphan age cutoff
+      # Voices — the narrator and TALK — are Gemini TTS on GEMINI_API_KEY
+      # (speech.py); there is no separate voice key. The voice registry and
+      # the narrator cast live in voices.json (committed); SOMEWHERE_VOICE /
+      # SOMEWHERE_NARRATOR_VOICE / SOMEWHERE_TTS_MODEL optionally override the
+      # defaults. Music and world sound are not generated: no provider on the
+      # key makes them (music returns with Lyria — ONE_KEY_AUDIO_PLAN.md).
       # SDK model name for the DEFAULT world model (Happy Oyster — prompt-to-world
       # navigable real-time model). Steered by held movement/look + interaction
       # verbs, with our generated still passed as the world's first frame.

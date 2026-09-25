@@ -1,10 +1,22 @@
 # Dynamic Character Voices — Implementation Plan
 
-> **Status:** Phases 1–3 are implemented on this branch. See
-> `voice_design.py`, the wiring in `engine.py` / `api.py`, the client
-> hot-swap in `static/js/standalone.js`, and `test_voice_design.py`
-> (30 offline tests + 1 live-gated integration test). The plan below is
-> preserved as the design record.
+> **Status:** Shipped, then moved off ElevenLabs (2026-09-25). Phases 1–3
+> shipped as written below. Since 2026-09-25 the same machinery (budget,
+> coalescing, refcount, LRU, sweep) designs voices with **Gemini voice
+> design** on the player's one key — `POST /v1beta/voices`, model
+> `gemini-3.8-flash-tts`, ids `voice_…` — instead of ElevenLabs'
+> design + save pair. What the body says about ElevenLabs no longer holds:
+> the slot ceiling is Google's 200 stored voices per project (evict at 180,
+> counted from our own cache — there is no subscription lookup), our
+> voices are marked by the `[dyn]` display-name prefix (no labels), the
+> brief is the voice's permanent traits only (the moment's emotion goes
+> per line as style), there is no account "library", the config table's
+> `ELEVENLABS_*` names are now `SOMEWHERE_*`, and an OpenAI player gets the
+> `voices.json` roster (Gemini prebuilt names). `voice_design.py`'s
+> docstring is the current description; `test_voice_design.py` has the
+> offline suite and a live round-trip gated on
+> `SOMEWHERE_LIVE_VOICE_TEST=1`. The plan below is preserved as the design
+> record.
 
 
 **Goal:** stop mapping every SCAN subject to the same 5-voice `by_kind` roster and

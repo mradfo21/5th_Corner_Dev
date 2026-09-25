@@ -96,43 +96,52 @@ class KeysStoreCase(unittest.TestCase):
         after = {e["id"] for e in apm.available_model_catalogue("image")}
         self.assertIn("krea-2/medium", after)
 
-    def test_elevenlabs_rejects_a_dashboard_key_id(self):
-        """The dashboard lists keys by hex ID; the secret starts with sk_."""
-        with self.assertRaises(ValueError) as ctx:
-            keys_store.set_key(
-                "elevenlabs",
-                "629614d8f9b6fc247ae55f47ee5c635845bf7fec5addb595d150613de9c4f44d",
-            )
-        self.assertIn("key ID", str(ctx.exception))
+    def test_elevenlabs_is_not_a_provider_any_more(self):
+        """The game runs on one key (docs/plans/ONE_KEY_AUDIO_PLAN.md). ACCOUNT's
+        More keys is drawn from PROVIDERS, so a row here is a row on screen."""
+        ids = {p["id"] for p in keys_store.public_status(editable=True)["providers"]}
+        self.assertNotIn("elevenlabs", ids)
+        self.assertNotIn("ELEVENLABS_API_KEY", keys_store._KNOWN_ENV)
+        with self.assertRaises(KeyError):
+            keys_store.set_key("elevenlabs", "sk_" + "a" * 40)
+        self.assertFalse(any(env == "ELEVENLABS_API_KEY"
+                             for _mod, _attr, env in keys_store._RUNTIME_ATTRS))
+
+    def test_a_retired_key_in_keys_env_is_ignored_and_kept(self):
+        """An existing player's keys.env still has the line. It must not crash,
+        reach the process or ACCOUNT - and must not be deleted by the next
+        unrelated save either: the secret is theirs and was shown once."""
+        secret = "sk_" + "r" * 40
+        prev = os.environ.pop("ELEVENLABS_API_KEY", None)
+        self.addCleanup(lambda: prev is None or os.environ.__setitem__(
+            "ELEVENLABS_API_KEY", prev))
+        self.path.write_text(
+            "GEMINI_API_KEY=AIzaSy-already-here-1234\n"
+            f"ELEVENLABS_API_KEY={secret}\n", encoding="utf-8")
+        keys_store.load_into_environ()
+        self.assertEqual(os.environ.get("GEMINI_API_KEY"), "AIzaSy-already-here-1234")
+        self.assertNotIn("ELEVENLABS_API_KEY", os.environ)
+        blob = json.dumps(keys_store.public_status(editable=True))
+        self.assertNotIn(secret, blob)
+        self.assertNotIn("elevenlabs", blob.lower())
+        keys_store.set_key("krea", "krea-secret-key-value")
+        text = self.path.read_text(encoding="utf-8")
+        self.assertIn(f"ELEVENLABS_API_KEY={secret}", text)
+        self.assertIn("KREA_API_KEY=krea-secret-key-value", text)
+        self.assertIn("GEMINI_API_KEY=AIzaSy-already-here-1234", text)
         self.assertNotIn("ELEVENLABS_API_KEY", os.environ)
 
-    def test_elevenlabs_accepts_an_sk_key(self):
-        keys_store.set_key("elevenlabs", "sk_" + "a" * 40)
-        self.assertTrue(os.environ.get("ELEVENLABS_API_KEY", "").startswith("sk_"))
-        el = next(p for p in keys_store.public_status(editable=True)["providers"]
-                  if p["id"] == "elevenlabs")
-        self.assertTrue(el["usable"])
-        self.assertEqual(el["problem"], "")
-
-    def test_elevenlabs_hex_id_in_environ_is_flagged_unusable(self):
-        """`.env` can hold the dashboard key ID (set_key refuses it). ACCOUNT
-        must not light up green — that's why the custom voices never appeared."""
-        os.environ["ELEVENLABS_API_KEY"] = "6" * 64
-        el = next(p for p in keys_store.public_status(editable=True)["providers"]
-                  if p["id"] == "elevenlabs")
-        self.assertTrue(el["set"])
-        self.assertFalse(el["usable"])
-        self.assertIn("key ID", el["problem"])
-
-    def test_saving_gemini_does_not_blank_an_elevenlabs_runtime_key(self):
+    def test_saving_gemini_does_not_blank_another_runtime_key(self):
+        """refresh_runtime_keys once wrote EVERY cached attr from getenv on each
+        save, blanking keys that lived in config.json / the process env."""
         import engine
-        prev = engine.ELEVENLABS_API_KEY
+        prev = engine.OPENAI_API_KEY
         try:
-            engine.ELEVENLABS_API_KEY = "sk_keep-this-config-key-please"
+            engine.OPENAI_API_KEY = "sk-keep-this-config-key-please"
             keys_store.set_key("gemini", "AIzaSy-other-provider-key")
-            self.assertEqual(engine.ELEVENLABS_API_KEY, "sk_keep-this-config-key-please")
+            self.assertEqual(engine.OPENAI_API_KEY, "sk-keep-this-config-key-please")
         finally:
-            engine.ELEVENLABS_API_KEY = prev
+            engine.OPENAI_API_KEY = prev
 
     def test_explicit_mock_is_not_lifted(self):
         keys_store.mark_explicit_mock()

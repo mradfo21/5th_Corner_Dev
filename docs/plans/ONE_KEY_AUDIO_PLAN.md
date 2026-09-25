@@ -1,10 +1,25 @@
 # One key plays with sound — audio without ElevenLabs
 
-> **Status: proposed 2026-09-25, not started.** Nothing below is built. The
-> screens it touches (the narrator's subtitle, TALK's push-to-talk, the voice
-> line on a companion) go through a design pass before any code. Facts about
-> Google and OpenAI were checked against their docs on 2026-09-25; the ones
-> marked **unverified** are the first spike (§6).
+> **Status: in progress. A0, A1, A2, A4 and the first half of A5 shipped
+> 2026-09-25** (branch `feat/one-key-audio`; CHANGELOG of that date). Matt's
+> call the same day: **ElevenLabs goes entirely, as few providers as
+> possible, and a lane may go quiet rather than add one.** So:
+>
+> - **Gone:** every ElevenLabs call, key, agent id and ACCOUNT row. A keyless
+>   install makes no request anywhere near ElevenLabs.
+> - **Shipped on the one key:** the narrator and every TALK answer are TTS
+>   (`speech.py`; Gemini 3.8 Flash TTS, OpenAI `gpt-4o-mini-tts` through the
+>   bridge); a voice per character is designed from words on Gemini
+>   (`voice_design.py`) and is a steered roster voice on OpenAI.
+> - **Quiet until their step:** music (A6, Lyria — same Gemini key), scene
+>   ambience / foley / consequence beds (A3 — needs a sound library, which is
+>   not a provider). Files already on disk (an uploaded loop, local stock)
+>   still play. Speaking to a character by voice (A5's push-to-talk) waits on
+>   a mic control in the TALK panel — design pass first; TALK is typed, with
+>   spoken answers, until then.
+>
+> §6's spike questions are answered in §6. Where the body below says
+> "ElevenLabs stays an optional upgrade", Matt decided otherwise.
 
 ## Why
 
@@ -174,16 +189,43 @@ Answer these by calling the APIs, not from docs:
 `tools/audio_probe.py` in the probe pattern; the recordings go to
 `_claude_pull/audio_spike/`.
 
+**Answered 2026-09-25, on the real key:**
+
+1. Designing a voice is billed as the tokens it reports — measured 237 in,
+   655 audio + 947 thinking out, about $0.015 a voice, ~2 s. Worked on this
+   key (paid tier); the free tier is still unchecked.
+2. Stateless `voicekey_…` — not tried; stored voices are used, 200 per
+   project, evicted at 180 (voice_design).
+3. Designed voices in Live — not tried (A7).
+4. Latency for a line: 4–7 s to synthesise 7–16 s of audio (Flash; Lite was
+   within half a second). No streaming yet. A narrator line lands inside a
+   turn's ~30 s; a TALK answer is the reply's text call + this, ~8–10 s from
+   send to voice. Streaming is the next win if that feels slow.
+5. OpenAI consistency — **not tested: the OpenAI key in the repo's .env
+   answers `credit_balance_exhausted`**. The bridge path is unit-tested only.
+6. Lyria — not tried (A6).
+
+**Found on the way — the direction was read aloud.** A line's delivery ("low,
+close to the microphone, tired and certain") put in the prompt as
+`<style>:\n<line>`, or under markdown headings, was SPOKEN with the line about
+half the time on long directions: a transcribed answer began "Say this in
+character. An older voice for a person called Old Rancher…", 47 s of audio
+for 32 words. A system instruction is refused by the TTS models. The
+Interactions API's `speech_metadata.style` field went 6 for 6 clean with the
+same directions, so speech.py uses it on Gemini, and a line far longer than
+its words is said again plain (`_sounds_read_aloud`). Checked by
+transcribing every line of a live narrator + TALK run with Gemini.
+
 ## Order of work
 
 | Step | What | Done when | Days |
 |---|---|---|---|
-| A0 | **Stop the public-agent fallback** (no key → subtitles and silence, never our account) | A keyless install makes zero ElevenLabs requests (`tools/film_run.py --first-launch`, network log) | 0.5 |
-| A1 | Spike (§6) | Six answers written into this plan | 1 |
-| A2 | `speech.py` + narrator on TTS, both providers, bridge translation | The narrator speaks on a Gemini-only key and an OpenAI-only key; the tape replays from cache | 2 |
+| A0 | ✅ **Stop the public-agent fallback** (no key → subtitles and silence, never our account) | A keyless install makes zero ElevenLabs requests — there is no ElevenLabs code left to make one (`test_talk_voice`) | 0.5 |
+| A1 | ✅ Spike (§6) | Answers written into §6 | 1 |
+| A2 | ✅ `speech.py` + narrator on TTS, both providers, bridge translation | The narrator speaks on a Gemini key (verified live, transcribed); OpenAI unit-tested only (its key had no credit) | 2 |
 | A3 | Sound library + vocabulary in the consequence prompt | A 10-turn run on one key has ambience, foley and stingers; no clip generated | 3 |
-| A4 | Provider-neutral voice record; Gemini design; OpenAI steered roster | Two companions sound like two people on each provider; a changed key redesigns from the description | 3 |
-| A5 | TALK push-to-talk | A conversation on each provider, no ElevenLabs | 2 |
+| A4 | ✅ Provider-neutral voice record; Gemini design; OpenAI steered roster | A companion's designed voice (`voice_…`) took over mid-conversation, live; create/list/delete verified against the API | 3 |
+| A5 | ◐ TALK spoken answers (done) + push-to-talk (after the design pass: a mic control in the TALK panel, Dictation pointed at `#talk-input`) | A conversation on each provider, no ElevenLabs | 2 |
 | A6 | Music: Lyria for paid Gemini, score library otherwise | Beds change with phase on both | 2 |
 | A7 | Gemini Live duplex TALK (if spike Q3 says yes) | Duplex conversation in the designed voice | 3 |
 
@@ -206,11 +248,11 @@ become a provider-aware list; the music panel keeps Lyria and loops).
   `test_cost_tracker`, `test_pricing`, `test_billing` + the e2e suites that
   assert TALK/narrator behaviour.
 
-## Decisions for Matt
+## Decisions
 
-- **ElevenLabs stays as an optional upgrade key, or goes entirely?** Default
-  here: stays optional, off the default path, removed from the gateway's needs
-  (no commercial/OEM plan to negotiate).
-- **Sound library source:** licensed library vs generated once on ElevenLabs.
-- **OpenAI players' voices** are thirteen steered timbres. Acceptable, or
-  should ACCOUNT say "voices are best on Gemini"?
+- **ElevenLabs:** gone entirely (Matt, 2026-09-25). A player's keys.env that
+  still carries the key keeps it, word for word, and ignores it.
+- **Still Matt's:** the sound library's source (a licensed royalty-free
+  library, or the 19 stock clips already generated on the ElevenLabs account,
+  if its licence lets them ship); whether OpenAI players' thirteen steered
+  voices are acceptable or ACCOUNT should say "voices are best on Gemini".

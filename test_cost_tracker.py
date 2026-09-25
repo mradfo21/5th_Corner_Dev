@@ -137,9 +137,10 @@ class CostTrackerTestCase(unittest.TestCase):
         self.assertEqual(rows[1]["service_type"], "image")
 
     def test_track_context_manager_records_on_success(self):
-        with cost_tracker.track("s1", "voice", "elevenlabs", "tts") as t:
-            t["output_units"] = 500
-            t["unit_type"] = "characters"
+        with cost_tracker.track("s1", "voice", "gemini", "gemini-3.8-flash-tts") as t:
+            t["input_units"] = 60
+            t["output_units"] = 350
+            t["unit_type"] = "tokens"
         errors = cost_tracker.get_errors("all")["errors"]
         self.assertEqual(len(errors), 0)
         summary = cost_tracker.get_summary("all")
@@ -147,7 +148,7 @@ class CostTrackerTestCase(unittest.TestCase):
 
     def test_track_context_manager_records_failure_and_reraises(self):
         with self.assertRaises(RuntimeError):
-            with cost_tracker.track("s1", "voice", "elevenlabs", "tts"):
+            with cost_tracker.track("s1", "voice", "gemini", "gemini-3.8-flash-tts"):
                 raise RuntimeError("boom")
         errors = cost_tracker.get_errors("all")["errors"]
         self.assertEqual(len(errors), 1)

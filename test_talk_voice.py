@@ -1,30 +1,31 @@
 """
-test_talk_voice.py — TALK must never leave the player on a dead channel.
+test_talk_voice.py — TALK and the narrator speak on the player's one key.
 
-What went wrong in production: ELEVENLABS_API_KEY held a value that is not an
-ElevenLabs key, so every attempt to mint a signed conversation URL came back
-`invalid_api_key_prefix: API key must start with 'sk_'`. Nothing surfaced that:
+Until 2026-09-25 both were ElevenLabs Convai agents opened from the page, and
+the engine shipped a PUBLIC default agent id so voice "worked out of the box
+with no secret at all". It worked on whoever owned the agent: every keyless
+install would have talked, and been billed, on one account. The suite that
+used to live here checked that a bad ElevenLabs key was reported instead of
+hanging "establishing channel…" — a whole class of failure that is gone with
+the websocket.
 
-  * boot logged "key=YES", because the key was merely PRESENT
-  * /api/talk/session still answered "mode": "voice" with a null signed_url
-    and a voice_error, after which the browser skipped the public agent
-    entirely and either hung on "establishing channel…" or dropped to text.
-  * the browser then opened a PRIVATE agent it had no signature for, which
-    resolves fine and simply never connects
-  * the player sat on "establishing channel…" with a dead mic, forever
-
-The agent WAS being initialised — that was never the problem. The problem was
-that an unusable key was indistinguishable from a working one at every layer,
-and then the client treated any signing failure as "do not even try the
-public agent".
+What must hold now:
+  * nothing in the game can reach api.elevenlabs.io, and no agent id ships
+  * a conversation is "voice" only when this key can actually speak
+    (speech.can_speak); otherwise it is text, not a dead channel
+  * a line's caption waits for its voice, and the greeting is on screen
+    before anything is spoken
+  * a voice id from the ElevenLabs era (a saved companion, localStorage's
+    talk_voice_id) names nothing now and falls back to the roster
 
 Run with:
-    python3 -m unittest test_talk_voice -v
+    python -m unittest test_talk_voice -v
 """
 
 import os
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("GEMINI_API_KEY", "")
 os.environ.setdefault("OPENAI_API_KEY", "")
@@ -33,143 +34,118 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "")
 import engine
 
 ROOT = Path(__file__).parent.resolve()
+RUNTIME = ("engine.py", "api.py", "speech.py", "voice_design.py", "scene_audio.py",
+           "provider_bridge.py", "static/js/standalone.js")
 
 
-class TestElevenLabsKeyValidation(unittest.TestCase):
-    def setUp(self):
-        self._real = engine.ELEVENLABS_API_KEY
+class TestNothingReachesElevenLabs(unittest.TestCase):
+    def test_no_runtime_file_calls_elevenlabs(self):
+        for rel in RUNTIME:
+            src = (ROOT / rel).read_text(encoding="utf-8")
+            self.assertNotIn("api.elevenlabs.io", src, rel)
+            self.assertNotIn("xi-api-key", src, rel)
+            self.assertNotIn("@elevenlabs/client", src, rel)
 
-    def tearDown(self):
-        engine.ELEVENLABS_API_KEY = self._real
+    def test_no_default_agent_ships(self):
+        """The public agent id is what every keyless install talked on."""
+        for rel in RUNTIME:
+            src = (ROOT / rel).read_text(encoding="utf-8")
+            self.assertNotIn("agent_1601kxh3rz2hej9swfs75dv33q78", src, rel)
+        self.assertFalse(hasattr(engine, "ELEVENLABS_AGENT_ID"))
 
-    def test_missing_key_is_reported(self):
-        engine.ELEVENLABS_API_KEY = ""
-        self.assertEqual(engine.elevenlabs_key_problem(), "not set")
-
-    def test_a_valid_looking_key_is_accepted(self):
-        engine.ELEVENLABS_API_KEY = "sk_" + "a" * 40
-        self.assertIsNone(engine.elevenlabs_key_problem())
-
-    def test_an_agent_id_pasted_into_the_key_is_caught(self):
-        """The actual production value: an agent id in the API-key slot."""
-        engine.ELEVENLABS_API_KEY = "agent_1601kxh3rz2hej9swfs75dv33q78"
-        problem = engine.elevenlabs_key_problem()
-        self.assertIsNotNone(problem)
-        self.assertIn("agent id", problem)
-        self.assertIn("sk_", problem)
-
-    def test_an_api_key_ID_is_named_as_such(self):
-        """The second production value: the key's ID, copied from the dashboard
-        list. ElevenLabs rejects it with `api_key_id_used_as_api_key`. Calling it
-        merely "malformed" sends you hunting for a truncated paste, so the message
-        has to name the actual mistake and where the real key comes from."""
-        engine.ELEVENLABS_API_KEY = "629614d8f9b6fc247ae55f47ee5c635845bf7fec5addb595d150613de9c4f44d"
-        problem = engine.elevenlabs_key_problem()
-        self.assertIsNotNone(problem)
-        self.assertIn("ID", problem)
-        self.assertIn("sk_", problem)
-        self.assertIn("rotate", problem)
-        # A 32-char key id is the other shape the dashboard shows.
-        engine.ELEVENLABS_API_KEY = "0123456789abcdef0123456789abcdef"
-        self.assertIn("ID", engine.elevenlabs_key_problem())
-
-    def test_a_hex_looking_value_that_is_a_real_key_is_still_accepted(self):
-        """Only the 'sk_' prefix decides acceptance — never length or charset."""
-        engine.ELEVENLABS_API_KEY = "sk_" + "0123456789abcdef" * 4
-        self.assertIsNone(engine.elevenlabs_key_problem())
-
-    def test_the_problem_says_what_to_do_about_it(self):
-        engine.ELEVENLABS_API_KEY = "nope"
-        problem = engine.elevenlabs_key_problem()
-        # Naming the expected prefix is the whole point — "invalid key" alone
-        # doesn't tell anyone they pasted the wrong field.
-        self.assertIn("sk_", problem)
+    def test_the_talk_session_hands_out_no_agent(self):
+        fn = (ROOT / "engine.py").read_text(encoding="utf-8").split(
+            "def api_talk_session():", 1)[1].split("\ndef ", 1)[0]
+        for field in ('"agent_id"', '"signed_url"', '"overrides"'):
+            self.assertNotIn(field, fn)
+        self.assertIn('"voice" if _speech_available() else "text"', fn)
 
 
-class TestTalkSessionReportsWhyVoiceFailed(unittest.TestCase):
-    def setUp(self):
-        self.src = (ROOT / "engine.py").read_text(encoding="utf-8")
-        self.session = self.src.split("def api_talk_session(", 1)[1].split("\ndef ", 1)[0]
+class TestVoiceModeMeansTheKeyCanSpeak(unittest.TestCase):
+    def test_mock_mode_is_text(self):
+        with mock.patch("provider_bridge._mock_forced", return_value=True):
+            self.assertFalse(engine._speech_available())
 
-    def test_response_carries_a_voice_error_field(self):
-        self.assertIn('"voice_error": voice_error', self.session)
+    def test_a_gemini_key_speaks(self):
+        with mock.patch("provider_bridge._mock_forced", return_value=False), \
+                mock.patch("provider_bridge.active", return_value=False), \
+                mock.patch("provider_bridge.can_call_gemini_api", return_value=True):
+            self.assertTrue(engine._speech_available())
 
-    def test_a_known_bad_key_does_not_round_trip_to_elevenlabs(self):
-        """A dashboard key-ID or an agent id in the secret slot can never sign.
-        Hitting ElevenLabs with it just delayed TALK; skip the round trip."""
-        self.assertIn("skipping signed-url", self.session)
-        self.assertIn("elevenlabs_key_problem()", self.session)
-        skip_at = self.session.index("skipping signed-url")
-        attempt_at = self.session.index("get-signed-url")
-        self.assertLess(self.session.index("not key_problem"), attempt_at,
-                        "signing must be gated on a key that looks usable")
-        self.assertGreater(skip_at, attempt_at)
-
-    def test_a_rejected_signing_request_is_reported_not_swallowed(self):
-        self.assertIn("ElevenLabs rejected the signing request", self.session)
+    def test_no_key_is_text(self):
+        with mock.patch("provider_bridge._mock_forced", return_value=False), \
+                mock.patch("provider_bridge.active", return_value=False), \
+                mock.patch("provider_bridge.can_call_gemini_api", return_value=False):
+            self.assertFalse(engine._speech_available())
 
 
-class TestClientNeverHangsOnADeadChannel(unittest.TestCase):
+class TestVoiceIds(unittest.TestCase):
+    def test_an_elevenlabs_era_id_names_nothing(self):
+        # "Eric", the old default, as saved on companions and in localStorage.
+        self.assertEqual(engine._valid_voice_id("cjVigY5qzO86Huf0OWal"), "")
+
+    def test_every_gemini_voice_is_accepted(self):
+        for name in ("Charon", "Kore", "Algenib", "Sulafat", "Pulcherrima"):
+            self.assertEqual(engine._valid_voice_id(name), name)
+
+    def test_a_subject_always_gets_a_voice(self):
+        for subj in ({"label": "old woman", "kind": "person"},
+                     {"label": "intercom", "kind": "machine"},
+                     {"label": "thing in the dark", "kind": "creature"},
+                     {}):
+            vid = engine.resolve_fallback_voice_for_subject(subj)
+            self.assertTrue(engine._valid_voice_id(vid), (subj, vid))
+
+    def test_the_narrator_pace_is_said_in_words(self):
+        """ElevenLabs took `speed` as a number; a TTS model directed in words
+        needs it in the direction, or the editor's pace knob does nothing."""
+        with mock.patch.object(engine, "NARRATOR_SPEED", 0.8):
+            cast = engine.resolve_cast("narrator")
+        self.assertIn("slowly", cast.get("style", ""))
+        self.assertTrue(engine._valid_voice_id(cast["voice_id"]))
+
+
+class TestTheClientSpeaksLinesNotSessions(unittest.TestCase):
     def setUp(self):
         self.src = (ROOT / "static/js/standalone.js").read_text(encoding="utf-8")
 
-    def test_an_unusable_key_does_not_hang_on_voice(self):
-        """A dashboard key-ID cannot sign. Trying the private agent by id
-        left 'opening channel…' for seconds. Skip voice unless we have a
-        signed URL or a public agent with no key error."""
-        start = self.src.split("async function start(subj)", 1)[1].split("\n    function ", 1)[0]
-        self.assertIn("canVoice", start)
-        self.assertIn("signed_url", start)
-        self.assertIn("!session.voice_error", start)
-        self.assertIn("voice needs an sk_ key", start)
-        self.assertIn("beginVoice(session, opening)", start)
+    def test_one_path_for_every_spoken_line(self):
+        self.assertIn("const VoiceOut = (function () {", self.src)
+        vo = self.src.split("const VoiceOut = (function () {", 1)[1].split("})();", 1)[0]
+        self.assertIn('"/api/narrator/say"', vo)
+        self.assertIn('"ended"', vo)
+        self.assertNotIn("ElevenSDK", self.src)
 
-    def test_the_opening_line_appears_before_the_voice_socket(self):
-        """A hung startSession used to leave the speak screen silent.
+    def test_the_caption_waits_for_its_voice(self):
+        """Read the line, then hear it, was the bug with agent sessions."""
+        nar = self.src.split("function speakSegment(seg, myGen, pending)", 1)[1].split(
+            "\n    async function play(", 1)[0]
+        self.assertIn("onStart: reveal", nar)
 
-        The greeting used to be a canned 'you shouldn't be here' painted
-        BEFORE /api/talk/session, then posted as opening_line, so the voice
-        agent spoke that stock NPC line every time. Wait for the session to
-        write a real line; still paint it before beginVoice so a hung socket
-        is not a silent screen.
-        """
+    def test_the_next_line_is_fetched_while_this_one_plays(self):
+        play = self.src.split("async function play(segments, myGen)", 1)[1].split(
+            "\n    async function narrate(", 1)[0]
+        self.assertIn("next = voiced && lines[i + 1] ? VoiceOut.fetchLine(lines[i + 1])", play)
+
+    def test_the_greeting_is_on_screen_before_it_is_spoken(self):
         start = self.src.split("async function start(subj)", 1)[1].split("\n    function ", 1)[0]
+        session_at = start.index('postJSON("/api/talk/session"')
         greet_at = start.index('addLine("assistant", opening)')
-        voice_at = start.index("beginVoice(session, opening)")
-        session_at = start.index("postJSON(\"/api/talk/session\"")
-        self.assertLess(greet_at, voice_at)
-        self.assertGreater(greet_at, session_at)
+        speak_at = start.index("speakLine(opening)")
+        self.assertLess(session_at, greet_at)
+        self.assertLess(greet_at, speak_at)
         self.assertIn("fallbackOpening", start)
-        self.assertIn("greetingShown = true", start)
         self.assertNotIn("opening_line: firstLine", start)
 
-    def test_a_channel_that_never_connects_falls_back(self):
-        """startSession() can resolve and then never connect — an unauthorised
-        private agent does exactly that."""
-        self.assertIn("TALK_CONNECT_TIMEOUT_MS", self.src)
-        begin = self.src.split("async function beginVoice(", 1)[1].split("\n    function ", 1)[0]
-        self.assertIn("connectTimer", begin)
-        self.assertIn("voice didn't connect", begin)
+    def test_every_answer_is_spoken_in_voice_mode(self):
+        send = self.src.split("async function send(text)", 1)[1].split("\n    function ", 1)[0]
+        self.assertIn('postJSON("/api/talk/message"', send)
+        self.assertIn("speakLine(reply)", send)
 
-    def test_the_timeout_is_cancelled_once_connected(self):
-        begin = self.src.split("async function beginVoice(", 1)[1].split("\n    function ", 1)[0]
-        self.assertIn("connected = true", begin)
-        self.assertIn("clearConnectTimer()", begin)
-
-    def test_the_timeout_is_armed_before_the_session_starts(self):
-        """startSession() hangs on a private agent with no signed URL.
-        Arming only after it resolved left 'opening channel…' forever."""
-        begin = self.src.split("async function beginVoice(", 1)[1].split("\n    function ", 1)[0]
-        start_at = begin.index("Conversation.startSession(opts)")
-        arm_at = begin.index("connectTimer = setTimeout(")
-        self.assertLess(arm_at, start_at)
-        self.assertLess(arm_at, begin.index("ensureSdk()"))
-        self.assertIn("failToText", begin)
-        self.assertIn("fallbackOpening", begin)
-        # mode flips to voice only once the socket is up, so typing works
-        # while the channel is still opening.
-        self.assertIn('mode = "voice"', begin)
-        self.assertLess(begin.index("onConnect"), begin.index('mode = "voice"'))
+    def test_a_conversation_counts_only_if_the_player_said_something(self):
+        fn = self.src.split("function worthATurn()", 1)[1].split("\n    }", 1)[0]
+        self.assertIn('ln.role === "user"', fn)
+        self.assertNotIn("seconds", fn)
 
 
 class TestTalkOpeningIsNotAStockNpc(unittest.TestCase):
