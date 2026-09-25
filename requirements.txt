@@ -6,7 +6,6 @@ Pillow
 requests
 replicate
 imageio-ffmpeg
-opencv-python
 google-genai>=1.52.0
 anthropic
 flask-sock
@@ -15,10 +14,11 @@ stripe>=15,<16
 # TFLite runtime; the model itself is vendored in models/ so nothing is fetched
 # at boot. Optional at runtime — engine falls back to the Gemini detector if
 # this import fails — but installed by default because it is the default backend.
-# mediapipe depends on opencv-contrib-python, which installs the same `cv2`
-# package as the opencv-python pinned above. contrib is a strict superset, so the
-# two coexist as long as pip resolves them to the SAME version — which it does,
-# since both are released in lockstep. Listed after opencv-python deliberately.
+# mediapipe brings opencv-contrib-python, and that is the ONLY package that
+# provides `cv2` here (veo_video_utils uses it too). opencv-python used to be
+# listed as well: both install the same `cv2` folder, and on 2026-09-25 they
+# had drifted to 4.13 and 5.0 — whichever pip wrote last won, silently. contrib
+# is a strict superset, so one package, one cv2, one version.
 mediapipe>=0.10
 # Installer + in-place updates (updater.py, Distribution MVP M4). Must match
 # the vpk CLI that packs the release (dotnet tool install -g vpk --version ...).
