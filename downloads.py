@@ -306,15 +306,29 @@ def load_clips() -> dict:
         data = json.loads((CLIPS_DIR / "clips.json").read_text(encoding="utf-8"))
     except Exception:
         data = {}
+    # The mp4s are ~100 MB a shoot and are not in git; tools/publish_clips.py
+    # puts them on a release in the public media repo and records its download
+    # base here, so a server with no local copy (Render) still plays them.
+    base = str(data.get("base") or "").rstrip("/")
+    if base and not base.startswith("https://github.com/"):
+        base = ""
+
+    def where(filename: str) -> str:
+        if (CLIPS_DIR / filename).is_file():
+            return f"/static/video/get/{filename}"
+        return f"{base}/{filename}" if base else ""
+
     clips = []
     for c in data.get("clips") or []:
         name = str(c.get("name") or "")
-        if not re.fullmatch(r"[a-z0-9_-]{1,40}", name) or not (CLIPS_DIR / f"{name}.mp4").is_file():
+        if not re.fullmatch(r"[a-z0-9_-]{1,40}", name):
             continue
-        small = f"/static/video/get/{name}-720.mp4" if (CLIPS_DIR / f"{name}-720.mp4").is_file() else ""
+        src = where(f"{name}.mp4")
+        if not src:
+            continue
         clips.append({"name": name, "label": (c.get("label") or "").strip(),
                       "sub": (c.get("sub") or "").strip(),
-                      "src": f"/static/video/get/{name}.mp4", "src720": small,
+                      "src": src, "src720": where(f"{name}-720.mp4") if c.get("src720") else "",
                       "poster": f"/static/video/get/{name}.jpg" if (CLIPS_DIR / f"{name}.jpg").is_file() else ""})
     hero = next((c for c in clips if c["name"] == "hero"), None)
     return {"hero": hero, "clips": [c for c in clips if c["name"] != "hero"]}
