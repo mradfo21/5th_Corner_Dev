@@ -72,25 +72,41 @@ and `CHANGELOG.md`.
 
 ---
 
-## 3. The state of the tree — read this before you touch anything
+## 3. The state of the tree — and how work reaches it
 
-Branch: `cursor/fix-simulation-playback-coherence-9f80`. `main` is behind it.
-Remote is `github.com/mradfo21/5th_Corner_Dev`.
+**`main` is the game.** Remote is `github.com/mradfo21/5th_Corner_Dev`. Since
+2026-09-25 (PR #158) `main` is protected: nothing is pushed to it directly,
+every change arrives as a pull request, and the `suites` check (CI, below)
+must be green first. Players get builds only from tags on `main`
+(`docs/operations/RELEASING.md`).
 
-The tree is committed. The September 18 day and the September 20 morning went
-in as three commits on 2026-09-20 (`6206295` the docs and dead-code cleanup,
-`9dd4a7d` the feature day, `1118d5f` run isolation / region change / the
-doctrine guard), the QA loop that afternoon added two more, and the loop trace
-that evening (the goal wired through every system, `goal_reached`, the fate
-that fights roll with) one more — see the top of `CHANGELOG.md`. Start with
-`git status` and `git log --oneline -8` anyway; `prompts/simulation_prompts.json`
-will usually show as modified, because binding a World rewrites it (see
-section 8), and that diff is not work.
+How a session works, every time:
+
+1. **Its own worktree and branch, off `origin/main`.** Several agents work on
+   this repo at once; two sessions in one folder commit each other's
+   half-finished edits. `git worktree add -b <topic> ../5th_Corner_<Topic> origin/main`
+   (or the desktop app's worktree option). Branch names say what the work is:
+   `fix/…`, `feat/…`, `docs/…`, `dist/…`.
+2. **Commit as you go**, in the changelog's voice (section 7). `git status`
+   shows only real work: agent scratch (`_claude_*`, loose `_*.png`) is ignored.
+   `prompts/simulation_prompts.json` usually shows as modified because binding
+   a World rewrites it (section 8) — that diff is not work; leave it out.
+3. **Push the branch and open a PR into `main`.** CI
+   (`.github/workflows/ci.yml`) installs from `requirements.lock` on a clean
+   Windows runner and runs `tools/ci_suite.py`: every suite green at the
+   2026-09-25 baseline must stay green. A suite joins the gate by going in
+   `tools/ci_suites.txt`; the red ones are listed there to be fixed in.
+4. **Merge when green.** Keep the branch until the change has been played.
+
+A running `play.py` kills servers started from *its own checkout* only (so one
+worktree's game cannot take down another's e2e server — it did once).
 
 Untracked and safe to ignore or sweep: `_menushots_before/`,
 `_menushots_after/`, `_playthrough/`, loose `_*.png` probe images at the root,
-and `_claude_pull/` (frames and logs pulled out of a QA run). Those are
-screenshot evidence from past sessions.
+`_claude_pull/` (frames and logs pulled out of a QA run), and
+`_claude_retired/` (the old `_claude_runner.py` command runner and its
+launchers, retired 2026-09-25: it executed any `_claude_cmd*.bat` dropped in
+the repo with no permission check — never restart it).
 
 ---
 
