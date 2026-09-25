@@ -141,6 +141,12 @@ class TestCacheKey(unittest.TestCase):
         self.assertNotEqual(k1, k2)
 
 
+# An upper bound, not a pause: get_or_design_voice returns the moment the
+# design lands. 1.5 s was enough on a dev machine and not on a busy CI runner,
+# where these tests read "generating" (#162, #168).
+READY_WAIT = 10.0
+
+
 class TestDesignPipeline(unittest.TestCase):
     """End-to-end async pipeline with a fake ElevenLabs.
 
@@ -155,7 +161,7 @@ class TestDesignPipeline(unittest.TestCase):
     def setUpClass(cls):
         # A design records its cost through cost_tracker, whose first call
         # imports the whole engine — seconds on a cold CI runner, longer than
-        # the wait=1.5 these tests allow. Pay it once, here, not inside a
+        # the wait=READY_WAIT these tests allow. Pay it once, here, not inside a
         # timed assertion ("'generating' != 'ready'" on #162's run).
         import cost_tracker  # noqa: F401
         import engine  # noqa: F401
@@ -244,14 +250,14 @@ class TestDesignPipeline(unittest.TestCase):
 
     def test_ready_after_wait_returns_designed(self):
         r = self.vd.get_or_design_voice({"label": "warden", "kind": "person"},
-                                        "s1", wait=1.5)
+                                        "s1", wait=READY_WAIT)
         self.assertEqual(r["status"], "ready")
         self.assertEqual(r["source"], "designed")
         self.assertTrue(r["voice_id"].startswith("voice_"))
 
     def test_second_lookup_is_cache_hit(self):
         self.vd.get_or_design_voice({"label": "warden", "kind": "person"},
-                                    "s1", wait=1.5)
+                                    "s1", wait=READY_WAIT)
         r = self.vd.get_or_design_voice({"label": "warden", "kind": "person"},
                                         "s1", wait=0)
         self.assertEqual(r["status"], "ready")
@@ -261,7 +267,7 @@ class TestDesignPipeline(unittest.TestCase):
         # First design lands a voice; regenerate must DROP the cache entry,
         # spend another design credit, and keep the caller's description seed.
         first = self.vd.get_or_design_voice(
-            {"label": "kane", "kind": "person"}, "s1", wait=1.5
+            {"label": "kane", "kind": "person"}, "s1", wait=READY_WAIT
         )
         self.assertEqual(first["status"], "ready")
         seed = "a low gravelly wary male voice mid-40s tired, analog horror radio."
@@ -269,7 +275,7 @@ class TestDesignPipeline(unittest.TestCase):
         designs_before = len([c for c in self.call_log if c[0] == "design"])
         regen = self.vd.regenerate_voice(
             {"label": "kane", "kind": "person"}, "s1", seed,
-            old_voice_id=first["voice_id"], wait=1.5,
+            old_voice_id=first["voice_id"], wait=READY_WAIT,
         )
         self.assertEqual(regen["status"], "ready")
         self.assertEqual(regen["description"], seed)
@@ -283,25 +289,25 @@ class TestDesignPipeline(unittest.TestCase):
         seed = "a thin metallic whisper for a machine called rusted intercom."
         r = self.vd.get_or_design_voice(
             {"label": "rusted intercom", "kind": "machine"}, "s1",
-            wait=1.5, description_override=seed,
+            wait=READY_WAIT, description_override=seed,
         )
         self.assertEqual(r["status"], "ready")
         self.assertEqual(r["description"], seed)
 
     def test_different_session_designs_different_voice(self):
         r1 = self.vd.get_or_design_voice({"label": "warden", "kind": "person"},
-                                         "s1", wait=1.5)
+                                         "s1", wait=READY_WAIT)
         r2 = self.vd.get_or_design_voice({"label": "warden", "kind": "person"},
-                                         "s2", wait=1.5)
+                                         "s2", wait=READY_WAIT)
         self.assertNotEqual(r1["cache_key"], r2["cache_key"])
         designs = [c for c in self.call_log if c[0] == "design"]
         self.assertEqual(len(designs), 2)
 
     def test_release_session_voices_deletes_only_that_session(self):
         r1 = self.vd.get_or_design_voice({"label": "warden", "kind": "person"},
-                                         "s1", wait=1.5)
+                                         "s1", wait=READY_WAIT)
         r2 = self.vd.get_or_design_voice({"label": "warden", "kind": "person"},
-                                         "s2", wait=1.5)
+                                         "s2", wait=READY_WAIT)
         res = self.vd.release_session_voices("s1")
         self.assertEqual(res["deleted"], 1)
         self.assertIn(r1["voice_id"], res["voice_ids"])
@@ -313,7 +319,7 @@ class TestDesignPipeline(unittest.TestCase):
 
     def test_refcount_blocks_release_then_allows_after_release(self):
         r = self.vd.get_or_design_voice({"label": "warden", "kind": "person"},
-                                        "s1", wait=1.5)
+                                        "s1", wait=READY_WAIT)
         self.vd.acquire(r["voice_id"])
         res1 = self.vd.release_session_voices("s1")
         self.assertEqual(res1["deleted"], 0)
@@ -325,7 +331,7 @@ class TestDesignPipeline(unittest.TestCase):
 
     def test_get_status_reports_ready_and_unknown(self):
         r = self.vd.get_or_design_voice({"label": "warden", "kind": "person"},
-                                        "s1", wait=1.5)
+                                        "s1", wait=READY_WAIT)
         st = self.vd.get_status(r["cache_key"])
         self.assertEqual(st["status"], "ready")
         self.assertEqual(st["voice_id"], r["voice_id"])
@@ -333,7 +339,7 @@ class TestDesignPipeline(unittest.TestCase):
 
     def test_is_ready_voice_id_admits_designed_and_rejects_random(self):
         r = self.vd.get_or_design_voice({"label": "warden", "kind": "person"},
-                                        "s1", wait=1.5)
+                                        "s1", wait=READY_WAIT)
         self.assertTrue(self.vd.is_ready_voice_id(r["voice_id"]))
         self.assertFalse(self.vd.is_ready_voice_id("not-a-real-id"))
         self.assertFalse(self.vd.is_ready_voice_id(""))
@@ -341,7 +347,7 @@ class TestDesignPipeline(unittest.TestCase):
     def test_design_failure_records_failed_and_uses_ttl(self):
         self.vd._post_design = lambda brief: None  # simulate upstream failure
         r = self.vd.get_or_design_voice({"label": "warden", "kind": "person"},
-                                        "s1", wait=1.5)
+                                        "s1", wait=READY_WAIT)
         self.assertEqual(r["status"], "failed")
         # Immediately re-asking must NOT re-attempt (TTL guards paid calls).
         r2 = self.vd.get_or_design_voice({"label": "warden", "kind": "person"},
@@ -361,7 +367,7 @@ class TestDesignPipeline(unittest.TestCase):
         self.vd._delete_voice = lambda vid: True
         for lbl in ("warden", "courier"):
             self.vd.get_or_design_voice({"label": lbl, "kind": "person"},
-                                        "s1", wait=1.5)
+                                        "s1", wait=READY_WAIT)
         r = self.vd.get_or_design_voice({"label": "elder", "kind": "person"},
                                         "s1", wait=0)
         self.assertEqual(r["source"], "budget")
@@ -370,7 +376,7 @@ class TestDesignPipeline(unittest.TestCase):
         self.vd.CACHE_PATH.write_text("{not: valid json", encoding="utf-8")
         # Any operation must not raise; recovery yields an empty cache.
         r = self.vd.get_or_design_voice({"label": "warden", "kind": "person"},
-                                        "s1", wait=1.5)
+                                        "s1", wait=READY_WAIT)
         self.assertEqual(r["status"], "ready")
 
 
