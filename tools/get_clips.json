@@ -1,26 +1,27 @@
 {
   "note": "Written by tools/refresh_get.py from tools/get_shoot.json. Which seconds of which recording make each /get clip; tools/cut_clips.py reads it.",
   "sources": {
-    "run": "_claude_film/get-run-20260925-101518/master.mp4",
-    "create": "_claude_film/get-create-20260925-205132/master.mp4",
+    "run": "C:\\VersionControl\\5th_Corner_Marketing\\_claude_film\\get-run-20260925-232932/master.mp4",
+    "create": "C:\\VersionControl\\5th_Corner_Marketing\\_claude_film\\get-create-20260925-232932/master.mp4",
     "key": "_claude_film/get-key-20260925-101518/master.mp4",
     "swat": "_claude_film/get-swat-20260925-192101/master.mp4",
     "cyber": "_claude_film/get-cyber-20260925-001657/master.mp4",
     "wear": "_claude_film/get-wear-20260925-101518/master.mp4",
-    "outgrowth": "_claude_film/get-outgrowth-20260925-205132/master.mp4"
+    "outgrowth": "C:\\VersionControl\\5th_Corner_Marketing\\_claude_film\\get-outgrowth-20260925-232932/master.mp4",
+    "run_goal": "C:\\VersionControl\\5th_Corner_Marketing\\_claude_film\\get-run-20260925-101518/master.mp4"
   },
   "clips": {
     "hero": {
       "label": "",
       "poster_at": 0.04,
-      "sub": "OUTGROWTH \u00b7 Ruth 'Static' Calloway",
+      "sub": "The FIFTH CORNER \u00b7 Jason Fleece",
       "segments": [
         {
-          "from": 441.44,
-          "to": 538.02,
+          "from": 505.67,
+          "to": 749.3,
           "squeeze": true,
           "hold": 0.6,
-          "src": "outgrowth"
+          "src": "run"
         }
       ]
     },
@@ -30,9 +31,9 @@
       "sub": "Any hero you can describe.",
       "segments": [
         {
-          "from": 12.86,
-          "to": 14.46,
-          "caption": "Dot Mahoney, an exoskeleton operator in her forties in a scuffed lift-assist exoskeleton covered in cartoon cat stickers, respirator pushed up, a thermos of coffee clipped to her chest, a flamethrower for the growth",
+          "from": 19.16,
+          "to": 20.76,
+          "caption": "Madame Adaeze Okafor, a seventy-year-old retired opera singer in a sequinned emerald gown and a battered gas mask, a crowbar in one gloved hand and a thermos of tea in the other",
           "caption_box": [
             0.315,
             0.34,
@@ -42,13 +43,13 @@
           "src": "create"
         },
         {
-          "from": 14.46,
-          "to": 62.62,
+          "from": 20.76,
+          "to": 91.89,
           "squeeze": true,
           "hold": 0.9,
           "keep": "end",
           "max": 2.5,
-          "caption": "Dot Mahoney, an exoskeleton operator in her forties in a scuffed lift-assist exoskeleton covered in cartoon cat stickers, respirator pushed up, a thermos of coffee clipped to her chest, a flamethrower for the growth",
+          "caption": "Madame Adaeze Okafor, a seventy-year-old retired opera singer in a sequinned emerald gown and a battered gas mask, a crowbar in one gloved hand and a thermos of tea in the other",
           "caption_box": [
             0.315,
             0.34,
@@ -57,9 +58,9 @@
           "src": "create"
         },
         {
-          "from": 62.62,
-          "to": 66.02,
-          "caption": "Dot Mahoney, an exoskeleton operator in her forties in a scuffed lift-assist exoskeleton covered in cartoon cat stickers, respirator pushed up, a thermos of coffee clipped to her chest, a flamethrower for the growth",
+          "from": 91.89,
+          "to": 94.69,
+          "caption": "Madame Adaeze Okafor, a seventy-year-old retired opera singer in a sequinned emerald gown and a battered gas mask, a crowbar in one gloved hand and a thermos of tea in the other",
           "caption_box": [
             0.315,
             0.34,
@@ -68,9 +69,9 @@
           "src": "create"
         },
         {
-          "from": 74.48,
-          "to": 76.08,
-          "caption": "Dr Ezra Quill, a botanist turned breacher, sample jars strapped across his plate carrier, a machete, a bandaged vine burn up one arm, a bagged cutting of the jungle hanging from his belt, sealed goggles",
+          "from": 109.22,
+          "to": 110.82,
+          "caption": "Kit Vega, a sixteen-year-old skateboarder in a neon-pink windbreaker and knee pads, a homemade taser built from a TV remote, a hamster peeking out of her hood",
           "caption_box": [
             0.315,
             0.34,
@@ -80,13 +81,13 @@
           "src": "create"
         },
         {
-          "from": 76.08,
-          "to": 127.26,
+          "from": 110.82,
+          "to": 171.89,
           "squeeze": true,
           "hold": 0.9,
           "keep": "end",
           "max": 2.5,
-          "caption": "Dr Ezra Quill, a botanist turned breacher, sample jars strapped across his plate carrier, a machete, a bandaged vine burn up one arm, a bagged cutting of the jungle hanging from his belt, sealed goggles",
+          "caption": "Kit Vega, a sixteen-year-old skateboarder in a neon-pink windbreaker and knee pads, a homemade taser built from a TV remote, a hamster peeking out of her hood",
           "caption_box": [
             0.315,
             0.34,
@@ -95,9 +96,9 @@
           "src": "create"
         },
         {
-          "from": 127.26,
-          "to": 130.66,
-          "caption": "Dr Ezra Quill, a botanist turned breacher, sample jars strapped across his plate carrier, a machete, a bandaged vine burn up one arm, a bagged cutting of the jungle hanging from his belt, sealed goggles",
+          "from": 171.89,
+          "to": 174.69,
+          "caption": "Kit Vega, a sixteen-year-old skateboarder in a neon-pink windbreaker and knee pads, a homemade taser built from a TV remote, a hamster peeking out of her hood",
           "caption_box": [
             0.315,
             0.34,
@@ -106,9 +107,9 @@
           "src": "create"
         },
         {
-          "from": 140.33,
-          "to": 141.93,
-          "caption": "Wendell 'Parrot' Byrne, a sniper in his sixties with a carbon-fibre prosthetic leg, a ghillie suit woven from blue-green jungle fronds, a boxy thermal scope, a battered bush hat, a small tethered drone perched on his shoulder like a parrot",
+          "from": 188.63,
+          "to": 190.23,
+          "caption": "Sir Aldous Finch, a medieval knight in dented plate armour who fell through time, a longsword, a paper birthday crown on his helmet and a very confused expression",
           "caption_box": [
             0.315,
             0.34,
@@ -118,13 +119,13 @@
           "src": "create"
         },
         {
-          "from": 141.93,
-          "to": 188.47,
+          "from": 190.23,
+          "to": 254.91,
           "squeeze": true,
           "hold": 0.9,
           "keep": "end",
           "max": 2.5,
-          "caption": "Wendell 'Parrot' Byrne, a sniper in his sixties with a carbon-fibre prosthetic leg, a ghillie suit woven from blue-green jungle fronds, a boxy thermal scope, a battered bush hat, a small tethered drone perched on his shoulder like a parrot",
+          "caption": "Sir Aldous Finch, a medieval knight in dented plate armour who fell through time, a longsword, a paper birthday crown on his helmet and a very confused expression",
           "caption_box": [
             0.315,
             0.34,
@@ -133,9 +134,47 @@
           "src": "create"
         },
         {
-          "from": 188.47,
-          "to": 191.87,
-          "caption": "Wendell 'Parrot' Byrne, a sniper in his sixties with a carbon-fibre prosthetic leg, a ghillie suit woven from blue-green jungle fronds, a boxy thermal scope, a battered bush hat, a small tethered drone perched on his shoulder like a parrot",
+          "from": 254.91,
+          "to": 257.71,
+          "caption": "Sir Aldous Finch, a medieval knight in dented plate armour who fell through time, a longsword, a paper birthday crown on his helmet and a very confused expression",
+          "caption_box": [
+            0.315,
+            0.34,
+            0.25
+          ],
+          "src": "create"
+        },
+        {
+          "from": 267.18,
+          "to": 268.78,
+          "caption": "Unit 9, a rusty 1950s tin robot butler in a bow tie, one wobbly wheel, a silver tray in one claw and a shotgun in the other",
+          "caption_box": [
+            0.315,
+            0.34,
+            0.25
+          ],
+          "type_on": true,
+          "src": "create"
+        },
+        {
+          "from": 268.78,
+          "to": 363.05,
+          "squeeze": true,
+          "hold": 0.9,
+          "keep": "end",
+          "max": 2.5,
+          "caption": "Unit 9, a rusty 1950s tin robot butler in a bow tie, one wobbly wheel, a silver tray in one claw and a shotgun in the other",
+          "caption_box": [
+            0.315,
+            0.34,
+            0.25
+          ],
+          "src": "create"
+        },
+        {
+          "from": 363.05,
+          "to": 365.85,
+          "caption": "Unit 9, a rusty 1950s tin robot butler in a bow tie, one wobbly wheel, a silver tray in one claw and a shotgun in the other",
           "caption_box": [
             0.315,
             0.34,
@@ -151,26 +190,26 @@
       "sub": "Two worlds to start. No two runs alike.",
       "segments": [
         {
-          "from": 169.13,
-          "to": 170.63,
+          "from": 193.91,
+          "to": 195.41,
           "src": "outgrowth"
         },
         {
-          "from": 196.59,
-          "to": 215.97,
+          "from": 220.68,
+          "to": 248.32,
           "squeeze": true,
           "hold": 1.2,
           "src": "outgrowth",
           "max": 4.5
         },
         {
-          "from": 100.07,
-          "to": 101.57,
+          "from": 116.21,
+          "to": 117.71,
           "src": "run"
         },
         {
-          "from": 129.65,
-          "to": 150.51,
+          "from": 138.73,
+          "to": 164.04,
           "squeeze": true,
           "hold": 1.2,
           "src": "run",
@@ -184,54 +223,54 @@
       "sub": "Type any move. It happens.",
       "segments": [
         {
-          "from": 634.12,
-          "to": 636.22,
-          "caption": "Hijack the robot dog and ride it into the jungle",
+          "from": 305.72,
+          "to": 307.82,
+          "caption": "Challenge the security robot to an arm wrestle",
           "type_on": true,
           "src": "outgrowth"
         },
         {
-          "from": 636.22,
-          "to": 660.39,
+          "from": 307.82,
+          "to": 329.94,
           "squeeze": true,
           "hold": 1.6,
-          "caption": "Hijack the robot dog and ride it into the jungle",
+          "caption": "Challenge the security robot to an arm wrestle",
           "keep": "end",
           "src": "outgrowth",
           "max": 5.9
         },
         {
-          "from": 323.98,
-          "to": 326.08,
-          "caption": "Tame the biggest sewer rat and ride it down the tunnel",
+          "from": 221.88,
+          "to": 223.98,
+          "caption": "Pretend to be a lost tourist and ask the guard for directions",
           "type_on": true,
-          "src": "cyber"
+          "src": "run"
         },
         {
-          "from": 326.08,
-          "to": 349.03,
+          "from": 223.98,
+          "to": 243.66,
           "squeeze": true,
           "hold": 1.6,
-          "caption": "Tame the biggest sewer rat and ride it down the tunnel",
+          "caption": "Pretend to be a lost tourist and ask the guard for directions",
           "keep": "end",
-          "src": "cyber",
+          "src": "run",
           "max": 5.9
         },
         {
-          "from": 220.35,
-          "to": 222.45,
-          "caption": "Hack the vending machine until it spits out grenades",
+          "from": 448.98,
+          "to": 451.08,
+          "caption": "Convince the creature that I am its long-lost mother",
           "type_on": true,
-          "src": "cyber"
+          "src": "outgrowth"
         },
         {
-          "from": 222.45,
-          "to": 243.97,
+          "from": 451.08,
+          "to": 472.88,
           "squeeze": true,
           "hold": 1.6,
-          "caption": "Hack the vending machine until it spits out grenades",
+          "caption": "Convince the creature that I am its long-lost mother",
           "keep": "end",
-          "src": "cyber",
+          "src": "outgrowth",
           "max": 5.9
         }
       ]
@@ -288,11 +327,11 @@
       "sub": "Roll to hit. Roll to survive.",
       "segments": [
         {
-          "from": 390.28,
-          "to": 452.34,
+          "from": 328.67,
+          "to": 407.84,
           "squeeze": true,
           "hold": 0.6,
-          "src": "cyber"
+          "src": "outgrowth"
         }
       ]
     },
@@ -307,7 +346,7 @@
           "squeeze": true,
           "hold": 0.7,
           "max": 9.0,
-          "src": "run"
+          "src": "run_goal"
         },
         {
           "from": 670.61,
@@ -315,14 +354,14 @@
           "squeeze": true,
           "hold": 0.7,
           "max": 14.0,
-          "src": "run"
+          "src": "run_goal"
         },
         {
           "from": 709.59,
           "to": 717.09,
           "squeeze": true,
           "hold": 0.7,
-          "src": "run"
+          "src": "run_goal"
         }
       ]
     },

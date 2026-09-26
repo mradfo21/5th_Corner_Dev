@@ -1,5 +1,40 @@
 # 🔧 CHANGELOG - September 25, 2026
 
+## 🎬 /get, re-shot: four people who could never meet, three kinds of freedom, and no hit flashes
+
+Matt: *"the splash combat has big artifacts. the fact that the character customization makes everyone look like the same overgrowth character doesn't work, the two examples of do anything are just riding mounts. it works once but not twice."* And: *"we just need one line 'Generative RPG'"*, and *"make the menu for the game JUST say 'ABYSS'."*
+
+**The words.** On /get, "Role-playing game · Single-player" is now **Generative RPG**. The start menu is the name alone; its tagline and styles are gone.
+
+**Anyone.** All three operators had been written from OUTGROWTH's lore, so they came out as one person in olive drab three times. The create film is now made outside any World's look, and it makes:
+- Madame Adaeze Okafor, a seventy-year-old opera singer in a sequinned gown and a gas mask, with a crowbar;
+- Kit Vega, a teenage skater in a pink windbreaker with a TV-remote taser and a hamster in her hood;
+- Sir Aldous Finch, a knight who fell through time, with a paper birthday crown on his helmet;
+- Unit 9, a rusty 1950s robot butler on one wheel, with a silver tray and a shotgun.
+
+Four were made on camera, and each came back as that person.
+
+**Anything.** Both examples had been a mount. Now each typed line is a different kind of freedom, across both worlds that ship:
+- *"Challenge the security robot to an arm wrestle"* (it walked up and took the grip);
+- *"Pretend to be a lost tourist and ask the guard for directions"* (hands up, to a masked guard);
+- *"Convince the creature that I am its long-lost mother."*
+
+The films also typed *"Build a scarecrow decoy…"* and *"Light a bonfire and send smoke signals"*; both happened, and are spare.
+
+**Attack.** It now shows the robot, Static grappling a red-eyed security unit, not CYBER HORROR, which does not ship.
+
+**Arrive.** Neither new run reached its goal, so it falls back to an earlier FIFTH CORNER film (`run_goal`, listed last so a new run that gets there wins).
+
+**The artifacts were the game's hit flash.** When you take damage, the game lays a red edge band and a greyed double image over the picture for a few frames. In a looping clip that reads as broken video. It was in the old splash, and in the first cut of this one. `cut_clips` now drops them from every clip (`keep_flashes` opts out). There are two signatures:
+- a jump away from a held still that comes back to it within half a second;
+- a short spike in the red of the frame's top and bottom edges over the second around it, which catches the pulse that lands on a new picture.
+
+Each cut runs 0.12 s further into the still, for the flash's greyed tail. The splash lost five flashes. Checked at six samples a second, none is left. The splash also stops half a second after the fight ends, where it used to cross-fade into YOU DIED over a ghost of an earlier frame.
+
+**Phone GIFs are sharper.** At 420 px the ordered dither crosshatched the splash. `make_gifs` now removes grain harder (the grain is what a GIF pays for) and uses a finer dither, and it keeps 540 px, trimming the loop instead. A clip made of beats (`gif_whole`: "Anything.", "Anyone.") is never trimmed and gives up width instead; the first cut had lost the third typed action that way.
+- Media release: `clips-2026-09-26-0039`.
+- GIFs: splash 6.7 MB (540 px, 14 s), "Anything." 6.6 MB (480 px, whole), the rest 540 px and under 7 MB.
+
 ## ✅ FIXED: /get plays on a phone: the clips are GIFs there
 
 Matt: *"the website has issues on mobile. the videos still dont play. on mobile you need to make them into small gif files around 7mb or less per gif."*
