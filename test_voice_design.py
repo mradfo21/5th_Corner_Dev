@@ -139,6 +139,12 @@ class _CostRecorder:
         self.events.append((args, kwargs))
 
 
+# An upper bound, not a pause: get_or_design_voice returns the moment the
+# design lands. 1.5 s was enough on a dev machine and not on a busy CI runner,
+# where these tests read "generating" (#162, #168; fixed on main by #169).
+READY_WAIT = 10.0
+
+
 class _FakeGeminiCase(unittest.TestCase):
     """A fresh module, a fresh cache file and a fake Gemini per test."""
 
@@ -193,7 +199,7 @@ class _FakeGeminiCase(unittest.TestCase):
         if self.vd.CACHE_PATH.exists():
             self.vd.CACHE_PATH.unlink()
 
-    def design(self, label="warden", session="s1", wait=1.5, kind="person", **kw):
+    def design(self, label="warden", session="s1", wait=READY_WAIT, kind="person", **kw):
         return self.vd.get_or_design_voice({"label": label, "kind": kind},
                                            session, wait=wait, **kw)
 
@@ -489,7 +495,7 @@ class TestDesignPipeline(_FakeGeminiCase):
         creates_before = len(self.fake.of("create"))
         regen = self.vd.regenerate_voice(
             {"label": "kane", "kind": "person"}, "s1", seed,
-            old_voice_id=first["voice_id"], wait=1.5,
+            old_voice_id=first["voice_id"], wait=READY_WAIT,
         )
         self.assertEqual(regen["status"], "ready")
         self.assertEqual(regen["description"], seed)
@@ -506,7 +512,7 @@ class TestDesignPipeline(_FakeGeminiCase):
             self.vd.regenerate_voice(
                 {"label": "kane", "kind": "person"}, "s1",
                 "a low gravelly wary male voice, tired.",
-                old_voice_id=first["voice_id"], wait=1.5)
+                old_voice_id=first["voice_id"], wait=READY_WAIT)
             self.assertNotIn(("delete", first["voice_id"]), self.fake.calls)
         finally:
             self.vd.release(first["voice_id"])

@@ -13,9 +13,11 @@ history and the real design document.
 ## 1. What this is
 
 **ABYSS** (the player-facing name since 2026-09-25; it was GOD before that,
-and it is still SOMEWHERE in the code, the env vars and the `%APPDATA%\SOMEWHERE`
-folder, which hold players' keys and characters and are never renamed) — tagline
-"When you stare into the abyss, the abyss stares back." **SOMEWHERE** is an
+and it is still SOMEWHERE in the code and the `SOMEWHERE_*` env vars). A
+player's keys, characters and saves live in `%APPDATA%\ABYSS` since the
+Distribution MVP (`app_identity.py`, `paths.py`), copied once from the old
+`%APPDATA%\SOMEWHERE`, which is left in place. Tagline: "The first game where
+ANYTHING is possible." **SOMEWHERE** is an
 AI-driven first-person survival horror game where nothing is
 pre-drawn. Every frame is generated as you play. You are a photojournalist in
 1993 at the fence of a quarantined facility in the Four Corners desert — hence
