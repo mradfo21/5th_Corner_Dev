@@ -482,15 +482,22 @@ def _talk_status():
 
 
 def _music_status():
-    """Can scene music / world SFX generate right now, and if not, why."""
+    """Can scene music and world sound play, and from what.
+
+    Nothing is generated: every lane plays the shipped library
+    (sound_library.py). `can_generate` keeps its name for the client and the
+    editor, and means "the library can answer" now."""
     info = {"can_generate": False, "reason": "unavailable", "stock_ready": 0,
-            "stock_total": 0}
+            "stock_total": 0, "library": {}}
     try:
+        import sound_library
         info["can_generate"] = scene_audio.is_available()
         info["reason"] = scene_audio.unavailable_reason() or "ready"
         stock = scene_audio.stock_status()
         info["stock_total"] = len(stock)
         info["stock_ready"] = sum(1 for v in stock.values() if v.get("ready"))
+        info["library"] = {lane: len(sound_library.entries(lane))
+                           for lane in sound_library.LANES}
     except Exception as e:  # noqa: BLE001
         info["reason"] = f"{type(e).__name__}: {e}"
     return info
@@ -1560,15 +1567,14 @@ def _find_image_in_any_session(safe_filename):
 
 @app.route('/api/scene_audio', methods=['POST'])
 def api_scene_audio():
-    """Generate (or reuse a cached) scene-matched instrumental clip for a guide
-    image and return its URL.
+    """The music bed and looping ambience for a scene, chosen from the shipped
+    sound library (scene_audio.get_scene_audio -> sound_library.pick).
 
-    The standalone UI posts the scene descriptor (`metadata.prompt`, already
-    delivered with every `scene_image`) here; a music bed plus looping world
-    SFX the client plays together, re-scoring on each new scene. Nothing on
-    the player's key generates them since ElevenLabs left (2026-09-25; music
-    returns with Lyria, docs/plans/ONE_KEY_AUDIO_PLAN.md), so this answers
-    with what is on disk or null URLs, and the client stays silent."""
+    The standalone UI posts the scene descriptor (vision's read of the frame,
+    or the image caption) here and crossfades on each new scene. The session's
+    phase and world are read server-side, so the score escalates with the run
+    and a neon World does not get the desert's bed. Every clip is already on
+    disk: the answer is immediate and never pending."""
     try:
         body = request.get_json(silent=True) or {}
         prompt = (body.get("prompt") or "").strip()
@@ -1597,11 +1603,9 @@ def api_scene_audio():
 
 @app.route('/api/action_foley', methods=['POST'])
 def api_action_foley():
-    """The sound of one player action, from the choice text that names it.
-
-    The client asks for every choice the moment the slate renders and plays the
-    matching one on click, so by then it is a cache hit. A miss is reported
-    `pending` rather than waited on — see scene_audio.action_foley.
+    """The sound of one player action, chosen from the library by the choice
+    text that names it (scene_audio.action_foley). The client asks for every
+    choice when the slate renders and plays the matching one on the click.
     """
     try:
         body = request.get_json(silent=True) or {}
@@ -1625,12 +1629,9 @@ def api_action_foley():
 
 @app.route('/api/consequence_audio', methods=['POST'])
 def api_consequence_audio():
-    """The bed the flipbook plays over, from the consequence prose.
-
-    Asked for the moment the consequence lands — five pipeline steps before the
-    picture — so the clip is on disk by the time the frames it runs under
-    exist. A miss is reported `pending` rather than waited on, exactly like
-    action foley; see scene_audio.consequence_bed.
+    """The bed the flipbook plays over, chosen from the library by the turn's
+    visual caption (or its prose) — see scene_audio.consequence_bed. Asked for
+    the moment the consequence lands; the clip is already on disk.
     """
     try:
         body = request.get_json(silent=True) or {}
@@ -5386,21 +5387,22 @@ def admin_studio_levels_delete():
 
 @app.route('/api/music', methods=['GET'])
 def api_music_get():
-    """What is scoring the game: a loop you chose, or the per-scene generator."""
+    """What is scoring the game: a loop you chose, or the library per scene."""
     try:
-        scene_audio.kick_stock_warmup()
         loop = scene_audio.custom_loop()
         return jsonify({"data": {
             "loop": loop,
             "direction": scene_audio.get_music_direction(),
             "preview": scene_audio.last_preview("preview"),
             "menu_loop": scene_audio.menu_loop(),
+            # The shipped title theme, played when nothing is locked.
+            "menu_library": scene_audio.menu_library(),
             "menu_direction": scene_audio.get_menu_direction(),
             "menu_preview": scene_audio.last_preview("menu_preview"),
             "sfx_direction": scene_audio.get_sfx_direction(),
             "can_generate": scene_audio.is_available(),
             "can_generate_reason": scene_audio.unavailable_reason(),
-            "provider": "",
+            "provider": "library",
             "accepts": sorted(scene_audio.LOOP_EXTS.keys()),
             "max_bytes": scene_audio.MAX_LOOP_BYTES,
             "stock": scene_audio.stock_status(),
@@ -5445,19 +5447,21 @@ def api_music_direction():
 
 @app.route('/api/music/stock', methods=['GET', 'POST'])
 def api_music_stock():
-    """Pre-cached encounter stingers and fallback ambience beds."""
+    """The encounter stingers and the seven generic ambience beds — library
+    entries, so there is nothing to generate: POST answers what is there."""
     try:
         if request.method == 'POST':
             body = request.get_json(silent=True) or {}
             key = (body.get("id") or "").strip()
-            force = bool(body.get("force"))
             if key:
-                rec = scene_audio.ensure_one_stock(key, force=force)
+                rec = scene_audio.stock_record(key)
                 if not rec:
                     return jsonify({"error": "invalid", "message": "Unknown stock id."}), 400
                 return jsonify({"data": rec})
-            return jsonify({"data": scene_audio.ensure_stock_sounds(force=force)})
-        scene_audio.kick_stock_warmup()
+            files = scene_audio.stock_status()
+            ready = sum(1 for v in files.values() if v.get("ready"))
+            return jsonify({"data": {"ok": ready > 0, "ready": ready,
+                                     "total": len(files), "files": files}})
         return jsonify({"data": {
             "can_generate": scene_audio.is_available(),
             "files": scene_audio.stock_status(),
@@ -5470,12 +5474,13 @@ def api_music_stock():
 
 @app.route('/api/music/inspect', methods=['POST'])
 def api_music_inspect():
-    """Show the music + SFX prompts a scene would send. No generation."""
+    """What a scene would play from the library, and why. No side effects."""
     body = request.get_json(silent=True) or {}
     try:
         return jsonify({"data": scene_audio.inspect_scene(
             body.get("prompt") or "",
             mode=(body.get("mode") or "scene"),
+            session_id=body.get("session") or "default",
         )})
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
@@ -5484,23 +5489,22 @@ def api_music_inspect():
 
 @app.route('/api/music/test', methods=['POST'])
 def api_music_test():
-    """Generate a one-off test clip (music, ambience, or stock stinger)."""
+    """The clip a scene would play on one layer (music, ambience, stinger)."""
     body = request.get_json(silent=True) or {}
     prompt = (body.get("prompt") or "").strip()
     layer = (body.get("layer") or "music").strip().lower()
     if layer != "stinger" and not prompt:
         return jsonify({"error": "invalid", "message": "Write a scene or prompt first."}), 400
     try:
-        rec = scene_audio.generate_test_clip(
+        rec = scene_audio.library_test_clip(
             prompt,
             mode=(body.get("mode") or "scene"),
             layer=layer,
-            seconds=body.get("seconds"),
             session_id=body.get("session") or "default",
         )
-        if not rec or rec.get("error") == "no_key":
+        if not rec:
             return jsonify({"error": "unavailable", "message":
-                            "Nothing on this key generates sound yet — upload a loop instead."}), 502
+                            scene_audio.unavailable_reason() or "Nothing in the library for that."}), 502
         return jsonify({"data": rec})
     except ValueError as e:
         return jsonify({"error": "invalid", "message": str(e)}), 400
@@ -5511,7 +5515,7 @@ def api_music_test():
 
 @app.route('/api/music/cache', methods=['GET', 'DELETE'])
 def api_music_cache():
-    """Per-scene generated clips. DELETE clears them; stock and locked loops stay."""
+    """Clips an earlier build generated per scene. DELETE clears them; the library and locked loops stay."""
     session_id = request.args.get("session") or "default"
     try:
         if request.method == "DELETE":
@@ -5526,18 +5530,17 @@ def api_music_cache():
 
 @app.route('/api/music/preview', methods=['POST'])
 def api_music_preview():
-    """Hear a prompt without locking it as the only track."""
+    """Hear the library track closest to a prompt, without locking it."""
     body = request.get_json(silent=True) or {}
     prompt = (body.get("prompt") or "").strip()
     if not prompt:
         return jsonify({"error": "invalid", "message": "Write how it should sound first."}), 400
     try:
         stem = "menu_preview" if (body.get("for") == "menu") else "preview"
-        preview = scene_audio.generate_preview(
-            prompt, seconds=body.get("seconds") or 8, stem=stem)
+        preview = scene_audio.library_preview(prompt, stem=stem)
         if not preview:
             return jsonify({"error": "unavailable", "message":
-                            "Nothing on this key generates sound yet — upload a loop instead."}), 502
+                            scene_audio.unavailable_reason() or "Nothing in the library for that."}), 502
         return jsonify({"data": {"preview": preview}})
     except ValueError as e:
         return jsonify({"error": "invalid", "message": str(e)}), 400
@@ -5548,10 +5551,11 @@ def api_music_preview():
 
 @app.route('/api/music/generate', methods=['POST'])
 def api_music_generate():
-    """Write the music yourself: {prompt, seconds?} straight to the music generator.
+    """Lock one track: {prompt} chooses the library track closest to those
+    words and locks it as the only track (or, with for=menu, the title track).
 
-    Distinct from /api/scene_audio, which derives music direction from a scene
-    description. Here the prompt IS the direction.
+    Distinct from /api/scene_audio, which chooses per scene. Here the prompt IS
+    the direction. The route keeps its name for the editor that calls it.
     """
     body = request.get_json(silent=True) or {}
     prompt = (body.get("prompt") or "").strip()
@@ -5559,11 +5563,10 @@ def api_music_generate():
         return jsonify({"error": "invalid", "message": "Write a prompt first."}), 400
     try:
         stem = "menu" if (body.get("for") == "menu") else "loop"
-        loop = scene_audio.generate_loop(
-            prompt, seconds=body.get("seconds") or 12, stem=stem)
+        loop = scene_audio.library_loop(prompt, stem=stem)
         if not loop:
             return jsonify({"error": "unavailable", "message":
-                            "Nothing on this key generates sound yet — upload a loop instead."}), 502
+                            scene_audio.unavailable_reason() or "Nothing in the library for that."}), 502
         key = "menu_loop" if stem == "menu" else "loop"
         return jsonify({"data": {key: loop, "loop": loop}})
     except ValueError as e:

@@ -1,9 +1,12 @@
 # One key plays with sound — audio without ElevenLabs
 
-> **Status: in progress. A0, A1, A2, A4 and the first half of A5 shipped
-> 2026-09-25** (branch `feat/one-key-audio`; CHANGELOG of that date). Matt's
-> call the same day: **ElevenLabs goes entirely, as few providers as
-> possible, and a lane may go quiet rather than add one.** So:
+> **Status: in progress. A0, A1, A2, A3, A4, A6 and the first half of A5
+> shipped 2026-09-25** (branches `feat/one-key-audio` and
+> `feat/sound-library`; CHANGELOG of that date). Matt's call the same day:
+> **ElevenLabs goes entirely, as few providers as possible, and a lane may go
+> quiet rather than add one.** And then, for the lanes that had gone quiet:
+> **"precache them FROM my 11 labs and ship precached whatever you need."**
+> So:
 >
 > - **Gone:** every ElevenLabs call, key, agent id and ACCOUNT row. A keyless
 >   install makes no request anywhere near ElevenLabs.
@@ -11,12 +14,17 @@
 >   (`speech.py`; Gemini 3.8 Flash TTS, OpenAI `gpt-4o-mini-tts` through the
 >   bridge); a voice per character is designed from words on Gemini
 >   (`voice_design.py`) and is a steered roster voice on OpenAI.
-> - **Quiet until their step:** music (A6, Lyria — same Gemini key), scene
->   ambience / foley / consequence beds (A3 — needs a sound library, which is
->   not a provider). Files already on disk (an uploaded loop, local stock)
->   still play. Speaking to a character by voice (A5's push-to-talk) waits on
->   a mic control in the TALK panel — design pass first; TALK is typed, with
->   spoken answers, until then.
+> - **Shipped as a library, not a provider (A3 + A6):** music, scene
+>   ambience, action foley, the consequence bed and the encounter stingers.
+>   171 clips made once on 5th Corner's ElevenLabs account
+>   (`tools/build_sound_library.py`, spec in `tools/sound_library_spec.json`),
+>   shipped in `static/audio/library/` (28 MB), and chosen at runtime by
+>   `sound_library.pick` from words the game already has. No call is made for
+>   sound at runtime, on any key, and none is billed. Lyria (§5) is not used:
+>   one library plays the same on Gemini, OpenAI and a keyless install.
+> - **Still open:** speaking to a character by voice (A5's push-to-talk) waits
+>   on a mic control in the TALK panel — design pass first; TALK is typed,
+>   with spoken answers, until then. A7.
 >
 > - **Also shipped the same day:** a character is designed their own voice in
 >   the character creator (two takes, the closer kept) and it narrates their
@@ -142,6 +150,18 @@ it in two steps, so the first works on both providers:
 
 ### 4. Sound effects → a shipped library the turn chooses from
 
+> **Shipped 2026-09-25, differently in two places.** The source is 5th
+> Corner's own ElevenLabs account (Pro plan; Matt's decision, above), not a
+> licensed pack; the 19 stock clips already paid for are in it. And the turn
+> does NOT name its sounds: there is no vocabulary in the consequence prompt
+> and no `sound` field. The server matches words it already has — the choice
+> text, vision's read of the frame, the consequence caption — against each
+> clip's tags (`sound_library.pick`), so no prompt got longer and no model
+> call was added. MP3 (mono sound, stereo music), 28 MB, not OGG/Opus at
+> 40-60 MB. The client's per-play variation (pitch, filter, offset) is not
+> done; variety comes from 2 takes of the commonest verbs and a seed that
+> spreads ties. The body below is the plan as written.
+
 No provider generates foley on one key, and generated foley was a third of a
 run's cost. So stop generating it:
 
@@ -163,6 +183,14 @@ run's cost. So stop generating it:
   over the library, as now. It stops being required for any sound at all.
 
 ### 5. Music → Lyria on Gemini, a score library everywhere
+
+> **Shipped 2026-09-25 as the score library alone:** 20 instrumental loops,
+> ~40 s, by mode (scene / conversation / encounter / camp / menu) × phase
+> (normal / escalating / critical) × world (desert, cyber, riot), on
+> ElevenLabs Music, `force_instrumental`. The phase is read from the run, so
+> the score escalates with it. Lyria is not wired: one library for every key
+> was simpler than two music paths, and the menu now plays a shipped title
+> theme when nothing is locked.
 
 - **Gemini on a paid key:** `lyria-3-clip-preview` for the scene/conversation/
   encounter beds (30 s, $0.04 — cheaper than Eleven Music's $0.075 per 30 s),
@@ -227,10 +255,10 @@ transcribing every line of a live narrator + TALK run with Gemini.
 | A0 | ✅ **Stop the public-agent fallback** (no key → subtitles and silence, never our account) | A keyless install makes zero ElevenLabs requests — there is no ElevenLabs code left to make one (`test_talk_voice`) | 0.5 |
 | A1 | ✅ Spike (§6) | Answers written into §6 | 1 |
 | A2 | ✅ `speech.py` + narrator on TTS, both providers, bridge translation | The narrator speaks on a Gemini key (verified live, transcribed); OpenAI unit-tested only (its key had no credit) | 2 |
-| A3 | Sound library + vocabulary in the consequence prompt | A 10-turn run on one key has ambience, foley and stingers; no clip generated | 3 |
+| A3 | ✅ Sound library (ambience, foley, consequence beds, stingers), chosen by words on the server — no vocabulary in the prompt | Every endpoint answers from the library, never pending, on any key or none; the catalog and the folder are held to each other (`test_sound_library`). A 10-turn native run with ears on it is still to do | 3 |
 | A4 | ✅ Provider-neutral voice record; Gemini design; OpenAI steered roster | A companion's designed voice (`voice_…`) took over mid-conversation, live; create/list/delete verified against the API | 3 |
 | A5 | ◐ TALK spoken answers (done) + push-to-talk (after the design pass: a mic control in the TALK panel, Dictation pointed at `#talk-input`) | A conversation on each provider, no ElevenLabs | 2 |
-| A6 | Music: Lyria for paid Gemini, score library otherwise | Beds change with phase on both | 2 |
+| A6 | ✅ Music: the score library, for every key (no Lyria) | Beds change with phase and world (`test_sound_library`); the menu plays a title theme | 2 |
 | A7 | Gemini Live duplex TALK (if spike Q3 says yes) | Duplex conversation in the designed voice | 3 |
 
 A0 is a release blocker. A2 and A3 are what a stranger notices. Everything is
@@ -256,7 +284,11 @@ become a provider-aware list; the music panel keeps Lyria and loops).
 
 - **ElevenLabs:** gone entirely (Matt, 2026-09-25). A player's keys.env that
   still carries the key keeps it, word for word, and ignores it.
-- **Still Matt's:** the sound library's source (a licensed royalty-free
-  library, or the 19 stock clips already generated on the ElevenLabs account,
-  if its licence lets them ship); whether OpenAI players' thirteen steered
-  voices are acceptable or ACCOUNT should say "voices are best on Gemini".
+- **The sound library's source:** our ElevenLabs account, generated once and
+  shipped (Matt, 2026-09-25: *"precache them FROM my 11 labs and ship
+  precached whatever you need"*). The account reports the Pro tier (read from
+  the API on the day); ElevenLabs' paid plans carry a commercial licence for
+  what they generate. Worth confirming against the terms before a publisher
+  or a store asks.
+- **Still Matt's:** whether OpenAI players' thirteen steered voices are
+  acceptable or ACCOUNT should say "voices are best on Gemini".

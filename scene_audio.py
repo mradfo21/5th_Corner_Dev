@@ -1,499 +1,247 @@
 """
-scene_audio.py — scene music and world sound: what plays, and (one day) what
-makes it.
+scene_audio.py — what plays under the picture: scene music, the place's
+ambience, the sound of an action, the sound of what it did, encounter hits.
 
-Turns the scene descriptor that already rides along with every guide image
-(the `metadata.prompt` the engine emits) into:
+Takes what the game already knows about a moment — vision's read of the frame
+that rendered, the choice text, the consequence caption, the mode (scene /
+conversation / encounter / camp), the run's phase and its world — and answers
+with files to play:
 
-  • a short instrumental bed (music)
-  • a looping ambience clip (world sound)
-  • encounter stingers (pre-cached stock catalog, not per-scene)
+  • a music bed           sound_library lane "music"
+  • a looping ambience    "ambience"
+  • action foley          "foley"
+  • a consequence bed     "consequence"
+  • encounter stingers    "stinger"
 
-The standalone UI loops the bed + ambience and crossfades on each new scene.
-Stock stingers live under ``assets/music/stock/`` so encounter hits do not
-wait on a live generation.
+NOTHING IS GENERATED. All of these used to be made per scene, per action and
+per turn by ElevenLabs — a second account, a second bill, 38% of a measured
+run's cost. The game now runs on the player's ONE key (Gemini, or OpenAI via
+provider_bridge; docs/plans/ONE_KEY_AUDIO_PLAN.md) and neither makes sound
+effects, so for a day every lane here was silent. Matt's call (2026-09-25):
+*"precache them FROM my 11 labs and ship precached whatever you need."* The
+library was made once on 5th Corner's account (tools/build_sound_library.py)
+and ships in static/audio/library/; ``sound_library.pick`` chooses a clip; this
+module is the wiring from the endpoints the client already calls
+(/api/scene_audio, /api/action_foley, /api/consequence_audio, /api/music/*) to
+that choice, in the shapes the client already reads. A clip is always on disk,
+so every answer is ``cached: true, pending: false`` and the client's retry
+loops simply never fire.
 
-NOTHING IS GENERATED TODAY. Music and all four sound lanes (scene ambience,
-action foley, the consequence bed, the stock catalog) were made by a third
-provider the game no longer uses — it now runs on one key, Gemini or OpenAI
-(docs/plans/ONE_KEY_AUDIO_PLAN.md), and neither makes sound effects. Music
-comes back with Lyria on the same Gemini key; `_generate_music` is the one
-place it plugs in. Until then `is_available()` is False and every generator
-answers None.
-
-What still works is everything that PLAYS a file already on disk: the chosen
-loop and the menu loop (uploaded in the editor), designer one-shots under
-``static/audio/encounter/``, any stock file present in ``assets/music/stock/``,
-and the ``/audio/<file>`` serving helpers. The endpoint helpers keep their
-"null URL + reason" shape and the client stays silent on a null layer.
+What a person can still bring: a locked loop and a title-screen loop (uploaded
+in the editor, or a library track locked from a direction), designer one-shots
+in static/audio/encounter/, and the /audio/<file> serving helpers for those.
 """
 
-import hashlib
+from __future__ import annotations
+
 import json
-import os
 import re
 import threading
 import time
 from pathlib import Path
 
+import sound_library
+
 ROOT = Path(__file__).parent.resolve()
 import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
 
-# Scene beds used to be 12s Lyria loops. A bit longer hides the loop point.
-DEFAULT_CLIP_SECONDS = 20
-DEFAULT_SFX_SECONDS = 14
-# The prompt budget of every sound lane. The sound model this was built against
-# refused anything longer with a 400 rather than a truncation, and both lanes
-# used to clip at 500, so a long scene descriptor silently made no sound at all.
-# Kept: a sound prompt longer than this was never better, and a future
-# generator is unlikely to be more generous.
-SFX_TEXT_MAX = 450
+MISSING_REASON = "the sound library is missing (static/audio/library)"
 
-# What `unavailable_reason()` says whenever nothing can be generated. The
-# client and the editor show it; it has to be true for a player on either key.
-NO_GENERATOR_REASON = "no sound generator on this key"
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# Prompt mapping: scene descriptor -> weighted prompts + generation config
-# (same shape the unit tests already assert; flattened to one text prompt)
-# ────────────────────────────────────────────────────────────────────────────
-
-_MOOD_CUES = [
-    (("battle", "fight", "chase", "run", "escape", "explosion", "alarm", "attack"),
-     "urgent, driving, percussive tension", 128, 0.7),
-    (("horror", "terror", "monster", "blood", "corpse", "nightmare", "dread", "haunt"),
-     "dark ambient horror, dissonant drones, unsettling", 70, 0.25),
-    (("ruin", "abandoned", "decay", "derelict", "empty", "desolate", "wasteland"),
-     "bleak, sparse, haunting ambient", 68, 0.3),
-    (("forest", "jungle", "garden", "trees", "nature", "meadow", "river", "ocean", "sea"),
-     "organic, lush, natural ambience with soft pads", 84, 0.6),
-    (("city", "street", "neon", "market", "crowd", "traffic", "station"),
-     "cinematic urban underscore, low synth pulse", 96, 0.55),
-    (("temple", "shrine", "cathedral", "sacred", "ritual", "ancient"),
-     "solemn, reverent, cavernous reverb, choral pads", 66, 0.4),
-    (("space", "stars", "void", "cosmic", "nebula", "orbit", "station"),
-     "vast cosmic ambient, weightless synth textures", 72, 0.5),
-    (("snow", "ice", "frozen", "cold", "winter", "tundra"),
-     "cold, crystalline, sparse ambient", 74, 0.45),
-    (("cave", "tunnel", "underground", "basement", "sewer", "mine", "dark"),
-     "claustrophobic low drones, dripping reverb", 64, 0.2),
-    (("dream", "surreal", "strange", "shimmer", "glow", "ethereal"),
-     "dreamy, ethereal, shimmering ambient", 80, 0.65),
-]
-
-_STYLE_ANCHORS = "cinematic instrumental score, atmospheric, no vocals, no drums lead"
-
-_CONVERSATION_STYLE_ANCHORS = (
-    "intimate cinematic underscore, warm low strings, soft piano, hushed pads, "
-    "no vocals, no drums lead, dialogue-friendly sparse arrangement"
-)
-# Encounter beds recolor from the music_prompt the client sends after the
-# brief lands: "stance — kind — label — danger — stakes". Creature is
-# checked first so kind wins over a generic hostile stance.
-_ENCOUNTER_STANCE_CUES = [
-    (("creature", "monster", "inhuman", "beast"),
-     "unsettling organic confrontation drone, wet texture, held breath", 62, 0.22),
-    (("desperate", "frantic", "panic"),
-     "frantic pulse, taut strings, short breath, danger accelerating", 92, 0.38),
-    (("opportunistic", "sly", "quiet threat"),
-     "quiet predatory hush, sparse analog, danger waiting", 64, 0.26),
-    (("hostile", "threat", "attack"),
-     "tense low-drone confrontation, analog-horror pulse, held breath", 72, 0.28),
-]
-_CONVERSATION_KIND_CUES = [
-    (("machine", "radio", "intercom", "terminal", "static"),
-     "cold electronic hum, distant radio static beds, tense intimacy", 72, 0.35),
-    (("creature", "monster", "inhuman", "strange"),
-     "unsettling intimate drones, close mic texture, held breath", 66, 0.3),
-    (("animal", "dog", "cat", "bird"),
-     "gentle organic pads, soft flute-like tones, quiet wonder", 76, 0.5),
-    (("hostile", "threat", "afraid", "danger", "gun"),
-     "taut low strings, heartbeat pulse, whispered tension", 88, 0.4),
-]
-
-
-def _clean_scene_text(scene_prompt: str) -> str:
-    """Compress a (possibly long, comma-stuffed image) prompt into a short
-    descriptor suitable as a music style cue."""
-    if not scene_prompt:
-        return ""
-    text = " ".join(str(scene_prompt).split())
-    # Image prompts open with a style stamp that barely changes. Scoring the
-    # first 240 characters made every turn the same piece of music. The unique
-    # shot — what the camera sees now — is at the end.
-    if len(text) > 240:
-        return text[-240:]
-    return text
-
-
-def _scene_to_music_prompt(scene_prompt: str, mode: str = "scene",
-                           direction: str | None = None):
-    """Map a scene descriptor to (weighted_prompts, generation_config_kwargs).
-
-    Returns plain data (list of {text, weight} dicts + a kwargs dict) so this is
-    unit-testable without a network call. A text-prompted music model gets the
-    flattened text; Lyria takes weighted prompts and a config natively.
-    """
-    scene = _clean_scene_text(scene_prompt)
-    low = scene.lower()
-    mode = (mode or "scene").strip().lower()
-
-    if mode == "verbatim":
-        return ([{"text": scene, "weight": 1.0}],
-                {"bpm": 80, "temperature": 1.0, "guidance": 4.0})
-
-    if mode == "encounter":
-        mood_phrase = "tense low-drone confrontation, analog-horror pulse, held breath"
-        bpm = 68
-        brightness = 0.28
-        for keywords, phrase, cue_bpm, cue_bright in _ENCOUNTER_STANCE_CUES:
-            if any(k in low for k in keywords):
-                mood_phrase = phrase
-                bpm = cue_bpm
-                brightness = cue_bright
-                break
-        prompts = [
-            {"text": (scene or "a sudden confrontation"), "weight": 1.0},
-            {"text": mood_phrase, "weight": 1.2},
-            {"text": "sparse analog underscore, no melody, danger in the room", "weight": 0.8},
-        ]
-        if direction is None:
-            direction = get_music_direction()
-        if direction:
-            prompts.insert(0, {"text": direction, "weight": 1.1})
-        return (prompts, {"bpm": bpm, "temperature": 1.05, "guidance": 4.2,
-                          "brightness": brightness})
-
-    if mode == "conversation":
-        mood_phrase = "warm, intimate, hushed cinematic conversation underscore"
-        bpm = 74
-        brightness = 0.45
-        for keywords, phrase, cue_bpm, cue_bright in _CONVERSATION_KIND_CUES:
-            if any(k in low for k in keywords):
-                mood_phrase = phrase
-                bpm = cue_bpm
-                brightness = cue_bright
-                break
-        if mood_phrase.startswith("warm, intimate"):
-            for keywords, phrase, cue_bpm, cue_bright in _MOOD_CUES:
-                if any(k in low for k in keywords):
-                    mood_phrase = phrase + ", intimate and sparse"
-                    bpm = max(60, min(96, cue_bpm - 8))
-                    brightness = min(0.6, cue_bright)
-                    break
-        prompts = [
-            {"text": (scene or "a quiet conversation"), "weight": 1.0},
-            {"text": mood_phrase, "weight": 1.0},
-            {"text": _CONVERSATION_STYLE_ANCHORS, "weight": 0.8},
-        ]
-        if direction is None:
-            direction = get_music_direction()
-        if direction:
-            prompts.insert(0, {"text": direction, "weight": 1.1})
-        config = {"bpm": bpm, "brightness": brightness, "temperature": 1.05}
-        return prompts, config
-
-    mood_phrase = "calm, mysterious, exploratory ambient"
-    bpm = 78
-    brightness = 0.5
-    for keywords, phrase, cue_bpm, cue_bright in _MOOD_CUES:
-        if any(k in low for k in keywords):
-            mood_phrase = phrase
-            bpm = cue_bpm
-            brightness = cue_bright
-            break
-
-    prompts = [
-        {"text": (scene or "an unknown place"), "weight": 1.0},
-        {"text": mood_phrase, "weight": 0.9},
-        {"text": _STYLE_ANCHORS, "weight": 0.6},
-    ]
-    if direction is None:
-        direction = get_music_direction()
-    if direction:
-        prompts.insert(0, {"text": direction, "weight": 1.25})
-    config = {"bpm": bpm, "brightness": brightness, "temperature": 1.1}
-    return prompts, config
-
-
-def flatten_music_prompt(scene_prompt: str, mode: str = "scene",
-                         direction: str | None = None) -> str:
-    """One natural-language prompt a music model can compose from."""
-    prompts, cfg = _scene_to_music_prompt(scene_prompt, mode=mode,
-                                          direction=direction)
-    parts = [str(p.get("text") or "").strip() for p in prompts if p.get("text")]
-    bpm = cfg.get("bpm")
-    text = ". ".join(p for p in parts if p)
-    extras = [
-        "cinematic instrumental underscore",
-        "seamless looping",
-        "no vocals",
-        "no lyrics",
-    ]
-    if bpm:
-        extras.append(f"{int(bpm)} bpm")
-    for extra in extras:
-        if extra.lower() not in text.lower():
-            text = f"{text}. {extra}" if text else extra
-    return text[:2000]
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# World SFX prompts + pre-cached stock library
-# ────────────────────────────────────────────────────────────────────────────
-
-_AMBIENCE_CUES = [
-    (("rain", "storm", "downpour", "wet", "thunder"), "rain"),
-    (("cave", "tunnel", "underground", "basement", "sewer", "mine"), "cave"),
-    (("forest", "jungle", "trees", "woods", "meadow", "garden"), "forest"),
-    (("city", "street", "neon", "traffic", "market", "station", "crowd"), "urban"),
-    (("wind", "ruin", "wasteland", "desolate", "empty", "abandoned"), "wind"),
-    (("factory", "machine", "steam", "industrial", "pipe", "boiler"), "industrial"),
-    (("snow", "ice", "frozen", "tundra", "winter"), "wind"),
-    (("ocean", "sea", "river", "shore", "dock"), "rain"),
-    (("space", "void", "orbit", "cosmic"), "room"),
-]
-
-STOCK_STINGERS = {
-    "encounter_enter": {
-        "file": "sting_encounter_enter.mp3",
-        "prompt": (
-            "tense analog-horror confrontation stinger, low cinematic braam, "
-            "held breath, no melody, no vocals, short one-shot"
-        ),
-        "seconds": 3.0,
-        "loop": False,
-    },
-    "encounter_lock": {
-        "file": "sting_encounter_lock.mp3",
-        "prompt": (
-            "heavy metallic lock slam, confrontation plate locking into place, "
-            "analog horror, no music, no vocals, short one-shot"
-        ),
-        "seconds": 2.0,
-        "loop": False,
-    },
-    "encounter_resolve": {
-        "file": "sting_encounter_resolve.mp3",
-        "prompt": (
-            "short committed action impact, analog thud and tape scrape, "
-            "no melody, no vocals, one-shot"
-        ),
-        "seconds": 2.0,
-        "loop": False,
-    },
-    "encounter_exit": {
-        "file": "sting_encounter_exit.mp3",
-        "prompt": (
-            "aftermath release, air leaving a room, distant tape unwind, "
-            "soft analog fade, no melody, no vocals, one-shot"
-        ),
-        "seconds": 2.5,
-        "loop": False,
-    },
-    "encounter_hitch": {
-        "file": "sting_encounter_hitch.mp3",
-        "prompt": (
-            "world hitch-step analog tape jump, brief glitch stutter, "
-            "VHS scrape, no music, no vocals, one-shot"
-        ),
-        "seconds": 1.2,
-        "loop": False,
-    },
-    "encounter_die": {
-        "file": "sting_encounter_die.mp3",
-        "prompt": (
-            "fatal analog collapse, descending low tone and tape death, "
-            "no melody, no vocals, short one-shot"
-        ),
-        "seconds": 2.8,
-        "loop": False,
-    },
-    "encounter_title": {
-        "file": "sting_encounter_title.mp3",
-        "prompt": (
-            "full-screen ENCOUNTER title slam, analog-horror braam, "
-            "low cinematic impact, no melody, no vocals, short one-shot"
-        ),
-        "seconds": 2.2,
-        "loop": False,
-    },
-    "encounter_survive": {
-        "file": "sting_encounter_survive.mp3",
-        "prompt": (
-            "survive the interrupt, air returns, analog release rising, "
-            "soft hope without melody, no vocals, one-shot"
-        ),
-        "seconds": 2.4,
-        "loop": False,
-    },
-    "encounter_stance_hostile": {
-        "file": "sting_encounter_stance_hostile.mp3",
-        "prompt": (
-            "hostile confrontation color, low brass growl, analog tension, "
-            "no melody, no vocals, short one-shot"
-        ),
-        "seconds": 1.8,
-        "loop": False,
-    },
-    "encounter_stance_desperate": {
-        "file": "sting_encounter_stance_desperate.mp3",
-        "prompt": (
-            "desperate confrontation color, rising pulse, taut strings, "
-            "short breath, no vocals, short one-shot"
-        ),
-        "seconds": 1.8,
-        "loop": False,
-    },
-    "encounter_stance_opportunistic": {
-        "file": "sting_encounter_stance_opportunistic.mp3",
-        "prompt": (
-            "opportunistic confrontation color, quiet predatory hush, "
-            "sly analog drop, no vocals, short one-shot"
-        ),
-        "seconds": 1.8,
-        "loop": False,
-    },
-    "encounter_stance_creature": {
-        "file": "sting_encounter_stance_creature.mp3",
-        "prompt": (
-            "creature confrontation color, wet organic drone, inhuman rasp, "
-            "held breath, no vocals, short one-shot"
-        ),
-        "seconds": 1.8,
-        "loop": False,
-    },
-}
-
-STOCK_AMBIENCE = {
-    "industrial": {
-        "file": "amb_industrial.mp3",
-        "prompt": (
-            "seamless looping industrial machinery hum, steam pipes, distant "
-            "metal, no music, no melody, no vocals"
-        ),
-        "seconds": 16.0,
-        "loop": True,
-    },
-    "rain": {
-        "file": "amb_rain.mp3",
-        "prompt": (
-            "seamless looping rain on concrete and distant thunder rumble, "
-            "no music, no melody, no vocals"
-        ),
-        "seconds": 16.0,
-        "loop": True,
-    },
-    "cave": {
-        "file": "amb_cave.mp3",
-        "prompt": (
-            "seamless looping cave drip, subterranean room tone, distant echo, "
-            "no music, no melody, no vocals"
-        ),
-        "seconds": 16.0,
-        "loop": True,
-    },
-    "wind": {
-        "file": "amb_wind.mp3",
-        "prompt": (
-            "seamless looping cold wind through ruins, sparse debris, "
-            "no music, no melody, no vocals"
-        ),
-        "seconds": 16.0,
-        "loop": True,
-    },
-    "room": {
-        "file": "amb_room.mp3",
-        "prompt": (
-            "seamless looping quiet indoor room tone, faint electrical hum, "
-            "no music, no melody, no vocals"
-        ),
-        "seconds": 16.0,
-        "loop": True,
-    },
-    "urban": {
-        "file": "amb_urban.mp3",
-        "prompt": (
-            "seamless looping distant night city ambience, low traffic, "
-            "no music, no melody, no vocals"
-        ),
-        "seconds": 16.0,
-        "loop": True,
-    },
-    "forest": {
-        "file": "amb_forest.mp3",
-        "prompt": (
-            "seamless looping night forest insects and distant leaves, "
-            "no music, no melody, no vocals"
-        ),
-        "seconds": 16.0,
-        "loop": True,
-    },
-}
-
+# The one encounter stinger /api/scene_audio hands back with an encounter bed.
 _ENCOUNTER_STINGER = "encounter_enter"
 
 
-def _ambience_kind(scene_prompt: str, mode: str = "scene") -> str:
-    """Which stock ambience bed matches this scene."""
+# ────────────────────────────────────────────────────────────────────────────
+# Availability
+# ────────────────────────────────────────────────────────────────────────────
+
+def unavailable_reason() -> str | None:
+    """None while the shipped library is there — which is always, in a build
+    and in the repo. The string is shown to the player and the editor
+    (/api/health's music block), so it names the one thing that can be wrong."""
+    return None if sound_library.available() else MISSING_REASON
+
+
+def is_available() -> bool:
+    """True when the library can answer every lane.
+
+    Not a key question any more: no key makes sound, and none is needed. Mock
+    mode plays it too — the library never touches the network, so the reason
+    mock mode had to be kept away from the generator (a "fully offline" run
+    once billed music on every scene) no longer applies.
+    """
+    return unavailable_reason() is None
+
+
+def _entry_url(entry: dict | None) -> str | None:
+    """The library file's URL, or None when the file itself is gone."""
+    if not entry:
+        return None
+    try:
+        if not sound_library.file_path(entry).is_file():
+            return None
+    except OSError:
+        return None
+    return sound_library.url(entry)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# What the run knows: phase, world, and what the frame shows
+# ────────────────────────────────────────────────────────────────────────────
+
+def _run_context(session_id: str = "default") -> dict:
+    """{phase, world, vision} for a session, read-only.
+
+    The client asks for a bed with the scene text alone; the phase (does the
+    music escalate?), the world (desert, neon, riot?) and vision's read of the
+    frame (where is this fight?) are the server's to know.
+    """
+    out = {"phase": "normal", "world": "", "vision": ""}
+    sid = str(session_id or "default")
+    if sid == "legacy":
+        return out
+    try:
+        import engine
+        # Not engine._load_state: its path helper creates the session folder,
+        # and asking what a session sounds like must not make one.
+        path = Path(engine._get_session_root(sid)) / "state.json"
+        if not path.is_file():
+            return out
+        st = json.loads(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return out
+    out["phase"] = str(st.get("current_phase") or "normal")
+    out["world"] = str(st.get("world_prompt") or "")
+    out["vision"] = str(st.get("current_vision") or "")
+    return out
+
+
+def _clean_scene_text(scene_prompt: str) -> str:
+    """One line, capped. The picker reads the whole description — the old
+    last-240-characters rule existed for a generator's prompt budget, and a
+    word match does better with the place line AND the shot."""
+    if not scene_prompt:
+        return ""
+    return " ".join(str(scene_prompt).split())[:4000]
+
+
+# Scene ambience remembers what it chose per session, so a corridor vision
+# describes in new words every turn keeps one bed (sound_library.PREFER_RATIO).
+_LAST_BED: dict[str, str] = {}
+_LAST_BED_LOCK = threading.Lock()
+
+
+def scene_ambience_enabled() -> bool:
+    """On: the whole ambience library, matched to the scene. Off: only the
+    seven generic beds (rain, cave, wind, room, urban, forest, industrial) —
+    the keyword-matched stock bed every scene used to end up on."""
+    try:
+        import engine
+        return bool(getattr(engine, "SCENE_AMBIENCE_ENABLED", True))
+    except Exception:
+        return True
+
+
+def _pick_music(text: str, mode: str, ctx: dict, session_id: str) -> dict | None:
+    direction = get_music_direction()
+    phase = ctx.get("phase") or "normal"
+    # The world's own brief, the scene, and the author's words: "neon
+    # synthwave, rain on chrome" in the editor makes a desert World's score the
+    # cyber one, which is what writing it there means.
+    flavor = sound_library.flavor_of(" ".join((ctx.get("world") or "", text, direction)))
+    # The authored direction counts double: it is the author saying what the
+    # world should sound like ("slow detuned piano"), not a description of it.
+    query = " ".join(p for p in (text, direction, direction) if p)
+    return sound_library.pick(
+        "music", query, mode=mode, phase=phase, flavor=flavor,
+        seed=f"{session_id}|{mode}|{phase}|{flavor}")
+
+
+def _pick_ambience(text: str, mode: str, ctx: dict, session_id: str) -> dict | None:
+    sid = str(session_id or "default")
+    direction = get_sfx_direction()
+    context = [(ctx.get("vision") or "", 0.35), (direction, 1.0),
+               (ctx.get("world") or "", 0.15)]
+    with _LAST_BED_LOCK:
+        prefer = _LAST_BED.get(sid) if mode == "scene" else None
+    entry = sound_library.pick(
+        "ambience", text, seed=sid, context=context, prefer=prefer,
+        generic_only=not scene_ambience_enabled())
+    if entry and mode == "scene":
+        with _LAST_BED_LOCK:
+            _LAST_BED[sid] = str(entry.get("id"))
+    return entry
+
+
+def get_scene_audio(scene_prompt: str, session_id: str = "default",
+                    mode: str = "scene") -> dict | None:
+    """Music + ambience URLs for a scene; for an encounter, the stingers too.
+
+    ``mode="conversation"`` picks an intimate bed, ``"encounter"`` a stance-
+    coloured confrontation bed (the client sends "stance — kind — label —
+    danger — stakes") plus the stinger catalog. A scene round a campfire is
+    scored as camp. A locked loop replaces the music everywhere but encounters.
+    None only for an empty scene with no loop, or a missing library.
+    """
     mode = (mode or "scene").strip().lower()
-    if mode == "conversation":
-        return "room"
-    low = _clean_scene_text(scene_prompt).lower()
-    for keywords, kind in _AMBIENCE_CUES:
-        if any(k in low for k in keywords):
-            return kind
-    return "industrial" if mode == "encounter" else "room"
-
-
-def _scene_to_sfx_prompt(scene_prompt: str, mode: str = "scene",
-                         direction: str | None = None) -> str:
-    """Short Foley/ambience description — not a second music score."""
-    kind = _ambience_kind(scene_prompt, mode=mode)
-    spec = STOCK_AMBIENCE.get(kind) or STOCK_AMBIENCE["room"]
+    if mode not in ("scene", "conversation", "encounter"):
+        mode = "scene"
     scene = _clean_scene_text(scene_prompt)
-    if mode == "conversation":
-        text = (
-            f"seamless looping quiet room tone under a conversation, "
-            f"{spec['prompt']}"
-        )
-    elif mode == "encounter":
-        text = (
-            f"seamless looping tense close-mic ambience, danger in the room, "
-            f"{spec['prompt']}"
-        )
-    elif scene:
-        text = f"seamless looping environmental ambience of {scene}. {spec['prompt']}"
+    loop = None if mode == "encounter" else custom_loop()
+    if not loop and not scene and mode != "encounter":
+        return None
+    ctx = _run_context(session_id)
+    place = scene or "an unknown place"
+
+    music = None
+    if loop:
+        music_url = loop["url"]
     else:
-        text = spec["prompt"]
-    if direction is None:
-        direction = get_sfx_direction()
-    if direction:
-        text = f"{direction.strip()}. {text}"
-    return text[:SFX_TEXT_MAX]
+        music = _pick_music(place, sound_library.infer_mode(place, mode), ctx, session_id)
+        music_url = _entry_url(music)
+    bed = _pick_ambience(place, mode, ctx, session_id)
+    sfx_url = _entry_url(bed)
+    stinger_url = stock_stinger_url(_ENCOUNTER_STINGER) if mode == "encounter" else None
+    stingers = encounter_stinger_urls() if mode == "encounter" else None
+
+    if not music_url and not sfx_url and not stinger_url:
+        return None
+    result = {
+        "audio_url": music_url,
+        "sfx_url": sfx_url,
+        "stinger_url": stinger_url,
+        "cached": True,
+        "pending_music": False,
+        "pending_sfx": False,
+        "mode": mode,
+        "music_id": (music or {}).get("id"),
+        "sfx_id": (bed or {}).get("id"),
+        "phase": ctx.get("phase"),
+    }
+    if not music_url:
+        why = unavailable_reason()
+        if why:
+            result["reason"] = why
+    if stingers:
+        result["stingers"] = stingers
+    if loop:
+        result["source"] = loop.get("source") or "custom"
+    return result
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # Action foley — the sound of the thing you just did
 #
-# Everything else here is a BED: loops under the scene. This is the one sound
-# tied to the PLAYER, not the place, and it exists because pressing a choice
-# made no noise beyond a UI blip — you acted and the world did not answer.
-#
-# The prompt source is the choice TEXT, and that is the whole trick. An earlier
-# attempt fed the render prompt in ("third-person follow-cam, 1993 consumer
-# colour film, the back of the head toward the lens…") and got mush, because
-# none of that describes a sound. "Sprint toward the utility truck" is four
-# concrete words a Foley model can actually record.
-#
-# Generated when the CHOICES APPEAR, not when one is clicked — they sit on
-# screen for ten or twenty seconds first, which is plenty, and a foley that
-# arrives eight seconds after the button is useless. By click time it is a
-# cache hit and plays instantly.
+# Everything else here is a BED under the place. This is the one sound tied to
+# the PLAYER: pressing a choice used to make no noise beyond a UI blip — you
+# acted and the world did not answer. The source is the choice TEXT ("Kick open
+# the rusted door" -> a door kicked in), never the render prompt: an earlier
+# attempt fed the camera rig and film stock in and got mush. The frame's vision
+# read only chooses between clips the words already chose (gravel or catwalk
+# under a sprint). The client still prewarms the slate and plays on the click;
+# with every clip on disk that is simply a cache it never has to wait for.
 # ────────────────────────────────────────────────────────────────────────────
 
-ACTION_FOLEY_SECONDS = 2.0
 _FOLEY_NUM_RE = re.compile(r"^\s*\d+\s*[.)\-:]?\s*")
 
 
@@ -502,32 +250,6 @@ def _clean_action(action: str) -> str:
     text = " ".join(str(action or "").split())
     text = _FOLEY_NUM_RE.sub("", text)
     return text.strip().rstrip(".!?").strip()
-
-
-def _action_foley_prompt(action: str, direction: str | None = None) -> str:
-    """Short and concrete. Long prompts are what made this sound like nothing."""
-    act = _clean_action(action)
-    if not act:
-        return ""
-    text = (
-        f"{act}. A single close-mic Foley recording of exactly that action and "
-        f"nothing else — the sounds the body, the ground and the objects make. "
-        f"Dry, close, real, recorded in the room. One take, one action, a clear "
-        f"start and a natural end. No music, no melody, no voice, no words, "
-        f"not a loop."
-    )
-    if direction is None:
-        direction = get_sfx_direction()
-    if direction:
-        text = f"{direction.strip().rstrip('. ')}. {text}"
-    return text[:SFX_TEXT_MAX]
-
-
-def _foley_cache_name(action: str) -> str:
-    prompt = _action_foley_prompt(action)
-    key = json.dumps({"p": prompt, "s": ACTION_FOLEY_SECONDS,
-                      "prov": "sfx-foley"}, sort_keys=True)
-    return "foley_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16] + ".mp3"
 
 
 def action_foley_enabled() -> bool:
@@ -539,121 +261,43 @@ def action_foley_enabled() -> bool:
 
 
 def action_foley(action: str, session_id: str = "default") -> dict | None:
-    """The sound of one action. {url, cached, pending} or None.
+    """The sound of one action: {url, id, cached, pending} or None.
 
-    Same non-blocking contract as everything else in here: a miss is kicked to
-    the background and reported pending. The client pre-warms on the slate and
-    plays on the click, so pending should be rare by the time it matters.
+    The seed is the action's own words, so the same line always sounds the
+    same and two different doors can land on two different door clips.
     """
     if not action_foley_enabled() or not is_available():
         return None
     act = _clean_action(action)
     if len(act) < 2:
         return None
-
-    fname = _foley_cache_name(act)
-    fpath = _get_audio_dir(session_id) / fname
-    url = f"/audio/{fname}"
-    if fpath.exists() and fpath.stat().st_size > 32:
-        return {"url": _sessionize_url(url, session_id), "cached": True,
-                "pending": False}
-
-    prompt = _action_foley_prompt(act)
-
-    def _make():
-        try:
-            _cached_or_generate(
-                fpath,
-                lambda: _generate_sfx(prompt, ACTION_FOLEY_SECONDS, loop=False,
-                                      session_id=session_id),
-            )
-        except Exception as e:
-            print(f"[FOLEY] {act[:40]!r} failed: {e}", flush=True)
-
-    _kick(("foley", str(fpath)), _make)
-    return {"url": _sessionize_url(url, session_id), "cached": False,
-            "pending": True}
+    ctx = _run_context(session_id)
+    entry = sound_library.pick("foley", act, seed=act, context=ctx.get("vision") or "")
+    url = _entry_url(entry)
+    if not url:
+        return None
+    return {"url": url, "id": entry.get("id"), "cached": True, "pending": False}
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # Consequence bed — the sound of what the choice DID
 #
-# Action foley above answers the CLICK: two seconds of the verb, fired the
-# instant you press it. Then the turn renders for half a minute and the
-# flipbook plays the outcome out across four to sixteen frames — the most
-# motion this game ever puts on screen, and the only thing under it was the
-# room tone that was already playing before you chose. The beat with the most
-# to watch had the least to hear.
+# Foley answers the CLICK. Then the turn renders for half a minute and the
+# flipbook plays the outcome out — the most motion this game puts on screen,
+# and it had only the room tone under it. This is that beat's own sound,
+# chosen from the turn's visual caption (the client sends meta.visual, or the
+# prose when there is none): 6-12 seconds, by what happened — a door breached,
+# a collapse, gunfire, a discovery, dread when nothing names itself.
 #
-# This is that beat's own bed. Two things make it a different lane rather than
-# a longer foley:
-#
-#   · It is generated from the turn's VISUAL SCENE, not the choice text. Foley
-#     is the sound of what you MEANT to do; this is the shot the turn is about
-#     to draw, and those are often not the same event.
-#   · It is LONG — most of a wait, not a two-second hit — because the gap it
-#     covers is the whole image generation.
-#
-# It is deliberately NOT a loop. It was one, holding until the next action was
-# committed, and that is the version that had to be taken out: a distinctive
-# 18-second gesture repeating under a player who is reading gets annoying fast,
-# and the thing that makes a sound feel like the world answering is that it
-# happens ONCE. It plays through and stops. The scene's own ambience is
-# underneath it the whole time and is what fills the rest of the wait — that
-# lane is built to loop and is generic enough to bear it.
-#
-# Kicked the moment the consequence lands, which is five pipeline steps ahead
-# of the picture (action → consequence → world_update → world_respond →
-# actions → guide_image). The client opens it as soon as it is on disk rather
-# than holding it for the frames: guide_image alone is 20-40 seconds, the
-# ceremony has six short blips to fill that with, and that wait was the
-# longest silence in the turn. The prose the bed is made from is already on
-# screen by then, so it is not arriving early.
-#
-# Unlike foley this can never be a cache hit across turns: a consequence is
-# written fresh every time, so this is one generation per turn. That is the
-# cost of the lane and it is why it has its own switch.
+# It is deliberately NOT a loop. It was one once, holding until the next
+# action, and a distinctive gesture repeating under a player who is reading is
+# exactly what stops it reading as the world answering. It plays through and
+# stops; the scene's ambience underneath is the lane built to loop.
 # ────────────────────────────────────────────────────────────────────────────
 
-CONSEQUENCE_BED_SECONDS = 18.0
-# The wrapper below runs ~180 characters. The prose gets the rest of the
-# budget, and a sound model does nothing useful with more of it than this.
-CONSEQUENCE_TEXT_MAX = 220
-
-
 def _clean_consequence(text: str) -> str:
-    """The outcome, trimmed to something a sound model can actually record."""
     out = " ".join(str(text or "").split())
-    out = _FOLEY_NUM_RE.sub("", out).strip()
-    if len(out) <= CONSEQUENCE_TEXT_MAX:
-        return out.rstrip(",;:- ").strip()
-    head, sep, _tail = out[:CONSEQUENCE_TEXT_MAX].rpartition(" ")
-    return (head if sep else out[:CONSEQUENCE_TEXT_MAX]).rstrip(",;:- ").strip()
-
-
-def _consequence_bed_prompt(text: str, direction: str | None = None) -> str:
-    """Concrete first, instruction after — the same shape foley needed."""
-    what = _clean_consequence(text)
-    if not what:
-        return ""
-    out = (
-        f"{what}. One continuous recording of that moment and what it leaves "
-        f"behind — the place and the movement still in it, close and real. It "
-        f"begins, it settles, it dies away. No music, no melody, no voice, no "
-        f"words, not a loop."
-    )
-    if direction is None:
-        direction = get_sfx_direction()
-    if direction:
-        out = f"{direction.strip().rstrip('. ')}. {out}"
-    return out[:SFX_TEXT_MAX]
-
-
-def _consequence_cache_name(text: str) -> str:
-    prompt = _consequence_bed_prompt(text)
-    key = json.dumps({"p": prompt, "s": CONSEQUENCE_BED_SECONDS,
-                      "prov": "sfx-consequence"}, sort_keys=True)
-    return "beat_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16] + ".mp3"
+    return _FOLEY_NUM_RE.sub("", out).strip()
 
 
 def consequence_bed_enabled() -> bool:
@@ -665,140 +309,29 @@ def consequence_bed_enabled() -> bool:
 
 
 def consequence_bed(text: str, session_id: str = "default") -> dict | None:
-    """One turn's outcome, as a single pass. {url, cached, pending} or None.
-
-    Same non-blocking contract as the rest of this module: a miss is kicked to
-    a thread and reported pending. The client arms this on the consequence and
-    starts it when the frames play, so pending should be long resolved.
-    """
+    """One turn's outcome, as a single pass: {url, id, cached, pending} or None."""
     if not consequence_bed_enabled() or not is_available():
         return None
     what = _clean_consequence(text)
     # A consequence is prose. Anything this short is a fragment or an error
-    # string, and generating a bed from it produces noise with no subject.
+    # string, and there is nothing in it to choose a sound by.
     if len(what) < 12:
         return None
-
-    fname = _consequence_cache_name(what)
-    fpath = _get_audio_dir(session_id) / fname
-    url = f"/audio/{fname}"
-    if fpath.exists() and fpath.stat().st_size > 32:
-        return {"url": _sessionize_url(url, session_id), "cached": True,
-                "pending": False}
-
-    prompt = _consequence_bed_prompt(what)
-
-    def _make():
-        try:
-            _cached_or_generate(
-                fpath,
-                lambda: _generate_sfx(prompt, CONSEQUENCE_BED_SECONDS, loop=False,
-                                      session_id=session_id),
-            )
-        except Exception as e:
-            print(f"[BEAT] {what[:40]!r} failed: {e}", flush=True)
-
-    _kick(("beat", str(fpath)), _make)
-    return {"url": _sessionize_url(url, session_id), "cached": False,
-            "pending": True}
+    ctx = _run_context(session_id)
+    entry = sound_library.pick("consequence", what, seed=what,
+                               context=ctx.get("vision") or "")
+    url = _entry_url(entry)
+    if not url:
+        return None
+    return {"url": url, "id": entry.get("id"), "cached": True, "pending": False}
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Availability, and THE GENERATOR SEAM
-# ────────────────────────────────────────────────────────────────────────────
-
-def _offline_mock() -> bool:
-    """True when this process promised not to call the network.
-
-    ``--mock`` / ``MOCK_MODE`` / ``STORYGEN_BACKEND=mock`` still inherit every
-    key in the parent shell. Without this gate, a "fully offline" run billed
-    music and sound on every scene — keep it in front of any generator that
-    comes back.
-    """
-    if (os.environ.get("MOCK_MODE") or "").strip().lower() in ("1", "true", "yes"):
-        return True
-    if (os.environ.get("STORYGEN_BACKEND") or "").strip().lower() == "mock":
-        return True
-    try:
-        import keys_store
-        return bool(keys_store.is_explicit_mock())
-    except Exception:
-        return False
-
-
-def unavailable_reason() -> str | None:
-    """Why generation cannot run, or None when it can.
-
-    Today it never can, on any key: see ``is_available``. The string is shown
-    to the player and the editor (/api/health's music block, the null
-    responses of /api/scene_audio, /api/action_foley, /api/consequence_audio),
-    so it says what is actually true rather than naming a key to go and find.
-    """
-    if _offline_mock():
-        return "offline mock — no sound is generated"
-    return NO_GENERATOR_REASON
-
-
-def is_available() -> bool:
-    """True when music or sound can be generated. Always False today.
-
-    No provider on the player's key makes sound effects: the game runs on
-    Gemini or OpenAI alone, and neither has a sound-effects model, so scene
-    ambience, action foley, the consequence bed and the stock catalog cannot be
-    made. Music returns with Lyria on the Gemini key
-    (docs/plans/ONE_KEY_AUDIO_PLAN.md) — when it does, this answers per lane
-    (music yes, sound no) rather than for the module, and `_generate_music`
-    is where it plugs in.
-
-    Everything that plays a file already on disk ignores this: the chosen
-    loop, the menu loop, designer one-shots and any stock file present.
-    """
-    return unavailable_reason() is None
-
-
-def _generate_music(prompt: str, seconds: float, mode: str = "scene",
-                    session_id: str = "default") -> bytes | None:
-    """THE SEAM. Instrumental music for a flattened prompt, or None.
-
-    Every music lane in this module comes through here — the per-scene bed
-    (`_resolve_music`), the editor's preview (`generate_preview`), the locked
-    loop (`generate_loop`) and the editor's test clip (`generate_test_clip`) —
-    so a generator plugs in at this one place and all of them come back.
-
-    Nothing plugs in yet. The next one is Lyria (Google's music model, on the
-    same Gemini key the game already plays on); see
-    docs/plans/ONE_KEY_AUDIO_PLAN.md. When it lands it must: return encoded
-    audio bytes the browser can decode (the cache names end ``.mp3`` — change
-    them with the format), log its spend through ``cost_tracker.record_usage``
-    with a rate in pricing.json, stay behind ``_offline_mock()``, and make
-    ``is_available`` answer True for music.
-
-    ``mode`` is the profile the prompt was flattened from (scene /
-    conversation / encounter / verbatim), for a model that takes weighted
-    prompts and a config rather than one line — ``_scene_to_music_prompt``
-    already builds those.
-    """
-    return None
-
-
-def _generate_sfx(prompt: str, seconds: float, loop: bool = True,
-                  session_id: str = "default") -> bytes | None:
-    """Sound effects for a prompt, or None. Always None: no provider on the
-    player's key makes sound effects, and none is planned.
-
-    Kept only so the four sound lanes (scene ambience, action foley, the
-    consequence bed, the stock catalog) keep one call each and their prompt
-    builders stay tested; with ``is_available`` False none of them reaches it.
-    """
-    return None
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# Paths / cache
+# Paths
 # ────────────────────────────────────────────────────────────────────────────
 
 def _session_audio_dir(session_id: str = "default", *, create: bool = True) -> Path:
-    """Per-session scratch dir for generated audio (mirrors the image dir)."""
+    """Per-session audio dir (clips generated before the library, still served)."""
     safe = Path(str(session_id or "default")).name or "default"
     try:
         import engine
@@ -814,36 +347,11 @@ def _get_audio_dir(session_id: str = "default") -> Path:
     return _session_audio_dir(session_id, create=True)
 
 
-def _cache_name(scene_prompt: str, seconds: int, mode: str = "scene") -> str:
-    """Stable filename keyed on the derived music prompt so identical scenes
-    reuse the same clip instead of paying for it twice."""
-    prompts, cfg = _scene_to_music_prompt(scene_prompt, mode=mode)
-    key = json.dumps({"p": prompts, "c": cfg, "s": seconds, "m": mode,
-                      "prov": "music"}, sort_keys=True)
-    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
-    prefix = {"conversation": "convo", "encounter": "enc"}.get(mode, "scene")
-    return f"{prefix}_{digest}.mp3"
-
-
-def _sfx_cache_name(scene_prompt: str, seconds: int, mode: str = "scene") -> str:
-    prompt = _scene_to_sfx_prompt(scene_prompt, mode=mode)
-    key = json.dumps({"p": prompt, "s": seconds, "m": mode, "prov": "sfx"},
-                     sort_keys=True)
-    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
-    prefix = {"conversation": "amb_convo", "encounter": "amb_enc"}.get(mode, "amb")
-    return f"{prefix}_{digest}.mp3"
-
-
-_INFLIGHT_LOCK = threading.Lock()
-_INFLIGHT = {}
-
-
 # ────────────────────────────────────────────────────────────────────────────
 # THE CHOSEN LOOP
 # ────────────────────────────────────────────────────────────────────────────
 
 MUSIC_DIR = _paths.data_root() / "assets" / "music"
-STOCK_DIR = MUSIC_DIR / "stock"
 _LOOP_META = MUSIC_DIR / "loop.json"
 _DIRECTION_PATH = MUSIC_DIR / "direction.json"
 _SFX_DIRECTION_PATH = MUSIC_DIR / "sfx_direction.json"
@@ -852,6 +360,9 @@ _MENU_DIRECTION_PATH = MUSIC_DIR / "menu_direction.json"
 LOOP_EXTS = {"wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg",
              "m4a": "audio/mp4", "mp4": "audio/mp4", "webm": "audio/webm"}
 MAX_LOOP_BYTES = 12 * 1024 * 1024
+# A lock that was DERIVED from the direction — once generated, now chosen from
+# the library by its words — is stale the moment the direction changes.
+_DERIVED_SOURCES = ("generated", "library")
 
 
 def _loop_url(meta: dict) -> str:
@@ -870,7 +381,7 @@ def _file_url(path: Path) -> str | None:
 
 
 def get_sfx_direction() -> str:
-    """Authored 'how this place sounds as Foley', or empty."""
+    """Authored 'how this place sounds', or empty. Steers the ambience pick."""
     try:
         if not _SFX_DIRECTION_PATH.exists():
             return ""
@@ -889,7 +400,8 @@ def set_sfx_direction(prompt: str) -> str:
 
 
 def get_music_direction() -> str:
-    """The authored 'how this world sounds' line, or empty."""
+    """The authored 'how this world sounds' line, or empty. Steers the music
+    pick; world_regen reads and writes it too."""
     try:
         if not _DIRECTION_PATH.exists():
             return ""
@@ -904,7 +416,7 @@ def _preview_name(stem: str = "preview") -> str:
 
 
 def last_preview(stem: str = "preview") -> dict | None:
-    """The last generated sample for this stem, if it is still on disk."""
+    """A sample left on disk from before the library, if any."""
     safe = _preview_name(stem)
     for ext in ("mp3", "wav"):
         fname = f"{safe}.{ext}"
@@ -935,37 +447,33 @@ def set_music_direction(prompt: str) -> str:
     if text != old:
         _clear_preview("preview")
     loop = custom_loop()
-    if loop and loop.get("source") == "generated":
+    if loop and loop.get("source") in _DERIVED_SOURCES:
         clear_custom_loop()
     return text
 
 
-def generate_preview(prompt: str, seconds: int = 8, stem: str = "preview") -> dict | None:
-    """Hear the prompt without locking it as the game's only track."""
-    if not is_available():
-        return None
+def _library_music_for(prompt: str, stem: str) -> dict | None:
+    """The library track closest to an author's words. The title screen's
+    stem asks the menu mode; anything else is read as a scene."""
+    mode = "menu" if stem in ("menu", "menu_preview") else "scene"
+    return sound_library.pick("music", prompt or "", mode=mode,
+                              flavor=sound_library.flavor_of(prompt or ""),
+                              seed=f"direction|{prompt}")
+
+
+def library_preview(prompt: str, stem: str = "preview") -> dict | None:
+    """Hear what the library would play for these words, without locking it.
+    Writes nothing: the preview is the library file itself."""
     prompt = (prompt or "").strip()
-    if not prompt:
+    if not prompt or not is_available():
         return None
-    seconds = max(3, min(16, int(seconds or 8)))
-    data = _generate_music(flatten_music_prompt(prompt, mode="verbatim"),
-                           seconds, mode="verbatim")
-    if not data:
+    entry = _library_music_for(prompt, "menu_preview" if stem == "menu_preview" else "preview")
+    url = _entry_url(entry)
+    if not url:
         return None
-    MUSIC_DIR.mkdir(parents=True, exist_ok=True)
-    safe = _preview_name(stem)
-    for ext in ("mp3", "wav"):
-        stale = MUSIC_DIR / f"{safe}.{ext}"
-        try:
-            if stale.exists():
-                stale.unlink()
-        except OSError:
-            pass
-    fname = f"{safe}.mp3"
-    (MUSIC_DIR / fname).write_bytes(data)
-    stamp = int(time.time() * 1000)
-    return {"url": f"/audio/{fname}?v={stamp}", "file": fname,
-            "prompt": prompt[:400], "seconds": seconds}
+    return {"url": url, "file": entry.get("file"), "id": entry.get("id"),
+            "prompt": prompt[:400], "seconds": entry.get("seconds"),
+            "source": "library"}
 
 
 def custom_loop() -> dict | None:
@@ -1014,20 +522,25 @@ def set_uploaded_loop(data: bytes, ext: str, name: str = "",
     return _write_loop(data, ext, "upload", name=name, stem=stem)
 
 
-def generate_loop(prompt: str, seconds: int = DEFAULT_CLIP_SECONDS,
-                  stem: str = "loop") -> dict | None:
-    """Generate a loop from a MUSIC prompt and adopt it."""
-    if not is_available():
-        return None
+def library_loop(prompt: str, stem: str = "loop") -> dict | None:
+    """Lock the library track closest to these words as the only track.
+
+    Copied into the loop slot (not pointed at) so a lock survives a library
+    that later renames or drops the file, and so every path that already
+    knows how to serve and clear a lock keeps working unchanged.
+    """
     prompt = (prompt or "").strip()
-    if not prompt:
+    if not prompt or not is_available():
         return None
-    seconds = max(3, min(30, int(seconds or DEFAULT_CLIP_SECONDS)))
-    data = _generate_music(flatten_music_prompt(prompt, mode="verbatim"),
-                           seconds, mode="verbatim")
-    if not data:
+    entry = _library_music_for(prompt, stem)
+    if not entry:
         return None
-    return _write_loop(data, "mp3", "generated", prompt=prompt, name="", stem=stem)
+    path = sound_library.file_path(entry)
+    if not path.is_file():
+        return None
+    return _write_loop(path.read_bytes(), path.suffix.lstrip(".") or "mp3",
+                       "library", prompt=prompt, name=str(entry.get("id") or ""),
+                       stem=stem)
 
 
 def clear_custom_loop() -> None:
@@ -1058,12 +571,13 @@ def set_menu_direction(prompt: str) -> str:
     if text != old:
         _clear_preview("menu_preview")
     loop = menu_loop()
-    if loop and loop.get("source") == "generated":
+    if loop and loop.get("source") in _DERIVED_SOURCES:
         clear_menu_loop()
     return text
 
 
 def menu_loop() -> dict | None:
+    """The title-screen track somebody LOCKED, or None."""
     try:
         if not _MENU_META.exists():
             return None
@@ -1077,6 +591,21 @@ def menu_loop() -> dict | None:
         return None
 
 
+def menu_library() -> dict | None:
+    """The shipped title theme: what the start menu plays when nothing is
+    locked. A deliberate track, not an audition — the menu used to fall back to
+    a ten-second editor sample and loop it forever, which is why only a LOCKED
+    track may play there; the library's menu tracks were written as title
+    themes. The menu direction, when there is one, chooses between them."""
+    entry = sound_library.pick("music", get_menu_direction(), mode="menu",
+                               seed="menu")
+    url = _entry_url(entry)
+    if not url:
+        return None
+    return {"url": url, "id": entry.get("id"), "source": "library",
+            "file": entry.get("file")}
+
+
 def clear_menu_loop() -> None:
     try:
         for old in MUSIC_DIR.glob("menu.*"):
@@ -1086,20 +615,11 @@ def clear_menu_loop() -> None:
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Stock stingers / fallback ambience
+# Stingers and the generic beds — the old "stock" catalog, now library entries
 # ────────────────────────────────────────────────────────────────────────────
 
-def _stock_path(filename: str) -> Path:
-    return STOCK_DIR / Path(filename).name
-
-
-def _stock_url(filename: str) -> str | None:
-    return _file_url(_stock_path(filename))
-
-
 def stock_stinger_url(kind: str = _ENCOUNTER_STINGER) -> str | None:
-    spec = STOCK_STINGERS.get(kind)
-    return _stock_url(spec["file"]) if spec else None
+    return _entry_url(sound_library.get(kind)) if kind else None
 
 
 def encounter_designer_urls() -> dict:
@@ -1121,368 +641,70 @@ def encounter_designer_urls() -> dict:
 
 
 def encounter_stinger_urls() -> dict:
-    """Ready stock one-shots keyed by catalog id (encounter_hitch, …).
-
-    Missing files are omitted so the client can fall through to designer
-    WAVs and then the built-in synth. Warmup fills these in the background.
-    """
+    """Every encounter one-shot keyed by its id (encounter_hitch, …) — the
+    ids the client's Sound.STOCK_CUE already maps. Designer WAVs still win
+    on the client; the built-in synth is the last resort."""
     out = {}
-    for key in STOCK_STINGERS:
-        url = stock_stinger_url(key)
+    for entry in sound_library.entries("stinger"):
+        url = _entry_url(entry)
         if url:
-            out[key] = url
+            out[str(entry["id"])] = url
     return out
 
 
 def stock_ambience_url(kind: str) -> str | None:
-    spec = STOCK_AMBIENCE.get(kind)
-    return _stock_url(spec["file"]) if spec else None
-
-
-def stock_spec(key: str) -> tuple[dict | None, str]:
-    """Return (spec, kind) for a catalog id, or (None, "")."""
-    if key in STOCK_STINGERS:
-        return STOCK_STINGERS[key], "stinger"
-    if key in STOCK_AMBIENCE:
-        return STOCK_AMBIENCE[key], "ambience"
-    return None, ""
+    """One of the seven generic beds by its old name (rain, cave, …)."""
+    return _entry_url(sound_library.get(f"amb_{kind}"))
 
 
 def stock_status() -> dict:
-    """What's already on disk — used by tests, the editor, and warmup."""
+    """The stingers and the generic beds, keyed as the editor's Stock box and
+    the client's prefetch have always read them."""
     out = {}
-    for key, spec in {**STOCK_STINGERS, **STOCK_AMBIENCE}.items():
-        url = _stock_url(spec["file"])
-        kind = "stinger" if key in STOCK_STINGERS else "ambience"
+    for entry in sound_library.entries("stinger"):
+        url = _entry_url(entry)
+        out[str(entry["id"])] = {
+            "file": entry.get("file"), "ready": bool(url), "url": url,
+            "prompt": entry.get("prompt") or "", "seconds": entry.get("seconds"),
+            "loop": False, "kind": "stinger",
+        }
+    for entry in sound_library.entries("ambience"):
+        if not entry.get("generic"):
+            continue
+        key = str(entry["id"]).removeprefix("amb_")
+        url = _entry_url(entry)
         out[key] = {
-            "file": spec["file"],
-            "ready": bool(url),
-            "url": url,
-            "prompt": spec["prompt"],
-            "seconds": spec["seconds"],
-            "loop": spec["loop"],
-            "kind": kind,
+            "file": entry.get("file"), "ready": bool(url), "url": url,
+            "prompt": entry.get("prompt") or "", "seconds": entry.get("seconds"),
+            "loop": True, "kind": "ambience",
         }
     return out
 
 
-def ensure_one_stock(key: str, *, force: bool = False,
-                     session_id: str = "default") -> dict | None:
-    """Generate or reuse one catalog entry. Returns a status dict.
-
-    A file already on disk is always handed back. With nothing to generate it,
-    a missing one comes back ``url: None`` with ``error: "no_key"`` (the token
-    /api/music/test already maps to "unavailable") and ``reason`` saying why.
-    """
-    spec, kind = stock_spec(key)
-    if not spec:
+def stock_record(key: str) -> dict | None:
+    """One stock row as {id, kind, url, cached, prompt, file}, or None."""
+    rec = stock_status().get(key)
+    if not rec:
         return None
-    path = _stock_path(spec["file"])
-    url = _stock_url(spec["file"])
-    if url and not force:
-        return {"id": key, "kind": kind, "url": url, "cached": True,
-                "prompt": spec["prompt"], "file": spec["file"]}
-    missing = {"id": key, "kind": kind, "url": url, "cached": bool(url),
-               "prompt": spec["prompt"], "file": spec["file"],
-               "error": "no_key",
-               "reason": unavailable_reason() or NO_GENERATOR_REASON}
-    if not is_available():
-        return missing
-    data = _generate_sfx(
-        spec["prompt"], spec["seconds"], loop=spec["loop"],
-        session_id=session_id,
-    )
-    if not data:
-        return missing
-    STOCK_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    return {"id": key, "kind": kind, "url": _stock_url(spec["file"]),
-            "cached": False, "prompt": spec["prompt"], "file": spec["file"]}
+    return {"id": key, "kind": rec["kind"], "url": rec["url"],
+            "cached": bool(rec["url"]), "prompt": rec["prompt"],
+            "file": rec["file"]}
 
 
-def ensure_stock_sounds(*, force: bool = False,
-                        session_id: str = "default") -> dict:
-    """Generate any missing stock stingers and fallback ambience beds.
-
-    Safe to call repeatedly. Missing files are created; present ones are kept.
-    With no generator (today) nothing is created and the report says why.
-    """
-    if not is_available():
-        return {"ok": False, "reason": "no_key",
-                "why": unavailable_reason() or NO_GENERATOR_REASON,
-                "files": stock_status()}
-    STOCK_DIR.mkdir(parents=True, exist_ok=True)
-    results = {}
-    catalog = list(STOCK_STINGERS.items()) + list(STOCK_AMBIENCE.items())
-    for key, spec in catalog:
-        path = _stock_path(spec["file"])
-        if path.exists() and path.stat().st_size > 32 and not force:
-            results[key] = {"url": _stock_url(spec["file"]), "cached": True}
-            continue
-        try:
-            data = _generate_sfx(
-                spec["prompt"], spec["seconds"], loop=spec["loop"],
-                session_id=session_id,
-            )
-            if not data:
-                results[key] = {"error": NO_GENERATOR_REASON}
-                continue
-            path.write_bytes(data)
-            results[key] = {"url": _stock_url(spec["file"]), "cached": False}
-            print(f"[SCENE AUDIO] stock {key} -> {path.name} ({len(data)} bytes)",
-                  flush=True)
-        except Exception as e:
-            results[key] = {"error": str(e)}
-            print(f"[SCENE AUDIO] stock {key} failed: {e}", flush=True)
-    ready = sum(1 for v in results.values() if v.get("url"))
-    return {"ok": ready > 0, "ready": ready, "total": len(catalog),
-            "files": results}
-
-
-_STOCK_WARMUP_LOCK = threading.Lock()
-_STOCK_WARMUP_STARTED = False
-
-
-def kick_stock_warmup() -> None:
-    """Fill missing stock files in the background. Not called from gameplay
-    scoring — that would race the first scene's music call and stall the
-    worker. The editor and /api/music kick this; with no generator it returns
-    at once.
-    """
-    global _STOCK_WARMUP_STARTED
-    if not is_available():
-        return
-    with _STOCK_WARMUP_LOCK:
-        if _STOCK_WARMUP_STARTED:
-            return
-        _STOCK_WARMUP_STARTED = True
-    threading.Thread(target=lambda: ensure_stock_sounds(), daemon=True,
-                     name="stock-audio-warmup").start()
-
-
-# kick_menu_preview() used to live here: /api/music warmed a 10-second sample
-# from the menu direction text so the title screen would have something to play.
-# Nothing plays it now — the title screen takes the LOCKED menu track and
-# nothing else — so warming it only spent generation credit on audio no one
-# asked for. The editor's Play menu button still previews on demand.
-
-
-def _with_inflight(ikey, fn):
-    with _INFLIGHT_LOCK:
-        lock = _INFLIGHT.get(ikey)
-        if lock is None:
-            lock = threading.Lock()
-            _INFLIGHT[ikey] = lock
-    with lock:
-        try:
-            return fn()
-        finally:
-            with _INFLIGHT_LOCK:
-                _INFLIGHT.pop(ikey, None)
-
-
-def _kick(ikey, fn) -> None:
-    threading.Thread(
-        target=lambda: _with_inflight(ikey, fn),
-        daemon=True, name="scene-audio-gen",
-    ).start()
-
-
-def _cached_or_generate(fpath: Path, generate):
-    if fpath.exists() and fpath.stat().st_size > 32:
-        return True, False
-    data = generate()
-    if not data:
-        return False, False
-    fpath.parent.mkdir(parents=True, exist_ok=True)
-    tmp = fpath.with_name(fpath.name + ".part")
-    try:
-        tmp.write_bytes(data)
-        os.replace(tmp, fpath)
-    except Exception:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
-    return True, True
-
-
-def _resolve_music(scene_prompt: str, session_id: str, seconds: int,
-                   mode: str) -> tuple[str | None, bool, bool]:
-    """Return (web_url, cached, pending).
-
-    Uncached music starts in the background. The first scene must not wait
-    20–90s on a music model — the client retries until the file lands.
-    """
-    # A locked explore loop must not steal the confrontation bed.
-    if (mode or "scene").strip().lower() != "encounter":
-        loop = custom_loop()
-        if loop:
-            return loop["url"], True, False
-    fname = _cache_name(scene_prompt, seconds, mode=mode)
-    fpath = _get_audio_dir(session_id) / fname
-    web_url = f"/audio/{fname}"
-    if fpath.exists() and fpath.stat().st_size > 32:
-        return web_url, True, False
-    if not is_available():
-        return None, False, False
-
-    def _go():
-        dest = _get_audio_dir(session_id) / fname
-        try:
-            _cached_or_generate(
-                dest,
-                lambda: _generate_music(
-                    flatten_music_prompt(scene_prompt, mode=mode),
-                    seconds, mode=mode, session_id=session_id,
-                ),
-            )
-        except Exception as e:
-            print(f"[SCENE AUDIO] music failed: {e}", flush=True)
-
-    _kick((session_id, fname), _go)
-    return None, False, True
-
-
-def scene_ambience_enabled() -> bool:
-    """Whether a scene gets its OWN ambience or just the stock bed.
-
-    Off falls back to the keyword-matched stock loop, which is what every
-    scene used to end up on anyway — see the retry bug in SceneAudio.score.
-    """
-    try:
-        import engine
-        return bool(getattr(engine, "SCENE_AMBIENCE_ENABLED", True))
-    except Exception:
-        return True
-
-
-def _resolve_sfx(scene_prompt: str, session_id: str, seconds: int,
-                 mode: str) -> tuple[str | None, bool, bool]:
-    """Scene-specific looping ambience, falling back to a stock bed.
-
-    Stock plays immediately. Scene-specific fill-in (or a first generate when
-    stock is missing) always runs in the background.
-    """
-    kind = _ambience_kind(scene_prompt, mode=mode)
-    stock = stock_ambience_url(kind)
-    if mode == "conversation":
-        return stock, True, False
-    if not scene_ambience_enabled():
-        return stock, bool(stock), False
-    fname = _sfx_cache_name(scene_prompt, seconds, mode=mode)
-    fpath = _session_audio_dir(session_id, create=False) / fname
-    web_url = f"/audio/{fname}"
-    if fpath.exists() and fpath.stat().st_size > 32:
-        return web_url, True, False
-    if not is_available():
-        return stock, bool(stock), False
-
-    def _go():
-        dest = _get_audio_dir(session_id) / fname
-        try:
-            _cached_or_generate(
-                dest,
-                lambda: _generate_sfx(
-                    _scene_to_sfx_prompt(scene_prompt, mode=mode),
-                    seconds, loop=True, session_id=session_id,
-                ),
-            )
-        except Exception as e:
-            print(f"[SCENE AUDIO] sfx failed, using stock {kind}: {e}", flush=True)
-
-    _kick((session_id, fname), _go)
-    if stock:
-        # Stock NOW so the scene is not silent, but pending=True because the
-        # scene's own loop is being made this second and the client has to come
-        # back for it. This used to claim (stock, cached=True, pending=False) —
-        # which was simply untrue, and it was the whole bug: the client had no
-        # way to learn the real loop had landed, so every location in the game
-        # played one of four keyword-matched stock beds forever while the
-        # scene-specific loops piled up on disk, generated, paid for, unheard.
-        return stock, False, True
-    return None, False, True
-
-
-def get_scene_audio(scene_prompt: str, session_id: str = "default",
-                    seconds: int = DEFAULT_CLIP_SECONDS,
-                    mode: str = "scene") -> dict | None:
-    """Return music + world-SFX URLs for a scene, or ``None`` when nothing
-    can be produced.
-
-    ``mode="conversation"`` selects the intimate Conversation Moment profile.
-    ``mode="encounter"`` selects a stance-colored confrontation bed, tense
-    ambience, and the stock stinger catalog (``stingers``).
-
-    Uncached generation is kicked to a background thread. The response is
-    immediate: stock ambience / a pending flag, then the client retries. With
-    no generator (today) only files already on disk come back — the locked
-    loop, a clip cached earlier in the session, stock ambience and stingers —
-    and ``reason`` says why the music is missing.
-    """
-    mode = (mode or "scene").strip().lower()
-    if mode not in ("scene", "conversation", "encounter"):
-        mode = "scene"
-    scene_prompt = _clean_scene_text(scene_prompt)
-    loop = None if mode == "encounter" else custom_loop()
-    if mode == "encounter":
-        if is_available() and not stock_stinger_url(_ENCOUNTER_STINGER):
-            try:
-                ensure_one_stock(_ENCOUNTER_STINGER, session_id=session_id)
-            except Exception as e:
-                print(f"[SCENE AUDIO] enter stinger failed: {e}", flush=True)
-        kick_stock_warmup()
-    if not loop and not scene_prompt and mode != "encounter":
-        return None
-
-    seconds = max(3, min(30, int(seconds or DEFAULT_CLIP_SECONDS)))
-    sfx_seconds = DEFAULT_SFX_SECONDS
-    place = scene_prompt or "an unknown place"
-
-    music_url, music_cached, music_pending = _resolve_music(
-        place, session_id, seconds, mode)
-    sfx_url, sfx_cached, sfx_pending = _resolve_sfx(
-        place, session_id, sfx_seconds, mode)
-    stinger_url = stock_stinger_url(_ENCOUNTER_STINGER) if mode == "encounter" else None
-    stingers = encounter_stinger_urls() if mode == "encounter" else None
-
-    if not music_url and not sfx_url and not stinger_url and not (
-            music_pending or sfx_pending):
-        return None
-
-    result = {
-        "audio_url": music_url,
-        "sfx_url": sfx_url,
-        "stinger_url": stinger_url,
-        "cached": bool(music_cached and sfx_cached),
-        "pending_music": bool(music_pending),
-        "pending_sfx": bool(sfx_pending),
-        "mode": mode,
-    }
-    if session_id and session_id != "default":
-        result["audio_url"] = _sessionize_url(result["audio_url"], session_id)
-        result["sfx_url"] = _sessionize_url(result["sfx_url"], session_id)
-    if not music_url and not music_pending:
-        why = unavailable_reason()
-        if why:
-            result["reason"] = why
-    if stingers:
-        result["stingers"] = stingers
-    if loop:
-        result["source"] = loop.get("source") or "custom"
-    return result
-
+# ────────────────────────────────────────────────────────────────────────────
+# Serving what is not under static/
+# ────────────────────────────────────────────────────────────────────────────
 
 def resolve_audio_path(filename: str, session_id: str = "default") -> Path | None:
     """Resolve a served '/audio/<filename>' back to disk (path-traversal safe).
 
-    Looks in the requested session, then default, then stock / locked loops,
-    then any session's audio dir — same last-resort scan as /images so a
-    URL that lost its ?session= param still plays.
+    The library is served from /static/ and never comes through here. This is
+    for the locked loops, the editor's old previews, and clips an earlier
+    build generated into a session's audio/ dir.
     """
-    safe = Path(filename).name
-    if not safe or safe.endswith(".part"):
+    # A bare file name or nothing: no separators, no parent hops.
+    safe = Path(str(filename or "")).name
+    if not safe or safe.endswith(".part") or safe != str(filename):
         return None
     for sid in (session_id, "default"):
         if not sid:
@@ -1490,9 +712,6 @@ def resolve_audio_path(filename: str, session_id: str = "default") -> Path | Non
         candidate = _session_audio_dir(sid, create=False) / safe
         if candidate.exists():
             return candidate
-    stock = STOCK_DIR / safe
-    if stock.exists():
-        return stock
     loop = MUSIC_DIR / safe
     if loop.exists() and (
         safe.startswith("loop.") or safe.startswith("preview.")
@@ -1500,22 +719,6 @@ def resolve_audio_path(filename: str, session_id: str = "default") -> Path | Non
     ):
         return loop
     return _find_audio_in_any_session(safe)
-
-
-def _sessionize_url(url: str | None, session_id: str) -> str | None:
-    """Stamp a non-default session onto a generated clip URL."""
-    if not url or not session_id or session_id == "default":
-        return url
-    name = Path(str(url).split("?", 1)[0]).name
-    if name.startswith(("loop.", "preview.", "menu", "test_", "sting_")):
-        return url
-    if name.startswith("amb_") and not name.startswith(("amb_convo_", "amb_enc_")):
-        # stock amb_rain.mp3 etc. live outside the session dir
-        digest_like = name[4:].split(".", 1)[0]
-        if not any(c in "0123456789abcdef" for c in digest_like) or len(digest_like) < 12:
-            return url
-    sep = "&" if "?" in url else "?"
-    return f"{url}{sep}session={session_id}"
 
 
 def _find_audio_in_any_session(filename: str) -> Path | None:
@@ -1532,67 +735,80 @@ def _find_audio_in_any_session(filename: str) -> Path | None:
     return None
 
 
-def inspect_scene(scene_prompt: str, mode: str = "scene") -> dict:
-    """The prompts that would be sent — no generation, no billing."""
+# ────────────────────────────────────────────────────────────────────────────
+# The editor's readouts
+# ────────────────────────────────────────────────────────────────────────────
+
+def inspect_scene(scene_prompt: str, mode: str = "scene",
+                  session_id: str = "default") -> dict:
+    """What a scene would play and why — the picks, the words that chose them,
+    and the prompt each clip was made from. No side effects."""
     mode = (mode or "scene").strip().lower()
     if mode not in ("scene", "conversation", "encounter"):
         mode = "scene"
     scene = _clean_scene_text(scene_prompt)
+    place = scene or "an unknown place"
+    ctx = _run_context(session_id)
+    music = _pick_music(place, sound_library.infer_mode(place, mode), ctx, session_id)
+    bed = sound_library.pick(
+        "ambience", place, seed=str(session_id or "default"),
+        context=[(ctx.get("vision") or "", 0.35), (get_sfx_direction(), 1.0)],
+        generic_only=not scene_ambience_enabled())
     stinger_id = _ENCOUNTER_STINGER if mode == "encounter" else None
     return {
         "mode": mode,
         "scene": scene,
+        "phase": ctx.get("phase"),
         "direction": get_music_direction(),
         "sfx_direction": get_sfx_direction(),
-        "music_prompt": flatten_music_prompt(scene or "an unknown place", mode=mode),
-        "sfx_prompt": _scene_to_sfx_prompt(scene or "an unknown place", mode=mode),
-        "ambience_kind": _ambience_kind(scene, mode=mode),
+        "music_id": (music or {}).get("id"),
+        "music_prompt": (music or {}).get("prompt") or "",
+        "music_url": _entry_url(music),
+        "music_matched": sound_library.matched_tags(music, place) if music else [],
+        "ambience_id": (bed or {}).get("id"),
+        "ambience_kind": (bed or {}).get("id"),
+        "sfx_prompt": (bed or {}).get("prompt") or "",
+        "sfx_url": _entry_url(bed),
+        "ambience_matched": sound_library.matched_tags(bed, place) if bed else [],
         "stinger_id": stinger_id,
         "stinger_url": stock_stinger_url(stinger_id) if stinger_id else None,
         "can_generate": is_available(),
     }
 
 
-def generate_test_clip(scene_prompt: str, mode: str = "scene",
-                       layer: str = "music", seconds: int | None = None,
-                       session_id: str = "default") -> dict | None:
-    """Write a one-off test file the editor can play without locking a loop."""
+def library_test_clip(scene_prompt: str, mode: str = "scene",
+                      layer: str = "music", session_id: str = "default") -> dict | None:
+    """The clip a scene would play on one layer, for the editor to audition."""
     layer = (layer or "music").strip().lower()
     mode = (mode or "scene").strip().lower()
-    if mode not in ("scene", "conversation", "encounter", "verbatim"):
+    if mode not in ("scene", "conversation", "encounter"):
         mode = "scene"
     if layer == "stinger":
-        key = _ENCOUNTER_STINGER
-        return ensure_one_stock(key, force=False, session_id=session_id)
-    if not is_available():
-        return None
-    MUSIC_DIR.mkdir(parents=True, exist_ok=True)
-    if layer == "sfx":
-        seconds = max(3, min(16, int(seconds or 8)))
-        prompt = _scene_to_sfx_prompt(scene_prompt, mode=mode)
-        data = _generate_sfx(prompt, seconds, loop=True, session_id=session_id)
-        fname = "test_sfx.mp3"
+        entry = sound_library.get(_ENCOUNTER_STINGER)
+    elif layer == "sfx":
+        entry = sound_library.pick("ambience", _clean_scene_text(scene_prompt),
+                                   seed=str(session_id or "default"),
+                                   context=get_sfx_direction())
     else:
-        seconds = max(3, min(16, int(seconds or 8)))
-        prompt = flatten_music_prompt(scene_prompt, mode=mode)
-        data = _generate_music(prompt, seconds, mode=mode, session_id=session_id)
-        fname = "test_music.mp3"
-    if not data:
+        place = _clean_scene_text(scene_prompt) or "an unknown place"
+        entry = _pick_music(place, sound_library.infer_mode(place, mode),
+                            _run_context(session_id), session_id)
+    url = _entry_url(entry)
+    if not url:
         return None
-    (MUSIC_DIR / fname).write_bytes(data)
-    stamp = int(time.time() * 1000)
     return {
-        "url": f"/audio/{fname}?v={stamp}",
-        "file": fname,
-        "prompt": prompt,
+        "url": url,
+        "file": entry.get("file"),
+        "id": entry.get("id"),
+        "prompt": entry.get("prompt") or "",
         "layer": layer,
         "mode": mode,
-        "seconds": seconds,
+        "seconds": entry.get("seconds"),
     }
 
 
 def list_generated_cache(session_id: str = "default") -> list[dict]:
-    """Session-scored clips currently on disk."""
+    """Clips an earlier build generated into this session, still on disk."""
     out = []
     try:
         audio_dir = _get_audio_dir(session_id)
@@ -1605,7 +821,8 @@ def list_generated_cache(session_id: str = "default") -> list[dict]:
             continue
         kind = "other"
         for prefix, label in (("scene_", "music"), ("convo_", "conversation"),
-                              ("enc_", "encounter"), ("amb_", "ambience")):
+                              ("enc_", "encounter"), ("amb_", "ambience"),
+                              ("foley_", "foley"), ("beat_", "consequence")):
             if path.name.startswith(prefix):
                 kind = label
                 break
@@ -1623,7 +840,7 @@ def list_generated_cache(session_id: str = "default") -> list[dict]:
 
 
 def clear_generated_cache(session_id: str = "default") -> int:
-    """Delete per-scene generated clips. Does not touch stock or locked loops."""
+    """Delete those old per-session clips. The library and locked loops stay."""
     removed = 0
     try:
         audio_dir = _get_audio_dir(session_id)
@@ -1633,7 +850,7 @@ def clear_generated_cache(session_id: str = "default") -> int:
         if not path.is_file():
             continue
         if path.name.endswith(".part") or path.name.startswith(
-                ("scene_", "convo_", "enc_", "amb_")):
+                ("scene_", "convo_", "enc_", "amb_", "foley_", "beat_")):
             try:
                 path.unlink()
                 removed += 1

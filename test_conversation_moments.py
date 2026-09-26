@@ -4,39 +4,46 @@ from __future__ import annotations
 from pathlib import Path
 
 import scene_audio
+import sound_library
 import engine
 
 
-def test_conversation_music_profile_is_intimate():
-    prompts, cfg = scene_audio._scene_to_music_prompt(
-        "a frightened radio operator in a basement", mode="conversation",
-        direction="",
-    )
-    joined = " ".join(p["text"] for p in prompts).lower()
-    assert "intimate" in joined or "conversation" in joined or "radio" in joined
-    assert 60 <= cfg["bpm"] <= 100
-    # Cache names diverge by mode so scene + conversation beds don't collide.
-    scene_name = scene_audio._cache_name("a quiet hallway", 12, mode="scene")
-    convo_name = scene_audio._cache_name("a quiet hallway", 12, mode="conversation")
-    assert scene_name.startswith("scene_")
-    assert convo_name.startswith("convo_")
-    assert scene_name != convo_name
+def _quiet_run(monkeypatch, tmp_path):
+    music = tmp_path / "music"
+    music.mkdir(exist_ok=True)
+    monkeypatch.setattr(scene_audio, "MUSIC_DIR", music)
+    monkeypatch.setattr(scene_audio, "_DIRECTION_PATH", music / "direction.json")
+    monkeypatch.setattr(scene_audio, "_SFX_DIRECTION_PATH", music / "sfx_direction.json")
+    monkeypatch.setattr(scene_audio, "_LOOP_META", music / "loop.json")
+    monkeypatch.setattr(scene_audio, "_run_context",
+                        lambda session_id="default": {"phase": "normal", "world": "", "vision": ""})
+    return music
 
 
-def test_authored_music_direction_is_mixed_into_every_scene():
+def test_conversation_music_profile_is_intimate(monkeypatch, tmp_path):
+    """A conversation gets a conversation bed from the library — sparse and
+    dialogue-friendly — never the scene's, so the two don't collide."""
+    _quiet_run(monkeypatch, tmp_path)
+    convo = scene_audio.get_scene_audio("a frightened radio operator in a basement",
+                                        mode="conversation")
+    scene = scene_audio.get_scene_audio("a frightened radio operator in a basement")
+    assert convo["music_id"].startswith("mus_convo_")
+    assert "conversation" in sound_library.get(convo["music_id"])["prompt"].lower()
+    assert scene["music_id"] != convo["music_id"]
+
+
+def test_authored_music_direction_is_mixed_into_every_scene(monkeypatch, tmp_path):
     """Typing a score in the editor used to do nothing unless Generate
     succeeded and locked a loop. The direction has to ride on the next
-    scene — and the next run — without that."""
-    prompts, _cfg = scene_audio._scene_to_music_prompt(
-        "a sunlit kitchen", mode="scene",
-        direction="slow detuned piano, tape hiss, no drums",
-    )
-    joined = " ".join(p["text"] for p in prompts)
-    assert "detuned piano" in joined
-    assert "sunlit kitchen" in joined
-    empty, _ = scene_audio._scene_to_music_prompt(
-        "a sunlit kitchen", mode="scene", direction="")
-    assert "detuned piano" not in " ".join(p["text"] for p in empty)
+    scene — and the next run — without that: it is read into every pick."""
+    _quiet_run(monkeypatch, tmp_path)
+    before = scene_audio.get_scene_audio("a sunlit kitchen")["music_id"]
+    scene_audio.set_music_direction("neon synthwave, glitch, cyberpunk rain")
+    after = scene_audio.get_scene_audio("a sunlit kitchen")["music_id"]
+    assert before != after
+    assert "cyber" in after
+    scene_audio.set_music_direction("")
+    assert scene_audio.get_scene_audio("a sunlit kitchen")["music_id"] == before
 
 
 def test_saving_a_direction_clears_a_generated_lock(tmp_path, monkeypatch):
@@ -57,19 +64,20 @@ def test_saving_a_direction_clears_a_generated_lock(tmp_path, monkeypatch):
     assert scene_audio.custom_loop() is None
 
 
-def test_scene_text_uses_the_shot_not_the_style_stamp():
+def test_scene_text_uses_the_shot_not_the_style_stamp(monkeypatch, tmp_path):
     """Image prompts open with a stable style stamp. Scoring the first
-    240 characters made every turn the same piece of music."""
+    240 characters made every turn the same piece of music; the shot at the end
+    is what has to decide the bed."""
+    _quiet_run(monkeypatch, tmp_path)
     stamp = (
-        "cinematic 35mm film still, analog grain, muted palette, "
-        "wide establishing shot of the authored location, "
+        "cinematic 35mm still, analog grain, muted palette, "
+        "wide establishing view of the authored location, "
     ) * 8
-    shot = "a rusted radio on a kitchen table under a bare bulb"
+    shot = "a shortwave radio hissing static on a kitchen table under a bare bulb"
     text = stamp + shot
-    assert "rusted radio" not in text[:240]
-    cleaned = scene_audio._clean_scene_text(text)
-    assert "rusted radio" in cleaned
-    assert cleaned == text[-240:]
+    assert "radio" not in text[:240]
+    assert shot in scene_audio._clean_scene_text(text)
+    assert scene_audio.get_scene_audio(text)["sfx_id"] == "amb_radio_room"
 
 
 def test_menu_loop_does_not_steal_the_match(tmp_path, monkeypatch):
@@ -133,15 +141,18 @@ def test_saving_menu_direction_clears_a_stale_preview(tmp_path, monkeypatch):
     assert (music / "menu_preview.wav").exists()
 
 
-def test_an_old_elevenlabs_key_does_not_turn_generation_back_on(monkeypatch):
-    """Music and SFX were ElevenLabs; nothing on the player's key makes them
-    now (docs/plans/ONE_KEY_AUDIO_PLAN.md). A keys.env that still carries
-    the old key must not bring back a Generate button that cannot work."""
+def test_an_old_elevenlabs_key_changes_nothing(monkeypatch):
+    """Music and SFX were ElevenLabs; now they are a shipped library that no
+    key touches (docs/plans/ONE_KEY_AUDIO_PLAN.md). A keys.env that still
+    carries the old key must not bring back a generator: the module has none,
+    and plays the same with the key as without it."""
     monkeypatch.delenv("MOCK_MODE", raising=False)
     monkeypatch.delenv("STORYGEN_BACKEND", raising=False)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    without = (scene_audio.is_available(), scene_audio.unavailable_reason())
     monkeypatch.setenv("ELEVENLABS_API_KEY", "sk_" + "a" * 40)
-    assert not scene_audio.is_available()
-    assert scene_audio.unavailable_reason()
+    assert (scene_audio.is_available(), scene_audio.unavailable_reason()) == without
+    assert not [n for n in dir(scene_audio) if n.startswith("_generate")]
 
 
 def test_build_portrait_prompt_uses_cinematic_anchor():

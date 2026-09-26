@@ -4475,9 +4475,10 @@
     });
   }
 
-  // Music: write how the world sounds. That line is saved and mixed into
-  // every scene score, including the next run. "Generate a loop" used to be
-  // the only path, and typing without clicking it did nothing.
+  // Music: write how the world sounds. That line is saved and steers which
+  // library track every scene plays, including the next run. Nothing is
+  // generated since the sound library shipped (scene_audio.py): Play and Lock
+  // find the library track closest to the words.
   function sheetMusic(n, body) {
     const write = group(body, "How it sounds");
     const now = group(body, "Playing");
@@ -4559,10 +4560,11 @@
       const loop = state && state.loop;
       const direction = (state && state.direction) || "";
       const menuLoop = state && state.menu_loop;
+      const menuShipped = state && state.menu_library;
       const menuDirection = (state && state.menu_direction) || "";
       const canGen = !!(state && state.can_generate);
       const whyGen = (state && state.can_generate_reason) ||
-        "Generating needs an ElevenLabs sk_ key (ACCOUNT on the start screen).";
+        "The sound library is missing (static/audio/library).";
 
       now.innerHTML = "";
       if (loop) {
@@ -4641,16 +4643,15 @@
         const prompt = ta.value.trim();
         if (!prompt) { ta.focus(); return; }
         hear.disabled = true;
-        hear.textContent = "Writing\u2026";
+        hear.textContent = "Choosing\u2026";
         await saveDirection(true);
-        B.toast("Writing a sample\u2026");
         try {
           const r = await postMusic("/api/music/preview", { prompt: prompt, seconds: 8 });
           const url = r.data && r.data.preview && r.data.preview.url;
           if (r.ok && url) {
             wakeAudio();
             const heard = await playNow(url, now);
-            B.toast(heard ? "Playing the sample." : "Hit play on the preview.", heard ? "" : "warn");
+            B.toast(heard ? "Playing the closest library track." : "Hit play on the preview.", heard ? "" : "warn");
           } else B.toast(r.message || "Couldn't play that.", "warn");
         } catch (_) { B.toast("Couldn't play that.", "warn"); }
         hear.disabled = false;
@@ -4681,9 +4682,9 @@
       if (!canGen) {
         note(write, whyGen + " Play loop still plays a loop you already have. The direction still saves. Uploading works either way.");
       } else {
-        note(write, "Leave the field and it's saved. Play loop plays what you have, or writes a sample. Lock replaces every scene with one loop.");
+        note(write, "Leave the field and it's saved; every scene's track is chosen with it. Play loop plays what you have, or the library track closest to your words. Lock replaces every scene with that one track.");
       }
-      statusRow(now, "ElevenLabs", canGen ? "ready" : whyGen, !canGen);
+      statusRow(now, "Library", canGen ? "ready" : whyGen, !canGen);
 
       bring.innerHTML = "";
       const file = document.createElement("input");
@@ -4724,12 +4725,14 @@
         statusRow(title, "Menu", menuLoop.source === "upload" ? "your upload" : "locked title track");
         if (menuLoop.name) statusRow(title, "File", menuLoop.name);
         if (menuLoop.prompt) statusRow(title, "Prompt", menuLoop.prompt);
+      } else if (menuShipped) {
+        statusRow(title, "Menu", "the shipped title theme" + (menuDirection ? ", chosen by your direction" : ""));
       } else if (menuDirection) {
         statusRow(title, "Menu", "your direction");
       } else {
         statusRow(title, "Menu", "silent until you set one");
       }
-      note(title, "This is the start screen, not the match. Leave it empty and the menu stays quiet instead of looping the last fight.");
+      note(title, "This is the start screen, not the match. Unlocked, it plays a title theme from the library, never the last fight.");
       const mta = document.createElement("textarea");
       mta.className = "eg-prompt is-short";
       mta.spellcheck = false;
@@ -4776,7 +4779,7 @@
         const prompt = mta.value.trim();
         if (!prompt) { mta.focus(); return; }
         playMenu.disabled = true;
-        playMenu.textContent = "Writing\u2026";
+        playMenu.textContent = "Choosing\u2026";
         await saveMenu(true);
         try {
           const r = await postMusic("/api/music/preview", {
@@ -4786,7 +4789,7 @@
           if (r.ok && url) {
             wakeAudio();
             const heard = await playNow(url, title);
-            B.toast(heard ? "Playing the title sample." : "Hit play on the preview.", heard ? "" : "warn");
+            B.toast(heard ? "Playing the closest title theme." : "Hit play on the preview.", heard ? "" : "warn");
           } else B.toast(r.message || "Couldn't play that.", "warn");
         } catch (_) { B.toast("Couldn't play that.", "warn"); }
         playMenu.disabled = false;
@@ -4860,7 +4863,7 @@
       title.appendChild(mfile);
 
       ambience.innerHTML = "";
-      note(ambience, "World Foley under the score. Empty means we pick rain, cave, room tone, and so on from the scene.");
+      note(ambience, "The place under the score, chosen from the library by what the frame shows. Words here steer the choice.");
       const sta = document.createElement("textarea");
       sta.className = "eg-prompt is-short";
       sta.spellcheck = false;
@@ -4898,7 +4901,7 @@
         await saveSfx(true);
         const scene = (testScene && testScene.value.trim()) || "an unknown place";
         hearSfx.disabled = true;
-        hearSfx.textContent = "Writing\u2026";
+        hearSfx.textContent = "Choosing\u2026";
         try {
           const r = await postMusic("/api/music/test", {
             prompt: scene, mode: testMode, layer: "sfx", seconds: 8,
@@ -4915,7 +4918,7 @@
       if (!canGen) hearSfx.disabled = true;
 
       test.innerHTML = "";
-      note(test, "See the exact prompts a scene would send, then generate a sample without locking a loop.");
+      note(test, "See what a scene would play from the library and why, then hear it without locking a loop.");
       const testScene = document.createElement("textarea");
       testScene.className = "eg-prompt is-short";
       testScene.spellcheck = false;
@@ -4934,11 +4937,11 @@
       const musicPrompt = document.createElement("textarea");
       musicPrompt.className = "eg-prompt is-short";
       musicPrompt.readOnly = true;
-      musicPrompt.placeholder = "Music prompt appears here.";
+      musicPrompt.placeholder = "The music it would play appears here.";
       const sfxPrompt = document.createElement("textarea");
       sfxPrompt.className = "eg-prompt is-short";
       sfxPrompt.readOnly = true;
-      sfxPrompt.placeholder = "Ambience prompt appears here.";
+      sfxPrompt.placeholder = "The ambience it would play appears here.";
       test.appendChild(musicPrompt);
       test.appendChild(sfxPrompt);
       const inspectMeta = document.createElement("p");
@@ -4952,6 +4955,7 @@
           musicPrompt.value = d.music_prompt || "";
           sfxPrompt.value = d.sfx_prompt || "";
           const bits = [];
+          if (d.music_id) bits.push("music: " + d.music_id);
           if (d.ambience_kind) bits.push("ambience: " + d.ambience_kind);
           if (d.stinger_id) bits.push("stinger: " + d.stinger_id);
           inspectMeta.textContent = bits.join(" · ");
@@ -4966,7 +4970,7 @@
         const btn = button(tacts, label, layer === "music" ? "we-btn-primary" : "", async () => {
           const prompt = testScene.value.trim() || testScene.placeholder;
           btn.disabled = true;
-          btn.textContent = "Writing\u2026";
+          btn.textContent = "Choosing\u2026";
           try {
             const r = await postMusic("/api/music/test", {
               prompt: prompt, mode: testMode, layer: layer, seconds: 8,
@@ -4992,25 +4996,7 @@
       const readyN = Object.keys(files).filter((k) => files[k] && files[k].ready).length;
       const totalN = Object.keys(files).length;
       statusRow(stockBox, "Ready", readyN + " / " + totalN);
-      note(stockBox, "Encounter hits and fallback rooms. Generate missing ones here; Play hears what's on disk.");
-      const stockActs = document.createElement("div");
-      stockActs.className = "eg-row eg-acts";
-      stockBox.appendChild(stockActs);
-      const genMissing = button(stockActs, "Generate missing", "we-btn-primary", async () => {
-        genMissing.disabled = true;
-        genMissing.textContent = "Writing\u2026";
-        B.toast("Generating missing stock\u2026");
-        try {
-          const r = await postMusic("/api/music/stock", {});
-          if (r.ok) {
-            B.toast("Stock updated.");
-            load();
-          } else B.toast(r.message || "Couldn't generate stock.", "warn");
-        } catch (_) { B.toast("Couldn't generate stock.", "warn"); }
-        genMissing.disabled = false;
-        genMissing.textContent = "Generate missing";
-      });
-      if (!canGen) genMissing.disabled = true;
+      note(stockBox, "Encounter hits and the seven generic rooms. They ship in the sound library; Play hears one.");
       Object.keys(files).forEach((id) => {
         const rec = files[id] || {};
         const row = document.createElement("div");
@@ -5020,36 +5006,10 @@
         name.textContent = (rec.ready ? "ready · " : "missing · ") + id.replace(/_/g, " ");
         row.appendChild(name);
         const play = button(row, "Play", "", async () => {
-          if (rec.url) {
-            await playClip(rec.url, stockBox, !!rec.loop);
-            return;
-          }
-          play.disabled = true;
-          try {
-            const r = await postMusic("/api/music/stock", { id: id });
-            const url = r.data && r.data.url;
-            if (r.ok && url) await playClip(url, stockBox, !!rec.loop);
-            else B.toast(r.message || "Not generated yet.", "warn");
-            load();
-          } catch (_) { B.toast("Couldn't play that.", "warn"); }
-          play.disabled = false;
+          if (rec.url) await playClip(rec.url, stockBox, !!rec.loop);
+          else B.toast("Not in the library.", "warn");
         });
-        const regen = button(row, rec.ready ? "Regen" : "Generate", "we-btn-ghost", async () => {
-          regen.disabled = true;
-          regen.textContent = "Writing\u2026";
-          try {
-            const r = await postMusic("/api/music/stock", { id: id, force: !!rec.ready });
-            if (r.ok && r.data && r.data.url) {
-              await playClip(r.data.url, stockBox, !!rec.loop);
-              B.toast(id.replace(/_/g, " ") + " ready.");
-              load();
-            } else B.toast(r.message || "Couldn't generate that.", "warn");
-          } catch (_) { B.toast("Couldn't generate that.", "warn"); }
-          regen.disabled = false;
-          regen.textContent = rec.ready ? "Regen" : "Generate";
-        });
-        if (!canGen && !rec.url) play.disabled = true;
-        if (!canGen) regen.disabled = true;
+        if (!rec.url) play.disabled = true;
         stockBox.appendChild(row);
         if (rec.prompt) {
           const p = document.createElement("p");
@@ -5062,7 +5022,7 @@
       cacheBox.innerHTML = "";
       const clips = (state && state.cache) || [];
       statusRow(cacheBox, "Clips", String(clips.length));
-      note(cacheBox, "Per-scene music and ambience already generated this session. Clearing forces a fresh score on the next turn. Locked loops and stock stay.");
+      note(cacheBox, "Clips an earlier build generated for this session, before the library. Clearing deletes them; the library and locked loops stay.");
       clips.forEach((clip) => {
         statusRow(cacheBox, clip.kind || "clip", clip.file);
       });

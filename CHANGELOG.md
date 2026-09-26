@@ -1,5 +1,73 @@
 # 🔧 CHANGELOG - September 25, 2026
 
+## 🔊 NEW: The game sounds like something again, on any key — a library made once on ElevenLabs and shipped
+
+Matt, the same day ElevenLabs left and took the music and effects with it: *"precache them FROM my 11 labs and ship precached whatever you need."*
+
+**What had gone quiet.** When the player's key became the only key, everything under the picture that is not a voice stopped. Neither Gemini nor OpenAI makes sound effects, so `scene_audio.is_available()` answered False on every key, `_generate_music` and `_generate_sfx` returned None, and the scene bed, the place's ambience, the sound of an action, the consequence bed and the stingers were all silent unless someone had uploaded a loop. Generating them had also been 38% of a measured run's cost. So now they are made once, by us, and shipped.
+
+**What is in it.** 171 clips, 28.0 MB, in `static/audio/library/` (in git and in the build), with `catalog.json` naming what each one is, the whole prompt that made it, and the words that choose it:
+- **Music, 20.** Instrumental loops of 34–45 s by mode (scene, conversation, encounter, camp, menu), phase (normal, escalating, critical) and world (the desert's analog dread, CYBER HORROR's neon, SWAT's riot). There is an encounter bed per stance: hostile, creature, desperate, opportunistic, and one for a critical fight. ElevenLabs Music, `force_instrumental`.
+- **Ambience, 33.** The 7 stock beds Matt had already paid for, plus 26 new 25 s loops. The new ones cover the places the vision reads of real runs describe: desert by day and night, the fence line under a floodlight, the facility yard, fluorescent corridors, a klaxon lockdown, the server room, a lab, rain on tin, the jeep idling, the campfire, neon rain, a cyber alley, a pump station, chemical vats, the sewer, a bunker, an oilfield, a riot a few blocks off, something organic in the walls, a mine shaft, an abandoned house, an office after hours, a radio room, a pine forest and a vast hangar.
+- **Foley, 86.** One-shots of 0.4–3 s keyed to what players actually do. The verbs came from 1,169 slate lines in this machine's sessions: kick 170, sprint 134, smash 128, vault 120, charge 52, slam 46, stomp 43. The commonest have two takes. The photojournalist has a shutter, a film advance and a flash.
+- **Consequence, 20.** 4–10 s one-shots by what happened: a door breached, a collapse, gunfire, water bursting, an alarm tripping, something moving in the dark, a discovery, and dread when the caption names nothing.
+- **Stingers, 12.** The encounter hits Matt had already paid for, re-levelled, under the ids `Sound.STOCK_CUE` already maps.
+
+It cost **$4.35** at the old pricing.json rates (sound $0.12 a minute of output, music $0.15), counting every retake. The account's own counter moved **39,417 credits**, which is roughly $8 at Pro's price per credit. Both are well under the $25 Matt approved.
+
+**How a clip is chosen.** `sound_library.pick(lane, text, mode=, phase=, seed=)` is pure and deterministic. It matches words the game already has against each clip's tags: the choice text for foley, vision's read of the frame for the bed and its ambience, and the turn's visual caption for the consequence. No prompt got longer and no model call was added.
+- Text is stemmed crudely and consistently, so "kicked", "kicking" and "kicks" all read "kick". A tag matches when its words appear in order within three words of each other, so "Kick open the rusted door" matches "kick door". A specific phrase outscores a loose word.
+- The seed breaks ties. The same line always makes the same sound, and two different doors land on both door-kick takes.
+- The phase and the world are read from the run on the server. So the score escalates with the run, and a neon World does not get the desert's bed.
+- A scene round a campfire is scored as camp. A place bed that is still nearly as good as the new best keeps playing, so a corridor that vision describes in new words every turn does not crossfade every turn.
+- The title screen's sound is the background film's own soundtrack. The film plays unmuted; its markup starts `muted` only so autoplay is allowed, and CLAUDE.md had the "played muted" wrong. The shipped title theme is for a build without the film.
+  - For a day the theme was laid over the film. Matt: *"on the title screen the background video has audio you know."* `SceneAudio.enterMenu` now asks `Signal.hasFilm()` first.
+  - The theme is a track written as a title theme, never the editor's audition, so the rule that the menu plays only chosen tracks still holds. A menu loop locked in the editor still replaces both.
+  - A second layer turned up while checking it. The run behind the menu is still synced into the page, and six seconds after boot its scene-audio fallback timer scored that run's scene. The desert bed and lab ambience played under the title film; before the library that call answered silence, so nobody heard it.
+  - Nothing scores the game scene while the title screen, the picker or the character screen is up (`SceneAudio.offStage`), and nothing is consumed, so the first sync in the game scores it.
+  - Checked in the browser pane with the real film: 15 s on the title screen fetched only the film, playing unmuted, and no library track. PLAY → Jason → The FIFTH CORNER paused the film and scored the desert bed and the scene's ambience. With the film removed, the title theme plays.
+
+**The mechanism worth knowing: a MOVE TO played the door it was walking to.** The first tag set put "blast door" on the blast-door clip. "Head for the Reinforced Blast Door" is a MOVE TO, and it matched that tag for 4 points against the footsteps' 1 for "head", so walking toward a door played it grinding open. Each clip now has two word lists. `tags` are what the thing IS and are matched against the action. `where` is where it sounds like that and is matched only against the place, so it can choose gravel or catwalk under a sprint but can never choose a clip on its own. The test for it is the slate line itself.
+
+**Found by checking.**
+- **The fallback bed was nearly silent.** The stock room tone, which plays whenever a frame names nothing audible and so is the most-played bed in the game, measured −59 dBFS RMS with a −53 dBFS peak. Gemini called it *"a low-frequency electrical hum and subtle room tone"*: the right sound, 35 dB too quiet. It is lifted now.
+- **One take was nearly silent.** The first "discovery" consequence peaked at −48.8 dBFS: the shimmer "blooming out of silence" came back as mostly silence, and processing had trimmed it to 0.77 s. It was retaken with an audible prompt and is 6.9 s now.
+- **Levels were uneven.** Normalising to the peak left the escalating desert track, all ticking percussion with a 30 dB crest, 12 dB under every other track. A look-ahead limiter now takes up to 3–8 dB off the peaks per lane (14 dB on that one track). It is still 5.5 dB under the rest.
+- **The first listener agreed with everything.** Asked "does this match: <prompt>", Gemini said yes 171 times out of 171. Asked to describe a clip blind, it described the same take before and after its mp3 re-encode (waveform correlation 0.98) as *"a heavy metal door closing and latching shut"* and *"a bright, sparkling synth chime arpeggio"*.
+  - So the check that counts is forced choice. `--check --quiz` gives Gemini 3.8 Flash the clip's own description among three from other sounds in its lane, twice, with different distractors.
+  - Clips it failed on both rounds were retaken, 32 retakes in all, some with sharper prompts (the backpack zip was heard as a growl by two different models). 10 of the first 17 passed on their second take. The last round lifted the rifle shot from 1 right in 6 to 5 in 6, and the metal pickup from 0 to 6.
+
+**How it was checked.**
+- **Levels.** Every file is −30.7 to −18.2 dBFS RMS. No loop sits more than 7.7 dB below its body at either edge (measured on medians, because a heartbeat under a cello has silent windows between beats).
+- **Voices and music.** Gemini heard no speech or singing in any clip, and no music in any sound effect. It heard music in 19 of the 20 tracks; the creature bed is a drone.
+- **The quiz.** The last run got 186 of 236 rounds right against a 25% chance, and 79 clips were right both times.
+  - Across runs, five are persistently confused with a near neighbour, whatever the take: scramble and slide, body fall and dive, kick debris and slide, the console smash, cloth moving and radio static. They are Matt's to hear.
+- **Suites.** New `test_sound_library` (30) joins the CI gate:
+  - the catalog and the folder agree both ways, and every lane has enough;
+  - every stinger id the client knows is shipped;
+  - music is instrumental, and phase and world choose the score;
+  - `pick` always answers and answers the same, and a MOVE TO toward a blast door is footsteps;
+  - real slate lines pick the right family;
+  - no runtime module contains a provider's address, and ElevenLabs appears only in the build tool;
+  - `/api/scene_audio`, `/api/action_foley` and `/api/consequence_audio` answer with library files that are served as `audio/mpeg` and are never pending;
+  - asking what a session sounds like does not create the session;
+  - the three switches still switch, the files ship, and git does not ignore them.
+- **In a browser.** Against a sandboxed mock server from the branch, in the app's browser pane (Chromium, WebView2's engine):
+  - all 171 files decoded through `AudioContext.decodeAudioData`, each within 5 ms of its catalogued length;
+  - the page's own opening fetched the desert bed from the library;
+  - `SceneAudio.score()` of *"a shortwave radio hisses with static on a desk in the radio room"* fetched `amb_radio_room` and kept the same score, since the phase had not moved;
+  - the start menu fetched the title theme.
+- **Existing suites.** `test_scene_audio` is rewritten around the library and is 54/56. The two red ones are two of the three that were red at baseline for environmental reasons. The third, the desert render-base test, is rewritten in library terms: the frame's pump jack gets the oilfield bed, and it passes. `test_conversation_moments` is 42/42. The CI gate is 65/65 with the new suite.
+
+**What changed underneath.**
+- `scene_audio.py` keeps its endpoints' shapes and chooses from the library. Every answer is `cached: true, pending: false`, so the client's retry loop never fires.
+- Now dead, and removed: `_generate_music`, `_generate_sfx`, `_offline_mock`, the prompt builders, the per-session cache names, the stock warmup and the in-flight machinery. Mock mode plays the library too: it never touches the network.
+- The editor's Music sheet chooses rather than generates. Play and Lock find the library track closest to your words, and a direction steers every scene's pick. The Stock box plays the shipped hits, and the status row says "Library".
+- The tunables' help text, the engine's switch comments, `docs/MOMENTS.md`, CLAUDE.md and the plan (A3 and A6 done this way) say what is true.
+- `tools/ship_layout.py` names `sound_library`. `local_guard` already leaves `/static/` open.
+
+**Not checked:** a human listening to all 171; a real run in the native app with ears on it; the seams of the 20 music loops by ear (they were trimmed of fades, and the client crossfades 1.25 s at the loop point). **Listen to these first:** the five the quiz kept confusing (scramble, body fall, kick debris, the console smash, cloth moving); both gunshots and the small explosion, which flip between right and wrong across quiz runs; the escalating desert track, still 5.5 dB under the others; and the room tone, lifted 35 dB, for hiss.
+
 ## ✅ NEW: The narrator is one short thought, as the character, about the frame on screen
 
 Matt asked three things in a row:
@@ -133,7 +201,8 @@ Three code paths also told every World it was 1993:
   - `refresh_get` only found the first two. The harness prints a name as a Python repr, so a name with an apostrophe arrives in double quotes, and the finder only read single ones. It reads both now.
 - **"Anywhere."** shows only the two Worlds a build carries: "Two worlds to start. No two runs alike." It said three, and CYBER HORROR does not ship.
 - Clips: `mradfo21/abyss-media` release `clips-2026-09-25-2117`.
-- Still open: `goal.py` named the first film's goal "Buried Rail Siding" (a place, not a thing), and that walk never found a way in. The second film's goal was a thing and was reached.
+- Still open: `goal.py` named the first film's goal "Buried Rail Siding" (a place, not a thing), and that walk never found a way in. The second film's goal was a thing and was reached.## 🔊 FIXED: Every voice speaks on the player's one key — ElevenLabs is gone
+
 ## 🔊 FIXED: Every voice speaks on the player's one key — ElevenLabs is gone
 
 From the release planning: *"right now there is no solution for eleven labs. what can we use from google / openai … so that there is no need for multiple accounts?"* and then *"switching away from elevenlabs, even if that means losing certain audio features. i think we'll want as few providers as possible to start."* The plan is `docs/plans/ONE_KEY_AUDIO_PLAN.md`; this is its A0, A1, A2, A4 and half of A5.
@@ -166,6 +235,7 @@ From the release planning: *"right now there is no solution for eleven labs. wha
 - `voice_design` created, listed and deleted real voices; none were left stored.
 - **Not checked:** the OpenAI path against the real API (the repo's OpenAI key answers `credit_balance_exhausted`; it is unit-tested), a turn loop in the native app with ears on it, and the free Gemini tier.
 - New `test_speech` (15) joins the CI gate. `test_talk_voice` (19) is rewritten around what must hold now: nothing reaches ElevenLabs, no agent id ships, voice means the key can speak, captions wait for their voice. `test_voice_design` 67 + 1 live, `test_conversation_moments` 42/42, the gate's billing/pricing/keys/editor suites green.
+
 ## 🚀 SHIPPED: ABYSS 0.1.0-beta.1 — built by a tag, installed from GitHub, served from /get
 
 The first distributed build. It was tagged on `main` after PR #158 went green, and the release workflow did everything itself in 10½ minutes on GitHub's runner: install from the lock, the gate, the build, the smoke test with the install folder read-only, the notices, the Velopack pack and the publish. The result is https://github.com/mradfo21/abyss-releases/releases/tag/v0.1.0-beta.1: a 216 MB `Setup.exe`, a portable zip and the update feed, each with GitHub's SHA-256.

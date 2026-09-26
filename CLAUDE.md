@@ -141,7 +141,8 @@ anywhere. Grep `add_url_rule` in `api.py` for the gameplay routes and
 | `local_vision.py` | | On-device MediaPipe detector for SCAN (falls back to Gemini) |
 | `ai_provider_manager.py` | | Text/vision/image routing across providers |
 | `prompts_store.py` / `worlds_store.py` / `experience_store.py` | | The authoring stores |
-| `speech.py` / `voice_design.py` / `scene_audio.py` | | Every spoken line (Gemini TTS; OpenAI through the bridge), a voice designed per character from words (Gemini only), and music/ambience/foley — which nothing on the player's key generates since ElevenLabs left (`docs/plans/ONE_KEY_AUDIO_PLAN.md`) |
+| `speech.py` / `voice_design.py` | | Every spoken line (Gemini TTS; OpenAI through the bridge), and a voice designed per character from words (Gemini only) (`docs/plans/ONE_KEY_AUDIO_PLAN.md`) |
+| `scene_audio.py` / `sound_library.py` | | Everything under the picture that is not a voice — music by mode × phase × world, the place's ambience, action foley, the consequence bed, encounter stingers — played from the shipped sound library (`static/audio/library/`, below). Nothing is generated at runtime, on any key. `sound_library.pick` is pure: words in, catalog entry out |
 | `render_jobs.py` | | Unattended playthroughs on the heavy models |
 | `coinop.py` / `billing.py` / `cost_tracker.py` / `pricing.py` | | Credits, Stripe, spend accounting |
 | `authoring_sandbox.py` | | Guard that stops a test run overwriting live authoring data |
@@ -270,9 +271,25 @@ earlier one.
   `verdict:`), update `refresh_get.find` with it. Typed words (an ACT, a
   character's line) are burned over the clip as a caption by `cut_clips`,
   because the game's own input is too small to read in a clip.
+- **The sound library** (`static/audio/library/`, ~28 MB, in git and in
+  the build) is every sound the game plays that is not a voice: 20 music
+  loops, 33 ambience beds, 86 foley one-shots, 20 consequence beds and the
+  12 encounter stingers, with `catalog.json` saying what each is, what made
+  it and which words choose it (`tags`; `where` is place-only, so a MOVE TO
+  toward a blast door is footsteps, not the door). It was made ONCE on 5th
+  Corner's ElevenLabs account by `tools/build_sound_library.py` from
+  `tools/sound_library_spec.json` — the one file in the repo that may call
+  ElevenLabs — and the game only reads it. To add a sound: an entry in the
+  spec, then `python tools/build_sound_library.py --env <.env with the key>`
+  (it generates only what is missing, prices it first, and stops at
+  `--budget`), then `--check --quiz` and listen. `test_sound_library` holds
+  the catalog and the folder to each other.
 - `static/menu/background_loop.mp4` — the start menu's background film,
-  played muted and looping under the title by `Signal` (standalone.js). Swap
-  the file to swap the splash; absent, the menu is the black card. `*.mp4` is
+  played looping under the title by `Signal` (standalone.js) WITH ITS OWN
+  SOUND, which is the title screen's audio: no library theme is laid over it
+  (the shipped title theme plays only on a build without the film, or a
+  menu loop locked in the editor replaces both). Swap the file to swap the
+  splash; absent, the menu is the black card. `*.mp4` is
   gitignored, and `tools/ship_layout` bundles `static/`, so a build made with
   it in place carries it.
 
@@ -595,7 +612,8 @@ it. Keep that; it is the reason the codebase is navigable at this size.
   what they pay for, then taking money; tracked in its §2 tables),
   `FATE_ROLL_VISUAL_PLAN.md`,
   `ONE_KEY_AUDIO_PLAN.md` (ElevenLabs is gone; voices are TTS on the one key;
-  music (Lyria), a sound library and TALK push-to-talk are its open steps),
+  music and sound are a shipped library; TALK push-to-talk and Gemini Live
+  are its open steps),
   `TRADING_PLAN.md` (characters and worlds shared as PNG cards and codes;
   design pass first),
   `PROMPT_TRIM_PROPOSAL.md` (see above — the tests assumed it), and the "fully

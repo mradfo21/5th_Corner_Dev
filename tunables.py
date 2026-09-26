@@ -189,33 +189,29 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
         "kind": "bool",
         "label": "Scene ambience",
         "default": True,
-        "help": "Give each scene its own looping ambience, generated from the "
-                "prompt that drew the frame, instead of the generic stock bed "
-                "matched by keyword. ~14s a loop, cached per scene. Nothing "
-                "generates sound today (no provider on the key you play on "
-                "makes it), so this only chooses what plays from disk.",
+        "help": "Give each scene the ambience the sound library matches to "
+                "what the frame shows (a fence line at night, a server room, "
+                "neon rain...), instead of one of seven generic beds matched "
+                "by keyword. The library ships with the game; nothing is "
+                "generated.",
     },
     "action_foley": {
         "kind": "bool",
         "label": "Action foley",
         "default": True,
-        "help": "Play a generated Foley clip of the action you just took - "
-                "footsteps, metal, cloth - built from the choice text. "
-                "Generated when the choices appear so the click is instant. "
-                "~2s a clip, cached per action. Silent today: no provider on "
-                "the key you play on makes sound effects.",
+        "help": "Play a Foley clip of the action you just took - footsteps, "
+                "metal, glass, a door kicked in - chosen from the sound "
+                "library by the choice text. ~1-3s a clip.",
     },
     "consequence_bed": {
         "kind": "bool",
         "label": "Consequence sound",
         "default": True,
-        "help": "Play one long sound of what your choice did, generated from "
-                "the visual scene the turn is about to draw. Kicked when the "
-                "consequence lands so it is ready before the picture is, and "
-                "it plays ONCE - it is not a loop. ~18s a clip, and a fresh "
-                "generation EVERY turn, since a consequence is never written "
-                "twice and so never gets a cache hit. Silent today: no "
-                "provider on the key you play on makes sound effects.",
+        "help": "Play one sound of what your choice did - a door breached, "
+                "a collapse, gunfire, dread - chosen from the sound library by "
+                "the visual scene the turn is about to draw. It starts when "
+                "the consequence lands, before the picture, and plays ONCE - "
+                "it is not a loop. 6-12s a clip.",
     },
     "intro_cutscene": {
         "kind": "bool",

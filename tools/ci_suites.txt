@@ -87,3 +87,4 @@ test_local_guard
 test_paths
 test_bug_send
 test_downloads
+test_sound_library
