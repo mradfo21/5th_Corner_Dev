@@ -163,6 +163,8 @@ class _FakeGeminiCase(unittest.TestCase):
         self.fake = FakeGemini()
         self.cost = _CostRecorder()
         self.vd.cost_tracker = self.cost
+        # A server error is asked once more after a pause; not in a test.
+        self.vd.CREATE_RETRY_AFTER_S = 0
         import requests
         self._patches = [
             mock.patch.object(requests, "post", self.fake.post),
@@ -571,10 +573,13 @@ class TestDesignPipeline(_FakeGeminiCase):
         self.fake.fail_create = True
         r = self.design()
         self.assertEqual(r["status"], "failed")
+        # One design = the create and its one retry on a server error.
+        tried = len(self.fake.of("create"))
+        self.assertEqual(tried, 2)
         # Immediately re-asking must NOT re-attempt (TTL guards paid calls).
         r2 = self.design(wait=0)
         self.assertEqual(r2["status"], "failed")
-        self.assertEqual(len(self.fake.of("create")), 1)
+        self.assertEqual(len(self.fake.of("create")), tried)
 
     def test_failure_retries_after_the_ttl(self):
         self.fake.fail_create = True

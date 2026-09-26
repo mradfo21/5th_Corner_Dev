@@ -664,6 +664,9 @@ def _create_body(brief: Dict[str, Any], gender: str) -> Dict[str, Any]:
     return {"store": True, "voice": voice}
 
 
+CREATE_RETRY_AFTER_S = 3.0
+
+
 def _post_create(brief: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """POST /v1beta/voices -> the stored voice ({id, expire_time, usage, …})
     or None on failure. One call designs AND stores it.
@@ -684,16 +687,25 @@ def _post_create(brief: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         print(f"[VOICE DESIGN] requests unavailable: {e}", flush=True)
         return None
     for g in attempts:
-        try:
-            resp = requests.post(
-                _URL_VOICES,
-                headers=_headers(key),
-                json=_create_body(brief, g),
-                timeout=DESIGN_TIMEOUT_SECONDS,
-            )
-        except Exception as e:  # noqa: BLE001
-            print(f"[VOICE DESIGN] create exception: {e}", flush=True)
-            return None
+        # Launch week, 2026-09-25: both takes of Jason's voice came back
+        # HTTP 500 on the first opening of the roster and he had no voice
+        # until the next. A server error is asked once more after a beat; a
+        # refusal (4xx) is not.
+        for server_try in (1, 2):
+            try:
+                resp = requests.post(
+                    _URL_VOICES,
+                    headers=_headers(key),
+                    json=_create_body(brief, g),
+                    timeout=DESIGN_TIMEOUT_SECONDS,
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"[VOICE DESIGN] create exception: {e}", flush=True)
+                return None
+            if resp.status_code < 500 or server_try == 2:
+                break
+            print(f"[VOICE DESIGN] create http {resp.status_code}; asking once more", flush=True)
+            time.sleep(CREATE_RETRY_AFTER_S)
         if resp.status_code == 200:
             try:
                 data = resp.json() or {}

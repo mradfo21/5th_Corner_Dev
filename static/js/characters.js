@@ -1060,6 +1060,24 @@
     snd("focusTick");
     paint();
     sayCurrentSoon(350);
+    freshVoice(S.list[to]);
+  }
+  // Switching to someone whose voice this screen last saw as not ready: read
+  // their card again. The roster retries a failed voice on its own (the
+  // server's ensure_voice), and the screen, which only follows voices it
+  // knows are being designed, kept showing "COULD NOT FIND IT" over a voice
+  // that had since landed — Jason, on the first opening of Matt's own roster
+  // after a Google 500 (2026-09-25).
+  async function freshVoice(c) {
+    if (!c || (c.voice && c.voice.url) || !(c.voice && c.voice.can)) return;
+    let got;
+    try { got = (await api("GET", `/api/characters/${c.id}`)).character; } catch (_) { return; }
+    const i = S.list.findIndex((x) => x.id === c.id);
+    if (i < 0 || !got) return;
+    S.list[i] = Object.assign({}, S.list[i], got);
+    paint();
+    if (anyBusy()) startPoll();
+    sayCurrent();
   }
   function startCreate() {
     if (S.mode === "create") return;
