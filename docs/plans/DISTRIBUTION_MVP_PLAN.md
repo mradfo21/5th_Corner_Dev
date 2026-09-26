@@ -119,13 +119,13 @@ tracks) + SFX (30) $1.74 (38%), text $0.14 (3%).
 
 - [ ] New service (separate from the site) exposing only gateway routes. Our keys live only there
 - [ ] Identity: random wallet id per install (signed), email link/verify for recovery and the starter credit (`billing.link_email` exists)
-- [ ] Client: `provider_bridge.py` gains a "5th Corner" backend: its `requests.Session.request` hook rewrites Gemini `generateContent` calls (17 raw-REST call sites) to the gateway with the wallet token. Route the 6 ElevenLabs calls and Krea the same way. Gemini Live (gemini_live_talk.py, gemini_live_vision.py) and Veo use the SDK → gateway mints short-lived tokens; Reactor already mints server-side
+- [ ] Client: `provider_bridge.py` gains a "5th Corner" backend: its `requests.Session.request` hook rewrites Gemini `generateContent` calls (17 raw-REST call sites) to the gateway with the wallet token. Route Krea the same way (ElevenLabs is gone since 2026-09-25: voices are Gemini TTS on the same wire, docs/plans/ONE_KEY_AUDIO_PLAN.md; speech.py uses the Interactions API, which the gateway must also route). Gemini Live (gemini_live_talk.py, gemini_live_vision.py) and Veo use the SDK → gateway mints short-lived tokens; Reactor already mints server-side
 - [ ] Server: allowlist of models/sizes; balance check before each paid call (`billing.gate`), debit after using `cost_tracker` pricing (`charge_cost`); per-minute metering for TALK (`meter_start/stop` exists); rate limits; request size caps
 - [ ] Postgres for wallets and the ledger (replaces `billing.json` on the 1 GB disk); more than one worker
 - [ ] Stripe Checkout top-ups (existing `create_checkout`, Managed Payments) with the webhook on the gateway
 - [ ] Shared caches across players: SFX library, music cues, factory-world look-book sheets and opening frame — generated once, reused
 - [ ] ACCOUNT: balance, top-up, and "use my own key" (existing BYOK path) as the advanced option
-- [ ] Spend caps and alerts on our Google and ElevenLabs accounts
+- [ ] Spend caps and alerts on our Google account
 
 ## M5 — Site and feedback
 
@@ -158,8 +158,7 @@ hiding prompts, analytics beyond download counts.
 ## Needs Matt (not code)
 
 Push the working tree (M0); Azure Artifact Signing application; Google paid
-billing + budget cap on the gateway key; ElevenLabs commercial plan + OEM terms
-check + usage cap; Stripe live mode; DNS for `api.5th-corner.com`; Render
+billing + budget cap on the gateway key; Stripe live mode; DNS for `api.5th-corner.com`; Render
 Postgres + gateway service; private Discord webhook; legal entity name and
 contact email for /privacy and /terms; Windows Sandbox enabled; a test budget
 for real API calls.

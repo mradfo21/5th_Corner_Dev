@@ -447,42 +447,36 @@ def _build_info():
 
 
 def _talk_status():
-    """Can NPC conversation actually work right now, and if not, what's missing?
+    """Can NPC conversation speak right now, and if not, why?
 
-    Booleans only — never the key or the agent id. TALK degrades silently today:
-    a missing ELEVENLABS_AGENT_ID drops you to text with no explanation, and a
-    key that is actually an agent id looks identical from the outside. The
-    editor's NPC panel reads this so the answer is on screen instead of in the
-    boot log.
+    Booleans only, never a key. The editor's NPC panel reads this so the
+    answer is on screen instead of in the boot log. Voices are text-to-speech
+    on the player's own key (speech.py); a character's voice is designed from
+    a description on Gemini (voice_design) and is a roster voice on OpenAI.
     """
     info = {}
     try:
-        info["agent"] = bool(getattr(engine, "ELEVENLABS_AGENT_ID", ""))
-        info["api_key"] = bool(getattr(engine, "ELEVENLABS_API_KEY", ""))
-        info["overrides"] = bool(getattr(engine, "ELEVENLABS_ALLOW_OVERRIDES", False))
-        # A public agent connects with no key; a private one cannot.
-        info["voice"] = bool(info["agent"])
-        if not info["agent"]:
-            info["reason"] = "ELEVENLABS_AGENT_ID is not set — conversation falls back to text."
-        elif not info["api_key"]:
-            info["reason"] = "No ELEVENLABS_API_KEY: works only if the agent is public."
+        import speech
+        info["voice"] = speech.can_speak()
+        info["model"] = speech.model()
+        if info["voice"]:
+            info["reason"] = "ready"
         else:
-            problem = None
             try:
-                problem = engine.elevenlabs_key_problem()
-            except Exception:
-                problem = None
-            if problem:
-                info["voice"] = False
-                info["reason"] = f"ElevenLabs API key {problem}."
-            else:
-                info["reason"] = "ready"
+                import provider_bridge as _pb
+                mock = _pb._mock_forced()
+            except Exception:  # noqa: BLE001
+                mock = False
+            info["reason"] = ("Mock mode: conversations are text only." if mock
+                              else "No key for the chosen provider: conversations are text only.")
     except Exception as e:  # noqa: BLE001
         info = {"voice": False, "reason": f"{type(e).__name__}: {e}"}
     try:
         import voice_design as _vd
+        info["designs_voices"] = bool(_vd.is_available())
         info["designed_voices"] = len((_vd.cache_snapshot() or {}).get("entries") or [])
     except Exception:  # noqa: BLE001
+        info["designs_voices"] = False
         info["designed_voices"] = 0
     return info
 
@@ -1211,9 +1205,9 @@ app.add_url_rule('/api/investigate', 'standalone_api_investigate', engine.api_in
 app.add_url_rule('/api/investigations', 'standalone_api_investigations', engine.api_investigations, methods=['GET'])
 # TALK tool: open a story-aware conversation with a SCAN subject the model
 # classified as able to speak (a person/character/creature/voice-machine). The
-# session endpoint assembles the awareness briefing and, when ElevenLabs is
-# configured, returns voice-agent config; otherwise the UI falls back to a text
-# conversation driven by the message endpoint. Both are stateless / read-only.
+# session endpoint assembles the awareness briefing and picks the character's
+# voice; the conversation itself is the message endpoint, each answer spoken
+# through /api/narrator/say when the key can speak. Both are stateless.
 # See engine.api_talk_session / engine.api_talk_message.
 def _response_status(response) -> int:
     try:
@@ -1228,35 +1222,15 @@ def _gated_talk_session():
     blocked = _spend_blocked()
     if blocked:
         return blocked
-    response = engine.api_talk_session()
-    if _response_status(response) < 400:
-        try:
-            sid = str((request.get_json(silent=True) or {}).get("session_id") or "default")
-            billing.meter_start("talk", sid, service_type="voice",
-                                provider="elevenlabs", model="talk_agent")
-        except Exception:
-            traceback.print_exc()
-    return response
+    # No per-minute meter: a conversation used to be an ElevenLabs agent billed
+    # by the connected minute. Now each spoken answer is one TTS call, logged
+    # at the wire like every other Gemini call, and an idle open panel costs
+    # nothing.
+    return engine.api_talk_session()
 
 
 def _metered_talk_end():
-    response = engine.api_talk_end()
-    try:
-        data = request.get_json(silent=True) or {}
-        sid = str(data.get("session_id") or "default")
-        try:
-            reported = float(data.get("duration_seconds") or 0)
-        except (TypeError, ValueError):
-            reported = 0.0
-        gap = billing.meter_stop("talk", sid, reported)
-        if gap > 0:
-            import cost_tracker
-            cost_tracker.record_usage(sid, "voice", "elevenlabs", "talk_agent",
-                                      operation="server_meter", output_units=gap,
-                                      unit_type="seconds", success=True)
-    except Exception:
-        traceback.print_exc()
-    return response
+    return engine.api_talk_end()
 
 
 def _gated_talk_message():
@@ -1284,8 +1258,8 @@ app.add_url_rule('/api/talk/portrait', 'standalone_api_talk_portrait', _gated_ta
 # be listed and placed back into later scenes for a continuing story.
 app.add_url_rule('/api/companions', 'standalone_api_companions', engine.api_companions, methods=['GET'])
 app.add_url_rule('/api/companions/place', 'standalone_api_companion_place', engine.api_companion_place, methods=['POST'])
-# Rebuild a companion's ElevenLabs voice from the stored Voice Design brief
-# (persisted by api_talk_session). Poll /api/talk/voice/status while generating.
+# Rebuild a companion's voice from the stored design description (persisted
+# by api_talk_session). Poll /api/talk/voice/status while generating.
 def _gated_companion_regenerate_voice():
     blocked = _spend_blocked()
     if blocked:
@@ -1425,14 +1399,14 @@ app.add_url_rule('/api/encounter/travel', 'standalone_api_encounter_travel',
 # Refcount + status endpoints for the dynamic per-character voices designed
 # on the fly by voice_design.py. /talk/end lets the client drop the refcount
 # on the active voice when the TALK widget closes so session-cleanup can
-# reap it; /talk/voice/status is the poll a client uses to hot-swap the
-# Convai TTS override once a designed voice lands. Both are best-effort:
+# reap it; /talk/voice/status is the poll a client uses to speak the next
+# answer in the designed voice once it lands. Both are best-effort:
 # 200s even on internal failure so end-of-call cleanup never surfaces as a
 # user-visible error, and both no-op when voice_design is unavailable.
 app.add_url_rule('/api/talk/end', 'standalone_api_talk_end', _metered_talk_end, methods=['POST'])
 app.add_url_rule('/api/talk/voice/status', 'standalone_api_talk_voice_status', engine.api_talk_voice_status, methods=['GET'])
 # Opt-in experimental: bidirectional Gemini Live-API session for TALK,
-# replacing the ElevenLabs voice hop with native-audio streaming from Gemini
+# replacing the turn-by-turn spoken answers with native-audio streaming from Gemini
 # itself (and optionally sharing live video frames so the character sees the
 # scene the player is looking at). See gemini_live_talk.py + LIVE_TALK_PROTOTYPE.md
 # for design, tradeoffs, and known caveats (1 FPS video cap, ~100 s session
@@ -1440,7 +1414,7 @@ app.add_url_rule('/api/talk/voice/status', 'standalone_api_talk_voice_status', e
 # in the cloud env).
 # Registered only when TALK_LIVE_API=1 + GEMINI_API_KEY + google-genai + a
 # flask-sock instance are ALL present, so this is a no-op in the default
-# deploy — the existing /api/talk/session (ElevenLabs) path is untouched.
+# deploy — the existing /api/talk/session path is untouched.
 try:
     import gemini_live_talk as _live_talk  # noqa: WPS433
     if _sock is not None and _live_talk.is_available():
@@ -1492,8 +1466,9 @@ app.add_url_rule('/api/talk/voices', 'standalone_api_talk_voices', engine.api_ta
 # speak as a single archive voice or a small cast (radio-play handoffs). `say`
 # voices one line, `narrate` voices a multi-character script, `worldbuild`
 # GENERATES a story-aware narration (LLM) and optionally speaks it, and `cast`
-# advertises the available voices. Audio needs ELEVENLABS_API_KEY; without it
-# they degrade to text. All read-only. See engine.api_narrator_*.
+# advertises the available voices. Audio is TTS on the player's key
+# (speech.py); without one they degrade to text. All read-only. TALK speaks its
+# answers through `say` too. See engine.api_narrator_*.
 app.add_url_rule('/api/narrator/cast', 'standalone_api_narrator_cast', engine.api_narrator_cast, methods=['GET'])
 app.add_url_rule('/api/narrator/say', 'standalone_api_narrator_say', engine.api_narrator_say, methods=['POST'])
 app.add_url_rule('/api/narrator/narrate', 'standalone_api_narrator_narrate', engine.api_narrator_narrate, methods=['POST'])
@@ -1588,11 +1563,11 @@ def api_scene_audio():
     image and return its URL.
 
     The standalone UI posts the scene descriptor (`metadata.prompt`, already
-    delivered with every `scene_image`) here; we render an ElevenLabs Music
-    bed plus looping world SFX the client plays together, re-scoring on each
-    new scene. Degrades to null URLs whenever audio can't be produced (no
-    ELEVENLABS_API_KEY, or the call failed) so the client stays silent
-    instead of erroring."""
+    delivered with every `scene_image`) here; a music bed plus looping world
+    SFX the client plays together, re-scoring on each new scene. Nothing on
+    the player's key generates them since ElevenLabs left (2026-09-25; music
+    returns with Lyria, docs/plans/ONE_KEY_AUDIO_PLAN.md), so this answers
+    with what is on disk or null URLs, and the client stays silent."""
     try:
         body = request.get_json(silent=True) or {}
         prompt = (body.get("prompt") or "").strip()
@@ -3214,8 +3189,8 @@ def _list_active_sessions():
 
 # Start the periodic voice-design sweep at import time so orphans left by a
 # crashed prior process are reaped shortly after boot (and every SWEEP_HOURS
-# thereafter). Guarded by voice_design.is_available() — a no-op when no
-# ElevenLabs key is configured, which matches the rest of the module.
+# thereafter). Guarded by voice_design.is_available() — a no-op unless Gemini
+# is the provider playing (OpenAI cannot design a voice from words).
 try:
     import voice_design as _voice_design
     # Loud, easy-to-grep startup line: makes it trivial to tell from prod
@@ -3225,21 +3200,19 @@ try:
     if _voice_design.is_available():
         print(
             "[VOICE DESIGN] ENABLED — model={m} budget/session={b} "
-            "concurrency={c} label_tag={t}".format(
-                m=_voice_design.TTV_MODEL,
+            "concurrency={c}".format(
+                m=getattr(_voice_design, "MODEL", "?"),
                 b=_voice_design.DESIGN_BUDGET_PER_SESSION,
                 c=_voice_design.DESIGN_CONCURRENCY,
-                t=_voice_design.LABEL_TAG,
             )
         )
         _voice_design.start_periodic_sweep(active_sessions_getter=_list_active_sessions)
     else:
-        _reason = (
-            "no ELEVENLABS_API_KEY" if not _voice_design._api_key()
-            else "ELEVENLABS_DYNAMIC_VOICES=0"
-        )
-        print(f"[VOICE DESIGN] DISABLED ({_reason}) — TALK will use the "
-              f"static by_kind roster only")
+        try:
+            _why = _voice_design.unavailable_reason()
+        except Exception:  # noqa: BLE001
+            _why = "unavailable"
+        print(f"[VOICE DESIGN] DISABLED ({_why}) — TALK uses the voices.json roster")
 except Exception as _e:  # noqa: BLE001
     print(f"[VOICE DESIGN] init failed: {_e}")
 
@@ -5426,7 +5399,7 @@ def api_music_get():
             "sfx_direction": scene_audio.get_sfx_direction(),
             "can_generate": scene_audio.is_available(),
             "can_generate_reason": scene_audio.unavailable_reason(),
-            "provider": "elevenlabs",
+            "provider": "",
             "accepts": sorted(scene_audio.LOOP_EXTS.keys()),
             "max_bytes": scene_audio.MAX_LOOP_BYTES,
             "stock": scene_audio.stock_status(),
@@ -5524,12 +5497,9 @@ def api_music_test():
             seconds=body.get("seconds"),
             session_id=body.get("session") or "default",
         )
-        if not rec:
+        if not rec or rec.get("error") == "no_key":
             return jsonify({"error": "unavailable", "message":
-                            "Couldn't generate that — check ELEVENLABS_API_KEY."}), 502
-        if rec.get("error") == "no_key":
-            return jsonify({"error": "unavailable", "message":
-                            "Couldn't generate that — check ELEVENLABS_API_KEY."}), 502
+                            "Nothing on this key generates sound yet — upload a loop instead."}), 502
         return jsonify({"data": rec})
     except ValueError as e:
         return jsonify({"error": "invalid", "message": str(e)}), 400
@@ -5566,7 +5536,7 @@ def api_music_preview():
             prompt, seconds=body.get("seconds") or 8, stem=stem)
         if not preview:
             return jsonify({"error": "unavailable", "message":
-                            "Couldn't preview that — check ELEVENLABS_API_KEY, then try again."}), 502
+                            "Nothing on this key generates sound yet — upload a loop instead."}), 502
         return jsonify({"data": {"preview": preview}})
     except ValueError as e:
         return jsonify({"error": "invalid", "message": str(e)}), 400
@@ -5577,7 +5547,7 @@ def api_music_preview():
 
 @app.route('/api/music/generate', methods=['POST'])
 def api_music_generate():
-    """Write the music yourself: {prompt, seconds?} straight to ElevenLabs Music.
+    """Write the music yourself: {prompt, seconds?} straight to the music generator.
 
     Distinct from /api/scene_audio, which derives music direction from a scene
     description. Here the prompt IS the direction.
@@ -5592,8 +5562,7 @@ def api_music_generate():
             prompt, seconds=body.get("seconds") or 12, stem=stem)
         if not loop:
             return jsonify({"error": "unavailable", "message":
-                            "Couldn't generate that — no ELEVENLABS_API_KEY, or "
-                            "the generate call failed."}), 502
+                            "Nothing on this key generates sound yet — upload a loop instead."}), 502
         key = "menu_loop" if stem == "menu" else "loop"
         return jsonify({"data": {key: loop, "loop": loop}})
     except ValueError as e:
@@ -5859,27 +5828,14 @@ def api_flipbook():
 
 @app.route('/api/talk/voices/library', methods=['GET'])
 def talk_voice_library():
-    """Every voice on the ElevenLabs account, including the ones you designed
-    there. `voices.json` is a curated list of stock ids baked into the repo, so
-    without this a workspace full of custom voices is invisible in game.
-    """
+    """The voices a character can be given: the shipped roster (Gemini's
+    prebuilt voices). This listed an ElevenLabs account's own voices until
+    2026-09-25; there is no account library on a Gemini or OpenAI key, and
+    per-character voices are designed from words instead (voice_design)."""
     try:
-        import voice_design
-        force = request.args.get("refresh") in ("1", "true", "yes")
-        out = voice_design.voice_library(force=force)
-        # A 400 from BOTH listing endpoints is almost never the request; it is
-        # usually the key. engine already knows how to spot the classic mistake
-        # (an agent id pasted into ELEVENLABS_API_KEY), so ask it rather than
-        # leaving "http_400" on screen for someone to guess at.
-        if not out.get("ok"):
-            try:
-                problem = engine.elevenlabs_key_problem()
-            except Exception:  # noqa: BLE001
-                problem = None
-            if problem:
-                out["reason"] = "bad_key"
-                out["detail"] = str(problem)[:200]
-        return jsonify({"data": out})
+        reg = engine.get_voice_registry()
+        return jsonify({"data": {"ok": True, "voices": reg.get("voices") or [],
+                                 "source": "shipped"}})
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         return jsonify({"data": {"ok": False, "reason": str(e)[:120], "voices": []}})

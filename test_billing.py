@@ -128,12 +128,29 @@ class BillingCase(unittest.TestCase):
                 self.assertEqual(billing.meter_stop("reactor", "s1", 40), 0.0)  # closed
             # A browser that vanished: closed at its last poll and charged.
             with app.test_request_context("/api/talk/session", headers=hdr):
-                billing.meter_start("talk", "s1", service_type="voice", provider="elevenlabs", model="talk_agent")
+                billing.meter_start("talk", "s1", service_type="voice", provider="gemini",
+                                    model="gemini-3.8-flash-tts")
             now = billing._METERS[(key, "talk", "s1")]["start"]
             billing._LAST_SEEN[key] = now + 30
             with patch("cost_tracker.record_usage") as rec:
                 self.assertEqual(billing._reap_once(now + 30 + billing.REAP_AFTER_S + 1), 1)
             self.assertAlmostEqual(rec.call_args.kwargs["output_units"], 30, delta=0.5)
+
+    def test_rate_card_prices_only_what_the_game_can_make(self):
+        """Voices are Gemini TTS now; sound effects and music have no generator
+        (docs/plans/ONE_KEY_AUDIO_PLAN.md), so they have no row. Every row that
+        is shown has a price."""
+        with patch.object(billing, "requires_wallet", return_value=False):
+            card = billing.rate_card()
+        things = {r["thing"]: r for r in card["rows"]}
+        self.assertNotIn("Sound effect", things)
+        self.assertNotIn("Music", things)
+        self.assertFalse([r for r in card["rows"] if r["provider"] == "elevenlabs"])
+        for label in ("Spoken line", "Talking with someone"):
+            self.assertEqual(things[label]["provider"], "gemini")
+            self.assertEqual(things[label]["model"], "gemini-3.8-flash-tts")
+        for row in card["rows"]:
+            self.assertIsNotNone(row["provider_usd"], row["thing"])
 
     def test_rate_card_is_the_price_a_charge_uses(self):
         import pricing

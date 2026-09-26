@@ -1,20 +1,31 @@
 """
-scene_audio.py — scene music and world sound from ElevenLabs.
+scene_audio.py — scene music and world sound: what plays, and (one day) what
+makes it.
 
 Turns the scene descriptor that already rides along with every guide image
 (the `metadata.prompt` the engine emits) into:
 
-  • a short instrumental bed via ElevenLabs Music (`music_v2`)
-  • a looping ambience clip via ElevenLabs Sound Effects
+  • a short instrumental bed (music)
+  • a looping ambience clip (world sound)
   • encounter stingers (pre-cached stock catalog, not per-scene)
 
 The standalone UI loops the bed + ambience and crossfades on each new scene.
 Stock stingers live under ``assets/music/stock/`` so encounter hits do not
 wait on a live generation.
 
-Everything degrades gracefully: if `ELEVENLABS_API_KEY` is unset or a call
-fails, `get_scene_audio()` returns ``None`` (or stock-only URLs when those
-files already exist) and the client stays silent on the missing layer.
+NOTHING IS GENERATED TODAY. Music and all four sound lanes (scene ambience,
+action foley, the consequence bed, the stock catalog) were made by a third
+provider the game no longer uses — it now runs on one key, Gemini or OpenAI
+(docs/plans/ONE_KEY_AUDIO_PLAN.md), and neither makes sound effects. Music
+comes back with Lyria on the same Gemini key; `_generate_music` is the one
+place it plugs in. Until then `is_available()` is False and every generator
+answers None.
+
+What still works is everything that PLAYS a file already on disk: the chosen
+loop and the menu loop (uploaded in the editor), designer one-shots under
+``static/audio/encounter/``, any stock file present in ``assets/music/stock/``,
+and the ``/audio/<file>`` serving helpers. The endpoint helpers keep their
+"null URL + reason" shape and the client stays silent on a null layer.
 """
 
 import hashlib
@@ -28,53 +39,24 @@ from pathlib import Path
 ROOT = Path(__file__).parent.resolve()
 import paths as _paths  # where the game writes (M2): the repo from source, %APPDATA%/ABYSS built
 
-try:
-    import cost_tracker
-except Exception:
-    class _NoopCostTracker:
-        def record_usage(self, *args, **kwargs):
-            return None
-
-    cost_tracker = _NoopCostTracker()
-
-try:
-    _CONFIG = json.load((ROOT / "config.json").open(encoding="utf-8"))
-except Exception:
-    _CONFIG = {}
-
-# Seed only. Call `_api_key()` at use-time — keys_store can patch this
-# attribute AND os.environ after import.
-ELEVENLABS_API_KEY = (
-    os.getenv("ELEVENLABS_API_KEY") or _CONFIG.get("ELEVENLABS_API_KEY") or ""
-).strip()
-
-MUSIC_MODEL = "music_v2"
-SFX_MODEL = "eleven_text_to_sound_v2"
-ELEVEN_MUSIC_URL = "https://api.elevenlabs.io/v1/music"
-ELEVEN_SFX_URL = "https://api.elevenlabs.io/v1/sound-generation"
-
-# Scene beds used to be 12s Lyria loops. A bit longer hides the loop point
-# and Eleven Music's minimum is 3s.
+# Scene beds used to be 12s Lyria loops. A bit longer hides the loop point.
 DEFAULT_CLIP_SECONDS = 20
 DEFAULT_SFX_SECONDS = 14
-# ElevenLabs sound-generation rejects anything longer, with a 400 rather than
-# a truncation: "expected a maximum number of 450 characters". Both SFX lanes
-# used to clip at 500 and a long scene descriptor simply failed to make any
-# sound — silently, because a failed effect is supposed to be survivable.
+# The prompt budget of every sound lane. The sound model this was built against
+# refused anything longer with a 400 rather than a truncation, and both lanes
+# used to clip at 500, so a long scene descriptor silently made no sound at all.
+# Kept: a sound prompt longer than this was never better, and a future
+# generator is unlikely to be more generous.
 SFX_TEXT_MAX = 450
-_MUSIC_TIMEOUT_SECONDS = 90
-_SFX_TIMEOUT_SECONDS = 45
 
-
-def _api_key() -> str:
-    return (
-        os.environ.get("ELEVENLABS_API_KEY") or ELEVENLABS_API_KEY or ""
-    ).strip()
+# What `unavailable_reason()` says whenever nothing can be generated. The
+# client and the editor show it; it has to be true for a player on either key.
+NO_GENERATOR_REASON = "no sound generator on this key"
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # Prompt mapping: scene descriptor -> weighted prompts + generation config
-# (same shape the unit tests already assert; flattened for Eleven Music)
+# (same shape the unit tests already assert; flattened to one text prompt)
 # ────────────────────────────────────────────────────────────────────────────
 
 _MOOD_CUES = [
@@ -150,7 +132,8 @@ def _scene_to_music_prompt(scene_prompt: str, mode: str = "scene",
     """Map a scene descriptor to (weighted_prompts, generation_config_kwargs).
 
     Returns plain data (list of {text, weight} dicts + a kwargs dict) so this is
-    unit-testable without a network call. Eleven Music gets the flattened text.
+    unit-testable without a network call. A text-prompted music model gets the
+    flattened text; Lyria takes weighted prompts and a config natively.
     """
     scene = _clean_scene_text(scene_prompt)
     low = scene.lower()
@@ -236,7 +219,7 @@ def _scene_to_music_prompt(scene_prompt: str, mode: str = "scene",
 
 def flatten_music_prompt(scene_prompt: str, mode: str = "scene",
                          direction: str | None = None) -> str:
-    """One natural-language prompt Eleven Music can compose from."""
+    """One natural-language prompt a music model can compose from."""
     prompts, cfg = _scene_to_music_prompt(scene_prompt, mode=mode,
                                           direction=direction)
     parts = [str(p.get("text") or "").strip() for p in prompts if p.get("text")]
@@ -543,7 +526,7 @@ def _action_foley_prompt(action: str, direction: str | None = None) -> str:
 def _foley_cache_name(action: str) -> str:
     prompt = _action_foley_prompt(action)
     key = json.dumps({"p": prompt, "s": ACTION_FOLEY_SECONDS,
-                      "prov": "eleven-sfx-foley"}, sort_keys=True)
+                      "prov": "sfx-foley"}, sort_keys=True)
     return "foley_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16] + ".mp3"
 
 
@@ -581,8 +564,8 @@ def action_foley(action: str, session_id: str = "default") -> dict | None:
         try:
             _cached_or_generate(
                 fpath,
-                lambda: _eleven_sfx(prompt, ACTION_FOLEY_SECONDS, loop=False,
-                                    session_id=session_id),
+                lambda: _generate_sfx(prompt, ACTION_FOLEY_SECONDS, loop=False,
+                                      session_id=session_id),
             )
         except Exception as e:
             print(f"[FOLEY] {act[:40]!r} failed: {e}", flush=True)
@@ -669,7 +652,7 @@ def _consequence_bed_prompt(text: str, direction: str | None = None) -> str:
 def _consequence_cache_name(text: str) -> str:
     prompt = _consequence_bed_prompt(text)
     key = json.dumps({"p": prompt, "s": CONSEQUENCE_BED_SECONDS,
-                      "prov": "eleven-sfx-consequence"}, sort_keys=True)
+                      "prov": "sfx-consequence"}, sort_keys=True)
     return "beat_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16] + ".mp3"
 
 
@@ -709,8 +692,8 @@ def consequence_bed(text: str, session_id: str = "default") -> dict | None:
         try:
             _cached_or_generate(
                 fpath,
-                lambda: _eleven_sfx(prompt, CONSEQUENCE_BED_SECONDS, loop=False,
-                                    session_id=session_id),
+                lambda: _generate_sfx(prompt, CONSEQUENCE_BED_SECONDS, loop=False,
+                                      session_id=session_id),
             )
         except Exception as e:
             print(f"[BEAT] {what[:40]!r} failed: {e}", flush=True)
@@ -721,15 +704,16 @@ def consequence_bed(text: str, session_id: str = "default") -> dict | None:
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# ElevenLabs HTTP
+# Availability, and THE GENERATOR SEAM
 # ────────────────────────────────────────────────────────────────────────────
 
 def _offline_mock() -> bool:
     """True when this process promised not to call the network.
 
-    ``--mock`` / ``MOCK_MODE`` / ``STORYGEN_BACKEND=mock`` still inherit
-    ``ELEVENLABS_API_KEY`` from the parent shell. Without this gate, a
-    "fully offline" run bills Music + SFX on every scene.
+    ``--mock`` / ``MOCK_MODE`` / ``STORYGEN_BACKEND=mock`` still inherit every
+    key in the parent shell. Without this gate, a "fully offline" run billed
+    music and sound on every scene — keep it in front of any generator that
+    comes back.
     """
     if (os.environ.get("MOCK_MODE") or "").strip().lower() in ("1", "true", "yes"):
         return True
@@ -743,101 +727,70 @@ def _offline_mock() -> bool:
 
 
 def unavailable_reason() -> str | None:
-    """Why generation cannot run, or None when the key looks usable.
+    """Why generation cannot run, or None when it can.
 
-    The dashboard lists keys by ID (bare hex). That value is not a key —
-    ElevenLabs rejects it. Same diagnosis as ``engine.elevenlabs_key_problem``.
+    Today it never can, on any key: see ``is_available``. The string is shown
+    to the player and the editor (/api/health's music block, the null
+    responses of /api/scene_audio, /api/action_foley, /api/consequence_audio),
+    so it says what is actually true rather than naming a key to go and find.
     """
     if _offline_mock():
-        return "offline mock — ElevenLabs is not called"
-    key = _api_key()
-    if not key:
-        return "ELEVENLABS_API_KEY is not set."
-    if key.startswith("sk_"):
-        return None
-    if key.startswith("agent_"):
-        return "that's an agent id, not the sk_ secret"
-    if len(key) in (32, 64) and all(c in "0123456789abcdefABCDEF" for c in key):
-        return "that's the key ID from the dashboard list, not the sk_ secret"
-    return "ElevenLabs API keys start with sk_"
+        return "offline mock — no sound is generated"
+    return NO_GENERATOR_REASON
 
 
 def is_available() -> bool:
-    """True when we can plausibly generate audio (usable ElevenLabs key)."""
+    """True when music or sound can be generated. Always False today.
+
+    No provider on the player's key makes sound effects: the game runs on
+    Gemini or OpenAI alone, and neither has a sound-effects model, so scene
+    ambience, action foley, the consequence bed and the stock catalog cannot be
+    made. Music returns with Lyria on the Gemini key
+    (docs/plans/ONE_KEY_AUDIO_PLAN.md) — when it does, this answers per lane
+    (music yes, sound no) rather than for the module, and `_generate_music`
+    is where it plugs in.
+
+    Everything that plays a file already on disk ignores this: the chosen
+    loop, the menu loop, designer one-shots and any stock file present.
+    """
     return unavailable_reason() is None
 
 
-def _record(session_id: str, model: str, operation: str, seconds: float,
-            t0: float, success: bool, error: str = ""):
-    cost_tracker.record_usage(
-        session_id or "default", "voice", "elevenlabs", model,
-        operation=operation,
-        output_units=seconds if success else None,
-        unit_type="seconds",
-        success=success,
-        error_message=error or None,
-        latency_ms=int((time.time() - t0) * 1000),
-    )
+def _generate_music(prompt: str, seconds: float, mode: str = "scene",
+                    session_id: str = "default") -> bytes | None:
+    """THE SEAM. Instrumental music for a flattened prompt, or None.
+
+    Every music lane in this module comes through here — the per-scene bed
+    (`_resolve_music`), the editor's preview (`generate_preview`), the locked
+    loop (`generate_loop`) and the editor's test clip (`generate_test_clip`) —
+    so a generator plugs in at this one place and all of them come back.
+
+    Nothing plugs in yet. The next one is Lyria (Google's music model, on the
+    same Gemini key the game already plays on); see
+    docs/plans/ONE_KEY_AUDIO_PLAN.md. When it lands it must: return encoded
+    audio bytes the browser can decode (the cache names end ``.mp3`` — change
+    them with the format), log its spend through ``cost_tracker.record_usage``
+    with a rate in pricing.json, stay behind ``_offline_mock()``, and make
+    ``is_available`` answer True for music.
+
+    ``mode`` is the profile the prompt was flattened from (scene /
+    conversation / encounter / verbatim), for a model that takes weighted
+    prompts and a config rather than one line — ``_scene_to_music_prompt``
+    already builds those.
+    """
+    return None
 
 
-def _eleven_music(prompt: str, seconds: int, session_id: str = "default") -> bytes:
-    import requests
+def _generate_sfx(prompt: str, seconds: float, loop: bool = True,
+                  session_id: str = "default") -> bytes | None:
+    """Sound effects for a prompt, or None. Always None: no provider on the
+    player's key makes sound effects, and none is planned.
 
-    seconds = max(3, min(30, int(seconds or DEFAULT_CLIP_SECONDS)))
-    t0 = time.time()
-    try:
-        resp = requests.post(
-            ELEVEN_MUSIC_URL,
-            headers={"xi-api-key": _api_key(), "Content-Type": "application/json"},
-            params={"output_format": "mp3_44100_128"},
-            json={
-                "prompt": (prompt or "").strip()[:2000],
-                "music_length_ms": seconds * 1000,
-                "model_id": MUSIC_MODEL,
-                "force_instrumental": True,
-            },
-            timeout=_MUSIC_TIMEOUT_SECONDS,
-        )
-    except Exception as e:
-        _record(session_id, MUSIC_MODEL, "music_compose", seconds, t0, False, str(e))
-        raise
-    if resp.status_code != 200 or not resp.content:
-        err = f"http_{resp.status_code}: {(resp.text or '')[:180]}"
-        _record(session_id, MUSIC_MODEL, "music_compose", seconds, t0, False, err)
-        raise RuntimeError(f"eleven music {err}")
-    _record(session_id, MUSIC_MODEL, "music_compose", seconds, t0, True)
-    return resp.content
-
-
-def _eleven_sfx(prompt: str, seconds: float, loop: bool = True,
-                session_id: str = "default") -> bytes:
-    import requests
-
-    seconds = max(0.5, min(30.0, float(seconds or DEFAULT_SFX_SECONDS)))
-    t0 = time.time()
-    try:
-        resp = requests.post(
-            ELEVEN_SFX_URL,
-            headers={"xi-api-key": _api_key(), "Content-Type": "application/json"},
-            params={"output_format": "mp3_44100_128"},
-            json={
-                "text": (prompt or "").strip()[:SFX_TEXT_MAX],
-                "model_id": SFX_MODEL,
-                "duration_seconds": seconds,
-                "prompt_influence": 0.4,
-                "loop": bool(loop),
-            },
-            timeout=_SFX_TIMEOUT_SECONDS,
-        )
-    except Exception as e:
-        _record(session_id, SFX_MODEL, "sfx_generate", seconds, t0, False, str(e))
-        raise
-    if resp.status_code != 200 or not resp.content:
-        err = f"http_{resp.status_code}: {(resp.text or '')[:180]}"
-        _record(session_id, SFX_MODEL, "sfx_generate", seconds, t0, False, err)
-        raise RuntimeError(f"eleven sfx {err}")
-    _record(session_id, SFX_MODEL, "sfx_generate", seconds, t0, True)
-    return resp.content
+    Kept only so the four sound lanes (scene ambience, action foley, the
+    consequence bed, the stock catalog) keep one call each and their prompt
+    builders stay tested; with ``is_available`` False none of them reaches it.
+    """
+    return None
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -863,10 +816,10 @@ def _get_audio_dir(session_id: str = "default") -> Path:
 
 def _cache_name(scene_prompt: str, seconds: int, mode: str = "scene") -> str:
     """Stable filename keyed on the derived music prompt so identical scenes
-    reuse the same clip instead of re-billing ElevenLabs."""
+    reuse the same clip instead of paying for it twice."""
     prompts, cfg = _scene_to_music_prompt(scene_prompt, mode=mode)
     key = json.dumps({"p": prompts, "c": cfg, "s": seconds, "m": mode,
-                      "prov": "eleven-music"}, sort_keys=True)
+                      "prov": "music"}, sort_keys=True)
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
     prefix = {"conversation": "convo", "encounter": "enc"}.get(mode, "scene")
     return f"{prefix}_{digest}.mp3"
@@ -874,7 +827,7 @@ def _cache_name(scene_prompt: str, seconds: int, mode: str = "scene") -> str:
 
 def _sfx_cache_name(scene_prompt: str, seconds: int, mode: str = "scene") -> str:
     prompt = _scene_to_sfx_prompt(scene_prompt, mode=mode)
-    key = json.dumps({"p": prompt, "s": seconds, "m": mode, "prov": "eleven-sfx"},
+    key = json.dumps({"p": prompt, "s": seconds, "m": mode, "prov": "sfx"},
                      sort_keys=True)
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
     prefix = {"conversation": "amb_convo", "encounter": "amb_enc"}.get(mode, "amb")
@@ -995,7 +948,8 @@ def generate_preview(prompt: str, seconds: int = 8, stem: str = "preview") -> di
     if not prompt:
         return None
     seconds = max(3, min(16, int(seconds or 8)))
-    data = _eleven_music(flatten_music_prompt(prompt, mode="verbatim"), seconds)
+    data = _generate_music(flatten_music_prompt(prompt, mode="verbatim"),
+                           seconds, mode="verbatim")
     if not data:
         return None
     MUSIC_DIR.mkdir(parents=True, exist_ok=True)
@@ -1069,7 +1023,8 @@ def generate_loop(prompt: str, seconds: int = DEFAULT_CLIP_SECONDS,
     if not prompt:
         return None
     seconds = max(3, min(30, int(seconds or DEFAULT_CLIP_SECONDS)))
-    data = _eleven_music(flatten_music_prompt(prompt, mode="verbatim"), seconds)
+    data = _generate_music(flatten_music_prompt(prompt, mode="verbatim"),
+                           seconds, mode="verbatim")
     if not data:
         return None
     return _write_loop(data, "mp3", "generated", prompt=prompt, name="", stem=stem)
@@ -1213,24 +1168,33 @@ def stock_status() -> dict:
 
 def ensure_one_stock(key: str, *, force: bool = False,
                      session_id: str = "default") -> dict | None:
-    """Generate or reuse one catalog entry. Returns a status dict."""
+    """Generate or reuse one catalog entry. Returns a status dict.
+
+    A file already on disk is always handed back. With nothing to generate it,
+    a missing one comes back ``url: None`` with ``error: "no_key"`` (the token
+    /api/music/test already maps to "unavailable") and ``reason`` saying why.
+    """
     spec, kind = stock_spec(key)
     if not spec:
         return None
-    STOCK_DIR.mkdir(parents=True, exist_ok=True)
     path = _stock_path(spec["file"])
     url = _stock_url(spec["file"])
     if url and not force:
         return {"id": key, "kind": kind, "url": url, "cached": True,
                 "prompt": spec["prompt"], "file": spec["file"]}
+    missing = {"id": key, "kind": kind, "url": url, "cached": bool(url),
+               "prompt": spec["prompt"], "file": spec["file"],
+               "error": "no_key",
+               "reason": unavailable_reason() or NO_GENERATOR_REASON}
     if not is_available():
-        return {"id": key, "kind": kind, "url": url, "cached": bool(url),
-                "prompt": spec["prompt"], "file": spec["file"],
-                "error": "no_key"}
-    data = _eleven_sfx(
+        return missing
+    data = _generate_sfx(
         spec["prompt"], spec["seconds"], loop=spec["loop"],
         session_id=session_id,
     )
+    if not data:
+        return missing
+    STOCK_DIR.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return {"id": key, "kind": kind, "url": _stock_url(spec["file"]),
             "cached": False, "prompt": spec["prompt"], "file": spec["file"]}
@@ -1241,9 +1205,12 @@ def ensure_stock_sounds(*, force: bool = False,
     """Generate any missing stock stingers and fallback ambience beds.
 
     Safe to call repeatedly. Missing files are created; present ones are kept.
+    With no generator (today) nothing is created and the report says why.
     """
     if not is_available():
-        return {"ok": False, "reason": "no_key", "files": stock_status()}
+        return {"ok": False, "reason": "no_key",
+                "why": unavailable_reason() or NO_GENERATOR_REASON,
+                "files": stock_status()}
     STOCK_DIR.mkdir(parents=True, exist_ok=True)
     results = {}
     catalog = list(STOCK_STINGERS.items()) + list(STOCK_AMBIENCE.items())
@@ -1253,10 +1220,13 @@ def ensure_stock_sounds(*, force: bool = False,
             results[key] = {"url": _stock_url(spec["file"]), "cached": True}
             continue
         try:
-            data = _eleven_sfx(
+            data = _generate_sfx(
                 spec["prompt"], spec["seconds"], loop=spec["loop"],
                 session_id=session_id,
             )
+            if not data:
+                results[key] = {"error": NO_GENERATOR_REASON}
+                continue
             path.write_bytes(data)
             results[key] = {"url": _stock_url(spec["file"]), "cached": False}
             print(f"[SCENE AUDIO] stock {key} -> {path.name} ({len(data)} bytes)",
@@ -1275,8 +1245,9 @@ _STOCK_WARMUP_STARTED = False
 
 def kick_stock_warmup() -> None:
     """Fill missing stock files in the background. Not called from gameplay
-    scoring — that would race the first scene's Music call and stall the worker.
-    The editor and /api/music kick this once a usable key is present.
+    scoring — that would race the first scene's music call and stall the
+    worker. The editor and /api/music kick this; with no generator it returns
+    at once.
     """
     global _STOCK_WARMUP_STARTED
     if not is_available():
@@ -1292,7 +1263,7 @@ def kick_stock_warmup() -> None:
 # kick_menu_preview() used to live here: /api/music warmed a 10-second sample
 # from the menu direction text so the title screen would have something to play.
 # Nothing plays it now — the title screen takes the LOCKED menu track and
-# nothing else — so warming it only spent ElevenLabs credit on audio no one
+# nothing else — so warming it only spent generation credit on audio no one
 # asked for. The editor's Play menu button still previews on demand.
 
 
@@ -1342,7 +1313,7 @@ def _resolve_music(scene_prompt: str, session_id: str, seconds: int,
     """Return (web_url, cached, pending).
 
     Uncached music starts in the background. The first scene must not wait
-    20–90s on Eleven Music — the client retries until the file lands.
+    20–90s on a music model — the client retries until the file lands.
     """
     # A locked explore loop must not steal the confrontation bed.
     if (mode or "scene").strip().lower() != "encounter":
@@ -1362,9 +1333,9 @@ def _resolve_music(scene_prompt: str, session_id: str, seconds: int,
         try:
             _cached_or_generate(
                 dest,
-                lambda: _eleven_music(
+                lambda: _generate_music(
                     flatten_music_prompt(scene_prompt, mode=mode),
-                    seconds, session_id=session_id,
+                    seconds, mode=mode, session_id=session_id,
                 ),
             )
         except Exception as e:
@@ -1413,7 +1384,7 @@ def _resolve_sfx(scene_prompt: str, session_id: str, seconds: int,
         try:
             _cached_or_generate(
                 dest,
-                lambda: _eleven_sfx(
+                lambda: _generate_sfx(
                     _scene_to_sfx_prompt(scene_prompt, mode=mode),
                     seconds, loop=True, session_id=session_id,
                 ),
@@ -1444,8 +1415,11 @@ def get_scene_audio(scene_prompt: str, session_id: str = "default",
     ``mode="encounter"`` selects a stance-colored confrontation bed, tense
     ambience, and the stock stinger catalog (``stingers``).
 
-    Uncached ElevenLabs work is kicked to a background thread. The response
-    is immediate: stock ambience / a pending flag, then the client retries.
+    Uncached generation is kicked to a background thread. The response is
+    immediate: stock ambience / a pending flag, then the client retries. With
+    no generator (today) only files already on disk come back — the locked
+    loop, a clip cached earlier in the session, stock ambience and stingers —
+    and ``reason`` says why the music is missing.
     """
     mode = (mode or "scene").strip().lower()
     if mode not in ("scene", "conversation", "encounter"):
@@ -1596,12 +1570,12 @@ def generate_test_clip(scene_prompt: str, mode: str = "scene",
     if layer == "sfx":
         seconds = max(3, min(16, int(seconds or 8)))
         prompt = _scene_to_sfx_prompt(scene_prompt, mode=mode)
-        data = _eleven_sfx(prompt, seconds, loop=True, session_id=session_id)
+        data = _generate_sfx(prompt, seconds, loop=True, session_id=session_id)
         fname = "test_sfx.mp3"
     else:
         seconds = max(3, min(16, int(seconds or 8)))
         prompt = flatten_music_prompt(scene_prompt, mode=mode)
-        data = _eleven_music(prompt, seconds, session_id=session_id)
+        data = _generate_music(prompt, seconds, mode=mode, session_id=session_id)
         fname = "test_music.mp3"
     if not data:
         return None

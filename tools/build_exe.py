@@ -113,8 +113,7 @@ def main(argv=None) -> int:
             "\n"
             "GEMINI_API_KEY=\n"
             "OPENAI_API_KEY=\n"
-            "# ANTHROPIC_API_KEY=\n"
-            "# ELEVENLABS_API_KEY=\n",
+            "# ANTHROPIC_API_KEY=\n",
             encoding="utf-8",
         )
 

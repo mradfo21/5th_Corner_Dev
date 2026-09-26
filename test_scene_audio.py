@@ -1,4 +1,8 @@
-"""Offline tests for ElevenLabs scene music + world SFX (no network)."""
+"""Offline tests for scene music + world sound (no network).
+
+Nothing is generated today (see scene_audio.is_available); these hold the
+prompt builders, the lanes' contracts through the generator seam, and every
+path that plays a file already on disk."""
 from __future__ import annotations
 
 import re
@@ -78,24 +82,67 @@ def _clear_mock(monkeypatch):
         pass
 
 
-def test_is_available_requires_an_sk_key(monkeypatch):
+def test_nothing_generates_on_either_key(monkeypatch):
+    """The game runs on one key, Gemini or OpenAI, and neither makes sound
+    effects. A key being present must not make the module claim it can; the
+    reason it gives is shown to the player, so it has to be the true one."""
     _clear_mock(monkeypatch)
-    monkeypatch.setattr(scene_audio, "ELEVENLABS_API_KEY", "")
-    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    for env in ("GEMINI_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.setenv(env, "a-perfectly-good-key-1234")
     assert scene_audio.is_available() is False
-    assert "not set" in scene_audio.unavailable_reason()
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "not-a-real-key")
-    assert scene_audio.is_available() is False
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "ab" * 32)
-    assert "key ID" in scene_audio.unavailable_reason()
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk_" + "b" * 40)
-    assert scene_audio.is_available() is True
-    assert scene_audio.unavailable_reason() is None
+    why = scene_audio.unavailable_reason()
+    assert why == scene_audio.NO_GENERATOR_REASON
+    assert "sound generator" in why
 
 
-def test_get_scene_audio_degrades_without_key(monkeypatch, tmp_path):
-    monkeypatch.setattr(scene_audio, "ELEVENLABS_API_KEY", "")
-    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+def test_every_generator_answers_none(monkeypatch, tmp_path):
+    """The seam is where Lyria plugs in. Until it does, nothing reaches the
+    disk and nothing claims to be pending, whichever lane asks."""
+    _clear_mock(monkeypatch)
+    monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
+    monkeypatch.setattr(scene_audio, "STOCK_DIR", tmp_path / "stock")
+    assert scene_audio._generate_music("a slow drone", 8, mode="scene") is None
+    assert scene_audio._generate_sfx("rain on a roof", 8, loop=True) is None
+    assert scene_audio.generate_preview("a slow drone") is None
+    assert scene_audio.generate_loop("a slow drone") is None
+    assert scene_audio.generate_test_clip("a quiet yard", layer="music") is None
+    assert scene_audio.generate_test_clip("a quiet yard", layer="sfx") is None
+    stinger = scene_audio.generate_test_clip("", layer="stinger")
+    assert stinger["url"] is None and stinger["error"] == "no_key"
+    assert stinger["reason"] == scene_audio.NO_GENERATOR_REASON
+    assert scene_audio.action_foley("Vault the fence", session_id="t") is None
+    assert scene_audio.consequence_bed(
+        "The hinges tear out of the frame and it swings wide", session_id="t") is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_seam_is_what_the_music_lanes_call(monkeypatch, tmp_path):
+    """One place for a generator to go: the preview and the locked loop both
+    come back the moment _generate_music answers."""
+    monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
+    monkeypatch.setattr(scene_audio, "_LOOP_META", tmp_path / "loop.json")
+    monkeypatch.setattr(scene_audio, "is_available", lambda: True)
+    seen = []
+    monkeypatch.setattr(scene_audio, "_generate_music",
+                        lambda prompt, secs, mode="scene", session_id="default": (
+                            seen.append(mode) or b"ID3" + b"\x00" * 80))
+    assert scene_audio.generate_preview("a slow drone")["file"] == "preview.mp3"
+    assert scene_audio.generate_loop("a slow drone")["source"] == "generated"
+    assert seen == ["verbatim", "verbatim"]
+
+
+def test_no_sound_provider_is_called_from_here():
+    """The third provider is gone, key and wire both. A request library or an
+    API host creeping back into this module would be a second key again."""
+    src = Path(scene_audio.__file__).read_text(encoding="utf-8")
+    low = src.lower()
+    assert "import requests" not in src
+    assert "api.elevenlabs.io" not in low
+    assert "xi-api-key" not in low
+    assert "elevenlabs_api_key" not in low
+
+
+def test_get_scene_audio_is_none_with_nothing_on_disk(monkeypatch, tmp_path):
     monkeypatch.setattr(scene_audio, "STOCK_DIR", tmp_path / "stock")
     monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
     monkeypatch.setattr(scene_audio, "_LOOP_META", tmp_path / "loop.json")
@@ -104,8 +151,6 @@ def test_get_scene_audio_degrades_without_key(monkeypatch, tmp_path):
 
 
 def test_encounter_uses_stock_stinger_when_present(monkeypatch, tmp_path):
-    monkeypatch.setattr(scene_audio, "ELEVENLABS_API_KEY", "")
-    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     stock = tmp_path / "stock"
     stock.mkdir()
     audio = tmp_path / "audio"
@@ -241,34 +286,34 @@ def test_inspect_endpoint_returns_prompts():
     assert data.get("mode") == "scene"
 
 
-def test_health_and_scene_audio_name_a_bad_key(monkeypatch):
+def test_health_and_scene_audio_say_why_there_is_no_sound(monkeypatch, tmp_path):
     import api
     _clear_mock(monkeypatch)
-    monkeypatch.setattr(scene_audio, "ELEVENLABS_API_KEY", "")
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "ab" * 32)
+    monkeypatch.setattr(scene_audio, "STOCK_DIR", tmp_path / "stock")
+    monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
+    monkeypatch.setattr(scene_audio, "_LOOP_META", tmp_path / "loop.json")
     client = api.app.test_client()
     health = client.get("/api/health").get_json()
     assert "music" in health
     assert health["music"]["can_generate"] is False
-    assert "key ID" in (health["music"].get("reason") or "")
+    assert scene_audio.NO_GENERATOR_REASON in (health["music"].get("reason") or "")
     rec = client.post("/api/scene_audio", json={"prompt": "a quiet forest"})
     body = rec.get_json()
     assert body.get("audio_url") is None
-    assert "key ID" in (body.get("reason") or "")
+    assert scene_audio.NO_GENERATOR_REASON in (body.get("reason") or "")
 
 
 def test_mock_mode_does_not_generate(monkeypatch, tmp_path):
     _clear_mock(monkeypatch)
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk_" + "b" * 40)
     monkeypatch.setenv("STORYGEN_BACKEND", "mock")
     monkeypatch.setattr(scene_audio, "STOCK_DIR", tmp_path / "stock")
     monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
     monkeypatch.setattr(scene_audio, "_LOOP_META", tmp_path / "loop.json")
     (tmp_path / "stock").mkdir()
     called = []
-    monkeypatch.setattr(scene_audio, "_eleven_music",
+    monkeypatch.setattr(scene_audio, "_generate_music",
                         lambda *a, **k: called.append("music") or b"x")
-    monkeypatch.setattr(scene_audio, "_eleven_sfx",
+    monkeypatch.setattr(scene_audio, "_generate_sfx",
                         lambda *a, **k: called.append("sfx") or b"x")
     assert scene_audio.is_available() is False
     assert "offline mock" in scene_audio.unavailable_reason()
@@ -282,8 +327,9 @@ def test_uncached_music_returns_immediately_and_marks_pending(monkeypatch, tmp_p
     import threading
     import time
     _clear_mock(monkeypatch)
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk_" + "b" * 40)
-    monkeypatch.setattr(scene_audio, "ELEVENLABS_API_KEY", "sk_" + "b" * 40)
+    # A generator that works (the day Lyria lands): the first scene must still
+    # not wait on it.
+    monkeypatch.setattr(scene_audio, "is_available", lambda: True)
     audio = tmp_path / "audio"
     stock = tmp_path / "stock"
     audio.mkdir()
@@ -303,8 +349,8 @@ def test_uncached_music_returns_immediately_and_marks_pending(monkeypatch, tmp_p
         release.wait(2)
         return b"ID3" + b"\x00" * 80
 
-    monkeypatch.setattr(scene_audio, "_eleven_music", slow_music)
-    monkeypatch.setattr(scene_audio, "_eleven_sfx",
+    monkeypatch.setattr(scene_audio, "_generate_music", slow_music)
+    monkeypatch.setattr(scene_audio, "_generate_sfx",
                         lambda *a, **k: b"ID3" + b"\x00" * 80)
     t0 = time.time()
     rec = scene_audio.get_scene_audio("a quiet forest at dawn")
@@ -318,19 +364,17 @@ def test_uncached_music_returns_immediately_and_marks_pending(monkeypatch, tmp_p
     release.set()
 
 
-def test_ensure_stock_without_key_reports_missing(monkeypatch, tmp_path):
-    monkeypatch.setattr(scene_audio, "ELEVENLABS_API_KEY", "")
-    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+def test_ensure_stock_without_a_generator_reports_missing(monkeypatch, tmp_path):
+    _clear_mock(monkeypatch)
     monkeypatch.setattr(scene_audio, "STOCK_DIR", tmp_path)
     rec = scene_audio.ensure_stock_sounds()
     assert rec["ok"] is False
-    assert rec["reason"] == "no_key"
+    assert rec["reason"] == "no_key"   # the token api.py maps to "unavailable"
+    assert rec["why"] == scene_audio.NO_GENERATOR_REASON
     assert rec["files"]["encounter_enter"]["ready"] is False
 
 
 def test_encounter_does_not_adopt_the_explore_loop(monkeypatch, tmp_path):
-    monkeypatch.setattr(scene_audio, "ELEVENLABS_API_KEY", "")
-    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     music = tmp_path / "music"
     stock = music / "stock"
     music.mkdir()
@@ -379,9 +423,9 @@ def test_nothing_generates_a_title_bed_behind_your_back():
 
 
 def test_the_bed_lane_respects_the_api_text_limit():
-    """ElevenLabs rejects over 450 characters with a 400, not a truncation, so
-    an overlong scene descriptor made no ambience at all - silently. Both SFX
-    lanes used to clip at 500."""
+    """The sound model this was built against rejected over 450 characters with
+    a 400, not a truncation, so an overlong scene descriptor made no ambience
+    at all - silently. Both SFX lanes used to clip at 500."""
     long_scene = "a dripping flooded corridor. " * 100
     assert len(scene_audio._scene_to_sfx_prompt(long_scene, "scene")) \
         <= scene_audio.SFX_TEXT_MAX
@@ -494,7 +538,7 @@ def test_foley_is_short():
 def test_foley_is_not_generated_as_a_loop(monkeypatch):
     seen = {}
     monkeypatch.setattr(scene_audio, "is_available", lambda: True)
-    monkeypatch.setattr(scene_audio, "_eleven_sfx",
+    monkeypatch.setattr(scene_audio, "_generate_sfx",
                         lambda prompt, secs, loop=True, session_id="d": (
                             seen.update(loop=loop, secs=secs, prompt=prompt) or b"x"))
     monkeypatch.setattr(scene_audio, "_kick", lambda key, fn: fn())
@@ -549,16 +593,16 @@ def test_the_consequence_sound_is_a_one_shot_not_a_loop():
     seen = {}
     monkey = scene_audio
     orig_avail, orig_sfx, orig_kick = (
-        monkey.is_available, monkey._eleven_sfx, monkey._kick)
+        monkey.is_available, monkey._generate_sfx, monkey._kick)
     try:
         monkey.is_available = lambda: True
-        monkey._eleven_sfx = lambda prompt, secs, loop=True, session_id="d": (
+        monkey._generate_sfx = lambda prompt, secs, loop=True, session_id="d": (
             seen.update(loop=loop, secs=secs) or b"x")
         monkey._kick = lambda key, fn: fn()
         scene_audio.consequence_bed("The floor gives out beneath the crate",
                                     session_id="bedtest")
     finally:
-        monkey.is_available, monkey._eleven_sfx, monkey._kick = (
+        monkey.is_available, monkey._generate_sfx, monkey._kick = (
             orig_avail, orig_sfx, orig_kick)
     assert seen["loop"] is False
     assert seen["secs"] == scene_audio.CONSEQUENCE_BED_SECONDS
@@ -623,7 +667,7 @@ def test_the_bed_opens_when_it_is_READY_not_when_the_picture_lands():
 
 
 def test_the_scene_bed_is_scored_from_the_frame_that_rendered():
-    """Measured: scoring off metadata.base sent ElevenLabs "seamless looping
+    """Measured: scoring off metadata.base sent the sound model "seamless looping
     environmental ambience of s grit across the pad. The place is the Four
     Corners fence..." for a desert well pad - the pump jack, the shed and the
     standing water sliced out by _clean_scene_text's last-240 rule, because
@@ -717,7 +761,7 @@ def test_the_client_prewarms_the_slate_and_plays_on_commit():
 
 def test_generated_audio_is_loudness_normalised():
     """Measured before this existed: a scene bed at RMS 0.007, about -43 dBFS.
-    Running, and inaudible. ElevenLabs does not normalise its output, so a
+    Running, and inaudible. The sound model did not normalise its output, so a
     fixed gain is always wrong for something."""
     js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
         encoding="utf-8")
@@ -730,7 +774,7 @@ def test_generated_audio_is_loudness_normalised():
 
 
 def test_normalisation_uses_peak_as_well_as_loudness():
-    """Measured off a real ElevenLabs foley clip: rms 0.006, peak 0.060 - a raw
+    """Measured off a real generated foley clip: rms 0.006, peak 0.060 - a raw
     peak of -24 dBFS. The source is that quiet, so the boost needed is large,
     and a peak term is what makes a large boost safe: it cannot by construction
     push the clip into clipping."""

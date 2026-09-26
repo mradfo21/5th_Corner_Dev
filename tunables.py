@@ -191,7 +191,9 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
         "default": True,
         "help": "Give each scene its own looping ambience, generated from the "
                 "prompt that drew the frame, instead of the generic stock bed "
-                "matched by keyword. ElevenLabs; ~14s a loop, cached per scene.",
+                "matched by keyword. ~14s a loop, cached per scene. Nothing "
+                "generates sound today (no provider on the key you play on "
+                "makes it), so this only chooses what plays from disk.",
     },
     "action_foley": {
         "kind": "bool",
@@ -200,7 +202,8 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
         "help": "Play a generated Foley clip of the action you just took - "
                 "footsteps, metal, cloth - built from the choice text. "
                 "Generated when the choices appear so the click is instant. "
-                "ElevenLabs; ~2s a clip, cached per action.",
+                "~2s a clip, cached per action. Silent today: no provider on "
+                "the key you play on makes sound effects.",
     },
     "consequence_bed": {
         "kind": "bool",
@@ -209,9 +212,10 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
         "help": "Play one long sound of what your choice did, generated from "
                 "the visual scene the turn is about to draw. Kicked when the "
                 "consequence lands so it is ready before the picture is, and "
-                "it plays ONCE - it is not a loop. ElevenLabs; ~18s a clip, "
-                "and a fresh generation EVERY turn, since a consequence is "
-                "never written twice and so never gets a cache hit.",
+                "it plays ONCE - it is not a loop. ~18s a clip, and a fresh "
+                "generation EVERY turn, since a consequence is never written "
+                "twice and so never gets a cache hit. Silent today: no "
+                "provider on the key you play on makes sound effects.",
     },
     "intro_cutscene": {
         "kind": "bool",
@@ -232,6 +236,9 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
                 "than a flipbook frame on purpose: these are photographs to "
                 "look at, not in-betweens.",
     },
+    # A voice is a Gemini prebuilt voice name from voices.json ("Charon",
+    # "Algieba") or a `voice_...` id designed from a description (voice_design.py);
+    # on OpenAI the bridge maps the name to its nearest voice. See _coerce.
     "default_voice_id": {
         "kind": "voice",
         "label": "Default voice",
@@ -249,27 +256,23 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
     # model was one env var read once at import, and the pace lived in
     # voices.json's cast sheet. Reported as "it sounds terrible, he speaks WAY
     # too fast", which needed a redeploy to even try a fix.
+    # Written to SOMEWHERE_TTS_MODEL, which speech.model() reads on every line,
+    # so a change is live on the next thing spoken. Gemini models only: on an
+    # OpenAI key the bridge speaks with its own TTS model whatever this says.
     "tts_model": {
         "kind": "enum",
         "label": "Voice model",
         "options": [
-            "eleven_v3",
-            "eleven_v3_conversational",
-            "eleven_multilingual_v2",
-            "eleven_flash_v2_5",
-            "eleven_turbo_v2_5",
+            "gemini-3.8-flash-tts",
+            "gemini-3.8-flash-lite-tts",
         ],
-        "default": "eleven_multilingual_v2",
-        "help": "eleven_multilingual_v2 is the lifelike long-form narration "
-                "model and the right one for reading prose. eleven_v3 is more "
-                "expressive but it is a research preview built around audio "
-                "tags, which narration does not use - it gives more variable "
-                "results on library voices, is not optimised for voice clones, "
-                "and IGNORES the pace knob below (v3 takes pacing from audio "
-                "tags). The flash/turbo models are built for latency, not "
-                "performance - ElevenLabs lists turbo as outclassed by flash "
-                "and recommends replacing it everywhere.",
+        "default": "gemini-3.8-flash-tts",
+        "help": "gemini-3.8-flash-tts is the model the voices are cast "
+                "against. flash-lite-tts is a third cheaper on audio out; "
+                "listen before keeping it for the narrator.",
     },
+    # Still read: the narrator's pace is said to the TTS model in words
+    # (engine._pace_words), since a model directed in words has no speed dial.
     "narrator_speed": {
         "kind": "number",
         "label": "Narrator pace",
@@ -277,11 +280,9 @@ SCHEMA: Dict[str, Dict[str, Any]] = {
         "min": 0.7,
         "max": 1.2,
         "step": 0.01,
-        "help": "1.0 is the voice's own pace; 0.7 is the slowest ElevenLabs "
-                "allows and 1.2 the fastest. Extreme values cost audio quality. "
-                "Has no effect on the v3 models, which take pacing from audio "
-                "tags - this knob was set to 0.85 to fix 'he reads too fast' "
-                "while v3 was selected, so the fix was discarded in transit.",
+        "help": "1.0 is the voice's own pace; lower is slower. It reaches the "
+                "voice as a direction in words, not a dial, so a small move "
+                "may not be heard. 0.85 is the fix for 'he reads too fast'.",
     },
 }
 
@@ -314,12 +315,49 @@ def _coerce(name: str, value: Any) -> Any:
         return int(v) if float(spec.get("step") or 0) >= 1 else round(v, 3)
     if kind == "voice":
         v = str(value).strip()
-        # Voice ids are opaque; the only thing worth enforcing is that this is
-        # an id and not a paragraph.
+        # An id and not a paragraph, and one the voice model can actually speak
+        # in: a voices.json name, or a designed `voice_...` id. The old
+        # provider's opaque ids ("21m00Tcm4TlvDq8ikWAM") pass the first test,
+        # and a tunables.json holding one would hand every line a voice Gemini
+        # has never heard of - see load(), which drops them.
         if len(v) > 64 or not v.replace("-", "").replace("_", "").isalnum():
             raise ValueError(f"{name} does not look like a voice id")
+        if not (v.startswith("voice_") or v in _registry_voice_ids()):
+            raise ValueError(f"{name}: {v!r} is not a voice in voices.json")
         return v
     raise ValueError(f"unhandled kind {kind!r}")
+
+
+def _registry_voice_ids() -> set:
+    """The prebuilt voice names voices.json offers (read fresh; it is small)."""
+    try:
+        data = json.loads((ROOT / "voices.json").read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return set()
+    return {str(v.get("id")) for v in (data.get("voices") or [])
+            if isinstance(v, dict) and v.get("id")}
+
+
+def _still_valid(name: str, value: Any) -> bool:
+    """A stored value the schema would no longer accept is dropped on read.
+
+    A tunables.json written before the one-key change holds old voice-model
+    names and the old provider's voice ids. Applied as-is they would set a TTS
+    model and voices nothing can speak; dropped, the knob falls back to what
+    the process booted with, and the next save rewrites the file without them.
+    """
+    try:
+        _coerce(name, value)
+        return True
+    except ValueError:
+        if (name, repr(value)) not in _WARNED_INVALID:
+            _WARNED_INVALID.add((name, repr(value)))
+            print(f"[TUNABLES] ignoring stored {name}={value!r}: no longer valid",
+                  flush=True)
+        return False
+
+
+_WARNED_INVALID: set = set()
 
 
 def load() -> Dict[str, Any]:
@@ -330,7 +368,8 @@ def load() -> Dict[str, Any]:
             data = json.loads(STORE.read_text(encoding="utf-8")) or {}
         except Exception:  # noqa: BLE001
             return {}
-    return {k: v for k, v in data.items() if k in SCHEMA}
+    return {k: v for k, v in data.items()
+            if k in SCHEMA and (v is None or _still_valid(k, v))}
 
 
 def _write(data: Dict[str, Any]) -> None:
@@ -441,8 +480,8 @@ def _live(name: str, spec: Dict[str, Any]) -> Any:
             import engine
             return engine._narrator_voice_id()
         if name == "tts_model":
-            import engine
-            return getattr(engine, "ELEVENLABS_TTS_MODEL", spec.get("default"))
+            import speech
+            return speech.model()
         if name == "narrator_speed":
             import engine
             return engine._narrator_speed()
@@ -531,13 +570,13 @@ def _apply_one(name: str, value: Any) -> None:
         cutscene.HOLD_MS = int(value)
     elif name == "narrator_voice_id":
         import engine
-        engine.ELEVENLABS_NARRATOR_VOICE_ID = value
+        engine.NARRATOR_VOICE_ID = value
     elif name == "default_voice_id":
         import engine
-        engine.ELEVENLABS_VOICE_ID = value
+        engine.DEFAULT_VOICE_ID = value
     elif name == "tts_model":
-        import engine
-        engine.ELEVENLABS_TTS_MODEL = str(value)
+        # speech.model() reads this on every line, so it is live at once.
+        os.environ["SOMEWHERE_TTS_MODEL"] = str(value)
     elif name == "narrator_speed":
         import engine
         engine.NARRATOR_SPEED = float(value)

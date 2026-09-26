@@ -996,14 +996,15 @@ class TestTheNarratorSpeaksWhenItShould(unittest.TestCase):
 
     def test_the_caption_waits_for_the_voice(self):
         """show() ran before the SDK loaded and the websocket opened, so the
-        line was on screen seconds before it was spoken."""
-        seg = self.js.split("function speakSegment(seg, myGen) {", 1)[1].split(
-            "\n    }", 1)[0]
+        line was on screen seconds before it was spoken. Since 2026-09-25 a
+        line is a file (VoiceOut), and its caption goes up on `playing`."""
+        seg = self.js.split("function speakSegment(seg, myGen, pending) {", 1)[1].split(
+            "\n    async function play(", 1)[0]
         self.assertIn("const reveal = () => show(seg.character, seg.text);", seg)
-        self.assertIn('if (md === "speaking") { spoke = true; reveal(); }', seg)
+        self.assertIn("onStart: reveal", seg)
         self.assertNotIn("\n        show(seg.character, seg.text);", seg)
-        # a connection that never speaks must still subtitle rather than vanish
-        self.assertIn("if (!spoke && !done && myGen === gen) reveal();", seg)
+        # a line that plays but never reports `playing` must still subtitle
+        self.assertIn("setTimeout(() => { if (myGen === gen) reveal(); }, 1500)", seg)
 
     def test_the_bar_is_positioned_by_the_stylesheet(self):
         """An inline bottom offset pushed the caption up by the action wheel's

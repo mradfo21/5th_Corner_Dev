@@ -642,9 +642,10 @@ def grant_wallet(amount_usd: float, *, source: str, checkout_session_id: Optiona
 
 
 # ── live time, measured here (BILLING_LIVE_PLAN A5) ───────────────────────
-# Reactor video and TALK agents stream browser <-> provider directly, so the
-# only duration the server is told is the one the browser reports when it
-# hangs up. A meter starts when the server hands out the connection (token /
+# Reactor video streams browser <-> provider directly, so the only duration
+# the server is told is the one the browser reports when it hangs up. (TALK
+# did too while it was a hosted voice agent; its lines are Gemini TTS calls
+# now, metered at the wire, but the "talk" meter kind is still accepted.) A meter starts when the server hands out the connection (token /
 # talk session) and stops at the report; the player pays the longer of the
 # two. A meter whose browser stops polling /api/feed for REAP_AFTER_S is
 # closed at the last poll and charged then.
@@ -753,10 +754,16 @@ _CARD = (
     ("Picture", "gemini", "gemini-3.1-flash-lite-image", "images", 1, "1K", "each, 1K"),
     ("Sharp picture", "gemini", "gemini-3.1-flash-image", "images", 1, "2K", "each, 2K"),
     ("Cutscene frame", "gemini", "gemini-3-pro-image", "images", 1, "4K", "each, 4K"),
-    ("Spoken line", "elevenlabs", "tts", "characters", 200, None, "about 200 characters"),
-    ("Sound effect", "elevenlabs", "eleven_text_to_sound_v2", "seconds", 60, None, "per minute"),
-    ("Music", "elevenlabs", "music_v2", "seconds", 60, None, "per minute"),
-    ("Talking with someone", "elevenlabs", "talk_agent", "seconds", 60, None, "per minute"),
+    # Voices are Gemini TTS, billed as tokens: the line (plus its delivery
+    # direction) in, audio out at 25 tokens a second. A 200-character line is
+    # about 50 text tokens under ~50 of direction, spoken in ~14 s.
+    # No sound-effect or music rows: nothing makes either today (music comes
+    # back with Lyria — docs/plans/ONE_KEY_AUDIO_PLAN.md), and a row for a
+    # thing the game cannot do would be a price for nothing.
+    ("Spoken line", "gemini", "gemini-3.8-flash-tts", "tokens", (100, 350), None,
+     "about 200 characters, ~14 s of speech"),
+    ("Talking with someone", "gemini", "gemini-3.8-flash-tts", "tokens", (400, 1500), None,
+     "per minute of their voice"),
     ("Live video", "reactor", "happy-oyster", "seconds", 60, None, "per minute"),
     ("Live video, light", "reactor", "lingbot-world-2", "seconds", 60, None, "per minute"),
     ("Video clip", "veo", "veo-3.1-generate-preview", "seconds", 8, None, "8 seconds"),

@@ -1128,8 +1128,8 @@
     }
 
     // Drop authored files in static/audio/encounter/<stem>.{wav,mp3} to
-    // replace the synth. If those are missing, play the pre-cached ElevenLabs
-    // stock stinger served from /audio/. Missing files stay silent-fail and
+    // replace the synth. If those are missing, play a stock stinger served
+    // from /audio/ when one is on disk. Missing files stay silent-fail and
     // the built-in cue plays.
     const SAMPLE_DIR = "/static/audio/encounter/";
     const SAMPLE_STEMS = {
@@ -1554,8 +1554,9 @@
   // SceneAudio — generated ambient score for the current guide image.
   //
   // Each new scene carries a text descriptor (metadata.prompt). We POST it to
-  // /api/scene_audio, which returns an ElevenLabs Music bed plus looping world
-  // SFX (stock first, then a scene-specific fill-in). We loop both and
+  // /api/scene_audio, which returns a music bed plus looping world SFX (stock
+  // first, then a scene-specific fill-in) — whatever is on disk, since nothing
+  // on the player's key generates them (docs/plans/ONE_KEY_AUDIO_PLAN.md). We loop both and
   // crossfade whenever the world re-scores. Uncached music is generated in
   // the background — we retry until the file lands instead of blocking the
   // first scene. Encounter stingers are pre-cached stock one-shots. Shares
@@ -2025,7 +2026,7 @@
     }
 
     // Ask for one action's foley and resolve only when the clip is REALLY
-    // there. The endpoint reports `pending` while ElevenLabs is still working
+    // there. The endpoint reports `pending` while the generator is still working
     // and hands back the url it is GOING to write; treating that as playable
     // was the bug — the fetch 404s, the .catch swallows it, and the action is
     // silent. Polls instead, shares one request per action, and gives up
@@ -22849,8 +22850,8 @@
     },
     {
       // TALK — only surfaces for things that can speak. It doesn't resolve a
-      // turn; it opens a live, story-aware conversation overlay (voice via
-      // ElevenLabs when configured, else text). A warm-accented speech bubble
+      // turn; it opens a story-aware conversation overlay (answers spoken on
+      // the player's key when it can speak, else text). A warm-accented speech bubble
       // sets it apart from the two cool "world action" verbs above.
       id: "talk", label: "TALK", title: "Talk to",
       when: objectSpeaks,
@@ -23093,28 +23094,85 @@
   }
 
   // ------------------------------------------------------------------
-  // Shared ElevenLabs client-SDK loader — used by BOTH the TALK conversation
-  // and the NARRATOR. Loaded lazily and pinned to the 1.x line so a future
-  // breaking release can't change the API out from under us.
+  // VOICE OUT — every spoken line in the game (the narrator, a TALK answer)
+  // is one POST to /api/narrator/say, which answers a WAV made by the
+  // player's own key (speech.py: Gemini TTS, or OpenAI's through the bridge).
+  //
+  // Until 2026-09-25 each line was an ElevenLabs Convai session opened from
+  // this page — a websocket, a borrowed microphone (the narrator needed a
+  // synthetic silent one), and a guess at when the agent had finished
+  // playing, which clipped the last word of every narration for a while.
+  // A file has an `ended` event. Channels ("narrator", "talk") let one voice
+  // be stopped without silencing the other.
   // ------------------------------------------------------------------
-  const ElevenSDK = (function () {
-    const URL = "https://esm.sh/@elevenlabs/client@1";
-    let p = null;
-    function load() {
-      if (!p) {
-        AgentLog.push("sdk", "loading ElevenLabs SDK\u2026");
-        p = import(/* webpackIgnore: true */ URL)
-          .then((m) => {
-            const C = m.Conversation || (m.default && m.default.Conversation);
-            if (!C) throw new Error("Conversation export missing");
-            AgentLog.push("ok", "SDK loaded");
-            return C;
-          })
-          .catch((e) => { p = null; AgentLog.push("error", "SDK load failed", String(e).slice(0, 120)); throw e; });
-      }
-      return p;
+  const VoiceOut = (function () {
+    const playing = {};   // channel -> HTMLAudioElement
+
+    // The WAV for one line, or null (mock mode, no key, a refusal). Starting
+    // this before the previous line has finished is what keeps a two-line
+    // narration from pausing between its lines for the synthesis.
+    function fetchLine(line) {
+      const text = String((line && line.text) || "").trim();
+      if (!text) return Promise.resolve(null);
+      return fetch("/api/narrator/say", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID },
+        body: JSON.stringify({
+          text: text,
+          character: line.character || undefined,
+          voice_id: line.voice_id || undefined,
+          style: line.style || undefined,
+          session_id: SESSION_ID,
+        }),
+      }).then((r) => (r.ok ? r.blob() : null)).catch(() => null);
     }
-    return { load };
+
+    // Play a fetched line. Resolves when it has finished (or failed, or was
+    // stopped); `onStart` fires when sound actually begins, so a caption can
+    // wait for its voice instead of arriving seconds ahead of it.
+    function play(blob, opts) {
+      opts = opts || {};
+      const channel = opts.channel || "narrator";
+      stop(channel);
+      if (!blob) return Promise.resolve(false);
+      return new Promise((resolve) => {
+        const url = URL.createObjectURL(blob);
+        const a = new Audio(url);
+        a.volume = typeof opts.volume === "number" ? opts.volume : 1;
+        playing[channel] = a;
+        let done = false;
+        const finish = (ok) => {
+          if (done) return; done = true;
+          if (playing[channel] === a) delete playing[channel];
+          try { URL.revokeObjectURL(url); } catch (_) {}
+          resolve(ok);
+        };
+        a.addEventListener("playing", () => { try { opts.onStart && opts.onStart(); } catch (_) {} }, { once: true });
+        a.addEventListener("ended", () => finish(true));
+        a.addEventListener("error", () => finish(false));
+        a.addEventListener("abort", () => finish(false));
+        a.__finish = finish;
+        a.play().catch((e) => {
+          AgentLog.push("warn", "voice blocked", AgentLog.clip(e && (e.message || e), 80));
+          finish(false);
+        });
+      });
+    }
+
+    function stop(channel) {
+      const chans = channel ? [channel] : Object.keys(playing);
+      chans.forEach((c) => {
+        const a = playing[c];
+        if (!a) return;
+        delete playing[c];
+        try { a.pause(); } catch (_) {}
+        try { a.__finish && a.__finish(false); } catch (_) {}
+      });
+    }
+
+    function isPlaying(channel) { return !!playing[channel || "narrator"]; }
+
+    return { fetchLine, play, stop, isPlaying };
   })();
 
   // ------------------------------------------------------------------
@@ -23421,33 +23479,31 @@
   // TALK — a live, story-aware conversation with a SCAN subject that speaks.
   //
   // Kicked off from a tag's TALK action (only shown on things that can speak).
-  // It asks the server for a session: when ElevenLabs is configured the server
-  // returns voice-agent config (agent id / signed url + the story briefing as
-  // dynamic variables + prompt overrides) and we run a LIVE VOICE conversation
-  // via the ElevenLabs client SDK — real mic in, the character's voice out —
-  // rendered inside this same sleek panel (its transcript is our transcript).
-  // With no agent configured we fall back to a text conversation via
-  // /api/talk/message. Either way the subject is aware of the current scene and
-  // recent beats. TALK never resolves a turn — it's a parallel layer over the
-  // world. You can also TYPE at any time during a voice call.
+  // The server picks the character's voice (/api/talk/session); the
+  // conversation is /api/talk/message turns, and in "voice" mode every answer
+  // is spoken in that voice (VoiceOut, TTS on the player's own key). Until
+  // 2026-09-25 this was a live ElevenLabs agent — mic in, voice out — on a
+  // second account; holding to speak comes back through dictation once the
+  // panel has a control for it (docs/plans/ONE_KEY_AUDIO_PLAN.md). The
+  // subject is aware of the current scene and recent beats. TALK never
+  // resolves a turn by itself — hanging up does (settleAfterTalk).
   // ------------------------------------------------------------------
   const Talk = (function () {
     let open = false;
     let subject = null;         // {label, kind, speaks, cx, cy, w, h}
-    let messages = [];          // text-mode transcript sent to /api/talk/message
-    // What both sides ACTUALLY said, in either mode, and the thing the turn
-    // fired on hang-up is generated from. `messages` cannot do this job: it is
-    // the text-mode request body and stays empty for a whole voice call, where
-    // the lines arrive through the SDK's onMessage instead. addLine is the one
-    // place every spoken line passes through, so it is the one place to keep.
+    let messages = [];          // the transcript sent to /api/talk/message
+    // What both sides ACTUALLY said, and the thing the turn fired on hang-up
+    // is generated from. addLine is the one place every line passes through,
+    // so it is the one place to keep it (the ElevenLabs era had a second
+    // path, the SDK's onMessage, which `messages` never saw).
     let transcript = [];
     let settling = false;       // the turn this conversation caused is resolving
     let busy = false;           // text-mode request in flight
-    let mode = "text";          // "text" | "voice"
-    let convo = null;           // ElevenLabs SDK Conversation instance (voice)
-    let micMuted = false;
-    // Live voice switching: the registry (from the session) + the player's
-    // chosen voice (persisted). Changing it live reconnects the voice channel.
+    let mode = "text";          // "text" | "voice" (answers are spoken)
+    let voiceMuted = false;     // the player silenced the character (MUTE pill)
+    let voiceStyle = "";        // the delivery, in words, for every answer
+    // Voice switching: the registry (from the session) + the player's chosen
+    // voice (persisted). Changing it takes effect on the next answer.
     let voices = null;
     let selectedVoiceId = "";
     try { selectedVoiceId = localStorage.getItem("talk_voice_id") || ""; } catch (_) {}
@@ -23455,23 +23511,16 @@
     let switching = false;
     let wasAutoPlay = false;     // restore auto-play on close if we paused it
     let lastFocus = null;        // restore focus on close (a11y)
-    // Dynamic per-character voice bookkeeping. `voiceInUse` is the voice_id
-    // actually attached to the live Convai session — so /api/talk/end can
-    // drop its refcount on close and session-cleanup can then reap it.
-    // `designPollTimer` polls /api/talk/voice/status for a still-designing
-    // voice so we can hot-swap it into the live call when it lands.
+    // Dynamic per-character voice bookkeeping. `voiceInUse` is the voice the
+    // answers are spoken in — so /api/talk/end can drop its refcount on close
+    // and session-cleanup can then reap it. `designPollTimer` polls
+    // /api/talk/voice/status for a still-designing voice; the answer after
+    // it lands is spoken in it (a file per line, so nothing is cut off).
     let voiceInUse = "";
-    let voiceConnectedAt = 0;   // Date.now() the live Convai channel actually went live (cost reporting)
+    let voiceConnectedAt = 0;   // Date.now() the conversation opened
     let designPollTimer = null;
     let designPollTries = 0;
     let designCacheKey = "";
-    // When a designed voice becomes ready while the AI is still speaking, we
-    // queue it and swap the moment the AI transitions back to listening —
-    // otherwise we'd cut the character off mid-word. Also tracks whether the
-    // opening line has finished so a swap doesn't force it to be re-spoken.
-    let pendingDesignedVoiceId = "";
-    let aiIsSpeaking = false;
-    let openingSpoken = false;
 
     function stopDesignPoll() {
       if (designPollTimer) { clearInterval(designPollTimer); designPollTimer = null; }
@@ -23480,8 +23529,8 @@
     }
 
     // Poll the server every ~1.5s for a background-designed voice; when it
-    // flips to ready, hot-swap the live Convai session onto it. Caps at ~21s
-    // of polling so a failed design falls silently back to the preset voice.
+    // flips to ready, the next answer is spoken in it. Caps at ~21s of
+    // polling so a failed design falls silently back to the roster voice.
     function startDesignPoll(cacheKey) {
       stopDesignPoll();
       if (!cacheKey) return;
@@ -23502,16 +23551,7 @@
             stopDesignPoll();
             // Don't override a manual pick the player made mid-generation.
             if (selectedVoiceId && selectedVoiceId !== voiceInUse) return;
-            // Defer the actual swap until (a) the opening line is done AND
-            // (b) the AI isn't mid-speech, so a hot-swap can never truncate
-            // the character. If either condition is missing we stash the
-            // voice id; the onModeChange -> "listening" path picks it up.
-            if (!openingSpoken || aiIsSpeaking) {
-              pendingDesignedVoiceId = data.voice_id;
-              AgentLog.push("dim", "designed voice ready, queued until pause");
-              return;
-            }
-            hotSwapDesignedVoice(data.voice_id);
+            adoptDesignedVoice(data.voice_id);
           } else if (data.status === "failed" || data.status === "unknown") {
             stopDesignPoll();
           }
@@ -23519,46 +23559,35 @@
       }, 1500);
     }
 
-    // Rebuild the Convai session with the newly-designed voice id.
-    // Distinct from user-driven changeVoice() in three ways so the swap
-    // stays invisible-feeling to the player:
-    //   1. Does NOT persist to localStorage (the human picker's contract).
-    //   2. Does NOT print a chat line (too meta / draws attention).
-    //   3. Passes __suppressFirstMessage so the character doesn't
-    //      re-introduce themselves — the opening was already said in the
-    //      fallback voice; the new voice takes over from the NEXT turn.
-    // Callers must gate on !aiIsSpeaking + openingSpoken so the reconnect
-    // never truncates the character mid-word.
-    async function hotSwapDesignedVoice(newVoiceId) {
-      if (!newVoiceId || switching || !open || mode !== "voice") return;
-      if (newVoiceId === voiceInUse) return;
-      pendingDesignedVoiceId = "";
-      switching = true;
-      setSub("channel live \u00b7 listening");
-      if (convo) { try { await convo.endSession(); } catch (_) {} convo = null; }
-      const reuseOpening = (lastSession && lastSession.context && lastSession.context.opening_line) || "";
-      let session = null;
-      try {
-        session = await postJSON("/api/talk/session",
-          { subject, voice_id: newVoiceId, opening_line: reuseOpening });
-      } catch (e) { console.warn("[talk] hot-swap fetch failed:", e); }
-      if (!open) { switching = false; return; }
-      if (!session || session.mode !== "voice") { switching = false; return; }
-      AgentLog.push("talk", "voice hot-swapped", "designed \u00b7 " + newVoiceId);
-      beginVoice(session, "", { suppressFirstMessage: true });
+    // The designed voice landed: speak the NEXT answer in it. No reconnect,
+    // no re-greeting, no chat line — the player just hears the person
+    // become themselves. The fallback's refcount is released first.
+    function adoptDesignedVoice(newVoiceId) {
+      if (!newVoiceId || !open || newVoiceId === voiceInUse) return;
+      if (voiceInUse) releaseVoiceOnClose(voiceInUse, 0);
+      voiceInUse = newVoiceId;
+      AgentLog.push("talk", "designed voice in", newVoiceId);
     }
 
-    // Fire-and-forget notify so server can drop the voice refcount and
-    // reclaim the ElevenLabs voice slot at session end. sendBeacon survives
-    // pagehide/close; fetch with keepalive is the fallback. `durationSeconds`
-    // (how long the Convai channel was actually live) lets the server log a
-    // cost-usage row for the conversational-agent minutes — otherwise
-    // ElevenLabs TALK is invisible to the cost tracker (it's a client<->agent
-    // websocket the server never proxies).
+    // Speak one of the character's lines (skipped when muted or text-only).
+    // Resolves when it has finished, so the orb can follow it.
+    async function speakLine(text) {
+      if (mode !== "voice" || voiceMuted || !text || state.soundEnabled === false) return;
+      setOrbState("speaking");
+      const blob = await VoiceOut.fetchLine({ text, voice_id: voiceInUse, style: voiceStyle });
+      if (!open) return;
+      if (!blob) { setOrbState("idle"); return; }
+      await VoiceOut.play(blob, { channel: "talk" });
+      if (open) setOrbState("idle");
+    }
+
+    // Fire-and-forget notify so the server can drop the voice refcount and
+    // reclaim the designed voice at session end. sendBeacon survives
+    // pagehide/close; fetch with keepalive is the fallback.
     function releaseVoiceOnClose(voiceId, durationSeconds, subj) {
       // Notify /api/talk/end to drop the voice refcount. Pass `subj` ONLY on
-      // final hang-up so character memory isn't incremented on mid-call voice
-      // hot-swaps (those call this with just a voice id).
+      // final hang-up so character memory isn't incremented on a mid-talk
+      // voice change (those call this with just a voice id).
       try {
         const body = JSON.stringify({
           voice_id: voiceId || "",
@@ -23740,7 +23769,7 @@
       } catch (_) { savedEnvFrameDataUrl = null; }
       worldSwapped = true;
       // Moments.push paused the session for the takeover; resume so frames flow
-      // for the character world (audio stays muted — the voice is ElevenLabs).
+      // for the character world (audio stays muted — the voice is VoiceOut).
       try { RR.resume && RR.resume(); } catch (_) {}
       // Re-anchor DIRECTLY via the facade (NOT Renderer.applyScene) so
       // Renderer.lastScene keeps pointing at the env world we'll return to.
@@ -23861,8 +23890,6 @@
       restorePromise.finally(() => { if (restoreInFlight === restorePromise) restoreInFlight = null; });
     }
 
-    function ensureSdk() { return ElevenSDK.load(); }
-
     // Mirror the latest line (yours or theirs) as a soft speech caption
     // floating over the scene — Coffee-Talk-style dialog that "hangs in the
     // air" so a conversation can happen in your peripheral vision while you
@@ -23942,15 +23969,9 @@
       transcript = [];
       busy = false;
       mode = "text";
-      convo = null;
-      micMuted = false;
+      voiceStyle = "";
+      voiceConnectedAt = 0;
       open = true;
-      // Reset the dynamic-voice bookkeeping so a new TALK never inherits
-      // a queued swap or stale "opening already spoken" state from a prior
-      // conversation (which would let a hot-swap fire mid-greeting).
-      pendingDesignedVoiceId = "";
-      aiIsSpeaking = false;
-      openingSpoken = false;
       greetingShown = false;
       lastFocus = document.activeElement;
       Narrator.stop(); // a two-way conversation takes over from ambient narration
@@ -24078,21 +24099,12 @@
           });
         } catch (_) {}
       }
-      // A key-ID / malformed secret cannot mint a signed URL. Trying the
-      // (private) agent by id then hung on "opening channel…". Only open
-      // voice when we have a signature, or a public agent and no key error.
-      const canVoice = !!(session && session.mode === "voice" &&
-        (session.signed_url || (session.agent_id && !session.voice_error)));
-      if (session && session.voice_error) {
-        console.warn("[talk] voice signing:", session.voice_error);
-        try { AgentLog.push("warn", "voice signing", session.voice_error); } catch (_) {}
-      }
-      if (canVoice) {
-        beginVoice(session, opening);
+      if (session && session.mode === "voice") {
+        beginVoice(session);
+        // The greeting was put on screen above; now say it.
+        if (opening) speakLine(opening);
       } else {
-        beginText(opening, session && session.voice_error
-          ? "text transmission \u00b7 voice needs an sk_ key"
-          : "text transmission");
+        beginText(opening, "text transmission");
       }
     }
 
@@ -24113,173 +24125,42 @@
       setTimeout(() => { if (open) el.talkInput.focus(); }, 220);
     }
 
-    // Live voice via the ElevenLabs client SDK, rendered into THIS panel: the
-    // agent's spoken lines + our voice transcriptions stream in as bubbles, the
-    // orb reflects listening/speaking, and typing still works (sendUserMessage).
-    // Any failure (SDK blocked, mic denied, connect error) degrades to the
-    // server text conversation so TALK always works.
-    async function beginVoice(session, opening, opts_ext) {
-      // Stay on text until onConnect. Flipping to voice here made send()
-      // drop typed lines (convo is still null) and a hung startSession
-      // left the speak screen mute.
+    // Voice mode: the same text conversation, every answer spoken in the
+    // character's voice. The MUTE pill silences the character (there is no
+    // open microphone to mute any more).
+    function beginVoice(session) {
+      mode = "voice";
+      switching = false;
       lastSession = session;
       adoptVoiceCatalog(session);
-      setSub(switching ? "switching voice\u2026" : "speak or type");
-      setOrbState(switching ? "connecting" : "idle");
-      el.talkInput.setAttribute("placeholder", "speak, or type\u2026");
-      // Hot-swap path passes { suppressFirstMessage: true } so the character
-      // doesn't re-greet in the new voice — the opening was already said in
-      // the fallback voice. Also resets the opening-spoken gate so any
-      // NEXT designed-voice swap defers again until the (new) opening is done.
-      var suppressFirst = !!(opts_ext && opts_ext.suppressFirstMessage);
-      if (!suppressFirst) openingSpoken = false;
-
-      let connected = false;
-      let connectTimer = null;
-      let finished = false;
-      const clearConnectTimer = () => { if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; } };
-      const failToText = (why) => {
-        if (finished || !open || connected) return;
-        finished = true;
-        clearConnectTimer();
-        console.warn("[talk] voice channel never opened — falling back to text:", why || "");
-        try { AgentLog.push("error", "voice channel never opened", why || "falling back to text"); } catch (_) {}
-        try { if (convo) convo.endSession(); } catch (_) {}
-        convo = null;
-        beginText(opening || fallbackOpening(subject), "text transmission \u00b7 voice didn't connect");
-      };
-      // Arm before SDK load AND startSession. Either can hang; the greeting
-      // is already on screen and typing stays on the text path until connect.
-      const connectBudget = (session && session.signed_url)
-        ? TALK_CONNECT_TIMEOUT_MS
-        : Math.min(TALK_CONNECT_TIMEOUT_MS, 6000);
-      connectTimer = setTimeout(() => failToText("timeout"), connectBudget);
-
-      let Conversation;
-      try {
-        Conversation = await ensureSdk();
-      } catch (e) {
-        console.warn("[talk] SDK load failed, falling back to text:", e);
-        return failToText((e && e.message) || "sdk");
+      voiceStyle = (session && session.voice_style) || "";
+      setSub("speak or type");
+      setOrbState("idle");
+      el.talkInput.setAttribute("placeholder", "say something\u2026");
+      el.talkModeToggle.classList.remove("hidden");
+      el.talkModeToggle.textContent = voiceMuted ? "UNMUTE" : "MUTE";
+      el.talkModeToggle.setAttribute("title", "Mute / unmute their voice");
+      showVoiceControl(session.voice_id);
+      if (voiceInUse && voiceInUse !== session.voice_id) releaseVoiceOnClose(voiceInUse, 0);
+      voiceInUse = session.voice_id || "";
+      voiceConnectedAt = voiceConnectedAt || Date.now();
+      AgentLog.push("talk", "voice", (session.voice_id || "default") + " \u00b7 " + (session.voice_status || ""));
+      if (session.voice_status === "generating" && session.voice_cache_key) {
+        AgentLog.push("dim", "casting character voice", session.voice_cache_key);
+        startDesignPoll(session.voice_cache_key);
+      } else {
+        stopDesignPoll();
       }
-      if (!open) { clearConnectTimer(); return; }
-
-      const opts = {
-        connectionType: "websocket",
-        dynamicVariables: session.dynamic_variables || {},
-        onConnect: () => {
-          if (!open) return;
-          connected = true;
-          finished = true;
-          mode = "voice";
-          clearConnectTimer();
-          switching = false;
-          AgentLog.push("ok", "talk connected", subject && subject.label);
-          setSub("channel live \u00b7 listening"); setOrbState("listening");
-          el.talkModeToggle.classList.remove("hidden");
-          el.talkModeToggle.textContent = micMuted ? "UNMUTE" : "MUTE";
-          showVoiceControl(session.voice_id);
-          // Remember the voice we actually handed to Convai so /api/talk/end
-          // can release its refcount at close time. Every /api/talk/session
-          // call bumps the refcount, so on a re-connect (voice switch /
-          // hot-swap / user pick) we release the PREVIOUS voice first —
-          // otherwise its refcount would stay >0 across the whole session
-          // and block reclaim.
-          if (voiceInUse && voiceInUse !== session.voice_id) {
-            releaseVoiceOnClose(voiceInUse, voiceConnectedAt ? (Date.now() - voiceConnectedAt) / 1000 : 0);
-          }
-          voiceInUse = session.voice_id || "";
-          voiceConnectedAt = Date.now();
-          // If a per-character voice is being designed in the background,
-          // start polling so we can hot-swap it in once it lands.
-          if (session.voice_status === "generating" && session.voice_cache_key) {
-            AgentLog.push("dim", "casting character voice", session.voice_cache_key);
-            startDesignPoll(session.voice_cache_key);
-          } else {
-            stopDesignPoll();
-          }
-        },
-        onDisconnect: () => { AgentLog.push("dim", "talk disconnected"); if (open && mode === "voice") { setSub("channel closed"); setOrbState("idle"); } },
-        onError: (e) => { AgentLog.push("error", "talk error", AgentLog.clip(e && (e.message || e), 120)); console.warn("[talk] voice error:", e); },
-        onStatusChange: (s) => { AgentLog.push("dim", "talk status", (s && (s.status || s)) || ""); },
-        onModeChange: (m) => {
-          if (!open) return;
-          const md = (m && (m.mode || m)) || "";
-          if (md === "speaking") {
-            aiIsSpeaking = true;
-            setSub("channel live \u00b7 speaking"); setOrbState("speaking");
-          } else if (md === "listening") {
-            aiIsSpeaking = false;
-            // The AI just finished a turn. Mark opening-spoken (the first
-            // speaking->listening transition is when the greeting ends),
-            // and if a designed voice landed while we were speaking, apply
-            // it NOW so the swap never truncates the character.
-            openingSpoken = true;
-            setSub("channel live \u00b7 listening"); setOrbState("listening");
-            if (pendingDesignedVoiceId && !switching) {
-              const vid = pendingDesignedVoiceId;
-              pendingDesignedVoiceId = "";
-              hotSwapDesignedVoice(vid);
-            }
-          }
-        },
-        onMessage: (m) => {
-          if (!open || !m) return;
-          const src = m.source || m.role;
-          const text = (m.message || m.text || "").trim();
-          if (!text) return;
-          if (src === "ai" || src === "agent") { addLine("assistant", text); Sound.talkLine(); pulseOrb(); AgentLog.push("talk", subject.label.toUpperCase() + ":", AgentLog.clip(text, 100)); }
-          else if (src === "user") { addLine("user", text); AgentLog.push("dim", "YOU:", AgentLog.clip(text, 100)); }
-        },
-      };
-      // Persona overrides (server sends them only when the agent allows it).
-      const a = session.overrides && session.overrides.agent;
-      const tts = session.overrides && session.overrides.tts;
-      if (a || tts) {
-        opts.overrides = {};
-        if (a) {
-          opts.overrides.agent = {};
-          if (a.prompt && a.prompt.prompt) opts.overrides.agent.prompt = { prompt: a.prompt.prompt };
-          // Hot-swap explicitly suppresses the first message so the character
-          // doesn't re-greet in the new voice. A single space keeps the agent
-          // from falling back to its DASHBOARD-configured first message
-          // (which would defeat the purpose) while producing essentially no
-          // audio the player would notice.
-          if (suppressFirst) {
-            opts.overrides.agent.firstMessage = " ";
-          } else if (a.first_message) {
-            opts.overrides.agent.firstMessage = a.first_message;
-          }
-          opts.overrides.agent.language = "en";
-        }
-        // Voice override — THIS is what actually makes a live voice switch change
-        // the sound (the agent has tts.voice_id override enabled).
-        if (tts && tts.voice_id) opts.overrides.tts = { voiceId: tts.voice_id };
-      }
-      // A signed URL authorizes private agents (and works for public ones);
-      // otherwise connect to a public agent by id.
-      if (session.signed_url) opts.signedUrl = session.signed_url;
-      else opts.agentId = session.agent_id;
-      AgentLog.push("talk", "opening voice", (session.signed_url ? "signed-url" : "agent " + (session.agent_id || "?")) + " \u00b7 voice " + (session.voice_id || "default"));
-
-      try {
-        convo = await Conversation.startSession(opts);
-      } catch (e) {
-        console.warn("[talk] voice start failed, falling back to text:", e);
-        convo = null;
-        return failToText((e && e.message) || "mic unavailable");
-      }
-      if (!open) { try { convo.endSession(); } catch (_) {} convo = null; clearConnectTimer(); return; }
       setTimeout(() => { if (open) el.talkInput.focus(); }, 200);
     }
 
-    // Mic mute toggle (voice mode only) — repurposes the header pill.
+    // The MUTE pill (voice mode only): silence the character, or not.
     function micToggle() {
-      if (mode !== "voice" || !convo) return;
-      micMuted = !micMuted;
-      try { convo.setMicMuted(micMuted); } catch (e) { console.warn("[talk] mute failed:", e); }
-      el.talkModeToggle.textContent = micMuted ? "UNMUTE" : "MUTE";
-      el.talkModeToggle.classList.toggle("muted", micMuted);
+      if (mode !== "voice") return;
+      voiceMuted = !voiceMuted;
+      if (voiceMuted) { VoiceOut.stop("talk"); setOrbState("idle"); }
+      el.talkModeToggle.textContent = voiceMuted ? "UNMUTE" : "MUTE";
+      el.talkModeToggle.classList.toggle("muted", voiceMuted);
       Sound.toggle();
     }
 
@@ -24338,9 +24219,8 @@
       if (el.talkVoiceBtn) el.talkVoiceBtn.setAttribute("aria-expanded", "false");
     }
 
-    // Change the active voice on the fly. Persists the choice and, if a voice
-    // call is live, reconnects the channel with the new voice (the character
-    // re-greets you in the new voice). The typed transcript is preserved.
+    // Change the active voice on the fly. Persists the choice; the next thing
+    // the character says is in the new voice. The transcript is preserved.
     async function changeVoice(voiceId) {
       if (!voiceId || voiceId === selectedVoiceId && switching) return;
       if (switching) return; // a switch is already reconnecting — ignore rapid clicks
@@ -24352,41 +24232,21 @@
       closeVoiceMenu();
       Sound.toggle();
       if (mode !== "voice" || !open) return;
-      if (voiceId === prev) return; // no change to a live call
-      switching = true;
-      setSub("switching voice…"); setOrbState("connecting");
-      el.talkVoiceBtn && el.talkVoiceBtn.classList.add("switching");
-      if (convo) { try { await convo.endSession(); } catch (_) {} convo = null; }
-      let session = null;
-      // Reuse the current opening line so the reconnect doesn't burn an LLM call
-      // just to regenerate an identical greeting.
-      const reuseOpening = (lastSession && lastSession.context && lastSession.context.opening_line) || "";
-      try { session = await postJSON("/api/talk/session", { subject, voice_id: voiceId, opening_line: reuseOpening }); }
-      catch (e) { console.warn("[talk] reconnect failed:", e); }
-      el.talkVoiceBtn && el.talkVoiceBtn.classList.remove("switching");
-      if (!open) return;
-      if (!session || session.mode !== "voice") { switching = false; setSub("voice unavailable"); return; }
-      addLine("assistant", "\u2014 now speaking as " + voiceName(voiceId) + " \u2014");
-      beginVoice(session, (session.context && session.context.opening_line) || "");
+      if (voiceId === prev) return;
+      if (voiceInUse && voiceInUse !== voiceId) releaseVoiceOnClose(voiceInUse, 0);
+      voiceInUse = voiceId;
+      stopDesignPoll(); // the player's pick wins over a voice still designing
+      addLine("assistant", "\u2014 now speaking as " + voiceName(voiceId) + " \u2014", { record: false });
     }
 
     async function send(text) {
       text = (text || "").trim();
       if (!text || !open) return;
 
-      // VOICE: hand the typed line to the live agent (it takes its turn).
-      // If the socket isn't up yet, fall through to text so a hung
-      // startSession cannot swallow what the player typed.
-      if (mode === "voice" && convo) {
-        addLine("user", text);
-        el.talkInput.value = "";
-        Sound.submit();
-        try { convo.sendUserMessage(text); } catch (e) { console.warn("[talk] sendUserMessage failed:", e); }
-        return;
-      }
-
-      // TEXT: resolve a reply from the server (story-aware LLM roleplay).
+      // Resolve a reply from the server (story-aware LLM roleplay); in voice
+      // mode it is then spoken. A new line cuts off the one still playing.
       if (busy) return;
+      VoiceOut.stop("talk");
       busy = true;
       messages.push({ role: "user", content: text });
       addLine("user", text);
@@ -24402,6 +24262,7 @@
         addLine("assistant", reply);
         Sound.talkLine();
         pulseOrb();
+        speakLine(reply);
       } catch (err) {
         console.warn("[talk] message failed:", err);
         if (open) {
@@ -24441,11 +24302,11 @@
     // Enough of a conversation to be worth a turn. The player having said
     // something is the test — opening a channel and closing it without a word
     // is not an action, and must not cost a turn (or the money one takes).
-    // Voice is the exception: the SDK's user transcript can be late or absent,
-    // so a call the player plainly held counts on its own.
-    function worthATurn(seconds) {
-      if (transcript.some((ln) => ln.role === "user")) return true;
-      return mode === "voice" && (seconds || 0) >= 8;
+    // (A voice call used to count on its length alone, because the ElevenLabs
+    // SDK's transcript of the player could be late or absent; every line the
+    // player says now passes through addLine.)
+    function worthATurn() {
+      return transcript.some((ln) => ln.role === "user");
     }
 
     // A conversation opened from INSIDE another Moment — from camp, say —
@@ -24512,9 +24373,7 @@
       switching = false;
       hideFloat();
       stopDesignPoll();
-      pendingDesignedVoiceId = "";
-      aiIsSpeaking = false;
-      openingSpoken = false;
+      VoiceOut.stop("talk");
       greetingShown = false;
       // Notify the server so it drops the refcount on the voice we've been
       // using AND records a lightweight per-character memory entry. Capture
@@ -24530,7 +24389,6 @@
       // when there's no cinematic chrome to hand off to, so exit doesn't stack
       // two overlapping "hang up" cues.
       if (!inMoment) Sound.talkClose();
-      if (convo) { try { convo.endSession(); } catch (_) {} convo = null; }
       closeVoiceMenu();
       if (el.talkVoiceBtn) el.talkVoiceBtn.classList.add("hidden");
       el.talkOverlay.classList.remove("talk-in");
@@ -24592,7 +24450,7 @@
       // holds until it lands. settleAfterTalk fires the turn — which narrates
       // the deed itself through makeChoice — so the exit line below is only
       // for a conversation that was not worth one.
-      if (worthATurn(releasedDuration) && !state.gameOver && !settling
+      if (worthATurn() && !state.gameOver && !settling
           && !nestedInAnotherMoment() && !state.awaitingResolution) {
         settleAfterTalk(closedSubject, handBack);
         return;
@@ -27490,83 +27348,16 @@
   // IN it). It asks the server to GENERATE a short, story-aware world-building
   // narration — optionally a radio-play script that hands off between a cast of
   // voices (narrator / man / woman / elder / creature / machine / warden) — then
-  // plays each line's ElevenLabs audio in sequence with lower-third subtitles.
+  // plays each line's voice (VoiceOut) in sequence with lower-third subtitles.
   // Built to expand: point it at a focus, auto-narrate scene changes, etc.
   // ------------------------------------------------------------------
   const Narrator = (function () {
     let playing = false;
     let busy = false;
     let gen = 0;                 // bumped by stop() to abort in-flight work
-    let convo = null;            // the active per-segment SDK session
-    let agentCfg = null;         // {agent_id, signed_url} — the narrator's agent
-    let agentAvailable = null;   // did the server advertise a usable agent?
-    let silentInput = null;      // synthetic silent mic (see startSessionNoMic)
+    let voiceAvailable = null;   // can this key speak a line? (else subtitles)
 
     function isBusy() { return busy || playing; }
-
-    // The narrator is ONE-WAY (a voice OVER the scene, never listening), but the
-    // ElevenLabs VoiceConversation SDK always grabs a microphone on connect —
-    // so on any device with no mic, no mic permission, or a locked-down browser,
-    // startSession() throws "Requested device not found" and narration silently
-    // dies. Since we never actually listen, we hand the SDK a SYNTHETIC SILENT
-    // audio track instead of a real mic: voice OUT still plays, and there is zero
-    // microphone dependency. makeSilentMicStream() builds that track from a muted
-    // WebAudio graph; closeSilentInput() tears it down.
-    function makeSilentMicStream() {
-      try {
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        if (!Ctx) return null;
-        const ctx = new Ctx();
-        const dest = ctx.createMediaStreamDestination();
-        // A gain-0 oscillator keeps the output track "live" (unended) without
-        // ever emitting audible sound.
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        gain.gain.value = 0;
-        osc.connect(gain).connect(dest);
-        osc.start();
-        return { stream: dest.stream, ctx, osc };
-      } catch (_) { return null; }
-    }
-
-    function closeSilentInput() {
-      if (!silentInput) return;
-      const s = silentInput; silentInput = null;
-      try { s.osc && s.osc.stop(); } catch (_) {}
-      try { s.stream && s.stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
-      try { s.ctx && s.ctx.close(); } catch (_) {}
-    }
-
-    // Start a narrator SDK session WITHOUT requiring a real microphone. We
-    // briefly shim navigator.mediaDevices.getUserMedia so the SDK's connect-time
-    // audio-capture request resolves to a clone of our silent track, then restore
-    // the original immediately (the narrator never switches input devices, so
-    // getUserMedia is only called once, during startSession). Any failure falls
-    // back to the real getUserMedia — and the caller still degrades to timed
-    // subtitles if that throws too.
-    async function startSessionNoMic(Conversation, opts) {
-      const md = (navigator && navigator.mediaDevices) || null;
-      const orig = md && md.getUserMedia ? md.getUserMedia.bind(md) : null;
-      closeSilentInput();
-      silentInput = orig ? makeSilentMicStream() : null;
-      if (orig && silentInput && silentInput.stream) {
-        md.getUserMedia = (constraints) => {
-          try {
-            if (constraints && constraints.audio && silentInput && silentInput.stream) {
-              // Hand back a fresh clone so the SDK can stop "its" tracks at
-              // endSession without ending our keep-alive source.
-              return Promise.resolve(silentInput.stream.clone());
-            }
-          } catch (_) {}
-          return orig(constraints);
-        };
-      }
-      try {
-        return await Conversation.startSession(opts);
-      } finally {
-        if (orig) { try { md.getUserMedia = orig; } catch (_) {} }
-      }
-    }
 
     function show(speaker, text) {
       if (el.narratorSpeaker) el.narratorSpeaker.textContent = speaker ? speaker.toUpperCase() : "";
@@ -27588,149 +27379,49 @@
       setTimeout(() => { if (!playing) el.narratorBar.classList.add("hidden"); }, 320);
     }
 
-    async function endConvo() {
-      if (convo) { const c = convo; convo = null; try { await c.endSession(); } catch (_) {} }
-      closeSilentInput();
-    }
-
-    // THE CLIPPED LAST WORD. The SDK reports mode "listening" when the agent
-    // has finished GENERATING the line — not when the browser has finished
-    // PLAYING it. There is still audio in the output node at that point, and
-    // endSession() tears the node down, so every narration lost its tail.
-    // Wait for the output to actually go quiet before wrapping the segment.
-    // Bounded both ways: a build with no analyser gets a flat grace beat, and
-    // a level that never settles gives up. Late is recoverable; clipped is not.
-    const OUTPUT_QUIET_MS = 420;
-    const OUTPUT_WAIT_MAX_MS = 6000;
-    const OUTPUT_FLOOR = 0.005;
-    const OUTPUT_BLIND_GRACE_MS = 900;
-
-    function outputLevel() {
-      try {
-        if (convo && typeof convo.getOutputVolume === "function") {
-          return convo.getOutputVolume() || 0;
-        }
-      } catch (_) {}
-      try {
-        if (convo && typeof convo.getOutputByteFrequencyData === "function") {
-          const d = convo.getOutputByteFrequencyData();
-          if (d && d.length) {
-            let sum = 0;
-            for (let i = 0; i < d.length; i++) sum += d[i];
-            return (sum / d.length) / 255;
-          }
-        }
-      } catch (_) {}
-      return -1; // nothing to measure on this SDK build
-    }
-
-    function waitForOutputSilence() {
-      if (outputLevel() < 0) {
-        return new Promise((r) => setTimeout(r, OUTPUT_BLIND_GRACE_MS));
-      }
-      return new Promise((resolve) => {
-        const t0 = Date.now();
-        let quietSince = 0;
-        const tick = setInterval(() => {
-          const now = Date.now();
-          const lvl = outputLevel();
-          if (lvl > OUTPUT_FLOOR) quietSince = 0;
-          else if (!quietSince) quietSince = now;
-          if ((quietSince && now - quietSince >= OUTPUT_QUIET_MS)
-              || now - t0 > OUTPUT_WAIT_MAX_MS) {
-            clearInterval(tick);
-            resolve();
-          }
-        }, 60);
-      });
-    }
-
-    // Speak ONE segment through the generative agent: a short SDK session whose
-    // FIRST MESSAGE is the exact narration line, in the segment's voice. The
-    // agent utters it, we detect it finished (mode → listening, or a hard
-    // timeout), then tear the session down and move on. Mic is muted (one-way).
-    function speakSegment(seg, myGen) {
+    // Speak ONE segment: the line's WAV (already being fetched while the
+    // previous line played), with the caption held until the voice starts —
+    // subtitles are only subtitles if the audio is under them. No voice on
+    // this key (mock mode, no key, a refused line) → a timed subtitle, shown
+    // at once because there is nothing for it to be early for.
+    function speakSegment(seg, myGen, pending) {
       return new Promise(async (resolve) => {
-        // The caption used to be drawn HERE, before the SDK had even loaded —
-        // then a websocket opened, a session started, and the voice began one
-        // to three seconds later. You read the line, then heard it. Subtitles
-        // are only subtitles if the audio is under them, so the line is held
-        // until the agent actually reaches "speaking". The fallback paths
-        // below have no audio to wait for and still show it immediately.
         const reveal = () => show(seg.character, seg.text);
         Sound.talkLine();
         AgentLog.push("narrator", (seg.character || "narrator").toUpperCase() + ":", AgentLog.clip(seg.text, 100));
-        // No voice channel possible → timed subtitle, shown at once because
-        // there is nothing for it to be early for.
         const timed = () => {
           reveal();
           setTimeout(resolve, Math.max(2600, (seg.text || "").length * 60));
         };
-        if (!agentCfg || !agentCfg.agent_id && !agentCfg.signed_url || state.soundEnabled === false) {
+        if (voiceAvailable === false || state.soundEnabled === false) {
           if (state.soundEnabled === false) AgentLog.push("dim", "muted \u2014 subtitle only");
-          else AgentLog.push("warn", "no narrator agent \u2014 subtitle only");
+          else AgentLog.push("warn", "no voice on this key \u2014 subtitle only");
           timed();
           return;
         }
-        let Conversation, done = false, spoke = false, hardTimer = null;
-        const finish = async (why) => {
-          if (done) return; done = true;
-          clearTimeout(hardTimer);
-          await endConvo();
-          resolve();
-        };
-        try { Conversation = await ElevenSDK.load(); }
-        catch (e) { AgentLog.push("error", "narrator SDK failed \u2014 subtitle", String(e).slice(0, 80)); timed(); return; }
+        const blob = await (pending || VoiceOut.fetchLine(seg));
         if (myGen !== gen) { resolve(); return; }
-        const opts = {
-          connectionType: "websocket",
-          overrides: {
-            agent: {
-              prompt: { prompt: "You are a disembodied narrator. Utter the first message EXACTLY as written, once, as narration. Then say nothing further and do not ask questions." },
-              firstMessage: seg.text,
-              language: "en",
-            },
-            tts: { voiceId: seg.voice_id },
-          },
-          onConnect: () => { AgentLog.push("ok", "narrator connected", seg.voice_id); },
-          onModeChange: (m) => {
-            const md = (m && (m.mode || m)) || "";
-            if (md === "speaking") { spoke = true; reveal(); }
-            // "listening" means the agent has finished GENERATING the line,
-            // not that the browser has finished playing it — there is still
-            // buffered audio in the output node. Ending the session here cut
-            // the last word off every single narration. Wait for the output
-            // to actually go quiet first.
-            else if (md === "listening" && spoke) waitForOutputSilence().then(() => finish("spoke"));
-          },
-          onError: (e) => { AgentLog.push("error", "narrator seg error", AgentLog.clip(e && (e.message || e), 100)); finish("error"); },
-          onDisconnect: () => { if (spoke) finish("disconnect"); },
-        };
-        if (agentCfg.signed_url) opts.signedUrl = agentCfg.signed_url; else opts.agentId = agentCfg.agent_id;
-        try {
-          // One-way: feed a synthetic silent mic so no real microphone (or mic
-          // permission) is ever required just to HEAR the narration.
-          convo = await startSessionNoMic(Conversation, opts);
-          try { convo.setMicMuted(true); } catch (_) {} // one-way — never listen
-        } catch (e) {
-          AgentLog.push("error", "narrator start failed \u2014 subtitle", AgentLog.clip(e && (e.message || e), 100));
-          convo = null; timed(); return;
-        }
-        if (myGen !== gen) { finish("aborted"); return; }
-        // A session that connects but never speaks would now show nothing at
-        // all, where before it at least showed the line. Put the subtitle up
-        // anyway after a beat — late is the failure mode we can live with.
-        setTimeout(() => { if (!spoke && !done && myGen === gen) reveal(); }, 2500);
-        // Safety net: never hang on a segment (long line ≈ read time + buffer).
-        hardTimer = setTimeout(() => finish("timeout"), Math.max(9000, (seg.text || "").length * 90));
+        if (!blob) { AgentLog.push("warn", "line not voiced \u2014 subtitle"); timed(); return; }
+        // A line that plays but never reports `playing` (a codec hiccup) must
+        // still get its caption.
+        const late = setTimeout(() => { if (myGen === gen) reveal(); }, 1500);
+        await VoiceOut.play(blob, { channel: "narrator", onStart: reveal });
+        clearTimeout(late);
+        resolve();
       });
     }
 
     async function play(segments, myGen) {
       playing = true;
       if (el.narratorBtn) el.narratorBtn.classList.add("on");
-      for (const seg of segments) {
-        if (myGen !== gen || !seg || !(seg.text || "").trim()) continue;
+      const voiced = voiceAvailable !== false && state.soundEnabled !== false;
+      const lines = (segments || []).filter((sg) => sg && (sg.text || "").trim());
+      let next = voiced && lines[0] ? VoiceOut.fetchLine(lines[0]) : null;
+      for (let i = 0; i < lines.length; i++) {
+        const seg = lines[i];
+        if (myGen !== gen) break;
+        const mine = next;
+        next = voiced && lines[i + 1] ? VoiceOut.fetchLine(lines[i + 1]) : null;
         // Optional inter-line pause — used by transition() to hold a beat of
         // silence between the bridging line and the "dark truth" that follows.
         const pause = seg && typeof seg._preDelayMs === "number" ? seg._preDelayMs : 0;
@@ -27738,7 +27429,7 @@
           await new Promise((r) => setTimeout(r, pause));
           if (myGen !== gen) break;
         }
-        await speakSegment(seg, myGen);
+        await speakSegment(seg, myGen, mine);
         if (myGen !== gen) break;
       }
       playing = false;
@@ -27746,8 +27437,8 @@
       if (myGen === gen) hide();
     }
 
-    // Generate a story-aware narration server-side (LLM), then SPEAK it live via
-    // the generative agent in the browser (no server TTS key required).
+    // Generate a story-aware narration server-side (LLM), then SPEAK it line by
+    // line (VoiceOut), each line's voice fetched while the one before plays.
     async function narrate(opts) {
       opts = opts || {};
       if (Talk.isOpen()) { showRendererToast("End the conversation to hear the narrator"); return; }
@@ -27761,8 +27452,8 @@
       Sound.talkOpen();
       AgentLog.push("narrator", "worldbuild\u2026", opts.focus ? AgentLog.clip(opts.focus, 60) : (opts.multi !== false ? "multi" : "single"));
       try {
-        // speak:false → server returns TEXT + per-line voice + agent config; the
-        // browser voices it as a generative agent.
+        // speak:false → the server returns TEXT + each line's voice and
+        // delivery; the lines are voiced here, one at a time.
         const deed = opts.deed || {};
         const res = await postJSON("/api/narrator/worldbuild", {
           multi: opts.multi !== false, speak: false, focus: opts.focus || "",
@@ -27774,10 +27465,9 @@
           deed_target: deed.target || "",
         });
         if (myGen !== gen) return;
-        agentCfg = (res && res.agent) || agentCfg;
-        agentAvailable = !!(res && res.agent_available);
+        if (res && typeof res.voice_available === "boolean") voiceAvailable = res.voice_available;
         const segs = (res && res.segments) || [];
-        AgentLog.push("dim", "worldbuild \u2192 " + segs.length + " line(s)", agentAvailable ? "agent voice" : "subtitles");
+        AgentLog.push("dim", "worldbuild \u2192 " + segs.length + " line(s)", voiceAvailable !== false ? "voiced" : "subtitles");
         if (!segs.length) { show("narrator", "The channel is silent."); setTimeout(() => { if (myGen === gen) hide(); }, 1800); return; }
         busy = false;
         await play(segs, myGen);
@@ -27794,23 +27484,22 @@
       gen++; // abort in-flight worldbuild / segment loop / timers
       playing = false;
       busy = false;
-      endConvo();
+      VoiceOut.stop("narrator");
       if (el.narratorBtn) el.narratorBtn.classList.remove("on");
       hide();
     }
 
-    // Learn whether the narrator can SPEAK (a generative agent is configured)
-    // and cache its agent config; reflect it on the control's tooltip.
+    // Learn whether the narrator can SPEAK on this key; reflect it on the
+    // control's tooltip.
     async function preflight() {
       try {
         const c = await getJSON("/api/narrator/cast");
-        agentAvailable = !!(c && c.agent_available);
-        agentCfg = (c && c.agent) || null;
-        AgentLog.push("narrator", "preflight", "agent " + (agentAvailable ? "ready (" + ((agentCfg && agentCfg.agent_id) || "?") + ")" : "NOT configured") + " \u00b7 tts key " + ((c && c.voice_available) ? "yes" : "no"));
-      } catch (e) { agentAvailable = null; AgentLog.push("warn", "preflight failed", AgentLog.clip(e && (e.message || e), 80)); }
+        voiceAvailable = !!(c && c.voice_available);
+        AgentLog.push("narrator", "preflight", "voice " + (voiceAvailable ? "ready" : "none on this key \u2014 subtitles"));
+      } catch (e) { voiceAvailable = null; AgentLog.push("warn", "preflight failed", AgentLog.clip(e && (e.message || e), 80)); }
       if (el.narratorBtn) {
-        el.narratorBtn.title = agentAvailable === false
-          ? "Narrator — world-building subtitles (voice agent not configured) (N)"
+        el.narratorBtn.title = voiceAvailable === false
+          ? "Narrator — world-building subtitles (no voice on this key) (N)"
           : "Narrator — a voice frames the world (N)";
       }
     }
@@ -28002,8 +27691,7 @@
           deed_target: dest,
         });
         if (myGen !== gen) return;
-        agentCfg = (res && res.agent) || agentCfg;
-        agentAvailable = !!(res && res.agent_available);
+        if (res && typeof res.voice_available === "boolean") voiceAvailable = res.voice_available;
         const raw = (res && res.segments) || [];
         // First segment is the BRIDGE, second is the DARK TRUTH; only the
         // dark-truth line carries the inter-line pause so there's a beat of
@@ -28011,7 +27699,7 @@
         const segs = raw.slice(0, 2).map((s, i) => (
           i === 0 ? s : Object.assign({}, s, { _preDelayMs: TRANSITION_INTERLINE_PAUSE_MS })
         ));
-        AgentLog.push("dim", "transition \u2192 " + segs.length + " line(s)", agentAvailable ? "agent voice" : "subtitles");
+        AgentLog.push("dim", "transition \u2192 " + segs.length + " line(s)", voiceAvailable !== false ? "voiced" : "subtitles");
         if (!segs.length) {
           show("narrator", "The channel is silent.");
           setTimeout(() => { if (myGen === gen) hide(); }, 1800);

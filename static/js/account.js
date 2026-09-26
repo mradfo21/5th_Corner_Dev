@@ -6,9 +6,10 @@
 //   plays on — a dropdown (Gemini or OpenAI) and that provider's key, checked
 //   with one real call the moment it is pasted (provider_bridge.check). Then
 //   what the keys have cost this month (cost_tracker's estimate), the
-//   monthly limit, and the optional keys (voice, live video, other picture
-//   models) plus a CUSTOM key — any OpenAI-compatible address and model,
-//   which becomes the narrator.
+//   monthly limit, and the optional keys (a Claude narrator, live video,
+//   other picture models) plus a CUSTOM key — any OpenAI-compatible address
+//   and model, which becomes the narrator. Voices come from the key the game
+//   plays on; there is no separate voice key (docs/plans/ONE_KEY_AUDIO_PLAN.md).
 //
 //   On a hosted server: a wallet that belongs to this browser (no sign-in).
 //   See the balance, ADD MONEY through Stripe Checkout, the limit, and the
@@ -486,7 +487,7 @@
     } else if (!live && ai.provider && ai.provider !== pick) {
       out.appendChild(h("p", { class: "acct-note is-warn", text: "Playing on " + AI_NAMES[ai.provider] + " until this key is saved." }));
     }
-    out.appendChild(h("p", { class: "acct-note", text: "Story and pictures both come from " + name + ", billed to your key. The key stays on this PC." }));
+    out.appendChild(h("p", { class: "acct-note", text: "Story, pictures and voices all come from " + name + ", billed to your key. The key stays on this PC." }));
     return out;
   }
 
@@ -508,7 +509,7 @@
       onclick: () => { moreOpen = !moreOpen; openRow = null; render(); },
     }));
     if (!moreOpen) return out;
-    out.appendChild(h("p", { class: "acct-note", text: "Voice, live video, other picture models, or a narrator on your own server. None are needed to play." }));
+    out.appendChild(h("p", { class: "acct-note", text: "A Claude narrator, live video, other picture models, or a narrator on your own server. None are needed to play." }));
     extras.forEach((p) => {
       const v = keyValue(p);
       const isOpen = openRow === p.id;
@@ -661,7 +662,7 @@
     if (c.set) acts.unshift(word("REMOVE", () => removeCustom()));
     setTimeout(() => { try { (c.set ? model : address).focus(); } catch (_) {} }, 0);
     return [
-      h("p", { class: "acct-note", text: "Any service that speaks the OpenAI API — a model on this machine, OpenRouter, your own server. It writes the story; pictures and voice keep their own keys." }),
+      h("p", { class: "acct-note", text: "Any service that speaks the OpenAI API — a model on this machine, OpenRouter, your own server. It writes the story; pictures and voices stay on the key you play on." }),
       h("div", { class: "acct-fields" }, [field("ADDRESS", address), field("MODEL", model), field("KEY", secret)]),
       h("div", { class: "acct-actions" }, acts),
       h("p", { class: "acct-note", text: "Stays on this machine." }),

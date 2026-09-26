@@ -258,76 +258,23 @@ if not GEMINI_API_KEY:
     GEMINI_API_KEY = CONFIG.get("GEMINI_API_KEY", "")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", CONFIG.get("REPLICATE_API_TOKEN"))
 
-# ── ElevenLabs Conversational AI (the TALK mechanic's voice layer) ──────────
-# The agent id is a PUBLIC identifier (it's sent to the browser to open the
-# call), so it's safe to ship a default. The default agent is PUBLIC, so voice
-# works out of the box with NO secret at all — the client connects by agent id.
-# The API key is an OPTIONAL secret (env or gitignored config.json): when set,
-# the server mints a short-lived signed URL so PRIVATE agents also work without
-# ever exposing the key to the browser.
-ELEVENLABS_API_KEY = (os.getenv("ELEVENLABS_API_KEY") or CONFIG.get("ELEVENLABS_API_KEY") or "").strip()
-ELEVENLABS_AGENT_ID = (os.getenv("ELEVENLABS_AGENT_ID") or CONFIG.get("ELEVENLABS_AGENT_ID")
-                       or "agent_1601kxh3rz2hej9swfs75dv33q78").strip()
-ELEVENLABS_VOICE_ID = (os.getenv("ELEVENLABS_VOICE_ID") or CONFIG.get("ELEVENLABS_VOICE_ID") or "").strip()
-# Our default agent has prompt + first_message overrides enabled, so we push the
-# full per-subject persona. Set to "0" if you point the agent id at one that
-# does NOT allow overrides (the widget errors otherwise; dynamic variables still
-# keep it story-aware).
-ELEVENLABS_ALLOW_OVERRIDES = (os.getenv("ELEVENLABS_ALLOW_OVERRIDES", "1").strip().lower()
-                              not in ("0", "false", "no", "off"))
-def elevenlabs_key_problem() -> Optional[str]:
-    """Why the ElevenLabs key can't be used, or None if it looks usable.
-
-    A key that is merely PRESENT is not a key that works. The deployed key was
-    being reported as "key=YES" while ElevenLabs rejected every call with
-    `invalid_api_key_prefix: API key must start with 'sk_'` — so signing a
-    conversation URL always failed, every TALK fell back to a private agent it
-    could not authorise, and the channel never opened. The boot line said
-    everything was fine.
-
-    Format-only: it cannot tell a revoked key from a live one, but it catches
-    the cases that actually happened. The live answer comes from the API itself;
-    see _mint_signed_url.
-
-    The mistake worth naming precisely: the ElevenLabs dashboard lists each key
-    by its **ID** (a bare hex string) while the key itself — the `sk_...` secret
-    — is only ever shown once, when the key is created or rotated. Copying the
-    row from the list therefore yields a plausible-looking value that ElevenLabs
-    rejects with `api_key_id_used_as_api_key`. Saying "malformed" sends someone
-    hunting for a truncated paste; saying "that's the ID, not the key" tells them
-    exactly what to do.
-    """
-    if not ELEVENLABS_API_KEY:
-        return "not set"
-    if ELEVENLABS_API_KEY.startswith("sk_"):
-        return None
-    key = ELEVENLABS_API_KEY
-    if len(key) in (32, 64) and all(c in "0123456789abcdefABCDEF" for c in key):
-        return ("looks like the API key ID, not the key. The dashboard lists keys "
-                "by ID (bare hex); the key itself starts with 'sk_' and is shown "
-                "ONLY when you create or rotate it. In ElevenLabs go to your "
-                "profile -> API Keys, create or rotate a key, and copy the 'sk_' "
-                "value")
-    if key.startswith("agent_"):
-        return ("is an agent id, not an API key (ELEVENLABS_AGENT_ID holds the "
-                "agent; ELEVENLABS_API_KEY needs the 'sk_' secret)")
-    return ("malformed — ElevenLabs API keys start with 'sk_' "
-            f"(this one starts with {key[:4]!r})")
-
-
-_ELEVENLABS_KEY_PROBLEM = elevenlabs_key_problem()
-print(f"[ENGINE INIT] ElevenLabs TALK: key={'YES' if ELEVENLABS_API_KEY else 'no'}, "
-      f"agent={'set' if ELEVENLABS_AGENT_ID else 'none'}, overrides={'on' if ELEVENLABS_ALLOW_OVERRIDES else 'off'}")
-if _ELEVENLABS_KEY_PROBLEM:
-    print(f"[ENGINE INIT] ElevenLabs API key {_ELEVENLABS_KEY_PROBLEM}. "
-          f"Voice TALK cannot mint a signed URL, so conversations with a PRIVATE "
-          f"agent will not connect and fall back to text. Fix ELEVENLABS_API_KEY.")
+# ── Voices (TALK and the narrator) ──────────────────────────────────────────
+# Every spoken line is text-to-speech on the player's one key (speech.py):
+# Gemini 3.8 TTS, or OpenAI's through provider_bridge. Until 2026-09-25 this
+# was ElevenLabs — a Convai agent opened in the browser for every TALK and
+# every narrator line, with a PUBLIC agent id baked in right here so it
+# "worked out of the box with no secret at all". It worked on whoever owned
+# that agent: every keyless install in the world would have talked on one
+# account. There is no default agent any more, and no second account.
+#
+# A voice is a Gemini prebuilt voice name ("Charon") from voices.json, or a
+# `voice_…` id designed from a description (voice_design.py). The editor's
+# voice tunables write DEFAULT_VOICE_ID / NARRATOR_VOICE_ID live.
 
 # ── Voice registry (data-driven) ────────────────────────────────────────────
-# Shared by the TALK mechanic (live voice switching per subject) and the
-# narrator stream (world-building, possibly voiced as multiple characters).
-# Loaded from voices.json so new voices/characters need NO code change. Env
-# ELEVENLABS_VOICE_ID / ELEVENLABS_NARRATOR_VOICE_ID override the defaults.
+# Shared by TALK (a voice per subject) and the narrator stream (world-building,
+# possibly voiced as several characters). Loaded from voices.json so new
+# voices/characters need NO code change.
 try:
     VOICES_CONFIG = json.load((ROOT / "voices.json").open(encoding="utf-8"))
     if not isinstance(VOICES_CONFIG, dict):
@@ -336,79 +283,39 @@ except Exception as _ve:
     print(f"[ENGINE INIT] voices.json not loaded ({_ve}); using empty registry")
     VOICES_CONFIG = {}
 
-ELEVENLABS_NARRATOR_VOICE_ID = (os.getenv("ELEVENLABS_NARRATOR_VOICE_ID")
-                                or VOICES_CONFIG.get("narrator_voice") or "").strip()
-# The TTS model. This shipped as `eleven_turbo_v2_5` with the note "turbo is
-# low-latency and great for realtime narration", and it was never revisited —
-# ElevenLabs' own model reference now lists turbo v2.5 as "first generation
-# low-latency model (outclassed by Flash models)" and says to replace it with
-# flash "in all use cases". Neither is the expressive choice: `eleven_v3` is
-# their most emotionally rich model, and the narrator is a short pre-generated
-# line played back, not a live conversation, so it can afford the extra second.
-#
-# The `tts_model` tunable overrides this live, because picking a voice model is
-# a judgement about how the game SOUNDS and should not need a redeploy to try.
-# Narration is long-form prose read straight, with no audio tags in it, so
-# `eleven_multilingual_v2` — ElevenLabs' lifelike long-form narration model — is
-# the right tool and `eleven_v3` was the wrong one. v3 is a research preview
-# built around audio tags for emotional direction; the narrator emits none, so
-# none of what makes v3 better was ever in play. What WAS in play: the docs warn
-# that library voices "may produce more variable results compared to the v2 and
-# v2.5 models" and that voice clones are "not fully optimized" for it, and v3
-# ignores the `speed` setting outright ("Speed is not available for the Eleven
-# v3 model" — it takes pacing from audio tags instead). So the narrator was
-# being read by a preview model, at a pace the cast sheet set and the model
-# discarded. v2 supports speed, is stable across arbitrary voices, and is what
-# long-form reading is for.
-ELEVENLABS_TTS_MODEL = (os.getenv("ELEVENLABS_TTS_MODEL")
-                        or "eleven_multilingual_v2").strip()
+DEFAULT_VOICE_ID = (os.getenv("SOMEWHERE_VOICE") or "").strip()
+NARRATOR_VOICE_ID = (os.getenv("SOMEWHERE_NARRATOR_VOICE")
+                     or VOICES_CONFIG.get("narrator_voice") or "").strip()
 
-# v3 takes its pacing from audio tags and rejects the knob. Sending `speed` to
-# it is not an error the API reports — it is silently dropped, which is how a
-# "he reads too fast" fix got applied to a model that could not act on it and
-# nobody noticed for a release.
-_NO_SPEED_MODELS = ("eleven_v3", "eleven_v3_conversational")
-
-
-def _model_supports_speed(model: str = "") -> bool:
-    return (model or ELEVENLABS_TTS_MODEL or "").strip() not in _NO_SPEED_MODELS
-
-# The narrator's pace. ElevenLabs' `speed` runs 0.7 (slowest) to 1.2 (fastest)
-# around a default of 1.0. The cast sheet shipped 0.98 — a 2% slowdown, i.e.
-# none — and a narrator direction that asks for ONE short sentence gives the
-# model almost no punctuation to pace against, so the line came out clipped.
-# Overridden live by the `narrator_speed` tunable.
+# The narrator's pace, as a number the editor's `narrator_speed` tunable can
+# move (1.0 = as the model reads it). ElevenLabs took it as a voice setting;
+# a TTS model that is directed in words takes it as words (_pace_words), so
+# the knob survived the move instead of silently doing nothing — which is
+# what it did for a release on eleven_v3, which dropped `speed` unannounced.
 NARRATOR_SPEED = float(os.getenv("NARRATOR_SPEED") or "0.85")
-
-# ElevenLabs' documented bounds for the `speed` voice setting. Outside these the
-# API rejects the request, and near them it degrades the audio.
 _SPEED_FLOOR, _SPEED_CEILING = 0.7, 1.2
 
 
 def _narrator_speed() -> float:
-    """The pace the narrator is read at, clamped to what the API accepts."""
+    """The pace the narrator is read at, clamped to a sane range."""
     try:
         return max(_SPEED_FLOOR, min(_SPEED_CEILING, float(NARRATOR_SPEED)))
     except (TypeError, ValueError):
         return 0.85
-# The narrator speaks through a GENERATIVE conversational agent in the browser
-# (like TALK) so it works live with NO server key. Defaults to the same public
-# agent as TALK; override to give the narrator its own agent.
-ELEVENLABS_NARRATOR_AGENT_ID = (os.getenv("ELEVENLABS_NARRATOR_AGENT_ID")
-                                or ELEVENLABS_AGENT_ID or "").strip()
 
 
-def _library_voices() -> list:
-    """Live ElevenLabs library (your voices), or [] when the account can't
-    be read. Never raises — a failed list must not break TALK."""
+def _pace_words(speed) -> str:
     try:
-        import voice_design as _vd
-        lib = _vd.voice_library()
-        if lib.get("ok"):
-            return list(lib.get("voices") or [])
-    except Exception:
-        pass
-    return []
+        speed = float(speed)
+    except (TypeError, ValueError):
+        return ""
+    if speed <= 0.8:
+        return "very slowly, leaving room between the sentences"
+    if speed < 0.95:
+        return "slowly"
+    if speed > 1.1:
+        return "quickly"
+    return ""
 
 
 def _shipped_voice_ids() -> set:
@@ -427,133 +334,66 @@ def _is_shipped_voice_id(vid: str) -> bool:
     return bool(vid) and vid in _shipped_voice_ids()
 
 
-def _pick_named_library_voice(lib: list, needles) -> str:
-    for needle in needles:
-        n = (needle or "").lower()
-        if not n:
-            continue
-        for v in lib:
-            if n in (v.get("name") or "").lower() and v.get("id"):
-                return v["id"]
-    return ""
-
-
-_DEFAULT_LIBRARY_AVOID = (
-    "bread", "eas", "p.a", " pa", "pa ", "announcer", "commercial",
-    "dispatch", "fabricator", "sfx", "foley", "stinger", "pusher",
-)
-
-
-def _pick_default_library_voice(lib: list) -> str:
-    """A general character voice, not the first alphabetical novelty clip."""
-    for v in lib:
-        name = (v.get("name") or "").lower()
-        if "narrator" in name:
-            continue
-        if any(tok in name for tok in _DEFAULT_LIBRARY_AVOID):
-            continue
-        if v.get("id"):
-            return v["id"]
-    return (lib[0].get("id") if lib else "") or ""
-
-
-def _usable_explicit_voice(explicit: str, lib: list) -> str:
-    """An editor/env override wins unless it is a leftover stock id."""
-    vid = (explicit or "").strip()
-    if not vid:
-        return ""
-    if lib and _is_shipped_voice_id(vid) and not any(v.get("id") == vid for v in lib):
-        return ""
-    return vid
+def _all_voice_names() -> set:
+    """Every Gemini prebuilt voice, not only the ones voices.json lists, so an
+    editor pick from Google's full thirty is not refused as unknown."""
+    names = set(_shipped_voice_ids())
+    try:
+        import provider_bridge as _pb
+        names.update(_pb.OPENAI_VOICE_FOR.keys())
+    except Exception:
+        pass
+    return names
 
 
 def _default_voice_id() -> str:
-    lib = _library_voices()
-    picked = _usable_explicit_voice(ELEVENLABS_VOICE_ID, lib)
-    if picked:
+    picked = (DEFAULT_VOICE_ID or "").strip()
+    if picked and _valid_voice_id(picked):
         return picked
-    if lib:
-        return _pick_default_library_voice(lib) or (lib[0].get("id") or "").strip()
-    return (VOICES_CONFIG.get("default_voice") or "cjVigY5qzO86Huf0OWal").strip()
+    return (VOICES_CONFIG.get("default_voice") or "Algieba").strip()
 
 
 def _narrator_voice_id() -> str:
-    """Who reads the story. A saved stock id must not beat Defect - Narrator."""
-    lib = _library_voices()
-    picked = _usable_explicit_voice(ELEVENLABS_NARRATOR_VOICE_ID, lib)
-    if picked:
+    """Who reads the story: the editor's pick, else voices.json's narrator."""
+    picked = (NARRATOR_VOICE_ID or "").strip()
+    if picked and _valid_voice_id(picked):
         return picked
-    if lib:
-        return _pick_named_library_voice(lib, ("narrator",)) or _default_voice_id()
-    return (ELEVENLABS_NARRATOR_VOICE_ID or VOICES_CONFIG.get("narrator_voice")
-            or _default_voice_id()).strip()
+    return (VOICES_CONFIG.get("narrator_voice") or _default_voice_id()).strip()
 
 
 def get_voice_registry() -> dict:
     """The client-facing voice catalog: the selectable voices, the resolved
-    defaults, and the per-kind + named-cast mappings. Safe to expose (no keys).
-
-    When the ElevenLabs account is readable this is YOUR library — the voices
-    you made there — not the eleven stock ids baked into voices.json. The
-    shipped roster is only the fallback for a missing/unusable key.
-    """
-    lib = _library_voices()
-    if lib:
-        clean = [
-            {"id": v.get("id"), "name": v.get("name") or v.get("id"),
-             "tag": v.get("tag") or v.get("description") or v.get("category") or "",
-             "gender": v.get("gender", ""),
-             "category": v.get("category", "")}
-            for v in lib if isinstance(v, dict) and v.get("id")
-        ]
-    else:
-        voices = VOICES_CONFIG.get("voices") or []
-        clean = [
-            {"id": v.get("id"), "name": v.get("name") or v.get("id"),
-             "tag": v.get("tag", ""), "gender": v.get("gender", ""),
-             "category": "premade"}
-            for v in voices if isinstance(v, dict) and v.get("id")
-        ]
+    defaults, and the per-kind + named-cast mappings. Safe to expose (no keys)."""
+    voices = VOICES_CONFIG.get("voices") or []
+    clean = [
+        {"id": v.get("id"), "name": v.get("name") or v.get("id"),
+         "tag": v.get("tag", ""), "gender": v.get("gender", ""),
+         "category": "premade"}
+        for v in voices if isinstance(v, dict) and v.get("id")
+    ]
     return {
         "voices": clean,
         "default": _default_voice_id(),
         "narrator": _narrator_voice_id(),
         "by_kind": VOICES_CONFIG.get("by_kind") or {},
         "cast": VOICES_CONFIG.get("cast") or {},
-        "source": "library" if lib else "shipped",
+        "source": "shipped",
     }
 
 
 def _valid_voice_id(voice_id) -> str:
-    """Return voice_id if it's a known/registered id, else ''. Guards against a
-    client sending an arbitrary/unknown voice into ElevenLabs.
-
-    When the live library is readable, leftover stock ids (Eric, localStorage
-    talk_voice_id, a companion saved under the old roster) are rejected so a
-    relaunch cannot quietly go back to vanilla.
-    """
+    """Return voice_id if it's a voice we can speak in, else ''. Guards against
+    a client sending an arbitrary id into the TTS call — and against the ids
+    of the ElevenLabs era (a companion saved last week, localStorage's
+    `talk_voice_id`), which now name nothing and fall to the roster."""
     vid = str(voice_id or "").strip()
     if not vid:
         return ""
-    lib = _library_voices()
-    if lib:
-        if any(isinstance(v, dict) and v.get("id") == vid for v in lib):
-            return vid
-        try:
-            import voice_design as _vd
-            if _vd.is_ready_voice_id(vid):
-                return vid
-        except Exception:
-            pass
-        return ""
-    known = _shipped_voice_ids()
-    if vid in known:
+    if vid in _all_voice_names():
         return vid
     try:
         import voice_design as _vd
         if _vd.is_ready_voice_id(vid):
-            return vid
-        if _vd.is_library_voice_id(vid):
             return vid
     except Exception:
         pass
@@ -562,8 +402,6 @@ def _valid_voice_id(voice_id) -> str:
 
 def resolve_voice_for_kind(kind: str) -> str:
     """Pick the default voice for a SCAN subject kind (person/creature/…)."""
-    if _library_voices():
-        return _default_voice_id()
     by_kind = VOICES_CONFIG.get("by_kind") or {}
     return (by_kind.get((kind or "").strip().lower()) or _default_voice_id()).strip()
 
@@ -621,10 +459,6 @@ def resolve_fallback_voice_for_subject(subject: dict) -> str:
     kind = str(subject.get("kind") or "").strip().lower()
 
     voices = VOICES_CONFIG.get("voices") or []
-    # When the account's own voices are readable, cast from those — not Eric.
-    lib = _library_voices()
-    if lib:
-        voices = lib
     # Exclude the narrator from the character pool — it's marked with a
     # distinctive "the archive voice" tag and would break the fiction.
     def _pool(pred):
@@ -640,16 +474,9 @@ def resolve_fallback_voice_for_subject(subject: dict) -> str:
                 return True
         return False
 
-    # Machines / voice-carriers: gender-neutral synthetic pool. Your library
-    # often has no `gender` label, so also match PA / EAS / announcer names.
+    # Machines / voice-carriers: the gender-neutral synthetic pool.
     if kind == "machine" or _has_hint(_FALLBACK_MACHINE_HINTS):
         pool = _pool(lambda v: (v.get("gender") or "").lower() == "neutral")
-        if not pool and lib:
-            pool = _pool(lambda v: any(
-                tok in (v.get("name") or "").lower()
-                for tok in ("pa", "announcer", "eas", "dispatch", "radio",
-                            "intercom", "machine", "terminal")
-            ))
         if pool:
             return _hash_pick(label or "machine", pool)
 
@@ -676,20 +503,13 @@ def resolve_fallback_voice_for_subject(subject: dict) -> str:
     if pool:
         return _hash_pick(label or kind, pool)
 
-    # Library voices rarely carry ElevenLabs gender labels. Hash the whole
-    # roster rather than falling back to stock Eric from by_kind.
-    if lib:
-        pool = _pool(lambda v: True)
-        if pool:
-            return _hash_pick(label or kind, pool)
-
     return resolve_voice_for_kind(kind)
 
 
 def _companion_voice_for_subject(subject: dict, session_id: str = "default") -> Optional[dict]:
-    """Return a companion's stored ElevenLabs voice block when reusable.
+    """Return a companion's stored voice block when reusable.
 
-    Companions persist ``voice_id`` + the Voice Design ``description`` so a
+    Companions persist ``voice_id`` + the voice-design ``description`` so a
     later TALK (camp, place, new scene) can sound like the same person
     without burning another design credit. Returns ``None`` when the roster
     has no usable voice for this label.
@@ -737,8 +557,8 @@ def resolve_voice_for_subject(subject: dict, session_id: str = "default",
         }
 
     The caller (``api_talk_session``) surfaces status/cache_key to the client
-    so it can poll ``/api/talk/voice/status`` and hot-swap the Convai voice
-    once the designed one lands. Guaranteed to always return a usable
+    so it can poll ``/api/talk/voice/status`` and speak the next line in the
+    designed voice once it lands. Guaranteed to always return a usable
     ``voice_id`` so callers can never end up with an empty tts.voice_id.
     """
     # Smart per-subject fallback: hash the label into a gender/kind-filtered
@@ -750,8 +570,9 @@ def resolve_voice_for_subject(subject: dict, session_id: str = "default",
 
     # Continuing-story path: reuse the exact voice stored on the companion
     # roster (same person at camp / after place) before designing a new one.
-    # The Voice Design description stays attached so regenerate_voice can
-    # rebuild the slot later if ElevenLabs evicted it.
+    # The design description stays attached so regenerate_voice can rebuild
+    # the voice later if it was evicted, expired (a year), or belongs to
+    # another key's Google project.
     try:
         stored = _companion_voice_for_subject(subject, session_id)
     except Exception:
@@ -827,9 +648,9 @@ def resolve_cast(character: str) -> dict:
     back to the narrator voice for an unknown name so narration always speaks.
 
     The NARRATOR is special: its voice is editor-owned (the `narrator_voice_id`
-    tunable writes ELEVENLABS_NARRATOR_VOICE_ID) and so has to be read live,
+    tunable writes NARRATOR_VOICE_ID) and so has to be read live,
     every call. It used to lose to `cast.narrator.voice_id` in voices.json,
-    because every caller resolved `cast["voice_id"] or ELEVENLABS_NARRATOR_...`
+    because every caller resolved `cast["voice_id"] or <the narrator global>`
     and the shipped registry names a narrator — so the fallback was never
     reached and picking a voice in the editor did nothing at all, for ever.
     The static entry still supplies the TTS settings (stability, style); it
@@ -849,6 +670,9 @@ def resolve_cast(character: str) -> dict:
     if key == "narrator":
         entry["voice_id"] = _narrator_voice_id()
         entry["speed"] = _narrator_speed()
+    pace = _pace_words(entry.get("speed"))
+    if pace:
+        entry["style"] = ((entry.get("style") or "Say this") + ", " + pace).strip(", ")
     if not entry.get("voice_id"):
         entry["voice_id"] = _narrator_voice_id()
     return entry
@@ -1137,8 +961,8 @@ def delete_session(session_id, archive_first=True):
     if archive_first:
         archive_session(session_id, reason='manual_deletion')
 
-    # Release any ElevenLabs voices designed for this session so we don't
-    # leak workspace slots. Runs before rmtree so a failure here still lets
+    # Release any voices designed for this session so we don't leak the
+    # project's 200 voice slots. Runs before rmtree so a failure here still lets
     # the disk cleanup proceed; the sweep will catch any stragglers later.
     try:
         import voice_design as _vd
@@ -1406,8 +1230,9 @@ FLIPBOOK_FRAME_MS = flipbook.DEFAULT_FRAME_MS
 INTRO_CUTSCENE = True
 
 # ── Scene ambience ────────────────────────────────────────────────────────────
-# Whether each scene gets its OWN generated looping ambience (ElevenLabs SFX,
-# ~14s, cached per scene descriptor) rather than only the stock bed matched by
+# Whether each scene gets its OWN generated looping ambience (~14s, cached per
+# scene descriptor; no generator on the player's key since ElevenLabs left,
+# 2026-09-25, so today only the stock bed plays) rather than only the stock bed matched by
 # keyword. This is the atmosphere layer — see scene_audio._resolve_sfx.
 SCENE_AMBIENCE_ENABLED = True
 
@@ -14563,9 +14388,9 @@ def api_photo():
 # the current phase/chaos/location, and the last few beats. This awareness is
 # assembled once here and reused two ways:
 #   • text mode (always available) — an LLM roleplays the subject in-world.
-#   • voice mode (when ElevenLabs is configured) — the same briefing is handed
-#     to an ElevenLabs Conversational AI agent as prompt overrides + dynamic
-#     variables, so you can literally speak to the character.
+#   • voice mode (when the key can speak) — the same text dialogue, with each
+#     answer spoken in the character's voice (speech.py) and the player able
+#     to hold to speak instead of typing.
 # Both are stateless/read-only: talking never mutates world state or history.
 # ═══════════════════════════════════════════════════════════════════
 
@@ -14742,7 +14567,7 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
     (``{"label", "kind", "speaks"}``). Returns a JSON-safe dict describing the
     subject, the current situation, and a ready-to-use persona prompt + opening
     line. This is the single source of "awareness" shared by the text fallback
-    and the ElevenLabs voice agent. ``opening_override`` reuses an existing
+    and the spoken one. ``opening_override`` reuses an existing
     opening line instead of spending an LLM call to regenerate one (used when
     only the VOICE is changing mid-conversation).
 
@@ -14806,8 +14631,8 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
 
     premise = _story_premise()
 
-    # Compose the persona / system prompt the roleplay LLM (or the ElevenLabs
-    # agent) uses to BE this subject, grounded in the story.
+    # Compose the persona / system prompt the roleplay LLM uses to BE this
+    # subject, grounded in the story.
     kind_hint = {
         "person": "a person the player has encountered",
         "character": "a named character in this world",
@@ -14877,9 +14702,8 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
         "recent": recent,
         "persona_prompt": persona_prompt,
         "opening_line": opening_line,
-        # Vision snapshot rides along so the ElevenLabs agent (via
-        # dynamic_variables) and any Live-audio path (via system_instruction)
-        # can quote the same "what you can see" list the persona was built on.
+        # Vision snapshot rides along so any Live-audio path (via
+        # system_instruction) can quote the same "what you can see" list the persona was built on.
         "vision": vision_snapshot,
     }
 
@@ -15166,7 +14990,7 @@ def _record_companion(session_id: str, subject: dict, portrait_url: str,
         "portrait_source": portrait_source or prev.get("portrait_source") or "",
         "portrait_gen": int(portrait_gen or prev.get("portrait_gen") or 0),
     }
-    # Preserve the ElevenLabs voice block if it was recorded first (voice +
+    # Preserve the voice block if it was recorded first (voice +
     # portrait are resolved in parallel from Talk.start).
     if isinstance(prev.get("voice"), dict):
         entry["voice"] = prev["voice"]
@@ -15186,14 +15010,14 @@ def _record_companion(session_id: str, subject: dict, portrait_url: str,
 
 
 def _record_companion_voice(session_id: str, subject: dict, voice: dict) -> None:
-    """Store the ElevenLabs voice data for a companion so their voice can be
+    """Store the voice data for a companion so their voice can be
     reused (by id) OR regenerated from scratch (by description) later.
 
     ``voice`` is the resolver output plus a couple of fields the caller knows::
 
         {
-          "voice_id":     <str>,   # reuse this exact ElevenLabs voice
-          "description":  <str>,   # the Voice Design brief — REGENERATION seed
+          "voice_id":     <str>,   # a Gemini voice name or a designed voice_...
+          "description":  <str>,   # the design brief — REGENERATION seed
           "source":       <str>,   # designed / cache / fallback / override / ...
           "status":       <str>,
           "cache_key":    <str|None>,
@@ -16096,8 +15920,8 @@ def api_companions():
                 "last_seen_turn": c.get("last_seen_turn"),
                 "trust": mem.get("trust", 0),
                 "notes": (mem.get("notes") or [])[-3:],
-                # ElevenLabs voice data: reuse by voice_id, or regenerate from
-                # the Voice Design description + model.
+                # Voice data: reuse by voice_id, or regenerate from the design
+                # description + model.
                 "voice": c.get("voice") or None,
             })
         out.sort(key=lambda r: (r.get("last_seen_turn") or 0), reverse=True)
@@ -16248,8 +16072,7 @@ def _watch_companion_voice_regen(session_id: str, subject: dict, cache_key: str,
 
 
 def api_companion_regenerate_voice():
-    """Regenerate a companion's ElevenLabs voice from their stored Voice
-    Design description — the seed persisted by ``api_talk_session``.
+    """Regenerate a companion's voice from their stored design description — the seed persisted by ``api_talk_session``.
 
     Request JSON: ``{"label": <str>, "session_id"?, "wait"?: <seconds>}``
     Response: ``{"label", "voice": {voice_id, description, source, status,
@@ -16296,7 +16119,7 @@ def api_companion_regenerate_voice():
             "kind": comp.get("kind") or "person",
         }
         world_prompt = str(st.get("world_prompt") or "")
-        model = (voice.get("model") or getattr(_vd, "TTV_MODEL", "") or "").strip()
+        model = (voice.get("model") or getattr(_vd, "MODEL", "") or "").strip()
         old_voice_id = (voice.get("voice_id") or "").strip() or None
 
         result = _vd.regenerate_voice(
@@ -16910,20 +16733,21 @@ def api_talk_session():
     Request JSON:  {"subject": {"label", "kind", "speaks"}, "session_id"?}
     Response JSON:
         {
-          "mode": "voice" | "text",
+          "mode": "voice" | "text",  # voice = replies are spoken (speech.py)
           "subject": {...},
           "context": {premise, situation, recent, opening_line, ...},
-          "agent_id":  <str|null>,   # ElevenLabs Conversational AI agent
-          "signed_url": <str|null>,  # short-lived URL for a private agent
-          "overrides": {...},        # agent prompt + first-message overrides
-          "dynamic_variables": {...} # story variables for the agent/widget
+          "voice_id": <str>,         # a Gemini voice name or a designed voice_...
+          "voice_style": <str>,      # the delivery, in words, for each line
+          "voice_status": ..., "voice_cache_key": ..., "voice_description": ...
         }
 
-    Voice mode needs only ELEVENLABS_AGENT_ID (a public agent connects with the
-    bare id). ELEVENLABS_API_KEY additionally mints a short-lived signed URL for
-    a PRIVATE agent — the recommended, more secure setup — without the key ever
-    reaching the browser. With neither set we degrade to text mode, which is
-    fully functional via /api/talk/message. Read-only: never mutates the sim.
+    A conversation is /api/talk/message turns: the player types or holds to
+    speak (dictation, /api/transcribe), the character answers in text, and
+    each answer is spoken in the character's voice via /api/narrator/say.
+    Until 2026-09-25 this handed the browser an ElevenLabs Convai agent: a
+    second account, and a public default agent id that every keyless install
+    would have talked on. "voice" now just means this key can speak.
+    Read-only: never mutates the sim.
     """
     try:
         if _rate_limited("talk_session", 0.8):
@@ -16956,12 +16780,12 @@ def api_talk_session():
         #   1) Explicit (validated) client choice — that's what powers the
         #      live voice-switcher pill in the TALK panel.
         #   2) A per-character voice designed on the fly from the persona
-        #      brief (ElevenLabs Voice Design), cached per session and
-        #      deleted at session end. See voice_design.py.
-        #   3) The static by_kind default in voices.json (always available).
+        #      brief (Gemini voice design), cached per session and deleted
+        #      at session end. See voice_design.py.
+        #   3) The static roster in voices.json (always available).
         # The resolver also surfaces cache_key + status so the client can
-        # poll /api/talk/voice/status and hot-swap the Convai override once
-        # the designed voice lands (typically after the fallback opening).
+        # poll /api/talk/voice/status and speak the next line in the designed
+        # voice once it lands (typically after the fallback opening).
         chosen_voice = _valid_voice_id(data.get("voice_id"))
         try:
             _world_prompt = str((_load_state(session_id) or {}).get("world_prompt") or "")
@@ -16986,22 +16810,22 @@ def api_talk_session():
             voice_status = voice_resolution["status"]
             voice_cache_key = voice_resolution.get("cache_key")
             voice_description = voice_resolution.get("description", "")
-        # Bump the refcount for the voice we're about to hand to Convai so
-        # session cleanup can't yank it mid-call. /api/talk/end releases it.
+        # Bump the refcount for the voice this conversation speaks in so
+        # session cleanup can't delete it mid-talk. /api/talk/end releases it.
         try:
             import voice_design as _vd
             _vd.acquire(resolved_voice)
         except Exception:
             pass
 
-        # Persist the ElevenLabs voice data onto this character's companion
-        # record so their voice can be reused (by id) or REGENERATED (by the
-        # Voice Design description) later, for a continuing story. Best-effort.
+        # Persist the voice onto this character's companion record so it can
+        # be reused (by id) or REGENERATED (by the description, the one field
+        # that survives a new key or a new provider) later. Best-effort.
         try:
             _ttv_model = ""
             try:
                 import voice_design as _vd2
-                _ttv_model = getattr(_vd2, "TTV_MODEL", "") or ""
+                _ttv_model = getattr(_vd2, "MODEL", "") or ""
             except Exception:
                 _ttv_model = ""
             _record_companion_voice(session_id, context["subject"], {
@@ -17017,97 +16841,8 @@ def api_talk_session():
         except Exception as _ve:
             log_error(f"[COMPANION] voice record failed: {_ve}")
 
-        # Dynamic variables + prompt overrides an ElevenLabs agent can consume to
-        # stay aware of the story (see ElevenLabs Conversational AI docs).
-        sit = context["situation"]
-        vision = context.get("vision") or {}
-        # Flatten the vision snapshot into a single string an ElevenLabs
-        # agent template can reference as {{visible_now}} without having to
-        # walk a JSON array. Kept short so it fits the agent's variable budget.
-        visible_names = []
-        for _obj in (vision.get("visible") or []):
-            _lbl = str(_obj.get("label") or "").strip()
-            if _lbl and _lbl.lower() != context["subject"]["label"].lower():
-                visible_names.append(_lbl)
-            if len(visible_names) >= 6:
-                break
-        dynamic_variables = {
-            "subject_label": context["subject"]["label"],
-            "subject_kind": context["subject"]["kind"],
-            "story_premise": context["premise"],
-            "story_phase": str(sit.get("phase", "")),
-            "chaos_level": str(sit.get("chaos", "")),
-            "turn": str(sit.get("turn", "")),
-            "location": str(sit.get("location", "")),
-            "time_of_day": str(sit.get("time_of_day", "")),
-            "current_scene": str(sit.get("scene", "")),
-            "recent_events": " | ".join(context.get("recent", [])),
-            # Direct-perception fields the voice agent can reference in its
-            # prompt template so its spoken lines stay grounded in what's
-            # actually on the player's screen. Empty strings when vision is
-            # unavailable — the agent template can fall back gracefully.
-            "visible_now": ", ".join(visible_names),
-            "visible_description": str(vision.get("description", "")),
-        }
-        # The opening line is ALSO a dynamic variable so an agent whose dashboard
-        # first-message is "{{opening_line}}" stays story-aware even without
-        # runtime overrides.
-        dynamic_variables["opening_line"] = context["opening_line"]
-
-        # Overrides completely replace the agent's prompt/first-message with the
-        # full per-subject persona. Only send them when allowed (the target agent
-        # must have those override fields enabled, or the widget throws).
-        overrides = None
-        if ELEVENLABS_ALLOW_OVERRIDES:
-            overrides = {
-                "agent": {
-                    "prompt": {"prompt": context["persona_prompt"]},
-                    "first_message": context["opening_line"],
-                }
-            }
-            # Voice override (agent has tts.voice_id override enabled) — this is
-            # how a live voice switch takes effect on the conversational agent.
-            if resolved_voice:
-                overrides["tts"] = {"voice_id": resolved_voice}
-
-        agent_id = ELEVENLABS_AGENT_ID
-        api_key = (ELEVENLABS_API_KEY or "").strip()
-        signed_url = None
-        # Voice needs only an agent id (public agents connect with it directly).
-        mode = "voice" if agent_id else "text"
-        # Advisory. A missing or unusable key must NOT block a public agent —
-        # that left TALK on "establishing channel…" forever, or dumped the
-        # player into text, because a dashboard key-ID in the API-key slot
-        # failed to sign and the client then refused to even try agent_id.
-        voice_error = None
-        key_problem = elevenlabs_key_problem()
-
-        if agent_id and api_key and not key_problem:
-            # Private agents need a short-lived signed URL minted server-side so
-            # the API key never reaches the browser. A signing failure is
-            # non-fatal: a public agent can still connect with the bare agent_id.
-            try:
-                import requests as _rq
-                resp = _rq.get(
-                    "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url",
-                    headers={"xi-api-key": api_key},
-                    params={"agent_id": agent_id},
-                    timeout=12,
-                )
-                if resp.status_code == 200:
-                    signed_url = (resp.json() or {}).get("signed_url")
-                else:
-                    voice_error = f"ElevenLabs rejected the signing request ({resp.status_code})"
-                    log_error(f"[TALK] signed-url {resp.status_code}: {resp.text[:200]}")
-            except Exception as e:
-                voice_error = "could not reach ElevenLabs to sign the conversation"
-                log_error(f"[TALK] signed-url exchange failed: {e}")
-        elif agent_id and key_problem and key_problem != "not set":
-            voice_error = f"ElevenLabs API key {key_problem}"
-            log_error(f"[TALK] skipping signed-url — API key {key_problem}")
-
         return jsonify({
-            "mode": mode,
+            "mode": "voice" if _speech_available() else "text",
             "subject": context["subject"],
             "context": {
                 "premise": context["premise"],
@@ -17115,27 +16850,40 @@ def api_talk_session():
                 "recent": context["recent"],
                 "opening_line": context["opening_line"],
             },
-            "agent_id": agent_id or None,
-            "signed_url": signed_url,
-            # Null when signing worked (or no key was needed). When set, the
-            # browser still tries a public agent_id; this string is why signing
-            # was skipped, so a dead channel can say so instead of hanging.
-            "voice_error": voice_error,
             "voice_id": resolved_voice or None,
-            # Extra fields let the client hot-swap the Convai voice once a
-            # per-character voice designed in the background is ready.
+            "voice_style": _talk_voice_style(context, voice_status == "ready"
+                                             and bool(voice_description)),
+            # The client speaks the next line in the designed voice once the
+            # background design lands (poll /api/talk/voice/status).
             "voice_status": voice_status,
             "voice_cache_key": voice_cache_key,
             "voice_description": voice_description,
             "voices": get_voice_registry(),
-            "overrides": overrides,
-            "dynamic_variables": dynamic_variables,
         })
     except Exception as e:
         import traceback as _tb
         log_error(f"[TALK] session failed: {e}")
         _tb.print_exc()
         return jsonify({"error": str(e), "mode": "text"}), 500
+
+
+def _talk_voice_style(context: dict, designed: bool) -> str:
+    """How this character's lines are delivered, in words.
+
+    A designed voice already IS the person (age, timbre, accent), and Google's
+    advice is to put only the moment's feeling in the per-line direction, so
+    it gets the emotion alone. A roster voice is only a timbre; it gets the
+    whole brief, which is also all an OpenAI voice can be given."""
+    try:
+        import voice_design as _vd
+        brief = _vd.brief_for_subject(context.get("subject") or {}, context)
+    except Exception:
+        return ""
+    emotion = str(brief.get("emotion") or "").strip()
+    if designed:
+        return f"Say this {emotion}".strip() if emotion else ""
+    desc = str(brief.get("description") or "").strip()
+    return (f"Say this in character. {desc}" + (f" Right now: {emotion}." if emotion else ""))[:400]
 
 
 def api_talk_voices():
@@ -17156,9 +16904,8 @@ def api_talk_end():
 
     Request JSON: ``{"voice_id": <str>, "session_id"?: <str>,
     "duration_seconds"?: <float>, "subject"?: {...}, "memory_note"?: <str>}``.
-    `duration_seconds` is how long the ElevenLabs Convai channel was actually
-    connected — the server never proxies that websocket, so the client is the
-    only one who knows. When ``subject`` is present we also upsert a lightweight
+    `duration_seconds` is how long the conversation was open (informational;
+    the lines are metered where they are spoken). When ``subject`` is present we also upsert a lightweight
     per-character memory record (see ``_record_character_memory``) so future
     Moments / trust systems have somewhere to plug in.
     Response JSON: ``{"ok": true, "refcount": <int>, "character"?: {...}}``.
@@ -17173,11 +16920,8 @@ def api_talk_end():
             seconds = float(data.get("duration_seconds") or 0)
         except (TypeError, ValueError):
             seconds = 0.0
-        if seconds > 0:
-            cost_tracker.record_usage(
-                session_id, "voice", "elevenlabs", "talk_agent",
-                output_units=seconds, unit_type="seconds", success=True,
-            )
+        # Spoken lines are metered where they are made (speech.py's calls are
+        # logged at the wire), so the conversation's length is not billed.
         character = None
         subject = data.get("subject")
         if isinstance(subject, dict) and (subject.get("label") or "").strip():
@@ -17398,9 +17142,9 @@ def api_talk_voice_status():
     Request: ``GET /api/talk/voice/status?cache_key=<16-hex>``.
     Response JSON: ``{"cache_key", "voice_id", "status", "description"}`` —
     ``status`` cycles through ``"generating"`` -> ``"ready"`` (or ``"failed"``
-    / ``"unknown"``). When ``status == "ready"``, the client re-opens the
-    Convai override with the new ``voice_id`` so the character voice swaps
-    live mid-conversation.
+    / ``"unknown"``). When ``status == "ready"``, the client speaks the next
+    line in the new ``voice_id``, so the character's voice changes
+    mid-conversation.
     """
     try:
         cache_key_str = str(request.args.get("cache_key") or "").strip()
@@ -17428,63 +17172,27 @@ def api_talk_voice_status():
 # is a one-way voice OVER the scene: world-building, lore, cold opens, stingers.
 # It can speak as a single "archive voice" or as a small CAST (narrator / man /
 # woman / elder / creature / machine / warden…), so a single narration can hand
-# off between characters like a radio play. Built on ElevenLabs text-to-speech
-# so it's a clean, expandable primitive:
+# off between characters like a radio play. Built on text-to-speech on the
+# player's key (speech.py) so it's a clean, expandable primitive:
 #   • /api/narrator/say       — speak one line (returns audio)
 #   • /api/narrator/narrate   — speak a multi-character script (audio per line)
 #   • /api/narrator/worldbuild— GENERATE a story-aware narration, then (opt) speak
 #   • /api/narrator/cast      — the voices + named cast the client can pick from
-# All read-only; none mutate the sim. Requires ELEVENLABS_API_KEY for audio;
-# without it these degrade to returning text only (never an error).
+# All read-only; none mutate the sim. Without a voice on this key (mock mode,
+# no key) these degrade to returning text only (never an error).
 # ═══════════════════════════════════════════════════════════════════
 
 def _tts_synthesize(text: str, voice_id: str, settings: dict = None):
-    """Synthesize one line of narration to MP3 bytes via ElevenLabs TTS.
-    Returns bytes on success, or None (never raises)."""
-    text = (text or "").strip()
-    if not text or not ELEVENLABS_API_KEY or not voice_id:
-        return None
-    t0 = time.time()
+    """One line of narration or dialogue, spoken (speech.py). WAV bytes, or
+    None (never raises). `settings["style"]` is the delivery, in words."""
+    style = ""
+    if isinstance(settings, dict):
+        style = str(settings.get("style") or "")
     try:
-        import requests as _rq
-        vs = {"stability": 0.5, "similarity_boost": 0.75}
-        if isinstance(settings, dict):
-            for k in ("stability", "similarity_boost", "style", "speed", "use_speaker_boost"):
-                if k in settings and settings[k] is not None:
-                    vs[k] = settings[k]
-        # Don't hand a model a setting it will throw away. See _NO_SPEED_MODELS:
-        # v3 drops `speed` without saying so, and a pace nobody can hear is
-        # worse than no pace control, because it reads as "we tried that".
-        if "speed" in vs and not _model_supports_speed():
-            vs.pop("speed", None)
-        billed_text = text[:2500]
-        resp = _rq.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
-            headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
-            params={"output_format": "mp3_44100_128"},
-            json={"text": billed_text, "model_id": ELEVENLABS_TTS_MODEL, "voice_settings": vs},
-            timeout=30,
-        )
-        if resp.status_code == 200:
-            cost_tracker.record_usage(
-                get_active_session_id(), "voice", "elevenlabs", "tts", operation="tts_synthesize",
-                input_units=len(billed_text), unit_type="characters", success=True,
-                latency_ms=int((time.time() - t0) * 1000),
-            )
-            return resp.content
-        log_error(f"[NARRATOR] tts {resp.status_code}: {resp.text[:180]}")
-        cost_tracker.record_usage(
-            get_active_session_id(), "voice", "elevenlabs", "tts", operation="tts_synthesize",
-            input_units=len(billed_text), unit_type="characters", success=False,
-            error_message=f"http_{resp.status_code}", latency_ms=int((time.time() - t0) * 1000),
-        )
-        return None
-    except Exception as e:
+        import speech
+        return speech.synthesize((text or "")[:2500], voice_id, style)
+    except Exception as e:  # noqa: BLE001
         log_error(f"[NARRATOR] tts failed: {e}")
-        cost_tracker.record_usage(
-            get_active_session_id(), "voice", "elevenlabs", "tts", operation="tts_synthesize",
-            success=False, error_message=str(e), latency_ms=int((time.time() - t0) * 1000),
-        )
         return None
 
 
@@ -17506,46 +17214,13 @@ def _narrate_segments(segments: list) -> list:
         cast = resolve_cast(character)
         voice_id = _valid_voice_id(seg.get("voice_id")) or cast.get("voice_id") \
             or _narrator_voice_id()
-        settings = {k: cast[k] for k in ("stability", "speed", "style", "similarity_boost") if k in cast}
+        settings = {k: cast[k] for k in ("style",) if k in cast}
         entry = {"character": character, "text": text[:2500], "voice_id": voice_id}
         audio = _tts_synthesize(text, voice_id, settings)
         if audio:
-            entry["audio"] = "data:audio/mpeg;base64," + _b64.b64encode(audio).decode("ascii")
+            entry["audio"] = "data:audio/wav;base64," + _b64.b64encode(audio).decode("ascii")
         out.append(entry)
     return out
-
-
-def _mint_signed_url(agent_id: str):
-    """Mint a short-lived signed conversation URL for a PRIVATE agent (needs the
-    API key). Returns the wss URL or None. A public agent doesn't need this."""
-    if not agent_id or not ELEVENLABS_API_KEY:
-        return None
-    try:
-        import requests as _rq
-        resp = _rq.get(
-            "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url",
-            headers={"xi-api-key": ELEVENLABS_API_KEY},
-            params={"agent_id": agent_id},
-            timeout=12,
-        )
-        if resp.status_code == 200:
-            return (resp.json() or {}).get("signed_url")
-        log_error(f"[TALK] signed-url {resp.status_code}: {resp.text[:180]}")
-    except Exception as e:
-        log_error(f"[TALK] signed-url exchange failed: {e}")
-    return None
-
-
-def _narrator_agent_config() -> dict:
-    """Browser voice-agent config for the narrator: the (public) agent id and,
-    for a private agent, a fresh signed URL. This is what lets narration play
-    LIVE as a generative agent with no server-side TTS key."""
-    agent_id = ELEVENLABS_NARRATOR_AGENT_ID
-    return {
-        "agent_id": agent_id or None,
-        "signed_url": _mint_signed_url(agent_id),
-        "allow_overrides": bool(ELEVENLABS_ALLOW_OVERRIDES),
-    }
 
 
 def _segment_voice(character: str, voice_id=None) -> str:
@@ -17555,52 +17230,51 @@ def _segment_voice(character: str, voice_id=None) -> str:
         or _narrator_voice_id()
 
 
+def _speech_available() -> bool:
+    try:
+        import speech
+        return speech.can_speak()
+    except Exception:
+        return False
+
+
 def api_narrator_cast():
-    """The voices + named cast the narrator can speak as (client picker), plus
-    the browser voice-agent config so narration can play as a generative agent."""
+    """The voices + named cast the narrator can speak as (client picker), and
+    whether a line will actually be voiced on this key (else subtitles)."""
     try:
         reg = get_voice_registry()
-        agent = _narrator_agent_config()
         return jsonify({
             "voices": reg["voices"],
             "narrator": reg["narrator"],
             "cast": reg["cast"],
-            # TTS (server-side) availability — legacy path; the primary path is
-            # now the generative agent below.
-            "voice_available": bool(ELEVENLABS_API_KEY),
-            # Generative-agent availability: narration speaks live if an agent id
-            # is configured (public agent needs no key).
-            "agent_available": bool(agent.get("agent_id")),
-            "agent": agent,
+            "voice_available": _speech_available(),
         })
     except Exception as e:
         log_error(f"[NARRATOR] cast failed: {e}")
-        return jsonify({"voices": [], "cast": {}, "voice_available": False, "agent_available": False}), 500
+        return jsonify({"voices": [], "cast": {}, "voice_available": False}), 500
 
 
 def api_narrator_say():
-    """Speak one line of narration. Request: {text, voice_id?|character?,
-    settings?}. Returns audio/mpeg (or 503 text JSON if voice isn't configured)."""
+    """Speak one line. Request: {text, character?, voice_id?, style?}.
+    Returns audio/wav, or 503 JSON with the text when this key has no voice
+    (mock mode, no key) — the client shows the subtitle either way."""
     try:
-        if _rate_limited("narrator_say", 0.5):
+        if _rate_limited("narrator_say", 0.2):
             return jsonify({"error": "slow down"}), 429
         data = request.get_json(silent=True) or {}
         text = (data.get("text") or "").strip()
         if not text:
             return jsonify({"error": "missing text"}), 400
-        if not ELEVENLABS_API_KEY:
-            return jsonify({"error": "narrator voice not configured", "text": text}), 503
+        if not _speech_available():
+            return jsonify({"error": "no voice on this key", "text": text}), 503
         cast = resolve_cast(data.get("character"))
-        voice_id = _valid_voice_id(data.get("voice_id")) or cast.get("voice_id") \
-            or _narrator_voice_id()
-        settings = {k: cast[k] for k in ("stability", "speed", "style", "similarity_boost") if k in cast}
-        if isinstance(data.get("settings"), dict):
-            settings.update(data["settings"])
-        audio = _tts_synthesize(text, voice_id, settings)
+        voice_id = _valid_voice_id(data.get("voice_id")) or cast.get("voice_id")             or _narrator_voice_id()
+        style = str(data.get("style") or cast.get("style") or "")[:400]
+        audio = _tts_synthesize(text, voice_id, {"style": style})
         if not audio:
-            return jsonify({"error": "synthesis failed"}), 502
+            return jsonify({"error": "synthesis failed", "text": text}), 502
         from flask import Response as _Resp
-        return _Resp(audio, mimetype="audio/mpeg")
+        return _Resp(audio, mimetype="audio/wav")
     except Exception as e:
         import traceback as _tb
         log_error(f"[NARRATOR] say failed: {e}")
@@ -17619,7 +17293,7 @@ def api_narrator_narrate():
         if not isinstance(segments, list) or not segments:
             return jsonify({"error": "missing segments"}), 400
         voiced = _narrate_segments(segments)
-        return jsonify({"segments": voiced, "voice": bool(ELEVENLABS_API_KEY)})
+        return jsonify({"segments": voiced, "voice": _speech_available()})
     except Exception as e:
         import traceback as _tb
         log_error(f"[NARRATOR] narrate failed: {e}")
@@ -18317,20 +17991,17 @@ def api_narrator_worldbuild():
             script = list(script or []) + list(follow_script or [])
         else:
             _remember_narration(script, session_id)
-        # Attach the resolved voice per line so the client's generative agent
-        # knows which voice to speak each segment in.
+        # Attach the resolved voice and delivery per line; the client asks
+        # /api/narrator/say for each one while the line before it plays, so
+        # the first line is not held back by the synthesis of the last.
         for seg in script:
             seg["voice_id"] = _segment_voice(seg.get("character"), seg.get("voice_id"))
-        agent = _narrator_agent_config()
-        # Primary path: return TEXT + voice + agent config; the browser speaks it
-        # through the generative agent (works live with no server key). The
-        # legacy speak=true path also embeds server-TTS audio when a key exists.
-        if speak and ELEVENLABS_API_KEY:
+            seg["style"] = resolve_cast(seg.get("character")).get("style", "")
+        can = _speech_available()
+        if speak and can:
             voiced = _narrate_segments(script)
-            return jsonify({"segments": voiced, "voice": True, "agent": agent,
-                            "agent_available": bool(agent.get("agent_id"))})
-        return jsonify({"segments": script, "voice": False, "agent": agent,
-                        "agent_available": bool(agent.get("agent_id"))})
+            return jsonify({"segments": voiced, "voice": True, "voice_available": True})
+        return jsonify({"segments": script, "voice": False, "voice_available": can})
     except Exception as e:
         import traceback as _tb
         log_error(f"[NARRATOR] worldbuild failed: {e}")

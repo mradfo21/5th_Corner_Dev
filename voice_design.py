@@ -1,32 +1,50 @@
 """
-voice_design.py — dynamic per-character ElevenLabs voices.
+voice_design.py — a voice designed for each character, on the player's key.
 
-Turns a SCAN subject (label + kind) plus the current story context into a
-custom ElevenLabs voice designed to sound like *that specific character*,
-instead of routing every subject through the static ``by_kind`` roster in
-``voices.json``. Designed voices are cached per-session on disk, tagged in
-the ElevenLabs workspace with ``source=somewhere-dyn``, and DELETED at
-session end so the workspace's voice-slot quota stays bounded.
+Turns a SCAN subject (label + kind) into a Gemini voice designed to sound like
+*that specific character*, instead of routing every subject through the
+static ``by_kind`` roster in ``voices.json``. One call —
+``POST /v1beta/voices`` with a ``prompted`` description — designs the voice
+and stores it in the key's Google project; the id it answers (``voice_…``) is
+what ``speech.py`` hands Gemini TTS as ``voiceConfig.voice``. Designed voices
+are cached per session on disk, named with the ``[dyn]`` prefix so the sweep
+can tell them from anything else in the project, and DELETED at session end.
 
-Design goals (see DYNAMIC_VOICES_PLAN.md):
+Why Gemini and not ElevenLabs any more: ElevenLabs was a second account. A
+player who had only pasted the one key ACCOUNT asks for heard the stock
+roster forever, and the ones who had both kept hitting ElevenLabs' voice-slot
+ceiling (the reason half of this module — the subscription lookup, the v1/v2
+listing dance, the ``sk_`` check — existed at all). Gemini 3.8 TTS gained
+voice design on 2026-09-23 on the same key that already draws every frame, so
+the game now speaks through one key. An OpenAI player has no voice design
+(OpenAI cannot build a voice from words); ``is_available()`` is False for
+them and the engine plays the roster.
+
+What the Google project allows, and what it shapes here: 200 stored voices
+per project, each expiring a year after it was made. Nothing reports how many
+of the 200 are used, so the soft cap counts our own ready voices and evicts
+the least-recently-used at 180, leaving headroom for designs in flight and for
+voices another checkout on the same key is holding.
+
+Design goals (see docs/plans/DYNAMIC_VOICES_PLAN.md):
 
 * Non-blocking hot path — ``get_or_design_voice(..., wait=0)`` never spends
-  more than a JSON-encode of latency on the caller's thread; the actual
-  Voice Design + save call runs in a background worker. The caller gets a
-  fallback voice immediately and can poll ``/api/talk/voice/status`` (or
-  pass ``wait>0`` to catch a fast path).
+  more than a JSON-encode of latency on the caller's thread; the design call
+  runs in a background worker. The caller gets a fallback voice immediately
+  and can poll ``/api/talk/voice/status`` (or pass ``wait>0`` to catch the
+  ~2 s the call usually takes).
 * Byte-identical fallback — every entry point degrades to ``None`` or an
-  empty result when the API key is missing / the feature is disabled / a
-  request fails, so callers that "OR" a fallback in behave exactly as they
-  did before this module existed.
+  empty result when the key is missing / the feature is disabled / the game
+  is in mock mode or on OpenAI / a request fails, so callers that "OR" a
+  fallback in behave exactly as they did before this module existed.
 * Slot-safe — a per-session **budget** caps design calls per session, an
-  in-memory **refcount** blocks deletion of voices attached to an open
-  Convai call, an **LRU eviction** frees the oldest voice when we approach
-  the workspace slot ceiling, and a periodic **sweep** reconciles the cache
-  with ``GET /v1/voices`` to reap orphans left by crashes.
+  in-memory **refcount** blocks deletion of a voice a live TALK still holds,
+  an **LRU eviction** frees the oldest voice as we approach the project's
+  200, and a periodic **sweep** reconciles the cache with
+  ``GET /v1beta/voices`` to reap ``[dyn]`` orphans left by crashes.
 
-Only depends on ``requests`` + stdlib — matches the style of ``scene_audio.py``
-and the existing ElevenLabs calls in ``engine.py``. No new dependency.
+Only depends on ``requests`` + stdlib. The HTTP goes through ``requests`` on
+purpose: the cost and provider hooks patch it.
 """
 
 from __future__ import annotations
@@ -37,7 +55,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -82,33 +100,47 @@ def _cfg_bool(name: str, default: bool) -> bool:
     return raw not in ("0", "false", "no", "off", "")
 
 
-ENABLED = _cfg_bool("ELEVENLABS_DYNAMIC_VOICES", True)
-API_KEY = _cfg("ELEVENLABS_API_KEY")
-TTV_MODEL = _cfg("ELEVENLABS_TTV_MODEL", "eleven_ttv_v3")
-DESIGN_BUDGET_PER_SESSION = _cfg_int("ELEVENLABS_DESIGN_BUDGET_PER_SESSION", 8)
-DESIGN_CONCURRENCY = _cfg_int("ELEVENLABS_DESIGN_CONCURRENCY", 3)
-VOICE_SOFT_CAP_OVERRIDE = _cfg_int("ELEVENLABS_VOICE_SOFT_CAP", 0)  # 0 = auto
-SWEEP_HOURS = _cfg_int("ELEVENLABS_VOICE_SWEEP_HOURS", 6)
-MAX_AGE_HOURS = _cfg_int("ELEVENLABS_VOICE_MAX_AGE_HOURS", 24)
-LABEL_TAG = _cfg("ELEVENLABS_VOICE_LABEL_TAG", "somewhere-dyn")
-FAIL_TTL_SECONDS = _cfg_int("ELEVENLABS_VOICE_FAIL_TTL_SECONDS", 900)
-DESIGN_TIMEOUT_SECONDS = _cfg_int("ELEVENLABS_DESIGN_TIMEOUT_SECONDS", 45)
+ENABLED = _cfg_bool("SOMEWHERE_DYNAMIC_VOICES", True)
+DESIGN_BUDGET_PER_SESSION = _cfg_int("SOMEWHERE_DESIGN_BUDGET_PER_SESSION", 8)
+DESIGN_CONCURRENCY = _cfg_int("SOMEWHERE_DESIGN_CONCURRENCY", 3)
+VOICE_SOFT_CAP_OVERRIDE = _cfg_int("SOMEWHERE_VOICE_SOFT_CAP", 0)  # 0 = auto
+SWEEP_HOURS = _cfg_int("SOMEWHERE_VOICE_SWEEP_HOURS", 6)
+MAX_AGE_HOURS = _cfg_int("SOMEWHERE_VOICE_MAX_AGE_HOURS", 24)
+FAIL_TTL_SECONDS = _cfg_int("SOMEWHERE_VOICE_FAIL_TTL_SECONDS", 900)
+DESIGN_TIMEOUT_SECONDS = _cfg_int("SOMEWHERE_DESIGN_TIMEOUT_SECONDS", 45)
+# A "[dyn]" voice on the server that this cache does not know is an orphan —
+# but it may also be one a design in flight made a moment ago, or one another
+# checkout on the same key is using. It is only reaped once it is this old.
+ORPHAN_GRACE_MINUTES = _cfg_int("SOMEWHERE_VOICE_ORPHAN_GRACE_MINUTES", 60)
 
-# Cache file lives at repo root so it survives `delete_session` (which wipes
-# per-session dirs) and stays authoritative across workers/restarts. Each
-# entry embeds its own session_id so cross-session sweeps/LRU can inspect it.
+# The model that designs the voice AND speaks with it (speech.py): a designed
+# voice belongs to the model it was designed on.
+MODEL = "gemini-3.8-flash-tts"
+LANGUAGE_CODE = "en-US"
+# Our voices are recognised by this display-name prefix: Gemini voices carry
+# no labels, and the sweep must never touch a voice it did not make.
+NAME_PREFIX = "[dyn]"
+# Google's per-project ceiling on stored voices, and how close we let it get.
+PROJECT_VOICE_LIMIT = 200
+_DEFAULT_SOFT_CAP = 180
+# A stored voice expires this long after it was made; the create answer says
+# when it expires, not when it was made, so age is read back from that.
+_STORED_LIFETIME = timedelta(days=365)
+# The brief builder targets well under this; a stored companion description
+# (or an ElevenLabs-era one, which ran to ~990) is trimmed to it.
+DESCRIPTION_MAX = 600
+
+# Cache file lives in the data root so it survives `delete_session` (which
+# wipes per-session dirs) and stays authoritative across workers/restarts.
+# Each entry embeds its own session_id so cross-session sweeps/LRU can inspect
+# it. Version 2 is the Gemini cache: a version-1 file holds ElevenLabs ids,
+# which Gemini TTS cannot speak and this key cannot delete, so it is dropped.
 CACHE_PATH = _paths.data_root() / "voice_design_cache.json"
+_CACHE_VERSION = 2
 
-# ElevenLabs endpoints. Voice Design lives under /v1/text-to-voice.
-_API_BASE = "https://api.elevenlabs.io"
-_URL_DESIGN = _API_BASE + "/v1/text-to-voice/design"
-_URL_SAVE_TPL = _API_BASE + "/v1/text-to-voice/{gvid}"
-_URL_DELETE_TPL = _API_BASE + "/v1/voices/{voice_id}"
-_URL_LIST_VOICES = _API_BASE + "/v1/voices"
-# v1 hands back the entire workspace in one response and starts 400-ing once it
-# is large; v2 is paged. See _list_workspace_voices, which tries v2 first.
-_URL_LIST_VOICES_V2 = _API_BASE + "/v2/voices"
-_URL_SUBSCRIPTION = _API_BASE + "/v1/user/subscription"
+_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+_URL_VOICES = _API_BASE + "/voices"
+_URL_VOICE_TPL = _API_BASE + "/voices/{voice_id}"
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -116,26 +148,52 @@ _URL_SUBSCRIPTION = _API_BASE + "/v1/user/subscription"
 # ────────────────────────────────────────────────────────────────────────────
 
 def _api_key() -> str:
-    """Live key. keys_store patches os.environ and this module's API_KEY after
-    import; reading only the import-time constant is how a pasted secret never
-    reached the list call."""
-    return (os.getenv("ELEVENLABS_API_KEY") or API_KEY or "").strip()
+    """The player's Gemini key, read live (ACCOUNT can paste one mid-run)."""
+    try:
+        import provider_bridge
+        return (provider_bridge.gemini_key() or "").strip()
+    except Exception:
+        return ""
 
 
-def _key_looks_real() -> bool:
-    """ElevenLabs rejects anything that is not an ``sk_`` secret. The dashboard
-    lists keys by hex ID; pasting that ID is the usual reason the library is
-    empty and the game falls back to the shipped vanilla roster."""
-    return _api_key().startswith("sk_")
+def _gemini_playing() -> bool:
+    """True when real Gemini is what answers this game's calls: not mock
+    mode, not an OpenAI player, and a key to call it with."""
+    try:
+        import provider_bridge
+        if provider_bridge._mock_forced():
+            return False
+        return (provider_bridge.effective_provider() == "gemini"
+                and bool(provider_bridge.gemini_key()))
+    except Exception:
+        return False
 
 
 def is_available() -> bool:
-    """True when we can plausibly design + save voices.
+    """True when we can plausibly design voices.
 
-    Cheap: only checks flag + key presence. Actual tier / quota errors surface
-    at design time and degrade to the fallback voice.
+    Cheap: flag, mock mode, provider and key presence. Quota and model errors
+    surface at design time and degrade to the fallback voice.
     """
-    return bool(ENABLED and _api_key())
+    return bool(ENABLED and _gemini_playing())
+
+
+def unavailable_reason() -> str:
+    """Why ``is_available()`` is False, in words for the startup log; '' when
+    it is True."""
+    if not ENABLED:
+        return "SOMEWHERE_DYNAMIC_VOICES=0"
+    try:
+        import provider_bridge
+        if provider_bridge._mock_forced():
+            return "mock mode"
+        if provider_bridge.effective_provider() == "openai":
+            return "playing on OpenAI, which cannot design a voice"
+        if not provider_bridge.gemini_key():
+            return "no Gemini key"
+    except Exception as e:  # noqa: BLE001
+        return f"provider unknown ({e})"
+    return ""
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -190,6 +248,14 @@ def _gender_hint(label: str, kind: str) -> str:
     return "unspecified"
 
 
+def _api_gender(label: str, kind: str) -> str:
+    """The create call's ``gender``: "male" or "female", else left out.
+    ("neutral" was accepted too on 2026-09-25, but a machine's voice is
+    better said by its description than by a field.)"""
+    g = _gender_hint(label, kind)
+    return g if g in ("male", "female") else ""
+
+
 def _age_bucket(label: str, kind: str) -> str:
     if kind == "machine":
         return "n/a"
@@ -201,11 +267,13 @@ def _age_bucket(label: str, kind: str) -> str:
 
 
 def _environment(label: str, kind: str) -> str:
+    """How the voice reaches you — permanent for a machine or a creature (an
+    intercom is always an intercom), nothing worth saying for a person."""
     if kind == "machine" or _first_hit(label, _MACHINE_HINTS):
-        return "filtered through a corroded 1990s PA / intercom, faint tape hiss, band-limited"
+        return "filtered through a corroded PA / intercom, faint tape hiss, band-limited"
     if kind in ("creature", "animal") or _first_hit(label, _CREATURE_HINTS):
-        return "close, wet room tone, faint reverb, uncomfortably intimate"
-    return "close-mic'd, natural room, minimal processing"
+        return "close and uncomfortably intimate"
+    return ""
 
 
 def _emotion(chaos: int, phase: str, recent: List[str]) -> str:
@@ -264,11 +332,9 @@ _DEFAULT_SAMPLE = "There's someone else down here. Stay low and don't say my nam
 
 
 def _sample_text(opening: str, label: str) -> str:
-    """Pick the line ElevenLabs will actually synthesize into the preview.
-
-    Prefer the character's own opening line (it's already in-voice), fall back
-    to a neutral analog-horror snippet. Trimmed to Voice Design's practical
-    upper bound (~1000 chars) but usually much shorter is better.
+    """A line in this character's mouth, kept on the cache entry for a
+    preview. (Gemini designs from the description alone; the line is no
+    longer part of the design call.)
     """
     text = (opening or "").strip()
     if 20 <= len(text) <= 300:
@@ -280,12 +346,43 @@ def _sample_text(opening: str, label: str) -> str:
     return _DEFAULT_SAMPLE
 
 
+# Sentences an ElevenLabs-era description carried that are situational or
+# addressed to ElevenLabs. A companion saved before 2026-09-25 still has one
+# stored as its regen seed; redesigned on Gemini, "Emotion: frayed" would be
+# baked into the character's voice for good.
+_STALE_SENTENCE = re.compile(
+    r"^(emotion|character notes|world premise|environment)\s*:|"
+    r"^speak the sample line|^do not include music",
+    re.IGNORECASE,
+)
+
+
+def _compact_description(desc: str) -> str:
+    """A stored description, made fit for Gemini: situational and
+    ElevenLabs-addressed sentences dropped, capped at DESCRIPTION_MAX."""
+    text = re.sub(r"\s+", " ", str(desc or "")).strip()
+    if not text:
+        return ""
+    sentences = re.split(r"(?<=\.)\s+(?=[A-Z])", text)
+    kept = [s for s in sentences if not _STALE_SENTENCE.match(s.strip())]
+    out = " ".join(kept).strip() or text
+    if len(out) > DESCRIPTION_MAX:
+        cut = out[:DESCRIPTION_MAX]
+        # End on a sentence if one ends in the last third, else on a word.
+        dot = cut.rfind(". ")
+        if dot > DESCRIPTION_MAX * 2 // 3:
+            cut = cut[:dot + 1]
+        else:
+            cut = cut.rsplit(" ", 1)[0]
+        out = cut.strip()
+    return out
+
+
 def brief_for_subject(
     subject: Dict[str, Any],
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Turn a SCAN subject + optional talk-context into a structured Voice
-    Design brief.
+    """Turn a SCAN subject + optional talk-context into a voice-design brief.
 
     ``context`` mirrors the dict returned by ``engine.build_talk_context``:
     ``{"situation": {"phase", "chaos", ...}, "recent": [...],
@@ -293,13 +390,24 @@ def brief_for_subject(
     the function never touches state on its own so it's cheap and
     deterministic (a property the unit tests lean on).
 
+    The description is the voice's PERMANENT traits only — age, gender,
+    timbre, pace, register, and how it reaches you — because a designed
+    voice keeps whatever it was designed with. The ElevenLabs brief also
+    carried "Emotion: frayed" and "Just witnessed: …"; designed that way,
+    the character is frayed in every line it ever says. The moment's
+    feeling is returned separately (``emotion``, ``delivery``) for the
+    speaker to pass as that line's style.
+
     Returns::
 
         {
-          "description": <str>,      # the natural-language brief for design
-          "sample_text": <str>,      # the line ElevenLabs synthesizes
-          "labels":      <dict>,     # metadata for the saved voice tag
-          "voice_name":  <str>,      # human-readable name for the library
+          "description": <str>,  # the voice's permanent traits, < ~400 chars
+          "gender":      <str>,  # "male" | "female" | "" (the API field)
+          "emotion":     <str>,  # situational: say THIS line this way
+          "delivery":    <str>,  # situational pace for this line
+          "sample_text": <str>,  # a line in-voice, kept for a preview
+          "labels":      <dict>, # metadata kept on the cache entry
+          "voice_name":  <str>,  # "[dyn] …" display name the sweep keys on
         }
     """
     subject = subject or {}
@@ -308,29 +416,17 @@ def brief_for_subject(
 
     label = _norm(subject.get("label")) or "figure"
     kind = _norm(subject.get("kind")) or "person"
-    world_premise = str(context.get("premise") or "")[:400]
-    world_scene = str(situation.get("scene") or "")[:280]
     chaos = int(situation.get("chaos") or 0)
     phase = str(situation.get("phase") or "normal")
-    time_of_day = str(situation.get("time_of_day") or "")[:80]
     recent = [str(r) for r in (context.get("recent") or [])[-3:]]
 
     gender = _gender_hint(label, kind)
     age = _age_bucket(label, kind)
     timbre = _timbre(label, kind, age)
-    delivery = _delivery(chaos, kind)
-    register = _register(kind, chaos)
+    # Pace and register as the character's own, not as tonight's: chaos 0.
+    pace = _delivery(0, kind)
+    register = _register(kind, 0)
     env = _environment(label, kind)
-    emotion = _emotion(chaos, phase, recent)
-
-    notes_bits = []
-    if world_scene:
-        notes_bits.append(f"Currently in: {world_scene}")
-    if time_of_day:
-        notes_bits.append(f"Time: {time_of_day}")
-    if recent:
-        notes_bits.append("Just witnessed: " + " | ".join(r[:120] for r in recent))
-    notes = " ".join(notes_bits)[:400]
 
     # Grammar / phrasing tweaks so the brief reads cleanly to the model.
     # Machines are age-less ("n/a"), and unspecified gender is best omitted
@@ -344,30 +440,25 @@ def brief_for_subject(
         _article = "An" if _bits[:1] in "aeiou" else "A"
         _voice_phrase = f"{_article} {_bits} voice"
     description = (
-        f"{_voice_phrase} for a {kind} known as \"{label}\" "
-        f"in a 1993 analog-horror world. "
+        f"{_voice_phrase} for a {kind} called \"{label[:60]}\". "
         f"Timbre: {timbre}. "
-        f"Delivery: {delivery}. "
-        f"Emotion: {emotion}. "
-        f"Register: {register}. "
-        f"Environment: {env}. "
-        + (f"Character notes: {notes}. " if notes else "")
-        + (f"World premise: {world_premise}. " if world_premise else "")
-        + "Speak the sample line as this character would speak it, "
-          "once, cleanly. Do NOT include music, background sound effects, "
-          "singing, or non-speech noises."
+        f"Pace: {pace}. "
+        f"Register: {register}."
+        + (f" Heard {env}." if env else "")
     )
-    # ElevenLabs Voice Design requires 20 <= len(voice_description) <= 1000.
-    description = description[:990]
+    description = _compact_description(description)
 
     sample = _sample_text(str(context.get("opening_line") or ""), label)
 
     return {
         "description": description,
+        "gender": _api_gender(label, kind),
+        "emotion": _emotion(chaos, phase, recent),
+        "delivery": _delivery(chaos, kind),
         "sample_text": sample,
         "voice_name": _voice_name(label, kind),
         "labels": {
-            "source": LABEL_TAG,
+            "source": NAME_PREFIX,
             "subject_label": label[:60],
             "subject_kind": kind[:20],
             "created_at": _now_iso(),
@@ -376,12 +467,12 @@ def brief_for_subject(
 
 
 def _voice_name(label: str, kind: str) -> str:
-    """A human-readable name for the ElevenLabs library entry.
+    """The voice's display name in the Google project.
 
-    Kept short and greppable (the sweeper filters library ids by our
-    ``source`` label, but a friendly name helps humans in the dashboard)."""
+    Starts with NAME_PREFIX: that prefix is the ONLY thing that marks a voice
+    as ours, so the sweep never reaps one a person made by hand."""
     clean = re.sub(r"[^a-zA-Z0-9 \-_]", "", label or "").strip() or "figure"
-    return f"[dyn] {clean} ({kind or 'person'})"[:100]
+    return f"{NAME_PREFIX} {clean} ({kind or 'person'})"[:100]
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -420,14 +511,10 @@ _DESIGN_SEMAPHORE = threading.BoundedSemaphore(max(1, DESIGN_CONCURRENCY))
 _INFLIGHT_EVENTS: Dict[str, threading.Event] = {}
 _INFLIGHT_LOCK = threading.Lock()
 # In-memory refcount so /api/talk/end can gate deletion of a voice a live
-# convai call still needs. Voices with refcount > 0 are skipped by
+# TALK still needs. Voices with refcount > 0 are skipped by
 # release_session_voices and reaped on the next sweep.
 _REFCOUNT: Dict[str, int] = {}
 _REFCOUNT_LOCK = threading.Lock()
-
-# Cached workspace slot ceiling (from GET /v1/user/subscription). Refreshed
-# lazily; 0 means "unknown" so callers treat it as unbounded.
-_SLOT_INFO = {"limit": 0, "used": 0, "checked_at": 0.0}
 
 
 def _now_iso() -> str:
@@ -438,27 +525,51 @@ def _now_ts() -> float:
     return time.time()
 
 
+def _parse_ts(value: Any) -> Optional[float]:
+    """RFC 3339 -> epoch seconds, or None. Google writes nanoseconds and a
+    trailing Z ("2027-09-25T12:00:00.123456789Z"); fromisoformat takes six
+    fractional digits at most."""
+    s = str(value or "").strip()
+    if not s:
+        return None
+    s = s.replace("Z", "+00:00").replace("z", "+00:00")
+    s = re.sub(r"(\.\d{6})\d+", r"\1", s)
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
 def _atomic_write_json(path: Path, data: Any) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
 
 
+def _fresh_cache() -> Dict[str, Any]:
+    return {"version": _CACHE_VERSION, "voices": {}}
+
+
 def _load_cache() -> Dict[str, Any]:
     if not CACHE_PATH.exists():
-        return {"version": 1, "voices": {}}
+        return _fresh_cache()
     try:
         data = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
-            return {"version": 1, "voices": {}}
-        data.setdefault("version", 1)
+            return _fresh_cache()
+        # A version-1 (ElevenLabs) cache: its ids mean nothing to Gemini.
+        if data.get("version") != _CACHE_VERSION:
+            return _fresh_cache()
         data.setdefault("voices", {})
         if not isinstance(data["voices"], dict):
             data["voices"] = {}
         return data
     except Exception:
         # Corrupt file — start fresh, don't crash the caller.
-        return {"version": 1, "voices": {}}
+        return _fresh_cache()
 
 
 def _save_cache(cache: Dict[str, Any]) -> None:
@@ -510,87 +621,110 @@ def _count_session_designs(session_id: str) -> int:
         )
 
 
+def _count_ready() -> int:
+    with _CACHE_LOCK:
+        voices = _load_cache().get("voices") or {}
+    return sum(1 for e in voices.values()
+               if isinstance(e, dict) and e.get("status") == "ready" and e.get("voice_id"))
+
+
 # ────────────────────────────────────────────────────────────────────────────
-# ElevenLabs HTTP wrappers (all quiet-fail)
+# Gemini voices HTTP wrappers (all quiet-fail)
 # ────────────────────────────────────────────────────────────────────────────
 
-def _post_design(brief: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """POST /v1/text-to-voice/design -> {previews: [...]} or None on failure."""
+def _headers(key: str) -> Dict[str, str]:
+    return {"x-goog-api-key": key, "Content-Type": "application/json"}
+
+
+def _voice_id_of(voice: Dict[str, Any]) -> str:
+    """``id`` as the create call answers it, or a resource ``name``
+    ("voices/voice_…") should a listing answer that way."""
+    if not isinstance(voice, dict):
+        return ""
+    vid = str(voice.get("id") or "").strip()
+    if not vid:
+        vid = str(voice.get("name") or "").strip().rsplit("/", 1)[-1]
+    return vid
+
+
+def _display_name_of(voice: Dict[str, Any]) -> str:
+    return str(voice.get("display_name") or voice.get("displayName") or "")
+
+
+def _create_body(brief: Dict[str, Any], gender: str) -> Dict[str, Any]:
+    voice: Dict[str, Any] = {
+        "model": MODEL,
+        "type": "prompted",
+        "display_name": brief["voice_name"],
+        "language_code": LANGUAGE_CODE,
+        "prompted": {"input": brief["description"]},
+    }
+    if gender:
+        voice["gender"] = gender
+    return {"store": True, "voice": voice}
+
+
+def _post_create(brief: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """POST /v1beta/voices -> the stored voice ({id, expire_time, usage, …})
+    or None on failure. One call designs AND stores it.
+
+    Only "male"/"female" are known to be accepted as ``gender``; should a
+    create with one of them 400, it is asked once more without the field.
+    """
     key = _api_key()
     if not key:
         return None
+    gender = str(brief.get("gender") or "").strip().lower()
+    if gender not in ("male", "female"):
+        gender = ""
+    attempts = [gender, ""] if gender else [""]
     try:
         import requests
-        resp = requests.post(
-            _URL_DESIGN,
-            headers={"xi-api-key": key, "Content-Type": "application/json"},
-            json={
-                "voice_description": brief["description"],
-                "model_id": TTV_MODEL,
-                "text": brief["sample_text"],
-                "auto_generate_text": False,
-                "guidance_scale": 25,
-                "loudness": 0.5,
-                "quality": 0.9,
-            },
-            timeout=DESIGN_TIMEOUT_SECONDS,
-        )
-        if resp.status_code == 200:
-            data = resp.json() or {}
-            if isinstance(data, dict) and data.get("previews"):
-                return data
-            print(f"[VOICE DESIGN] design returned no previews: {str(data)[:180]}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[VOICE DESIGN] requests unavailable: {e}", flush=True)
+        return None
+    for g in attempts:
+        try:
+            resp = requests.post(
+                _URL_VOICES,
+                headers=_headers(key),
+                json=_create_body(brief, g),
+                timeout=DESIGN_TIMEOUT_SECONDS,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[VOICE DESIGN] create exception: {e}", flush=True)
             return None
-        print(
-            f"[VOICE DESIGN] design http {resp.status_code}: {resp.text[:180]}",
-            flush=True,
-        )
+        if resp.status_code == 200:
+            try:
+                data = resp.json() or {}
+            except Exception:
+                data = {}
+            vid = _voice_id_of(data)
+            if vid:
+                data["id"] = vid
+                return data
+            print(f"[VOICE DESIGN] create returned no id: {str(data)[:180]}", flush=True)
+            return None
+        if resp.status_code == 400 and g:
+            print(f"[VOICE DESIGN] create 400 with gender={g!r}; retrying without "
+                  f"it: {resp.text[:180]}", flush=True)
+            continue
+        print(f"[VOICE DESIGN] create http {resp.status_code}: {resp.text[:180]}",
+              flush=True)
         return None
-    except Exception as e:  # noqa: BLE001
-        print(f"[VOICE DESIGN] design exception: {e}", flush=True)
-        return None
-
-
-def _post_save(generated_voice_id: str, brief: Dict[str, Any]) -> Optional[str]:
-    """POST /v1/text-to-voice/{gvid} to save the preview -> voice_id or None."""
-    key = _api_key()
-    if not key or not generated_voice_id:
-        return None
-    try:
-        import requests
-        resp = requests.post(
-            _URL_SAVE_TPL.format(gvid=generated_voice_id),
-            headers={"xi-api-key": key, "Content-Type": "application/json"},
-            json={
-                "voice_name": brief["voice_name"],
-                "voice_description": brief["description"],
-                "labels": brief["labels"],
-            },
-            timeout=30,
-        )
-        if resp.status_code in (200, 201):
-            data = resp.json() or {}
-            return data.get("voice_id") or None
-        print(
-            f"[VOICE DESIGN] save http {resp.status_code}: {resp.text[:180]}",
-            flush=True,
-        )
-        return None
-    except Exception as e:  # noqa: BLE001
-        print(f"[VOICE DESIGN] save exception: {e}", flush=True)
-        return None
+    return None
 
 
 def _delete_voice(voice_id: str) -> bool:
-    """DELETE /v1/voices/{voice_id}. True on success or 404. Never raises."""
+    """DELETE /v1beta/voices/{id}. True on success or 404. Never raises."""
     key = _api_key()
     if not key or not voice_id:
         return False
     try:
         import requests
         resp = requests.delete(
-            _URL_DELETE_TPL.format(voice_id=voice_id),
-            headers={"xi-api-key": key},
+            _URL_VOICE_TPL.format(voice_id=voice_id),
+            headers={"x-goog-api-key": key},
             timeout=15,
         )
         if resp.status_code in (200, 204, 404):
@@ -605,222 +739,100 @@ def _delete_voice(voice_id: str) -> bool:
         return False
 
 
-def _page_v2_voices(headers: Dict[str, str], extra: Optional[Dict[str, Any]] = None):
-    """One filtered walk of GET /v2/voices. Returns ``(voices, status)``."""
-    import requests
-    voices: List[Dict[str, Any]] = []
-    token = None
-    last_status = 0
-    for _ in range(10):
-        params: Dict[str, Any] = {"page_size": 100}
-        if extra:
-            params.update(extra)
-        if token:
-            params["next_page_token"] = token
-        resp = requests.get(_URL_LIST_VOICES_V2, headers=headers,
-                            params=params, timeout=15)
-        last_status = resp.status_code
-        if resp.status_code != 200:
-            return voices, last_status
-        data = resp.json() or {}
-        voices.extend(list(data.get("voices") or []))
-        token = data.get("next_page_token")
-        if not data.get("has_more") or not token:
-            return voices, 200
-    return voices, last_status
+_LIST_MAX_PAGES = 20  # 200 stored voices at the project cap; 50 to a page
 
 
-def _dedupe_voices(voices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    seen = set()
-    out: List[Dict[str, Any]] = []
-    for v in voices:
-        if not isinstance(v, dict):
-            continue
-        vid = v.get("voice_id")
-        if not vid or vid in seen:
-            continue
-        seen.add(vid)
-        out.append(v)
-    return out
+def _list_voices() -> Tuple[List[Dict[str, Any]], str]:
+    """Every voice stored in the key's project, as ``(voices, reason)``.
 
+    Asks for ``type=prompted``. Unfiltered, the listing is Google's prebuilt
+    catalogue — 2,089 voices over 42 pages on 2026-09-25, the stored ones
+    somewhere among them — and the first live run of this function walked
+    twenty pages of it and gave up. Prebuilt entries are skipped even so.
 
-def _is_ours(voice: Dict[str, Any]) -> bool:
-    """True for a voice this account made or keeps — not a stock premade."""
-    cat = (voice.get("category") or "").strip().lower()
-    return bool(cat) and cat != "premade"
-
-
-def _list_workspace_voices(with_reason: bool = False):
-    """The voices on this ElevenLabs account, empty on failure.
-
-    Asks v2 for ``personal`` / ``workspace`` first. An unfiltered v2 page is
-    mostly the stock premade roster, which is why a workspace full of hand-made
-    voices used to look empty from inside the game.
-
-    With ``with_reason`` returns ``(voices, reason)``.
+    ``reason`` is "ok" / "empty" only when the WHOLE listing was read; the
+    sweep acts on nothing else (dropping cache entries off half a listing
+    would forget voices that still exist). Pages on ``next_page_token`` (what
+    the API answers) or ``nextPageToken``. Normalised to ``{"id",
+    "display_name", "expire_time", "create_time"}``.
     """
-    def out(voices, reason):
-        return (voices, reason) if with_reason else voices
-
-    if not _api_key():
-        return out([], "no_api_key")
-    if not _key_looks_real():
-        return out([], "bad_key")
+    key = _api_key()
+    if not key:
+        return [], "no_api_key"
     try:
         import requests
-        headers = {"xi-api-key": _api_key()}
-        collected: List[Dict[str, Any]] = []
-        last_status = 0
-        # non-community = personal + workspace (excludes Voice Library copies).
-        # Fall through the older type names if this deployment doesn't know one.
-        for vtype in ("non-community", "personal", "workspace"):
-            batch, status = _page_v2_voices(headers, {"voice_type": vtype})
-            last_status = status
+        out: List[Dict[str, Any]] = []
+        seen: set = set()
+        token = ""
+        for _ in range(_LIST_MAX_PAGES):
+            params = {"type": "prompted"}
+            if token:
+                params["pageToken"] = token
+            resp = requests.get(_URL_VOICES, headers={"x-goog-api-key": key},
+                                params=params, timeout=15)
+            status = resp.status_code
             if status != 200:
-                print(f"[VOICE DESIGN] list v2 voice_type={vtype} http {status}",
-                      flush=True)
-                continue
-            collected.extend(batch)
-            if vtype == "non-community" and batch:
-                break
-        collected = _dedupe_voices(collected)
-        if collected:
-            ours = [v for v in collected if _is_ours(v)]
-            # Typed queries should already be theirs; keep them even when
-            # ElevenLabs omitted `category`, otherwise a nameless clone
-            # falls through to the premade roster.
-            return out(ours or collected, "ok")
-
-        # Unfiltered v2 (premade + whatever else) and the older v1 dump, so a
-        # brand-new account still has something in the menu.
-        batch, status = _page_v2_voices(headers)
-        last_status = status
-        if status == 200 and batch:
-            return out(_dedupe_voices(batch), "ok")
-
-        resp = requests.get(_URL_LIST_VOICES, headers=headers, timeout=15)
-        last_status = resp.status_code
-        if resp.status_code == 200:
+                print(f"[VOICE DESIGN] list http {status}: {resp.text[:180]}", flush=True)
+                if status in (401, 403):
+                    return out, "key_cannot_read_voices"
+                if status == 429:
+                    return out, "rate_limited"
+                return out, f"http_{status}"
             data = resp.json() or {}
-            voices = _dedupe_voices(list(data.get("voices") or []))
-            return out(voices, "ok" if voices else "empty")
-        print(f"[VOICE DESIGN] list http {last_status}", flush=True)
-        if last_status in (401, 403):
-            return out([], "key_cannot_read_voices")
-        if last_status == 429:
-            return out([], "rate_limited")
-        if last_status:
-            return out([], f"http_{last_status}")
-        return out([], "empty")
+            for v in (data.get("voices") or []):
+                if not isinstance(v, dict) or v.get("type") == "prebuilt":
+                    continue
+                vid = _voice_id_of(v)
+                if not vid or vid in seen:
+                    continue
+                seen.add(vid)
+                out.append({
+                    "id": vid,
+                    "display_name": _display_name_of(v),
+                    "expire_time": v.get("expire_time") or v.get("expireTime") or "",
+                    "create_time": v.get("create_time") or v.get("createTime") or "",
+                })
+            token = str(data.get("next_page_token") or data.get("nextPageToken") or "")
+            if not token:
+                return out, ("ok" if out else "empty")
+        print("[VOICE DESIGN] list: page limit reached", flush=True)
+        return out, "incomplete"
     except Exception as e:  # noqa: BLE001
         print(f"[VOICE DESIGN] list exception: {e}", flush=True)
-        return out([], "unreachable")
+        return [], "unreachable"
 
 
-_LIBRARY_CACHE: Dict[str, Any] = {"at": 0.0, "voices": []}
-_LIBRARY_TTL_S = 120.0
+def _remote_age_hours(voice: Dict[str, Any]) -> Optional[float]:
+    """How old a listed voice is, or None when it cannot be told. From
+    ``create_time`` if the listing gives one, else a year before it expires."""
+    created = _parse_ts(voice.get("create_time"))
+    if created is None:
+        expires = _parse_ts(voice.get("expire_time"))
+        if expires is None:
+            return None
+        created = expires - _STORED_LIFETIME.total_seconds()
+    return max(0.0, (_now_ts() - created) / 3600.0)
 
 
-def _shape_library_entry(v: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    if not isinstance(v, dict) or not v.get("voice_id"):
-        return None
-    labels = v.get("labels") if isinstance(v.get("labels"), dict) else {}
-    desc = (v.get("description") or "").strip()
-    if not desc:
-        desc = ", ".join(str(x) for x in labels.values() if x)
-    gender = str(labels.get("gender") or "").strip().lower()
-    return {
-        "id": v.get("voice_id"),
-        "name": v.get("name") or v.get("voice_id"),
-        # "cloned" / "generated" / "professional" / "premade"
-        "category": (v.get("category") or "").strip(),
-        "description": desc[:120],
-        "gender": gender,
-        "tag": desc[:80] or (v.get("category") or ""),
-    }
-
+# ────────────────────────────────────────────────────────────────────────────
+# The ElevenLabs library, retired
+# ────────────────────────────────────────────────────────────────────────────
 
 def voice_library(force: bool = False) -> Dict[str, Any]:
-    """Voices on the ElevenLabs account, shaped for a menu.
+    """There is no account library any more.
 
-    Prefers the ones you made (cloned / generated / professional). The stock
-    premade roster is only returned when the account has none of yours, so the
-    game stops sounding like Eric-and-Sarah the moment a real library is
-    readable. Cached two minutes. Never returns the key.
+    ElevenLabs had "your voices" — clones and designs made in its dashboard —
+    and the game listed them in TALK and the editor. A Gemini key has only the
+    prebuilt voices (the ``voices.json`` roster) and the ``[dyn]`` voices this
+    module makes and deletes. Kept so callers degrade to the roster exactly as
+    they did for a key that could not read the library.
     """
-    if not _api_key():
-        return {"ok": False, "reason": "no_api_key", "voices": []}
-    if not _key_looks_real():
-        return {"ok": False, "reason": "bad_key", "voices": []}
-    now = time.time()
-    if not force and _LIBRARY_CACHE["voices"] and (now - _LIBRARY_CACHE["at"]) < _LIBRARY_TTL_S:
-        return {"ok": True, "voices": _LIBRARY_CACHE["voices"], "cached": True}
-    raw, reason = _list_workspace_voices(with_reason=True)
-    if not raw:
-        return {"ok": False, "reason": reason, "voices": []}
-    out = []
-    for v in raw:
-        labels = v.get("labels") if isinstance(v.get("labels"), dict) else {}
-        name = (v.get("name") or "")
-        # Session-designed temps are tagged and swept; they are not "your"
-        # voices and must not refill the picker after a relaunch.
-        if name.startswith("[dyn]") or labels.get("source") == LABEL_TAG:
-            continue
-        entry = _shape_library_entry(v)
-        if entry:
-            out.append(entry)
-    yours = [e for e in out if e.get("category") and e["category"] != "premade"]
-    # Once we can see your voices, those ARE the library. Stock stays as the
-    # no-key / empty-account fallback in get_voice_registry.
-    chosen = yours or out
-    chosen.sort(key=lambda e: ((e.get("name") or "").lower()))
-    _LIBRARY_CACHE["voices"] = chosen
-    _LIBRARY_CACHE["at"] = now
-    return {"ok": True, "voices": chosen, "yours": len(yours)}
+    return {"ok": False, "reason": "no_library", "voices": []}
 
 
 def is_library_voice_id(voice_id: str) -> bool:
-    """True when ``voice_id`` is in the live ElevenLabs library cache.
-
-    Used by ``engine._valid_voice_id`` so a custom voice picked in the editor
-    or the TALK menu is not rejected as "unknown" and silently replaced with
-    a stock id from voices.json.
-    """
-    vid = (voice_id or "").strip()
-    if not vid:
-        return False
-    cached = _LIBRARY_CACHE.get("voices") or []
-    if any(isinstance(v, dict) and v.get("id") == vid for v in cached):
-        return True
-    lib = voice_library()
-    return any(isinstance(v, dict) and v.get("id") == vid
-               for v in (lib.get("voices") or []))
-
-
-def _get_subscription_slots() -> Tuple[int, int]:
-    """Return (used, limit) from GET /v1/user/subscription. Zeros on failure."""
-    key = _api_key()
-    if not key:
-        return (0, 0)
-    now = _now_ts()
-    if _SLOT_INFO["checked_at"] and now - _SLOT_INFO["checked_at"] < 24 * 3600:
-        return (_SLOT_INFO["used"], _SLOT_INFO["limit"])
-    try:
-        import requests
-        resp = requests.get(
-            _URL_SUBSCRIPTION,
-            headers={"xi-api-key": key},
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            data = resp.json() or {}
-            used = int(data.get("voice_slots_used") or 0)
-            limit = int(data.get("voice_limit") or 0)
-            _SLOT_INFO.update({"used": used, "limit": limit, "checked_at": now})
-            return (used, limit)
-    except Exception as e:  # noqa: BLE001
-        print(f"[VOICE DESIGN] subscription exception: {e}", flush=True)
-    return (0, 0)
+    """Always False: see ``voice_library``."""
+    return False
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -855,9 +867,36 @@ def refcount(voice_id: str) -> int:
 # Design pipeline — async by default, coalescing per cache key
 # ────────────────────────────────────────────────────────────────────────────
 
+def _record_design_cost(session_id: str, result: Optional[Dict[str, Any]]) -> None:
+    usage = (result or {}).get("usage") or {}
+
+    def n(*names: str) -> int:
+        for name in names:
+            try:
+                if usage.get(name) is not None:
+                    return int(usage.get(name) or 0)
+            except (TypeError, ValueError):
+                pass
+        return 0
+
+    tokens_in = n("total_input_tokens", "totalInputTokens")
+    tokens_out = (n("total_output_tokens", "totalOutputTokens")
+                  + n("total_thought_tokens", "totalThoughtTokens"))
+    try:
+        cost_tracker.record_usage(
+            session_id, "voice", "gemini", f"{MODEL}:voice_design",
+            operation="design",
+            input_units=tokens_in, output_units=tokens_out, unit_type="tokens",
+            success=bool(result),
+            error_message=None if result else "design_call_failed",
+        )
+    except Exception:
+        pass
+
+
 def _design_and_save(key: str, brief: Dict[str, Any],
                      session_id: str, subject: Dict[str, Any]) -> Optional[str]:
-    """Blocking: design 3 previews, save preview[0], return the new voice_id.
+    """Blocking: design and store one voice, return its ``voice_…`` id.
 
     Called only from the background worker via ``_start_design_worker``. Caller
     holds the semaphore + the inflight event. Marks the cache entry ready /
@@ -866,60 +905,18 @@ def _design_and_save(key: str, brief: Dict[str, Any],
     label = _norm(subject.get("label")) or "figure"
     kind = _norm(subject.get("kind")) or "person"
 
-    # LRU pressure check BEFORE spending credits: if we're at the soft cap,
-    # evict the oldest ready voice (any session) whose refcount is zero.
+    # LRU pressure check BEFORE spending tokens: at the soft cap, evict the
+    # oldest ready voice (any session) whose refcount is zero.
     _evict_if_over_soft_cap(need=1)
 
-    result = _post_design(brief)
-    # ElevenLabs bills the /design call itself (a fixed credit cost) whether
-    # or not we go on to /save a preview, so record it here regardless of
-    # what happens next.
-    cost_tracker.record_usage(
-        session_id, "voice", "elevenlabs", "voice_design", operation="design",
-        output_units=1, unit_type="calls", success=bool(result),
-        error_message=None if result else "design_call_failed",
-    )
-    if not result:
-        _put_entry(key, {
-            **(_get_entry(key) or {}),
-            "status": "failed",
-            "error": "design_call_failed",
-            "failed_at": _now_iso(),
-            "expires_at": _now_ts() + FAIL_TTL_SECONDS,
-        })
-        return None
-
-    previews = result.get("previews") or []
-    if not previews:
-        _put_entry(key, {
-            **(_get_entry(key) or {}),
-            "status": "failed",
-            "error": "no_previews",
-            "failed_at": _now_iso(),
-            "expires_at": _now_ts() + FAIL_TTL_SECONDS,
-        })
-        return None
-
-    # Pick the first preview; keep the others for a future re-cast affordance.
-    picked = previews[0]
-    generated_voice_id = picked.get("generated_voice_id") or picked.get("id")
-    if not generated_voice_id:
-        _put_entry(key, {
-            **(_get_entry(key) or {}),
-            "status": "failed",
-            "error": "no_gvid",
-            "failed_at": _now_iso(),
-            "expires_at": _now_ts() + FAIL_TTL_SECONDS,
-        })
-        return None
-
-    voice_id = _post_save(generated_voice_id, brief)
+    result = _post_create(brief)
+    _record_design_cost(session_id, result)
+    voice_id = _voice_id_of(result or {})
     if not voice_id:
         _put_entry(key, {
             **(_get_entry(key) or {}),
             "status": "failed",
-            "error": "save_call_failed",
-            "generated_voice_id": generated_voice_id,
+            "error": "design_call_failed",
             "failed_at": _now_iso(),
             "expires_at": _now_ts() + FAIL_TTL_SECONDS,
         })
@@ -932,20 +929,15 @@ def _design_and_save(key: str, brief: Dict[str, Any],
         "label": label,
         "kind": kind,
         "description": brief["description"],
-        "sample_text": brief["sample_text"],
-        "generated_voice_id": generated_voice_id,
-        "extra_preview_gvids": [
-            p.get("generated_voice_id") or p.get("id")
-            for p in previews[1:] if p.get("generated_voice_id") or p.get("id")
-        ],
+        "sample_text": brief.get("sample_text", ""),
+        "display_name": brief.get("voice_name", ""),
+        "labels": brief.get("labels") or {},
+        "model": (result or {}).get("model") or MODEL,
+        "expire_time": (result or {}).get("expire_time") or "",
         "created_at": now,
         "last_used_at": now,
         "status": "ready",
     })
-    # New voice consumes a slot — bump our cached count so subsequent LRU
-    # checks are accurate without another /subscription call.
-    if _SLOT_INFO["limit"]:
-        _SLOT_INFO["used"] = _SLOT_INFO["used"] + 1
     return voice_id
 
 
@@ -955,7 +947,7 @@ def _start_design_worker(key: str, brief: Dict[str, Any],
 
     The returned Event is set when the job finishes (success OR failure).
     Coalesces per-key so N concurrent SCAN taps on the same subject only spend
-    ONE Voice Design credit.
+    ONE design call.
     """
     with _INFLIGHT_LOCK:
         ev = _INFLIGHT_EVENTS.get(key)
@@ -973,7 +965,7 @@ def _start_design_worker(key: str, brief: Dict[str, Any],
         "label": _norm(subject.get("label")) or "figure",
         "kind": _norm(subject.get("kind")) or "person",
         "description": brief["description"],
-        "sample_text": brief["sample_text"],
+        "sample_text": brief.get("sample_text", ""),
         "status": "generating",
         "generating_since": _now_iso(),
     })
@@ -993,6 +985,15 @@ def _start_design_worker(key: str, brief: Dict[str, Any],
                 })
                 return
             _design_and_save(key, brief, session_id, subject)
+        except Exception as e:  # noqa: BLE001
+            print(f"[VOICE DESIGN] worker exception: {e}", flush=True)
+            _put_entry(key, {
+                **(_get_entry(key) or {}),
+                "status": "failed",
+                "error": "worker_exception",
+                "failed_at": _now_iso(),
+                "expires_at": _now_ts() + FAIL_TTL_SECONDS,
+            })
         finally:
             if acquired:
                 try:
@@ -1006,6 +1007,26 @@ def _start_design_worker(key: str, brief: Dict[str, Any],
     t = threading.Thread(target=_worker, name=f"voice-design-{key}", daemon=True)
     t.start()
     return ev
+
+
+def _brief_from_description(label: str, kind: str, description: str,
+                            sample_text: str, **extra_labels: str) -> Dict[str, Any]:
+    """A brief around a stored description (a companion's regen seed)."""
+    return {
+        "description": description,
+        "gender": _api_gender(label, kind),
+        "emotion": "",
+        "delivery": "",
+        "sample_text": _sample_text(sample_text or "", label),
+        "voice_name": _voice_name(label, kind),
+        "labels": {
+            "source": NAME_PREFIX,
+            "subject_label": label[:60],
+            "subject_kind": kind[:20],
+            "created_at": _now_iso(),
+            **extra_labels,
+        },
+    }
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -1022,14 +1043,15 @@ def regenerate_voice(
     old_voice_id: Optional[str] = None,
     wait: float = 0.0,
 ) -> Optional[Dict[str, Any]]:
-    """Force a NEW Voice Design from a stored companion description.
+    """Force a NEW voice design from a stored companion description.
 
-    Companions persist the Voice Design brief so a later beat can recreate
-    the same character's voice after slot eviction / session cleanup. This
-    path does **not** rebuild the brief from story context — it reuses the
-    exact ``description`` seed — then evicts the prior cache entry (and
-    best-effort deletes ``old_voice_id`` when its refcount is zero) before
-    kicking off a fresh design job under the same cache key.
+    Companions persist the voice-design brief so a later beat can recreate
+    the same character's voice after eviction / session cleanup. This path
+    does **not** rebuild the brief from story context — it reuses the
+    ``description`` seed (compacted: an ElevenLabs-era seed loses its
+    situational and ElevenLabs-addressed sentences) — then evicts the prior
+    cache entry (and best-effort deletes ``old_voice_id`` when its refcount
+    is zero) before kicking off a fresh design job under the same cache key.
 
     Returns the same shape as ``get_or_design_voice``, or ``None`` when the
     feature is unavailable / the description is unusable. Never raises.
@@ -1041,21 +1063,19 @@ def regenerate_voice(
     label = _norm(subject.get("label"))
     if not label:
         return None
-    desc = (description or "").strip()
-    # ElevenLabs Voice Design requires 20 <= len(voice_description) <= 1000.
+    desc = _compact_description(description)
     if len(desc) < 20:
         return None
-    desc = desc[:990]
 
     key = cache_key(subject, session_id, world_prompt)
 
     # Drop any ready/generating/failed entry for this key so we actually
-    # spend a new design credit instead of returning the cached voice_id.
+    # spend a new design call instead of returning the cached voice_id.
     existing = _get_entry(key)
     if existing:
         _drop_entries([key])
-    # Best-effort: free the previous ElevenLabs slot when nothing is holding
-    # a ref (an open Convai call keeps refcount > 0 and must not be yanked).
+    # Best-effort: free the previous voice when nothing is holding a ref (a
+    # live TALK keeps refcount > 0 and must not be yanked).
     if old_voice_id and refcount(old_voice_id) <= 0:
         try:
             _delete_voice(old_voice_id)
@@ -1072,18 +1092,7 @@ def regenerate_voice(
         }
 
     kind = _norm(subject.get("kind")) or "person"
-    brief = {
-        "description": desc,
-        "sample_text": _sample_text(sample_text or "", label),
-        "voice_name": _voice_name(label, kind),
-        "labels": {
-            "source": LABEL_TAG,
-            "subject_label": label[:60],
-            "subject_kind": kind[:20],
-            "created_at": _now_iso(),
-            "regen": "1",
-        },
-    }
+    brief = _brief_from_description(label, kind, desc, sample_text, regen="1")
     ev = _start_design_worker(key, brief, session_id, subject)
 
     if wait > 0:
@@ -1131,24 +1140,24 @@ def get_or_design_voice(
     this cache key completes (bounded by ``DESIGN_TIMEOUT_SECONDS``).
 
     ``description_override`` (when >= 20 chars) reuses a stored companion
-    Voice Design brief instead of rebuilding one from story context — the
+    voice description instead of rebuilding one from story context — the
     recovery path when a companion's ``voice_id`` was evicted but the regen
     seed survived on the roster.
 
     Returns a dict::
 
         {
-          "voice_id":   "<real elevenlabs id>" | None,
+          "voice_id":   "voice_…" | None,
           "cache_key":  "<16-hex>",
           "source":     "cache" | "designed" | "generating" | "failed" | "budget",
           "status":     "ready" | "generating" | "failed",
-          "description": "<the voice-design brief>",
+          "description": "<the voice description>",
         }
 
-    Never raises. Returns ``None`` when the feature is disabled / API key
-    missing / the subject is missing a label. The caller should then fall back
-    to whatever it used before this module existed (typically the
-    ``by_kind`` map in ``voices.json``).
+    Never raises. Returns ``None`` when the feature is disabled / Gemini is
+    not what is playing / the subject is missing a label. The caller should
+    then fall back to whatever it used before this module existed (typically
+    the ``by_kind`` map in ``voices.json``).
     """
     if not is_available():
         return None
@@ -1221,23 +1230,14 @@ def get_or_design_voice(
             "description": "",
         }
 
-    override = (description_override or "").strip()
+    override = _compact_description(description_override)
     if len(override) >= 20:
         kind = _norm(subject.get("kind")) or "person"
-        brief = {
-            "description": override[:990],
-            "sample_text": _sample_text(
-                str((context or {}).get("opening_line") or ""), label
-            ),
-            "voice_name": _voice_name(label, kind),
-            "labels": {
-                "source": LABEL_TAG,
-                "subject_label": label[:60],
-                "subject_kind": kind[:20],
-                "created_at": _now_iso(),
-                "from_companion": "1",
-            },
-        }
+        brief = _brief_from_description(
+            label, kind, override,
+            str((context or {}).get("opening_line") or ""),
+            from_companion="1",
+        )
     else:
         brief = brief_for_subject(subject, context)
     ev = _start_design_worker(key, brief, session_id, subject)
@@ -1273,12 +1273,12 @@ def get_or_design_voice(
 
 
 def is_ready_voice_id(voice_id: str) -> bool:
-    """Cheap allowlist check: is this voice_id present in the cache with
-    status='ready'? Used by ``engine._valid_voice_id`` to admit designed
-    voices through the same validation as preset ones without falling back
-    to the heavier ``cache_snapshot`` call on every TALK request."""
+    """Cheap allowlist check: is this a designed ``voice_…`` id present in
+    the cache with status='ready'? Used by ``engine._valid_voice_id`` to admit
+    designed voices through the same validation as roster ones without
+    falling back to the heavier ``cache_snapshot`` call on every TALK."""
     vid = (voice_id or "").strip()
-    if not vid:
+    if not vid.startswith("voice_"):
         return False
     try:
         with _CACHE_LOCK:
@@ -1328,8 +1328,8 @@ def release_session_voices(session_id: str,
                            grace_seconds: float = 0.0) -> Dict[str, Any]:
     """DELETE every designed voice tagged to ``session_id``.
 
-    Voices with refcount > 0 (a live convai call still holds them) are
-    skipped and left for the next sweep. Idempotent + never raises.
+    Voices with refcount > 0 (a live TALK still holds them) are skipped and
+    left for the next sweep. Idempotent + never raises.
     Returns ``{"deleted": N, "skipped": M, "voice_ids": [...]}``.
     """
     if not session_id:
@@ -1351,8 +1351,6 @@ def release_session_voices(session_id: str,
                 time.sleep(grace_seconds)
             if _delete_voice(vid):
                 deleted.append(vid)
-                if _SLOT_INFO["limit"] and _SLOT_INFO["used"] > 0:
-                    _SLOT_INFO["used"] -= 1
         drop_keys.append(key)
     _drop_entries(drop_keys)
     if deleted or skipped:
@@ -1365,14 +1363,14 @@ def release_session_voices(session_id: str,
 
 
 def _soft_cap() -> int:
-    """The cache LRU-evicts once total ready+generating voices reach this."""
+    """The cache LRU-evicts once its ready voices reach this.
+
+    Google stores 200 voices per project and says nothing about how many are
+    used, so the count is our own; 180 leaves room for designs in flight and
+    for another checkout's voices on the same key."""
     if VOICE_SOFT_CAP_OVERRIDE > 0:
         return VOICE_SOFT_CAP_OVERRIDE
-    _used, limit = _get_subscription_slots()
-    if limit <= 0:
-        return 20  # unknown quota — sensible upper bound
-    # Leave 2 slots of headroom for concurrent designs in flight.
-    return max(2, limit - 2)
+    return _DEFAULT_SOFT_CAP
 
 
 def _evict_if_over_soft_cap(need: int = 1) -> int:
@@ -1401,8 +1399,6 @@ def _evict_if_over_soft_cap(need: int = 1) -> int:
         if _delete_voice(vid):
             evict_keys.append(k)
             evicted += 1
-            if _SLOT_INFO["limit"] and _SLOT_INFO["used"] > 0:
-                _SLOT_INFO["used"] -= 1
     _drop_entries(evict_keys)
     if evicted:
         print(f"[VOICE DESIGN] LRU-evicted {evicted} designed voice(s)", flush=True)
@@ -1411,62 +1407,78 @@ def _evict_if_over_soft_cap(need: int = 1) -> int:
 
 def sweep_orphans(max_age_hours: Optional[int] = None,
                   active_session_ids: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Reconcile with ``GET /v1/voices``: delete any voice tagged
-    ``source=<LABEL_TAG>`` that is (a) older than ``max_age_hours`` and
-    (b) whose ``session_id`` label is not in ``active_session_ids`` (or is
-    missing). Also drops cache entries whose voice_id no longer exists on
-    the server. Idempotent + never raises.
+    """Reconcile the cache with ``GET /v1beta/voices``. Idempotent, never
+    raises. Only ever touches voices whose display name starts with
+    NAME_PREFIX, and never one with a live refcount.
+
+    * A ``[dyn]`` voice the cache does not know is an orphan (a crash between
+      the create and the cache write, a cache file deleted by hand): reaped
+      once it is older than ORPHAN_GRACE_MINUTES, or when its age cannot be
+      told. The grace is for a design in flight right now, and for a second
+      checkout on the same key, whose cache is a different file.
+    * A ``[dyn]`` voice the cache does know is reaped once it is older than
+      ``max_age_hours`` AND its session is not in ``active_session_ids``.
+    * A ready cache entry whose voice is no longer on the server is dropped
+      — but only off a complete listing, and only entries that existed
+      before the listing was asked for.
     """
     if not is_available():
         return {"deleted": 0, "unknown": 0, "kept": 0}
     max_age = int(max_age_hours if max_age_hours is not None else MAX_AGE_HOURS)
     active = set(active_session_ids or [])
-    cutoff_ts = _now_ts() - max_age * 3600
+    now_ts = _now_ts()
 
-    remote, list_reason = _list_workspace_voices(with_reason=True)
+    # Snapshot BEFORE listing: a voice designed while the listing is in
+    # flight is in the cache but not in the listing, and must not be dropped.
+    with _CACHE_LOCK:
+        snapshot = dict((_load_cache().get("voices") or {}))
+    by_vid = {
+        e["voice_id"]: (k, e) for k, e in snapshot.items()
+        if isinstance(e, dict) and e.get("voice_id")
+    }
+
+    remote, list_reason = _list_voices()
     if list_reason not in ("ok", "empty"):
         return {"deleted": 0, "unknown": 0, "kept": 0, "reason": list_reason}
     deleted = 0
     kept = 0
     unknown = 0
     remote_ids: set = set()
+    drop_keys: List[str] = []
     for v in remote:
         if not isinstance(v, dict):
             continue
-        vid = v.get("voice_id")
-        labels = v.get("labels") or {}
-        if not vid or labels.get("source") != LABEL_TAG:
+        vid = v.get("id") or ""
+        if not vid or not _display_name_of(v).startswith(NAME_PREFIX):
             continue
         remote_ids.add(vid)
-        created_iso = str(labels.get("created_at") or "")
-        session_id = str(labels.get("session_id") or "")
-        try:
-            created_ts = datetime.fromisoformat(
-                created_iso.replace("Z", "+00:00")
-            ).timestamp() if created_iso else 0.0
-        except Exception:
-            created_ts = 0.0
-        stale = created_ts and created_ts < cutoff_ts
-        orphaned = bool(session_id and session_id not in active)
         if refcount(vid) > 0:
             kept += 1
             continue
-        if stale or orphaned:
-            if _delete_voice(vid):
-                deleted += 1
-            else:
-                unknown += 1
+        known = by_vid.get(vid)
+        if known is None:
+            age_h = _remote_age_hours(v)
+            reap = age_h is None or age_h * 60.0 >= ORPHAN_GRACE_MINUTES
         else:
+            _k, entry = known
+            created = _parse_ts(entry.get("created_at"))
+            age_h = ((now_ts - created) / 3600.0) if created else _remote_age_hours(v)
+            stale = age_h is not None and age_h >= max_age
+            reap = bool(stale and entry.get("session_id") not in active)
+        if not reap:
             kept += 1
+            continue
+        if _delete_voice(vid):
+            deleted += 1
+            if known is not None:
+                drop_keys.append(known[0])
+        else:
+            unknown += 1
 
-    # Drop cache entries whose voice_id vanished server-side.
-    with _CACHE_LOCK:
-        cache = _load_cache()
-        drop_keys = [
-            k for k, e in (cache.get("voices") or {}).items()
-            if isinstance(e, dict) and e.get("voice_id") and e["voice_id"] not in remote_ids
-            and e.get("status") == "ready"
-        ]
+    # Drop ready cache entries whose voice vanished server-side.
+    for vid, (k, e) in by_vid.items():
+        if e.get("status") == "ready" and vid not in remote_ids and k not in drop_keys:
+            drop_keys.append(k)
     if drop_keys:
         _drop_entries(drop_keys)
 
@@ -1485,7 +1497,8 @@ def sweep_orphans(max_age_hours: Optional[int] = None,
 # ────────────────────────────────────────────────────────────────────────────
 
 def cache_snapshot() -> Dict[str, Any]:
-    """Human-readable snapshot for the admin dashboard. No secrets."""
+    """Human-readable snapshot for the admin dashboard. No secrets, and no
+    network: the slot count is our own cache's."""
     with _CACHE_LOCK:
         cache = _load_cache()
     entries = []
@@ -1504,17 +1517,16 @@ def cache_snapshot() -> Dict[str, Any]:
             "last_used_at": e.get("last_used_at"),
             "refcount": refcount(vid) if vid else 0,
         })
-    used, limit = _get_subscription_slots()
     return {
         "enabled": is_available(),
         "config": {
             "budget_per_session": DESIGN_BUDGET_PER_SESSION,
             "concurrency": DESIGN_CONCURRENCY,
             "soft_cap": _soft_cap(),
-            "label_tag": LABEL_TAG,
-            "ttv_model": TTV_MODEL,
+            "name_prefix": NAME_PREFIX,
+            "model": MODEL,
         },
-        "workspace_slots": {"used": used, "limit": limit},
+        "project_slots": {"used": _count_ready(), "limit": PROJECT_VOICE_LIMIT},
         "cache_size": len(entries),
         "entries": entries,
     }

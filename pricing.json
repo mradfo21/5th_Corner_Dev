@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-09-24T18:00:00+00:00",
+  "last_updated": "2026-09-25T12:00:00+00:00",
   "notes": "Every rate is the provider's own list price, read on the date in `checked` from the page in `source`. Token rates are dollars per MILLION tokens (input_per_1m / output_per_1m) \u2014 per-thousand token fields are refused by pricing.py, because that is how text ended up priced ~150x too high. Image rates may carry `sizes` (1K/2K/4K); an event that logs its size is priced at that size. A null rate means unpriced: shown as such, never charged as $0 silently. An unknown model only falls back to a provider default of the SAME unit type. Editable from the admin dashboard's Analytics > Pricing panel.",
   "rates": {
     "gemini:gemini-3.1-flash-lite": {
@@ -66,6 +66,30 @@
       "checked": "2026-09-21",
       "note": "Unknown Gemini IMAGE model -> priced as Flash Image at its size (the more expensive of the two fast models, so an unknown never undercharges)."
     },
+    "gemini:gemini-3.8-flash-tts": {
+      "unit_type": "tokens",
+      "input_per_1m": 0.5,
+      "output_per_1m": 9.0,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-09-25",
+      "note": "Every spoken line (speech.py). Audio out is 25 tokens/s (~$0.0135/min). Price doubles to $1 / $18 on 2027-01-01."
+    },
+    "gemini:gemini-3.8-flash-lite-tts": {
+      "unit_type": "tokens",
+      "input_per_1m": 0.5,
+      "output_per_1m": 6.0,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-09-25",
+      "note": "Audio out is 25 tokens/s (~$0.009/min). Price doubles to $1 / $12 on 2027-01-01."
+    },
+    "gemini:gemini-3.8-flash-tts:voice_design": {
+      "unit_type": "tokens",
+      "input_per_1m": 0.5,
+      "output_per_1m": 9.0,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-09-25",
+      "note": "Voice design is billed as the tokens it reports (measured 2026-09-25: 237 in, 655 audio + 947 thinking out \u2248 $0.015 per voice); no separate list price published."
+    },
     "gemini:models/lyria-realtime-exp": {
       "unit_type": "seconds",
       "per_unit": null,
@@ -131,6 +155,13 @@
       "checked": "2026-09-24",
       "note": "Billed by tokens: text in $5, image in $8, image out $30 per 1M. provider_bridge logs input as text-rate-equivalent tokens (image-input tokens x 8/5) so this one rate prices both."
     },
+    "openai:gpt-4o-mini-tts": {
+      "unit_type": "seconds",
+      "per_unit": 0.00025,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-09-25",
+      "note": "ESTIMATE ~$0.015/min; listed as $0.60/1M text in + $12/1M audio out, the bridge logs seconds of audio."
+    },
     "anthropic:claude-sonnet-4-5": {
       "unit_type": "tokens",
       "input_per_1m": 3.0,
@@ -179,47 +210,6 @@
       "source": "https://fal.ai/models/fal-ai/fast-lightning-sdxl",
       "checked": "2026-09-21",
       "note": "No usable public price (page shows $0 per compute second logged out). Unpriced until read from the fal account."
-    },
-    "elevenlabs:tts": {
-      "unit_type": "characters",
-      "per_1k": 0.1,
-      "source": "https://elevenlabs.io/pricing/api",
-      "checked": "2026-09-21",
-      "note": "eleven_multilingual_v2 (the game's default TTS model). Flash/Turbo are $0.05."
-    },
-    "elevenlabs:default": {
-      "unit_type": "characters",
-      "per_1k": 0.1,
-      "source": "https://elevenlabs.io/pricing/api",
-      "checked": "2026-09-21"
-    },
-    "elevenlabs:eleven_text_to_sound_v2": {
-      "unit_type": "seconds",
-      "per_unit": 0.002,
-      "source": "https://elevenlabs.io/pricing/api",
-      "checked": "2026-09-21",
-      "note": "$0.12 per minute of output."
-    },
-    "elevenlabs:music_v2": {
-      "unit_type": "seconds",
-      "per_unit": 0.0025,
-      "source": "https://elevenlabs.io/pricing/api",
-      "checked": "2026-09-21",
-      "note": "$0.15 per minute."
-    },
-    "elevenlabs:talk_agent": {
-      "unit_type": "seconds",
-      "per_unit": 0.001333,
-      "source": "https://elevenlabs.io/pricing/agents",
-      "checked": "2026-09-21",
-      "note": "$0.08 per call-minute (burst over concurrency $0.16). LLM billed separately."
-    },
-    "elevenlabs:voice_design": {
-      "unit_type": "calls",
-      "per_unit": 0.05,
-      "source": "https://elevenlabs.io/docs/help-center/product/voices/voice-design/how-much-does-voice-design-cost.md",
-      "checked": "2026-09-21",
-      "note": "ESTIMATE: billed per preview-text character at an unpublished rate; kept at the old $0.05 per call until checked against the ElevenLabs invoice."
     },
     "reactor:happy-oyster": {
       "unit_type": "seconds",
