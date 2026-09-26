@@ -1,5 +1,89 @@
 # 🔧 CHANGELOG - September 25, 2026
 
+## ✅ NEW: The narrator is one short thought, as the character, about the frame on screen
+
+Matt asked three things in a row:
+- *"do we have the ability for that voice description to influence the actual words from the narrator so playing each character feels like they see the world slightly differently?"*
+- *"make sure to not have many lines. really they should keep it short, a thought, what they'd think as them, the character"*
+- *"now do the thoughts pertain to whats happening in the scene we're looking at?"*
+
+The honest answers were no, no and no.
+
+**Who is thinking.** The narrator is the character ("You are {self}, speaking into a tape"). All it was told about them was what they LOOK like: `protagonist_line` gives name, role, appearance, wardrobe and gear. Its register is fixed for everyone ("Low. Tired. Certain."). So a rancher and a photojournalist narrated the same frame with the same eyes.
+- **Each character has a LENS now.** The brief that names and voices them writes it: what they notice first, the words and rhythm they talk in, and what they know. It is perception and diction only; narrator_direction still forbids the narrator a private history. Characters from before lenses get one written in the background the first time they narrate.
+- **Where it goes:**
+  - under the World brief's VOICE line, in every World's copy, none of which name `{lens}`;
+  - again, compressed, as the LAST thing in the prompt ("WHO IS THINKING — the thought has to be one only THEY would have").
+  - Placed only up top, it lost. In an A/B of one moment, four characters gave four lines any of them could have said.
+
+**One thought, not two beats.** A run played as a character narrates ONE sentence of twelve words or fewer: what goes through their head. The rotation of shapes stays, so it doesn't settle into one. There is a character set of shapes:
+- **NOTICE:** what you would catch first.
+- **KNOW:** what your trade tells you.
+- **READ, QUESTION, TALLY, GOAL,** with READ and KNOW ruling out "a year, a company, a permit".
+- **HISTORY**, the World's facts, keeps one slot in nine.
+- The MOVE TO bridge's second line is dropped for a character: one thought per narration.
+- Runs without a character (old saves, harness sessions) keep the two beats they were tuned on.
+- The mechanism worth knowing: the two-beat FACT shape ("what was done here, who ran it, what year") swallowed half the characters even after the lens was in, because the World's brief spends most of its words on history. A shape that does not rule history out inherits it.
+
+**What is on screen.** The narrator's "WHAT IS ON SCREEN" read `current_observed_vision`, then fell back to `current_image_prompt`.
+- The first is written only by /api/observe, the live-video path, so on the stills path every player plays it was always empty.
+- The fallback is the frame's RENDER RECIPE, which opens with the camera rules. Clipped to 400 characters, what the narrator was told about a frame of a rancher at a rusted truck, facing a razor-wired bunker, was *"🎥 CAMERA: THIRD-PERSON FOLLOW-CAM VIEW … a camera three to five metres behind the character."*
+- Every narration on the stills path has been written blind to its picture. The action text and the recent prose were the only anchors, which is why lines about permits and 1989 sounded like the place and not the frame.
+- `_narrator_sees` now uses the live read if there is one; otherwise the vision pass over the still (`_vision_analyze_all`, cached per image, the same read TALK already uses) plus the detector's labels for the frame. The render recipe is never used.
+
+**How it was checked.** A real frame from the native game (the harness played a turn as Hosteen: "Sprint toward the rusted truck") was narrated in-process as four characters, each from the start of the rotation.
+- The narrator now receives *"An elderly man … leaning against the side of a rusted 1990s pickup truck. In the middle distance, a concrete bunker-like structure is enclosed by a tall chain-link fence topped with barbed wire … In the frame: rusty pickup truck, concrete bunker, barbed wire fence, metal barrel, metal tank."*
+- Every thought is about that truck, and each is someone's:
+  - **Hosteen** (rancher): *"The tread on these tires has not seen a road in years."*
+  - **Jason** (photojournalist): *"The truck's VIN plate is filed smooth, just like the others."*
+  - **Elena** (paramedic): *"That truck bed would hold a trauma board, but not a spine."*
+  - **Sadie** (radio ham): *"Signal-to-noise ratio is bottoming out near these iron-rich sedimentary deposits."*
+- Before the lens, the same four characters in the same moment gave *"Horizon did X in 19XX. Why is Y?"* four times over.
+- **Not solved:** history still slips into about one thought in four. "Rolls of film" reaches characters who aren't photographers, since the World's premise was written around one.
+- `test_character_voice` (+5, the thought shape, the lens placement, no follow-up line) and `test_narrator_grounding` (the still is read; the render recipe never is) are green.
+
+## ✅ NEW: A character is designed a voice when they are made, and it narrates their runs
+
+Matt: *"focus on google see if we can use their new TTS that just came out this week … to get the best voice possible and then include that as part of the character creator"*, and then *"make sure custom character voicing is working and that we're generating good voices with character context as a default, that we're hearing it work in game, and that we're in good shape for rolling this into pricing and accounts."*
+
+**Why the character's voice is the narrator's.** The narrator is not an announcer. `narrator_direction` opens *"You are {self}, speaking into a tape you are not sure anyone will ever play"*: it is the protagonist. So a run played as a character is narrated in the voice the character creator designed for them, and a new character's first line, at the reveal, is them saying who they are into that tape.
+
+**What changed.**
+- **The brief writes how they sound.** The text call that already names a character (`_BRIEF`) now also returns `voice` and `voice_line`. `voice` uses the shape of Google's own example: one sentence, archetype first, then age, timbre and texture, accent, pacing. Their example is *"A world-weary 1940s noir private detective in his late 50s with a gravelly baritone voice, subtle Mid-Atlantic accent, and unhurried, deliberate pacing."* Permanent traits only: no emotion of the moment, and never a real person or celebrity, even if the player named one. There is no extra call; the brief was being made anyway.
+- **Two takes, and the closer one is kept.** Gemini 3.8 voice design (released 2026-09-23) has no seed and no "give me variations", and one description can come back as different people. So `voice_design.design_character_voice` designs two takes side by side. A listener model hears each design's own sample against the description and keeps the closer one; the other is deleted, since it would hold one of the project's 200 slots for a year. Character voices are named `[chr]`, which the session-voice sweep never touches.
+- **The record keeps what survives.** That is the description, plus the id, the key it was made on (a fingerprint, never the key), its expiry and the line. `voice.wav` is that line in that voice, for the screens. A voice made on another key, or within a day of expiring, is not used: it is designed again from the description (`ensure_voice`, at most once a minute), and the roster narrates meanwhile.
+- **The narrator's precedence** is the editor's explicit pick, then the run's character, then voices.json. `NARRATOR_VOICE_ID` is no longer seeded from voices.json. Seeded, the roster's narrator looked like a choice somebody made, and a choice beats every character's own voice.
+- **The delivery is short and the same everywhere:** "low and unhurried, close to the microphone, tired", for the reveal line and every narrator line. Google's guidance for designed voices is that extra direction "increases drift". For the same reason a designed voice no longer gets the narrator's "slowly" on top of its own pace; "slowly" on an "unhurried" voice read a 25-word line in 23 s.
+- **The screen** has a `VOICE` line under `STYLE`, in the same type. It shows the voice in five words ("STOIC NAVAJO ELDER IN HIS…"), plays on a click with a three-bar level while it speaks, reads "finding it…" while it's designed, and plays once by itself at a new character's reveal. CHANGE SOMETHING takes voice changes too: a line about the voice ("older and slower, a thinner, drier voice") redesigns the voice instead of redrawing the body. Where no voice can be designed (mock mode, an OpenAI key) the line is not drawn at all.
+- **Every character speaks on the character screen**, the existing ones too. Matt: *"make sure the voice of the EXISTING characters is also covered please, and they speak their line when you first get to the character screen or switch characters."*
+  - Opening the roster starts a voice design for every ready character with no usable voice: the starter, and anyone made before voices. It is at most once a minute each, and never where a voice can't be designed.
+  - The character you are looking at says their line once per arrival: when the screen opens, and on every switch. Arrowing through the roster speaks only for the one you stop on. A voice still being designed speaks the moment it lands, if they are still chosen.
+  - The native app showed a gap. Gemini TTS answered **503 "currently experiencing high demand"** on Jason's new line, and the screen then played the recording of his OLD voice, which was still on disk.
+  - Now a busy model (5xx) is asked once more after 2 s. A line that still can't be spoken leaves no recording behind, and is spoken again the next time the roster opens, followed on screen as "finding it".
+  - **Checked in the native game** (a hook on `HTMLMediaElement.play` logged every `voice.wav` played):
+    - Arriving: Hosteen spoke at 3.1 s.
+    - Jason, whose voice had been taken off him to stand in for an existing character: "FINDING IT…", then his new voice landed and he spoke at 43 s.
+    - Switching back and forth: each spoke on arrival.
+    - Three clicks in 0.3 s: only the last spoke.
+    - After the 503 fix, Jason's line was spoken again in 3.7 s as the roster opened. Transcribed: *"They told me to stay behind the fence. I needed the shot."*, "clean recording, no artifacts".
+- **The narrator's subtitle lets clicks through.** It took them all along, which went unnoticed while it was a few seconds of timed text. Spoken, a line holds the bar up for 15–25 s, and the native-app harness found it on top of the action wheel: *"the fist would not press … top: narrator-line"*. Only its stop button takes a click now.
+- **Pricing:** every voice event is priced (design as `gemini-3.8-flash-tts:voice_design`, lines as `gemini-3.8-flash-tts`, both token-billed as the API reports). The price list shows "A character's own voice". Hosted wallets are gated by default (every new POST route is), and the background design is charged to the wallet that made the character (billing's thread inheritance).
+
+**How it was checked, on the real Gemini key, with every WAV transcribed and described by Gemini.**
+- **A new character through the real route.** The line was "An old Navajo sheep rancher in his seventies who has watched the facility lights from his porch for thirty years."
+  - The brief named him **Hosteen Yazzie** and wrote *"A stoic Navajo elder in his mid-seventies with a deep, gravelly baritone, a soft-spoken Southwestern Native American cadence, and slow, deliberate pacing."*
+  - His reveal line: *"Those lights have been burning thirty years. Tonight, they finally went out."* Heard as *"male, raspy, low-pitched, dry, steady and deliberate"*, clean.
+  - The voice was ready at about 45 s, the portrait at 47 s.
+- **Two takes.** The listener kept the take *"with a more authentic, natural, and gravelly texture"* and the other was deleted. Only the two live `[chr]` voices remained stored in the project.
+- **A voice change.** "older and slower, a thinner, drier voice worn by age" rewrote the description to "late seventies … thin, dry baritone worn by age … extremely slow", and the new voice came back that way.
+- **The starter, Jason,** predates voices and was given one on demand: *"A dry, stubborn photojournalist in his mid-thirties with a gravelly, low-mid baritone, a flat Midwestern cadence…"*, saying *"Everybody else took the safe shot. I went over the fence for mine."*
+- **In the native game** (playtest_app, `PT_CHARACTER=hosteen`):
+  - Every narrator line was spoken in his voice (`voice_6ymp…`). Transcribed: *"The observation shack is vibrating like it's trying to shake itself off the cliff. I didn't build these to keep people out. They built them to stay inside."*, heard as *"older male, gritty texture, slow pace"*, no artifacts.
+  - The first run found the subtitle blocking the fist. After the fix, three turns committed, including an encounter, with no black screens and no console errors.
+- **Cost.** In the ledger, 11 spoken lines cost $0.051 (about half a cent each) and 6 design takes $0.13. A character's voice is about $0.045, paid once. None unpriced.
+- **Not solved:** designed voices skew younger than asked. The listener heard the mid-seventies rancher as 50-ish in every take. Age is in the description; the model underplays it.
+- `test_character_voice` (22) joins the CI gate.
+
 ## ✅ NEW: OUTGROWTH, the second World in the box — and the /get splash is shot in it
 
 Matt, on the old splash: *"the swat level and that stupid robot character aren't cool… wow them with the first few images."* Then, over seven looks: *"hard sci fi"*, *"desert container yard with unusual jungle"*, *"shot on more a24 16mm look"*, *"villains … a mix of horrific flesh creatures and 2030 robots"*, and finally *"perfect, create a world from this, ship it with the game."*
@@ -50,7 +134,6 @@ Three code paths also told every World it was 1993:
 - **"Anywhere."** shows only the two Worlds a build carries: "Two worlds to start. No two runs alike." It said three, and CYBER HORROR does not ship.
 - Clips: `mradfo21/abyss-media` release `clips-2026-09-25-2117`.
 - Still open: `goal.py` named the first film's goal "Buried Rail Siding" (a place, not a thing), and that walk never found a way in. The second film's goal was a thing and was reached.
-
 ## 🔊 FIXED: Every voice speaks on the player's one key — ElevenLabs is gone
 
 From the release planning: *"right now there is no solution for eleven labs. what can we use from google / openai … so that there is no need for multiple accounts?"* and then *"switching away from elevenlabs, even if that means losing certain audio features. i think we'll want as few providers as possible to start."* The plan is `docs/plans/ONE_KEY_AUDIO_PLAN.md`; this is its A0, A1, A2, A4 and half of A5.

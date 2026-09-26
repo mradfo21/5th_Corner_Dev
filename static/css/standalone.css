@@ -4582,7 +4582,13 @@ html.is-mobile #scan-tags .scan-tag.targeted::before {
   transition: opacity 0.3s ease, transform 0.3s ease;
   pointer-events: none;
 }
-#narrator-bar.narrator-in { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+/* A subtitle, and it passes clicks through: only its stop button takes one.
+   While the caption was a few seconds of timed text nobody noticed it was
+   catching clicks; spoken, a line holds the bar up for 15-25 s, and the
+   native-app harness found it on top of the action wheel (2026-09-25:
+   "the fist would not press ... top: narrator-line"). */
+#narrator-bar.narrator-in { opacity: 1; transform: translate(-50%, 0); pointer-events: none; }
+#narrator-bar.narrator-in #narrator-stop { pointer-events: auto; }
 #narrator-bar.hidden { display: none; }
 #narrator-inner {
   display: flex;

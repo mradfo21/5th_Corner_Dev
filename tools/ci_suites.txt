@@ -27,6 +27,7 @@ test_authoring_sandbox
 test_billing
 test_bug_report
 test_ceremony_hud
+test_character_voice
 test_characters
 test_choices_robustness
 test_combat

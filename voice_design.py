@@ -815,6 +815,121 @@ def _remote_age_hours(voice: Dict[str, Any]) -> Optional[float]:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Characters' own voices — kept, not swept
+# ────────────────────────────────────────────────────────────────────────────
+# The player's character (characters.py) is designed a voice when it is made,
+# and that voice narrates every run it plays (the narrator is "you, speaking
+# into a tape"). It must outlive sessions, so it is not a [dyn] voice: it is
+# named with CHARACTER_PREFIX, which the sweep never touches, and its id lives
+# on the character record, not in this cache. What survives a new key, a new
+# Google project or the year's expiry is the description on the record.
+
+CHARACTER_PREFIX = "[chr]"
+
+
+def key_fingerprint() -> str:
+    """Which key a voice was made on — a voice id belongs to that key's Google
+    project and names nothing on another. Never the key itself."""
+    key = _api_key()
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:12] if key else ""
+
+
+CHARACTER_TAKES = _cfg_int("SOMEWHERE_CHARACTER_VOICE_TAKES", 2)
+JUDGE_MODEL = "gemini-3.1-flash-lite"
+
+_JUDGE = """A voice designer was asked for this voice:
+"{description}"
+{n} takes follow, in order. Listen to each. Which take IS that person — above all the
+age, gender, accent and texture asked for — and sounds natural, with no robotic
+artifacts, clipping or odd pacing? Reply with JSON only: {{"best": <take number>, "why": "<one short clause>"}}"""
+
+
+def _judge_takes(description: str, takes: List[Dict[str, Any]]) -> Tuple[int, str]:
+    """Which take matches the description best, by listening to each design's
+    own sample (no extra speech). (index, why); index 0 on any failure."""
+    parts: List[Dict[str, Any]] = [{"text": _JUDGE.format(description=description[:600], n=len(takes))}]
+    for i, t in enumerate(takes, 1):
+        sample = t.get("sample_audio") or {}
+        data = sample.get("data") if isinstance(sample, dict) else None
+        if not data:
+            return 0, "a take had no sample"
+        parts += [{"text": f"Take {i}:"},
+                  {"inlineData": {"mimeType": str(sample.get("mime_type") or "audio/wav"), "data": data}}]
+    try:
+        import requests
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{JUDGE_MODEL}:generateContent",
+            headers=_headers(_api_key()),
+            json={"contents": [{"role": "user", "parts": parts}],
+                  "generationConfig": {"responseMimeType": "application/json", "temperature": 0}},
+            timeout=60)
+        if resp.status_code != 200:
+            return 0, f"judge http {resp.status_code}"
+        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        out = json.loads(re.sub(r"^```[a-z]*\s*|\s*```$", "", text.strip()))
+        best = int(out.get("best") or 1) - 1
+        if 0 <= best < len(takes):
+            return best, str(out.get("why") or "")[:160]
+    except Exception as e:  # noqa: BLE001
+        return 0, f"judge failed: {type(e).__name__}"
+    return 0, "judge gave no take"
+
+
+def design_character_voice(name: str, description: str, gender: str = "",
+                           session_id: str = "default",
+                           takes: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Design and store the voice for a player character. Blocking.
+
+    There is no seed and no "give me variations" in voice design, and one
+    description can come back as quite different people (a "mid-seventies"
+    rancher designed on 2026-09-25 was heard as middle-aged). Google's own
+    cookbook: create two or three, listen, keep one. So TAKES are designed
+    side by side, a listener model hears each design's own sample against
+    the description, the closest is kept and the rest are deleted — they
+    would otherwise hold slots of the project's 200 for a year.
+    Returns {id, expire_time, fingerprint, takes, picked_because} or None."""
+    description = (description or "").strip()
+    if not is_available() or len(description) < 20:
+        return None
+    clean = re.sub(r"[^a-zA-Z0-9 \-_']", "", name or "").strip() or "character"
+    brief = {"voice_name": f"{CHARACTER_PREFIX} {clean}"[:100],
+             "description": description[:1000],
+             "gender": gender if gender in ("male", "female") else ""}
+    n = max(1, min(3, int(takes if takes is not None else CHARACTER_TAKES)))
+    results: List[Optional[Dict[str, Any]]] = [None] * n
+
+    def one(i: int) -> None:
+        with _DESIGN_SEMAPHORE:
+            results[i] = _post_create(brief)
+        _record_design_cost(session_id, results[i])
+
+    threads = [threading.Thread(target=one, args=(i,), daemon=True) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(DESIGN_TIMEOUT_SECONDS * 2 + 10)
+    made = [r for r in results if r and r.get("id")]
+    if not made:
+        return None
+    best, why = (0, "one take") if len(made) == 1 else _judge_takes(description, made)
+    keep = made[best]
+    for i, r in enumerate(made):
+        if i != best:
+            _delete_voice(r["id"])
+    keep["fingerprint"] = key_fingerprint()
+    keep["takes"] = len(made)
+    keep["picked_because"] = why
+    return keep
+
+
+def delete_character_voice(voice_id: str) -> bool:
+    """Free a character's old voice once a new one has replaced it."""
+    if not voice_id or not str(voice_id).startswith("voice_"):
+        return False
+    return _delete_voice(voice_id)
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # The ElevenLabs library, retired
 # ────────────────────────────────────────────────────────────────────────────
 

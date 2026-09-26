@@ -764,6 +764,10 @@ _CARD = (
      "about 200 characters, ~14 s of speech"),
     ("Talking with someone", "gemini", "gemini-3.8-flash-tts", "tokens", (400, 1500), None,
      "per minute of their voice"),
+    # Two takes designed and the closer one kept (voice_design.design_character_voice):
+    # measured 238-258 tokens in and 1,500-2,800 out (it thinks) per take, 2026-09-25.
+    ("A character's own voice", "gemini", "gemini-3.8-flash-tts:voice_design", "tokens", (500, 4500), None,
+     "designed once, when they are made"),
     ("Live video", "reactor", "happy-oyster", "seconds", 60, None, "per minute"),
     ("Live video, light", "reactor", "lingbot-world-2", "seconds", 60, None, "per minute"),
     ("Video clip", "veo", "veo-3.1-generate-preview", "seconds", 8, None, "8 seconds"),

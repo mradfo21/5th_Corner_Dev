@@ -38,7 +38,7 @@
   },
 
   "cast": {
-    "narrator": { "voice_id": "Charon", "style": "Read this as the narrator of a 1993 documentary about something that should not have happened: low, unhurried, close to the microphone, tired and certain", "description": "The disembodied archive voice that frames the world." },
+    "narrator": { "voice_id": "Charon", "style": "low and unhurried, close to the microphone, tired", "description": "The disembodied archive voice that frames the world." },
     "man":      { "voice_id": "Algieba", "style": "Say this plainly, a man speaking under his breath", "description": "A generic man's voice." },
     "woman":    { "voice_id": "Kore", "style": "Say this plainly, a woman speaking under her breath", "description": "A generic woman's voice." },
     "elder":    { "voice_id": "Gacrux", "style": "Say this slowly, old and weathered, as if remembering", "description": "A wise, weathered old voice." },
