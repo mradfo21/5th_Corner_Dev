@@ -1,5 +1,56 @@
 # 🔧 CHANGELOG - September 25, 2026
 
+## ✅ NEW: OUTGROWTH, the second World in the box — and the /get splash is shot in it
+
+Matt, on the old splash: *"the swat level and that stupid robot character aren't cool… wow them with the first few images."* Then, over seven looks: *"hard sci fi"*, *"desert container yard with unusual jungle"*, *"shot on more a24 16mm look"*, *"villains … a mix of horrific flesh creatures and 2030 robots"*, and finally *"perfect, create a world from this, ship it with the game."*
+
+**The World.** `worlds/outgrowth.json` + `experiences/outgrowth.json`.
+- **Place:** Harrow Siding, 2030. An outback rail siding where a Verdant Genomics seed-bank crop, grown to hold water in the desert, went feral. A jungle now follows the creek lines.
+- **Threat:** things grown out of the crop (bark over raw tissue, pitcher mouths, roots for feet), and the company's security humanoids, robot dogs and drones, still on patrol and some of them overgrown.
+- **Lead:** Ruth "Static" Calloway, a fifties EW specialist with a cochlear implant, a jammer taped to her forearm and bubblegum.
+- **Look:** 16mm Vision3, practical creatures, plausible machines. The negative prompt forbids chrome, giant mechs, cartoon monsters and CGI-looking creatures, rather than robots and sci-fi.
+- **Rulebook keys:** the four are the factory's, untouched.
+- **Ships:** it is the second entry in `ship_layout.FACTORY_FILES` and in the `.gitignore` allowlist, so a build seeds it into `%APPDATA%\ABYSS` beside SOMEWHERE.
+
+**Why the old SWAT splash looked the way it did.** The SWAT World had been built from the factory copy:
+- Its `image_negative_prompt` still said "NEVER: robots, androids, sci-fi", on a level about robots.
+- Its art direction was the 1993 camcorder look.
+- Its lead was a borrowed Call of Duty character.
+- The image model had to reconcile a robot war with a rule against robots on every frame, and drew toys.
+
+Three code paths also told every World it was 1993:
+- the montage director ("the second-unit photographer on a 1993 analog-horror film");
+- the portrait and close-up anchors ("Keep 1993 analog-horror palette continuity");
+- the shared montage line ("1993 analog photograph").
+
+`game_identity.deperiod()` takes those words out when a World's art direction and era are set somewhere else. A 1993 World, and a World with no authored look, keep every word (`AWorldInAnotherPeriodIsNotToldItIs1993`).
+
+**Two traps it walked into on the way.**
+- `untitled-experience.json` is on the build's leftover sweep, and `worlds/world.json` is what the harness overwrites. So the World has its own slug, and this machine's SWAT authoring is back as it was.
+- The editor's example value for Pronouns was `she/her`. The placeholder-echo guard drops any value equal to its field's example, so Static would have been compiled with no pronouns at all. The example is now "she/her, he/him, they/them…". `test_no_shipped_sheet_wears_a_placeholder` caught it.
+
+**`film_run` films stills by default.** With `REACTOR_API_KEY` in `.env`, the film's client took the live-video layer. A stream that connected and presented black sat above bright stills for the whole Township 12 opening. `--realtime` keeps it.
+
+**How it was checked: played, twice, and looked at.**
+- **The World card**, drawn with the World bound in memory (never through `world_frames.ensure`, which draws with the live FIFTH CORNER prompts): Static walking the rails at the jungle's edge, vines across the sleepers, fungal shelves, an overgrown robot dog in the green, the tank and the dead road train behind.
+- **First film.** Six turns in the real app, via `tools/refresh_get.py`.
+  - What came back: a vine-lizard creature, a security humanoid with a drone, Static blowing a bubble, a Verdant scientist, and a bark-sheathed thing in the field lab's door that killed her in six rounds.
+  - Wrong 1: the montage's first shot was "the distant, shimmering metallic sheen of the Verdant field lab", which the model drew as a chrome box on bare desert. That came from the World's own wording ("field lab container").
+  - Wrong 2: the opening frame was mostly empty plain.
+  - Fix: `goal` and `landmarks` now say what the lab looks like (a rusted, vine-choked shipping container), and `opening_shot` writes the first frame at the jungle's edge.
+- **Second film.**
+  - The opening is the siding with the growth over the rails.
+  - Four fights, including one with a spiny creature under a company drone that ended TALKED DOWN.
+  - The typed "Hijack the robot dog and ride it into the jungle" happened.
+  - The goal walk reached the Rusted Water Tank and took the Verdant Exoskeleton Harness.
+  - The /get hero is that fight (`pick: {"fight": 2}`); the last fight was a two-round escape.
+- **"Anyone."** makes Dot Mahoney, Dr Ezra Quill and Wendell "Parrot" Byrne on camera.
+  - Unnamed, the game had called two of them Vance and two of them Alistair.
+  - `refresh_get` only found the first two. The harness prints a name as a Python repr, so a name with an apostrophe arrives in double quotes, and the finder only read single ones. It reads both now.
+- **"Anywhere."** shows only the two Worlds a build carries: "Two worlds to start. No two runs alike." It said three, and CYBER HORROR does not ship.
+- Clips: `mradfo21/abyss-media` release `clips-2026-09-25-2117`.
+- Still open: `goal.py` named the first film's goal "Buried Rail Siding" (a place, not a thing), and that walk never found a way in. The second film's goal was a thing and was reached.
+
 ## 🔊 FIXED: Every voice speaks on the player's one key — ElevenLabs is gone
 
 From the release planning: *"right now there is no solution for eleven labs. what can we use from google / openai … so that there is no need for multiple accounts?"* and then *"switching away from elevenlabs, even if that means losing certain audio features. i think we'll want as few providers as possible to start."* The plan is `docs/plans/ONE_KEY_AUDIO_PLAN.md`; this is its A0, A1, A2, A4 and half of A5.
@@ -32,7 +83,6 @@ From the release planning: *"right now there is no solution for eleven labs. wha
 - `voice_design` created, listed and deleted real voices; none were left stored.
 - **Not checked:** the OpenAI path against the real API (the repo's OpenAI key answers `credit_balance_exhausted`; it is unit-tested), a turn loop in the native app with ears on it, and the free Gemini tier.
 - New `test_speech` (15) joins the CI gate. `test_talk_voice` (19) is rewritten around what must hold now: nothing reaches ElevenLabs, no agent id ships, voice means the key can speak, captions wait for their voice. `test_voice_design` 67 + 1 live, `test_conversation_moments` 42/42, the gate's billing/pricing/keys/editor suites green.
-
 ## 🚀 SHIPPED: ABYSS 0.1.0-beta.1 — built by a tag, installed from GitHub, served from /get
 
 The first distributed build. It was tagged on `main` after PR #158 went green, and the release workflow did everything itself in 10½ minutes on GitHub's runner: install from the lock, the gate, the build, the smoke test with the install folder read-only, the notices, the Velopack pack and the publish. The result is https://github.com/mradfo21/abyss-releases/releases/tag/v0.1.0-beta.1: a 216 MB `Setup.exe`, a portable zip and the update feed, each with GitHub's SHA-256.

@@ -288,7 +288,10 @@ def find(moment: str, film: Film, clip: dict, taken: list) -> dict:
         # Every character made on camera, one after another: the line that
         # describes them (a caption, typed out — the field is small), the
         # drawing, and who came back, held.
-        made = [(t, line) for t, line in film.log if "created '" in line]
+        # The harness prints the name as a Python repr, so a name with an
+        # apostrophe in it ("Wendell 'Parrot' Byrne") comes in double quotes
+        # and was dropped from the reel.
+        made = [(t, line) for t, line in film.log if re.search(r"created ['\"]", line)]
         spans = film.spans("char-open")
         if not made or not spans:
             return {"missing": "no character was created on camera"}
@@ -296,12 +299,12 @@ def find(moment: str, film: Film, clip: dict, taken: list) -> dict:
         subs = [tt for tt, line in film.log if "CREATE: submitted" in line]
         segs, names = [], []
         for i, (t, line) in enumerate(made):
-            m = re.search(r"created '([^']+)'.*playable in (\d+)s", line)
+            m = re.search(r"created (['\"])(.+?)\1.*playable in (\d+)s", line)
             if not m:
                 continue
-            names.append(m.group(1))
+            names.append(m.group(2))
             # "playable in Ns" is timed from the Enter, and logged 2.5 s later.
-            sent = subs[i] if i < len(subs) else t - float(m.group(2)) - 2.6
+            sent = subs[i] if i < len(subs) else t - float(m.group(3)) - 2.6
             what = said[i] if i < len(said) else ""
             # The line going in; the wait for the drawing, squeezed to its
             # last seconds; then the reveal played as it happened (squeezed,

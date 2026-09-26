@@ -7,10 +7,10 @@
       "src720": "/static/video/get/hero-720.mp4",
       "poster": "/static/video/get/hero.jpg",
       "label": "",
-      "sub": "SWAT \u00b7 Luka 'Grizzly' Novak",
-      "seconds": 15.0,
-      "bytes": 12829097,
-      "bytes720": 3393830
+      "sub": "OUTGROWTH \u00b7 Ruth 'Static' Calloway",
+      "seconds": 18.3,
+      "bytes": 14365296,
+      "bytes720": 3922133
     },
     {
       "name": "create",
@@ -19,9 +19,9 @@
       "poster": "/static/video/get/create.jpg",
       "label": "Anyone.",
       "sub": "Any hero you can describe.",
-      "seconds": 19.4,
-      "bytes": 2343427,
-      "bytes720": 849711
+      "seconds": 22.3,
+      "bytes": 2616570,
+      "bytes720": 939930
     },
     {
       "name": "arrive",
@@ -29,10 +29,10 @@
       "src720": "/static/video/get/arrive-720.mp4",
       "poster": "/static/video/get/arrive.jpg",
       "label": "Anywhere.",
-      "sub": "Three worlds. No two runs alike.",
-      "seconds": 18.0,
-      "bytes": 10119976,
-      "bytes720": 2765414
+      "sub": "Two worlds to start. No two runs alike.",
+      "seconds": 12.0,
+      "bytes": 6497990,
+      "bytes720": 1794478
     },
     {
       "name": "act",
@@ -41,9 +41,9 @@
       "poster": "/static/video/get/act.jpg",
       "label": "Anything.",
       "sub": "Type any move. It happens.",
-      "seconds": 22.8,
-      "bytes": 24289494,
-      "bytes720": 5361434
+      "seconds": 24.0,
+      "bytes": 22621437,
+      "bytes720": 4834204
     },
     {
       "name": "wear",
@@ -53,8 +53,8 @@
       "label": "Arm.",
       "sub": "Loot it. Wear it. Wield it.",
       "seconds": 15.5,
-      "bytes": 3097356,
-      "bytes720": 762910
+      "bytes": 2777879,
+      "bytes720": 694477
     },
     {
       "name": "fight",
@@ -64,8 +64,8 @@
       "label": "Attack.",
       "sub": "Roll to hit. Roll to survive.",
       "seconds": 8.0,
-      "bytes": 6435007,
-      "bytes720": 1661282
+      "bytes": 5795162,
+      "bytes720": 1389049
     },
     {
       "name": "goal",
@@ -75,8 +75,8 @@
       "label": "Arrive.",
       "sub": "Find the goal. Claim the prize.",
       "seconds": 16.7,
-      "bytes": 18198734,
-      "bytes720": 4157835
+      "bytes": 16602977,
+      "bytes720": 3540565
     },
     {
       "name": "key",
@@ -86,9 +86,9 @@
       "label": "Access.",
       "sub": "Bring your own AI key.",
       "seconds": 15.5,
-      "bytes": 4003269,
-      "bytes720": 1170992
+      "bytes": 3707190,
+      "bytes720": 1026291
     }
   ],
-  "base": "https://github.com/mradfo21/abyss-media/releases/download/clips-2026-09-25-safari"
+  "base": "https://github.com/mradfo21/abyss-media/releases/download/clips-2026-09-25-2117"
 }

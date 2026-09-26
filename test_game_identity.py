@@ -1394,5 +1394,39 @@ class TestTheOpeningShotObeysItsOwnCamera(_IdentityFixture):
         self.assertIsNone(gi.opening_shot())
 
 
+class AWorldInAnotherPeriodIsNotToldItIs1993(unittest.TestCase):
+    """The shared montage / portrait lines were written for the one 1993
+    world. Township 12 (2061) got "1993 analog photograph" and "Near future,
+    2061" in the same prompt. deperiod() takes the period words out on a
+    World set elsewhere and leaves a 1993 World's prompts exactly as they were."""
+
+    LINE = "1993 analog photograph, cinematic game cutscene, practical light."
+    DIRECTOR = "You are the second-unit photographer on a 1993 analog-horror film, shooting"
+
+    def _spec(self, era):
+        import copy
+        spec = copy.deepcopy(gi.get_spec())
+        spec[gi.SETTING_KEY] = dict(spec[gi.SETTING_KEY], era=era)
+        return spec
+
+    def test_a_2061_world_loses_the_period_words(self):
+        with unittest.mock.patch.dict(gi.PROMPTS, {"image_art_direction": "MEDIUM\nHandheld documentary footage, 2061."}):
+            spec = self._spec("Near future, 2061")
+            self.assertFalse(gi.world_is_1993(spec))
+            self.assertEqual(gi.deperiod(self.LINE, spec), "photograph, cinematic game cutscene, practical light.")
+            self.assertEqual(gi.deperiod(self.DIRECTOR, spec),
+                             "You are the second-unit photographer on a film, shooting")
+
+    def test_a_1993_world_keeps_every_word(self):
+        with unittest.mock.patch.dict(gi.PROMPTS, {"image_art_direction": "MEDIUM\nA photograph taken in 1993 on consumer colour film."}):
+            spec = self._spec("")
+            self.assertTrue(gi.world_is_1993(spec))
+            self.assertEqual(gi.deperiod(self.LINE, spec), self.LINE)
+
+    def test_no_authored_look_is_the_shipped_1993_world(self):
+        with unittest.mock.patch.dict(gi.PROMPTS, {"image_art_direction": ""}):
+            self.assertTrue(gi.world_is_1993(self._spec("Near future, 2061")))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
