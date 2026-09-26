@@ -748,7 +748,9 @@
     // ACCOUNT can show the Reactor lamp green while a cached or early
     // /api/reactor/config still says enabled:false. The keys endpoint is
     // the same source as that lamp — believe it.
-    if (!rstate.cfg.enabled) {
+    // Not when the server has switched realtime off (REACTOR_ENABLED): then a
+    // Reactor key in ACCOUNT is exactly the case that must stay on stills.
+    if (!rstate.cfg.enabled && !rstate.cfg.switched_off) {
       try {
         const k = await fetch("/api/keys", { cache: "no-store" });
         if (k.ok) {
@@ -2526,6 +2528,8 @@
     getStatus: () => rstate.status,
     reloadConfig: loadConfig,
     isConfigured: () => !!(rstate.cfg && rstate.cfg.enabled),
+    // The server's REACTOR_ENABLED is off: no live video, whatever the keys say.
+    isSwitchedOff: () => !!(rstate.cfg && rstate.cfg.switched_off),
     // The reason the last connect attempt failed (see classifyConnectError),
     // or null if the last attempt succeeded / none has happened yet. Lets the
     // UI distinguish a transient upstream capacity shortage (Reactor has no

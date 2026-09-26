@@ -1,5 +1,21 @@
 # 🔧 CHANGELOG - September 25, 2026
 
+## ✅ FIXED: Reactor is off until it is asked for, and the WASD pad went with it
+
+Matt, on a screenshot of a live run: *"why is the directional wsad movement icon displaying now? it isn't functional at the moment."* Then: *"REACTOR .. we got more credits… i want reactor off for now until we can re-work the r&d… turn it off globally."*
+
+**Why it came back.** Nothing in the code had changed. The client starts every run in reactor mode, and `/api/reactor/config` reported `enabled` whenever a Reactor key existed. So when the account had credits again, every run went onto live video. `body.realtime-on` then lifted the video layers and put the EXPLORE drive pad (W A S D) in the middle of the action wheel. The pad steered nothing, and it pushed ACT / SCAN / CAMP / FORWARD out around it.
+
+**The switch.** `engine.REACTOR_ENABLED` is off unless `REACTOR_ENABLED=1`, whatever keys exist. Off means:
+- `/api/reactor/config` says `enabled: false, switched_off: true`, and the client no longer upgrades itself to "enabled" because ACCOUNT's key lamp is green.
+- `/api/reactor/token` answers 503 before it reads the key, so nothing is ever minted or spent. `/api/reactor/health` answers `switched_off`.
+- `/standalone` and `/realtime` render with `__FORCED_RENDERER__ = "image"`, the stills lock the tests already use. The client never enters reactor mode, not even for the boot moment before the config arrives. A key saved in ACCOUNT mid-run does not start an upgrade either.
+- **Flipbook is untouched.** `flipbook_active` is decided on the server per session and never reads the renderer. `test_flipbook` passes.
+
+**The pad has its own switch too.** `DRIVE_PAD_ENABLED` (standalone.js) sets `body.drive-pad-on`, which now owns the pad and the hub layout around it. `realtime-on` keeps only the video layering. With Reactor turned back on, the pad, WASD and mouse-look stay off until driving works.
+
+**Checked with a Reactor key present and the switch off** (a mock server from this branch, the real page in a browser): the page was forced to stills; `realtime-on` and `drive-pad-on` were both absent; `#move-pad` computed `display: none`; ReactorRenderer reported switched off; and there were **zero** `/api/reactor/token` requests. `test_keys_store.test_a_reactor_key_does_not_switch_realtime_on` holds that. CI gate 66/66.
+
 ## ✅ FIXED: A voice Google refused once is asked for again, and the character screen notices when it lands
 
 The first time the character screen opened on Matt's own roster (Grizzly, Jean-Luc, Jason, Ghost), none of them had a voice. They were all designed at once.

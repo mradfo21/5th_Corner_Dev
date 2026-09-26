@@ -221,12 +221,38 @@ class KeysApiCase(unittest.TestCase):
         self.assertNotIn(secret, got.get_data(as_text=True))
 
     def test_reactor_config_is_enabled_when_the_key_is_only_in_the_store(self):
+        import engine
+        from unittest import mock
         keys_store.set_key("reactor", "reactor-from-store-key")
         os.environ.pop("REACTOR_API_KEY", None)
-        resp = self.client.get("/api/reactor/config")
+        with mock.patch.object(engine, "REACTOR_ENABLED", True):
+            resp = self.client.get("/api/reactor/config")
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.get_json()["enabled"])
         self.assertEqual(resp.headers.get("Cache-Control"), "no-store")
+
+    def test_a_reactor_key_does_not_switch_realtime_on(self):
+        """2026-09-25: new Reactor credits put every run on live video, with a
+        drive pad that steered nothing. REACTOR_ENABLED is the switch; a key
+        alone is not: the config says off, no token is minted (no spend), and
+        the page is locked to stills (flipbook is server-side and unaffected)."""
+        import engine
+        from unittest import mock
+        keys_store.set_key("reactor", "reactor-from-store-key")
+        with mock.patch.object(engine, "REACTOR_ENABLED", False):
+            cfg = self.client.get("/api/reactor/config").get_json()
+            self.assertFalse(cfg["enabled"])
+            self.assertTrue(cfg["switched_off"])
+            self.assertEqual(self.client.post("/api/reactor/token").status_code, 503)
+            self.assertEqual(self.client.get("/api/reactor/health").get_json()["reason"], "switched_off")
+            for page in ("/standalone", "/realtime"):
+                html = self.client.get(page).get_data(as_text=True)
+                self.assertIn('window.__FORCED_RENDERER__ = "image"', html, page)
+
+    def test_reactor_is_off_unless_asked_for(self):
+        import engine
+        if os.environ.get("REACTOR_ENABLED") is None:
+            self.assertFalse(engine.REACTOR_ENABLED)
 
     def test_get_is_safe_when_unarmed(self):
         os.environ["GEMINI_API_KEY"] = "AIzaSy-host-secret-key"

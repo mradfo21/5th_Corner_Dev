@@ -1113,6 +1113,14 @@ VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead
 # unconfigured/unavailable, and players can flip renderers from the UI.
 SCENE_RENDERER = os.getenv("SCENE_RENDERER", "reactor")
 
+# The realtime renderer is OFF unless REACTOR_ENABLED=1, whatever keys exist.
+# With a Reactor key and credits the client used to switch every run onto live
+# video on its own: on 2026-09-25 new credits turned it back on under players,
+# with a WASD drive pad that steered nothing. Off here means /api/reactor/config
+# says disabled, no token is ever minted (no spend), and the client stays on
+# stills. Turn it on per machine when the realtime R&D is ready again.
+REACTOR_ENABLED = os.getenv("REACTOR_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+
 # ── Realtime world-model registry ─────────────────────────────────────────────
 # Reactor exposes several real-time world models through one SDK, and ships new
 # ones over time. We want to be able to use ALL of them — including ones that

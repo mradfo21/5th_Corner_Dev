@@ -5320,6 +5320,12 @@
     },
 
     wantsLive() {
+      // Switched off on the server (REACTOR_ENABLED): stay on stills and never
+      // ask for a token, rather than trying and falling back.
+      try {
+        if (window.ReactorRenderer && window.ReactorRenderer.isSwitchedOff
+            && window.ReactorRenderer.isSwitchedOff()) return false;
+      } catch (_) {}
       return !this.lockedStills && this.reactorAvailable();
     },
 
@@ -5327,6 +5333,10 @@
     // must start the upgrade; clearing the key should stop trying.
     onReactorKeyChanged(present) {
       if (!present) return;
+      try {
+        if (window.ReactorRenderer && window.ReactorRenderer.isSwitchedOff
+            && window.ReactorRenderer.isSwitchedOff()) return;
+      } catch (_) {}
       this.lockedStills = false;
       this.mode = "reactor";
       // A new key is exactly the fix a terminal failure was waiting for.
@@ -6787,6 +6797,12 @@
   })();
   try { window.__DangerSystem = DangerSystem; } catch (_) {}
 
+  // The realtime drive pad (the EXPLORE wheel, W A S D) and the keys behind it.
+  // Off until driving the live world model works: on 2026-09-25 the wheel
+  // showed on a live run and pushing it moved nothing. Turning this on brings
+  // back the pad, the hub layout around it, and WASD / stick steering.
+  var DRIVE_PAD_ENABLED = false;  // var: updateRendererButton is hoisted and may run first
+
   function updateRendererButton() {
     // Same trap as the lamp below: mode stays "reactor" on the stills floor, so
     // this used to stamp realtime-on over a run that was rendering stills. That
@@ -6798,6 +6814,9 @@
       && !Renderer._terminalStills
       && !Renderer.lockedStills;
     document.body.classList.toggle("realtime-on", realtime);
+    // The drive pad and WASD steering are their own switch (DRIVE_PAD_ENABLED):
+    // live video can present while driving it does nothing yet.
+    document.body.classList.toggle("drive-pad-on", realtime && DRIVE_PAD_ENABLED);
     // The camera works on a still frame just as well as on live video, so it's
     // revealed by "there is a scene", not "realtime is up". Gating it on
     // realtime hid the whole photography loop — the dossier and the case win
@@ -16520,6 +16539,7 @@
     let lastTravelling = false; // translation only — look does not set this
 
     function enabled() {
+      if (!DRIVE_PAD_ENABLED) return false;
       try { if (PlayFocus && !PlayFocus.isViewport()) return false; } catch (_) {}
       if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return false;
       // The Director experience has no movement/look — steering is text only.

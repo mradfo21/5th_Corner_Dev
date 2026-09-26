@@ -2562,10 +2562,14 @@ body.moment-active #leave-camp-btn {
    the three read as one instrument cluster:  ACT · EXPLORE · PHOTO.
    ============================================================ */
 
-/* Hidden unless the realtime renderer is on. */
+/* Hidden unless the drive is on (body.drive-pad-on, set by
+   updateRendererButton from DRIVE_PAD_ENABLED). Live video alone is not
+   enough: on 2026-09-25 the pad sat in the middle of a live run while
+   driving did nothing. The hubs it pushes aside (ACT, SCAN, CAMP,
+   FORWARD) move with it, so without it they sit where they do on stills. */
 #move-pad { display: none; }
 
-body.realtime-on #move-pad {
+body.drive-pad-on #move-pad {
   display: block;
   position: absolute;
   left: 50%;
@@ -2579,7 +2583,7 @@ body.realtime-on #move-pad {
   user-select: none;
   cursor: grab;
 }
-body.realtime-on #move-pad.engaged { cursor: grabbing; }
+body.drive-pad-on #move-pad.engaged { cursor: grabbing; }
 
 /* Recede when the free-will input is open or the camera is aiming, and while
    the boot gate is still up — attention belongs elsewhere then. */
@@ -2605,7 +2609,7 @@ body.awaiting-first-scene #move-pad {
     0 0 0 rgba(142, 255, 193, 0);
   transition: border-color 0.18s, box-shadow 0.25s;
 }
-body.realtime-on #move-pad.engaged .move-ring {
+body.drive-pad-on #move-pad.engaged .move-ring {
   border-color: rgba(255, 186, 89, 0.85);
   box-shadow:
     inset 0 0 18px rgba(0, 0, 0, 0.62),
@@ -2692,7 +2696,7 @@ body.realtime-on #move-pad.engaged .move-ring {
    pointer 1:1 (JS toggles .dragging). */
 .move-nub.dragging { transition: border-color 0.18s, box-shadow 0.25s; }
 .move-nub:focus-visible { box-shadow: inset 0 0 10px rgba(0,0,0,0.6), 0 0 0 2px rgba(142,255,193,0.7), 0 0 16px rgba(142,255,193,0.5); }
-body.realtime-on #move-pad.engaged .move-nub {
+body.drive-pad-on #move-pad.engaged .move-nub {
   border-color: rgba(255, 186, 89, 0.95);
   box-shadow:
     inset 0 0 10px rgba(0, 0, 0, 0.6),
@@ -2710,7 +2714,7 @@ body.realtime-on #move-pad.engaged .move-nub {
   opacity: 0.85;
   transition: opacity 0.16s;
 }
-body.realtime-on #move-pad.engaged .move-core { opacity: 0; }
+body.drive-pad-on #move-pad.engaged .move-core { opacity: 0; }
 .move-arrow {
   position: absolute;
   width: 0; height: 0;
@@ -2723,10 +2727,10 @@ body.realtime-on #move-pad.engaged .move-core { opacity: 0; }
   filter: drop-shadow(0 0 5px rgba(255, 186, 89, 0.85));
   transition: opacity 0.14s;
 }
-body.realtime-on #move-pad.engaged .move-arrow { opacity: 0.95; }
+body.drive-pad-on #move-pad.engaged .move-arrow { opacity: 0.95; }
 
 /* Idle breathing glow so the instrument invites a grab. */
-body.realtime-on #move-pad:not(.engaged) .move-ring {
+body.drive-pad-on #move-pad:not(.engaged) .move-ring {
   animation: move-idle-glow 3.4s ease-in-out infinite;
 }
 @keyframes move-idle-glow {
@@ -2748,18 +2752,18 @@ body.realtime-on #move-pad:not(.engaged) .move-ring {
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
   transition: color 0.16s, opacity 0.16s;
 }
-body.realtime-on #move-pad.engaged .move-readout {
+body.drive-pad-on #move-pad.engaged .move-readout {
   color: #ffd9a2;
   text-shadow: 0 0 10px rgba(255, 186, 89, 0.7), 0 1px 4px rgba(0, 0, 0, 0.9);
 }
 
 /* --- Cluster layout: ACT slides LEFT, PHOTO sits RIGHT, joystick is center. --- */
-body.realtime-on #free-will-btn {
+body.drive-pad-on #free-will-btn {
   bottom: 32px;
   transform: translateX(calc(-50% - 100px));
 }
-body.realtime-on #free-will-btn:hover { transform: translateX(calc(-50% - 100px)) scale(1.08); }
-body.realtime-on #free-will-btn:active { transform: translateX(calc(-50% - 100px)) scale(0.94); }
+body.drive-pad-on #free-will-btn:hover { transform: translateX(calc(-50% - 100px)) scale(1.08); }
+body.drive-pad-on #free-will-btn:active { transform: translateX(calc(-50% - 100px)) scale(0.94); }
 
 body.camera-on #realtime-btn {
   bottom: 32px;
@@ -2770,23 +2774,23 @@ body.camera-on #realtime-btn:active { transform: translateX(calc(-50% + 100px)) 
 
 /* SCAN stacks directly ABOVE the ACT hub on the left of the joystick cluster,
    clear of the taller center joystick. */
-body.realtime-on #scan-btn {
+body.drive-pad-on #scan-btn {
   bottom: 96px;
   transform: translateX(calc(-50% - 100px));
 }
-body.realtime-on #scan-btn:hover { transform: translateX(calc(-50% - 100px)) scale(1.08); }
-body.realtime-on #scan-btn:active { transform: translateX(calc(-50% - 100px)) scale(0.94); }
+body.drive-pad-on #scan-btn:hover { transform: translateX(calc(-50% - 100px)) scale(1.08); }
+body.drive-pad-on #scan-btn:active { transform: translateX(calc(-50% - 100px)) scale(0.94); }
 
 /* CAMP stacks above PHOTO on the right of the joystick cluster. */
-body.realtime-on #camp-btn {
+body.drive-pad-on #camp-btn {
   bottom: 96px;
   transform: translateX(calc(-50% + 100px));
 }
-body.realtime-on #camp-btn:hover { transform: translateX(calc(-50% + 100px)) scale(1.08); }
-body.realtime-on #camp-btn:active { transform: translateX(calc(-50% + 100px)) scale(0.94); }
+body.drive-pad-on #camp-btn:hover { transform: translateX(calc(-50% + 100px)) scale(1.08); }
+body.drive-pad-on #camp-btn:active { transform: translateX(calc(-50% + 100px)) scale(0.94); }
 
 /* Lift the FORWARD (play) hub clear of the taller joystick in the center. */
-body.realtime-on #forward-btn { bottom: 126px; }
+body.drive-pad-on #forward-btn { bottom: 126px; }
 
 /* While a turn resolves, recede the joystick with the rest of the cluster. */
 #action-wheel.turn-active #move-pad { opacity: 0; pointer-events: none; }
@@ -2893,7 +2897,7 @@ body.touch-aiming #capture-thumb {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  body.realtime-on #move-pad:not(.engaged) .move-ring { animation: none; }
+  body.drive-pad-on #move-pad:not(.engaged) .move-ring { animation: none; }
   .move-nub { transition: border-color 0.18s, box-shadow 0.25s; }
 }
 
@@ -11290,20 +11294,20 @@ body.agent-log-on #agent-log { display: flex; }
 
   /* Movement joystick: a touch-friendly stick, with the ACT/PHOTO hubs flanking
      it a little tighter to fit narrow screens. */
-  body.realtime-on #move-pad { width: 100px; height: 100px; bottom: 2px; }
-  body.realtime-on #forward-btn { bottom: 112px; }
-  body.realtime-on #free-will-btn { bottom: 28px; transform: translateX(calc(-50% - 86px)); }
-  body.realtime-on #free-will-btn:hover { transform: translateX(calc(-50% - 86px)) scale(1.08); }
-  body.realtime-on #free-will-btn:active { transform: translateX(calc(-50% - 86px)) scale(0.94); }
+  body.drive-pad-on #move-pad { width: 100px; height: 100px; bottom: 2px; }
+  body.drive-pad-on #forward-btn { bottom: 112px; }
+  body.drive-pad-on #free-will-btn { bottom: 28px; transform: translateX(calc(-50% - 86px)); }
+  body.drive-pad-on #free-will-btn:hover { transform: translateX(calc(-50% - 86px)) scale(1.08); }
+  body.drive-pad-on #free-will-btn:active { transform: translateX(calc(-50% - 86px)) scale(0.94); }
   body.camera-on #realtime-btn { bottom: 28px; transform: translateX(calc(-50% + 86px)); }
   body.camera-on #realtime-btn:hover { transform: translateX(calc(-50% + 86px)) scale(1.08); }
   body.camera-on #realtime-btn:active { transform: translateX(calc(-50% + 86px)) scale(0.94); }
-  body.realtime-on #scan-btn { bottom: 82px; transform: translateX(calc(-50% - 86px)); }
-  body.realtime-on #scan-btn:hover { transform: translateX(calc(-50% - 86px)) scale(1.08); }
-  body.realtime-on #scan-btn:active { transform: translateX(calc(-50% - 86px)) scale(0.94); }
-  body.realtime-on #camp-btn { bottom: 82px; transform: translateX(calc(-50% + 86px)); }
-  body.realtime-on #camp-btn:hover { transform: translateX(calc(-50% + 86px)) scale(1.08); }
-  body.realtime-on #camp-btn:active { transform: translateX(calc(-50% + 86px)) scale(0.94); }
+  body.drive-pad-on #scan-btn { bottom: 82px; transform: translateX(calc(-50% - 86px)); }
+  body.drive-pad-on #scan-btn:hover { transform: translateX(calc(-50% - 86px)) scale(1.08); }
+  body.drive-pad-on #scan-btn:active { transform: translateX(calc(-50% - 86px)) scale(0.94); }
+  body.drive-pad-on #camp-btn { bottom: 82px; transform: translateX(calc(-50% + 86px)); }
+  body.drive-pad-on #camp-btn:hover { transform: translateX(calc(-50% + 86px)) scale(1.08); }
+  body.drive-pad-on #camp-btn:active { transform: translateX(calc(-50% + 86px)) scale(0.94); }
 
   /* Keep the scan hint clear of the (taller) mobile action wheel. */
   #scan-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 196px); font-size: 10px; }
@@ -11343,16 +11347,16 @@ body.agent-log-on #agent-log { display: flex; }
   #scan-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); }
 
   /* Compact joystick cluster for short landscape screens. */
-  body.realtime-on #move-pad { width: 82px; height: 82px; bottom: 2px; }
-  body.realtime-on #forward-btn { bottom: 92px; }
-  body.realtime-on #free-will-btn { bottom: 22px; transform: translateX(calc(-50% - 74px)); }
-  body.realtime-on #free-will-btn:hover { transform: translateX(calc(-50% - 74px)) scale(1.08); }
+  body.drive-pad-on #move-pad { width: 82px; height: 82px; bottom: 2px; }
+  body.drive-pad-on #forward-btn { bottom: 92px; }
+  body.drive-pad-on #free-will-btn { bottom: 22px; transform: translateX(calc(-50% - 74px)); }
+  body.drive-pad-on #free-will-btn:hover { transform: translateX(calc(-50% - 74px)) scale(1.08); }
   body.camera-on #realtime-btn { bottom: 22px; transform: translateX(calc(-50% + 74px)); }
   body.camera-on #realtime-btn:hover { transform: translateX(calc(-50% + 74px)) scale(1.08); }
-  body.realtime-on #scan-btn { bottom: 68px; transform: translateX(calc(-50% - 74px)); }
-  body.realtime-on #scan-btn:hover { transform: translateX(calc(-50% - 74px)) scale(1.08); }
-  body.realtime-on #camp-btn { bottom: 68px; transform: translateX(calc(-50% + 74px)); }
-  body.realtime-on #camp-btn:hover { transform: translateX(calc(-50% + 74px)) scale(1.08); }
+  body.drive-pad-on #scan-btn { bottom: 68px; transform: translateX(calc(-50% - 74px)); }
+  body.drive-pad-on #scan-btn:hover { transform: translateX(calc(-50% - 74px)) scale(1.08); }
+  body.drive-pad-on #camp-btn { bottom: 68px; transform: translateX(calc(-50% + 74px)); }
+  body.drive-pad-on #camp-btn:hover { transform: translateX(calc(-50% + 74px)) scale(1.08); }
   .move-nub { width: 38px; height: 38px; margin: -19px 0 0 -19px; }
 
   /* Compact the hamburger so it still fits a short screen. */
