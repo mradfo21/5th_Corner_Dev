@@ -24,17 +24,21 @@ assets/references/*
 characters/*
 !characters/.gitkeep
 # Saved "worlds" (named prompt-set snapshots) — this machine's authoring.
-# The shipped SOMEWHERE demo is the only World that goes in a build.
+# The shipped Worlds (SOMEWHERE, OUTGROWTH) are the only ones that go in a build.
 worlds/*
 !worlds/.gitkeep
 !worlds/somewhere.json
 !worlds/somewhere-fp.json
 !worlds/somewhere.frame.png
 !worlds/somewhere.frame.json
+!worlds/outgrowth.json
+!worlds/outgrowth.frame.png
+!worlds/outgrowth.frame.json
 # Experience graphs — this machine's authoring, except the shipped demo.
 experiences/*
 !experiences/.gitkeep
 !experiences/somewhere.json
+!experiences/outgrowth.json
 experiences/.active
 autotest/*.json
 autotest/*.txt

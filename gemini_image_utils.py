@@ -343,6 +343,18 @@ def _sanitize_for_safety(prompt: str) -> str:
     
     return sanitized
 
+def _palette_continuity() -> str:
+    """The portrait / close-up palette line: the 1993 stock on a 1993 World,
+    the World's own everywhere else (see game_identity.world_is_1993)."""
+    try:
+        import game_identity
+        if not game_identity.world_is_1993():
+            return "Keep this world's own palette and film-stock continuity.\n"
+    except Exception:
+        pass
+    return "Keep 1993 analog-horror palette continuity (muted, slightly degraded film stock).\n"
+
+
 def generate_with_gemini(
     prompt: str,
     caption: str,
@@ -481,7 +493,7 @@ def generate_with_gemini(
             "This is a stylish cinematic CLOSE-UP of the object described in the prompt.\n"
             "The object fills the frame. Same materials, same wear, same light.\n"
             "Do NOT invent a person, face, figure, or human. The object IS the subject.\n"
-            "Keep 1993 analog-horror palette continuity (muted, slightly degraded film stock).\n"
+            f"{_palette_continuity()}"
             "NOT a character portrait. NOT a security camera POV. NOT a wide environment plate.\n"
         )
         structured_prompt = structured_prompt + portrait_anchor
@@ -491,7 +503,7 @@ def generate_with_gemini(
             "This is a stylish cinematic MEDIUM SHOT of the character described in the prompt.\n"
             "Frame from mid-torso up, shallow depth of field, 35mm film look, dramatic rim lighting.\n"
             "The SUBJECT IS THE FOCUS — show their face/figure clearly. Soft bokeh background.\n"
-            "Keep 1993 analog-horror palette continuity (muted, slightly degraded film stock).\n"
+            f"{_palette_continuity()}"
             "NOT a security camera POV. NOT a wide environment plate. NOT a selfie.\n"
         )
         structured_prompt = structured_prompt + portrait_anchor
