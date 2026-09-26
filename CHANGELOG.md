@@ -1,5 +1,23 @@
 # 🔧 CHANGELOG - September 25, 2026
 
+## ✅ FIXED: /get plays on a phone: the clips are GIFs there
+
+Matt: *"the website has issues on mobile. the videos still dont play. on mobile you need to make them into small gif files around 7mb or less per gif."*
+
+**Why video was not enough.** The clips were already served the way iPhone Safari needs (typed `video/mp4`, byte ranges, BT.709) and marked `muted playsinline`. But a phone can simply refuse to start a video: Low Power Mode blocks every autoplay, data-saver skips it, and some in-app browsers never start an inline one. An `<img>` of an animated GIF always animates.
+
+**What changed.**
+- `tools/make_gifs.py` makes one GIF per clip under 7 MB. It works down a ladder of width and frame rate (540 px at 12 fps, down to 320 px at 8 fps; trimmed only if even that is too big), with a light denoise, because the 16mm grain is what makes a GIF heavy. It marks `"gif": true` in `clips.json`.
+  - Today: the hero is 5.7 MB at 420 px, and act is 5.3 MB at 360 px. The other six are 540 px or 420 px, and each is under 5.5 MB.
+- `publish_clips.py` makes and uploads the GIFs with every shoot. Today's are on `clips-2026-09-25-2117` beside the MP4s.
+- `/get/media` serves `<clip>.gif` as `image/gif`, through the same proxy and with the same `?v=` shoot address.
+- At phone width, or with data-saver on, the page swaps each `<video>` for its GIF: the splash at once, and the reel as each clip comes near. The still shows until the GIF has loaded. Under reduced motion the still stays. Desktop is unchanged.
+
+**Checked** on this branch's server with the local copies moved away, so everything came through the media release exactly as on Render:
+- **At 375 px wide:** the splash was an `IMG` playing `hero.gif`. Scrolling the reel swapped every clip in turn, and each GIF loaded and showed (`create` 540 px, `act` 360 px, …) with no failed requests.
+- **At 1024 px:** the splash was the `VIDEO` playing `hero.mp4`, with no GIFs on the page.
+- `test_downloads.test_a_phone_gets_a_gif_served_as_an_image` holds it.
+
 ## ✅ FIXED: Reactor is off until it is asked for, and the WASD pad went with it
 
 Matt, on a screenshot of a live run: *"why is the directional wsad movement icon displaying now? it isn't functional at the moment."* Then: *"REACTOR .. we got more credits… i want reactor off for now until we can re-work the r&d… turn it off globally."*

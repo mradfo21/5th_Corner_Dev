@@ -339,12 +339,19 @@ def load_clips() -> dict:
         clips.append({"name": name, "label": (c.get("label") or "").strip(),
                       "sub": (c.get("sub") or "").strip(),
                       "src": src, "src720": where(f"{name}-720.mp4") if c.get("src720") else "",
+                      # The phone copy (tools/make_gifs.py): an <img> always animates,
+                      # where a phone's <video> may never be allowed to play.
+                      "gif": where(f"{name}.gif") if c.get("gif") else "",
                       "poster": f"/static/video/get/{name}.jpg" if (CLIPS_DIR / f"{name}.jpg").is_file() else ""})
     hero = next((c for c in clips if c["name"] == "hero"), None)
     return {"hero": hero, "clips": [c for c in clips if c["name"] != "hero"]}
 
 
-_MEDIA_NAME = re.compile(r"^[a-z0-9_-]{1,40}(-720)?\.mp4$")
+_MEDIA_NAME = re.compile(r"^[a-z0-9_-]{1,40}((-720)?\.mp4|\.gif)$")
+
+
+def _media_type(name: str) -> str:
+    return "image/gif" if name.endswith(".gif") else "video/mp4"
 
 
 def _clips_base() -> str:
@@ -398,7 +405,7 @@ def get_media(name: str):
         abort(404)
     local = CLIPS_DIR / name
     if local.is_file():
-        return send_file(str(local), mimetype="video/mp4", conditional=True, max_age=86400)
+        return send_file(str(local), mimetype=_media_type(name), conditional=True, max_age=86400)
     base = _clips_base()
     if not base:
         abort(404)
@@ -414,7 +421,7 @@ def get_media(name: str):
     if up.status_code not in (200, 206):
         up.close()
         abort(404 if up.status_code == 404 else 502)
-    out = {"Content-Type": "video/mp4", "Accept-Ranges": "bytes",
+    out = {"Content-Type": _media_type(name), "Accept-Ranges": "bytes",
            "Cache-Control": "public, max-age=86400"}
     for h in ("Content-Length", "Content-Range", "ETag", "Last-Modified"):
         if up.headers.get(h):

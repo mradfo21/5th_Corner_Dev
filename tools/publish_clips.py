@@ -30,15 +30,22 @@ def main() -> int:
     if not mp4s:
         print(f"no mp4s in {CLIPS} — cut them first (tools/refresh_get.py)")
         return 1
+    # The phone copies go up with every shoot (tools/make_gifs.py): on a phone
+    # the page shows the GIF, because the <video> may never be allowed to play.
+    sys.path.insert(0, str(ROOT))
+    from tools import make_gifs
+    make_gifs.main(["--src", str(CLIPS)])
+    files = mp4s + sorted(CLIPS.glob("*.gif"))
     tag = "clips-" + time.strftime("%Y-%m-%d-%H%M")
     subprocess.run(["gh", "release", "create", tag, "--repo", REPO, "--title", tag,
-                    "--notes", "The /get clips (tools/cut_clips.py).", *map(str, mp4s)],
+                    "--notes", "The /get clips (tools/cut_clips.py) and their phone GIFs (tools/make_gifs.py).",
+                    *map(str, files)],
                    check=True)
     manifest = CLIPS / "clips.json"
     data = json.loads(manifest.read_text(encoding="utf-8"))
     data["base"] = f"https://github.com/{REPO}/releases/download/{tag}"
     manifest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    print(f"{len(mp4s)} files -> {data['base']}\ncommit {manifest.relative_to(ROOT)} (and the posters)")
+    print(f"{len(files)} files -> {data['base']}\ncommit {manifest.relative_to(ROOT)} (and the posters)")
     return 0
 
 

@@ -109,6 +109,24 @@ class ClipsPlayOnAPhone(unittest.TestCase):
         clips = downloads.load_clips()
         self.assertEqual(clips["hero"]["src720"], "/get/media/hero-720.mp4?v=t")
 
+    def test_a_phone_gets_a_gif_served_as_an_image(self):
+        """Phones show the GIF (tools/make_gifs.py): their <video> may never be
+        allowed to play. It comes through the same proxy, typed as an image."""
+        (downloads.CLIPS_DIR / "clips.json").write_text(
+            '{"base": "https://github.com/x/y/releases/download/t", '
+            '"clips": [{"name": "hero", "gif": true}, {"name": "act"}]}', encoding="utf-8")
+        (downloads.CLIPS_DIR / "act.mp4").write_bytes(b"x")
+        (downloads.CLIPS_DIR / "hero.gif").write_bytes(b"GIF89a" + b"\x00" * 50)
+        clips = downloads.load_clips()
+        self.assertEqual(clips["hero"]["gif"], "/static/video/get/hero.gif")
+        self.assertEqual(clips["clips"][0]["gif"], "")          # no phone copy recorded
+        r = self.client.get("/get/media/hero.gif?v=t")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["Content-Type"], "image/gif")
+        r.close()   # Windows keeps a sent file open until the response is closed
+        (downloads.CLIPS_DIR / "hero.gif").unlink()
+        self.assertEqual(downloads.load_clips()["hero"]["gif"], "/get/media/hero.gif?v=t")
+
     def test_a_new_shoot_is_a_new_address(self):
         """The clips are cached for a day under their URL; the old footage
         stayed on screen after a re-shoot until the address changed."""
