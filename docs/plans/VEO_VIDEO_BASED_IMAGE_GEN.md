@@ -1,11 +1,15 @@
 # 🎬 Veo 3.1 Video-Based Image Generation
 
-> **Status: built but switched off.** `veo_video_utils.py` exists and engine
-> wiring is in place, gated behind `VEO_MODE_ENABLED`, which is `False` by
-> default. Motion between frames is handled in practice by the **flipbook**
-> (a grid of panels split back into frames) — see
-> [`FLIPBOOK_MODE_REVIVAL_PLAN.md`](FLIPBOOK_MODE_REVIVAL_PLAN.md). Treat Veo as a
-> dormant experiment, not a path anything currently depends on.
+> **Status: dormant, broken, and superseded by
+> [`TAPE_FILM_PLAN.md`](TAPE_FILM_PLAN.md).** Nothing reaches it: the
+> only switch is `image_provider: "veo"`, which no preset offers
+> (`VEO_MODE_ENABLED` gates nothing). If something did, every frame would buy
+> a clip and then fail: `_extract_last_frame` has used an undefined
+> `IMAGE_DIR` since 2025-12-19. The design below — video first, the last
+> frame pulled out and called the still — is the one the new plan turns
+> round. Motion between frames today is the **flipbook**
+> ([`FLIPBOOK_MODE_REVIVAL_PLAN.md`](FLIPBOOK_MODE_REVIVAL_PLAN.md)). The body
+> is the 2025 design record and is not true of the code.
 
 ## Revolutionary Approach
 
