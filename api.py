@@ -1709,8 +1709,23 @@ def serve_standalone():
     return render_template(
         'standalone.html',
         asset_version=_standalone_asset_version(),
+        forced_renderer=_renderer_when_reactor_off(),
         session_id=(request.args.get('session') or request.args.get('session_id') or ''),
     )
+
+
+def _renderer_when_reactor_off(wanted: str = "") -> str:
+    """The page's forced renderer: "image" while Reactor is switched off.
+
+    The client starts in reactor mode and only learns from /api/reactor/config
+    later, so a switched-off build still lifted the video layers and the drive
+    pad at boot. __FORCED_RENDERER__ = "image" is the stills lock the tests
+    already use; flipbook is decided on the server per session and never
+    reads it.
+    """
+    if not getattr(engine, "REACTOR_ENABLED", False):
+        return "image"
+    return wanted
 
 
 @app.route('/realtime', methods=['GET'])
@@ -1725,7 +1740,7 @@ def serve_realtime():
     return render_template(
         'standalone.html',
         asset_version=_standalone_asset_version(),
-        forced_renderer='reactor',
+        forced_renderer=_renderer_when_reactor_off('reactor'),
         session_id=(request.args.get('session') or request.args.get('session_id') or ''),
     )
 
@@ -2090,7 +2105,9 @@ def api_reactor_config():
     default_sdk = engine.world_model_sdk_name(default_id) if hasattr(engine, "world_model_sdk_name") \
         else os.getenv("REACTOR_MODEL", "reactor/happy-oyster")
     resp = jsonify({
-        "enabled": keys_store.has_provider_key("reactor"),
+        "enabled": bool(getattr(engine, "REACTOR_ENABLED", False)) and keys_store.has_provider_key("reactor"),
+        # Tells the client not to second-guess "enabled" from ACCOUNT's key lamp.
+        "switched_off": not getattr(engine, "REACTOR_ENABLED", False),
         "renderer": getattr(engine, "SCENE_RENDERER", "image"),
         "model_name": default_sdk,
         "world_model": default_id,
@@ -2115,6 +2132,12 @@ def api_reactor_token():
     `Reactor-API-Key` header returns `{ "jwt": ..., "expires_at": ... }`. The
     API key stays on the server; only the short-lived token reaches the browser.
     """
+    if not getattr(engine, "REACTOR_ENABLED", False):
+        return error_response(
+            "Reactor is switched off",
+            "The realtime renderer is off on this build (REACTOR_ENABLED).",
+            code=503,
+        )
     blocked = _spend_blocked(min_usd=0.25)
     if blocked:
         return blocked
@@ -2164,6 +2187,11 @@ def api_reactor_health():
 
     Never raises, and never returns the key or the token itself.
     """
+    if not getattr(engine, "REACTOR_ENABLED", False):
+        return jsonify({
+            "ok": False, "configured": False, "reason": "switched_off",
+            "detail": "The realtime renderer is off on this build (REACTOR_ENABLED).",
+        })
     keys_store.has_provider_key("reactor")
     api_key = os.getenv("REACTOR_API_KEY")
     if not api_key:
