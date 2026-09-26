@@ -56,6 +56,24 @@ HOLD = 0.5            # seconds of any still stretch that are kept
 DARK = 16             # mean luma (0-255) under which a sample is a black hold
 DARK_HOLD = 0.1       # seconds of a black hold that are kept
 
+# A hit flash: the game's damage overlay (a red edge, the picture greyed and
+# doubled) for a few frames over a picture that is otherwise holding still.
+# In a looping clip it reads as a broken video (Matt, 2026-09-25: "the
+# splash combat has big artifacts"). Found as a jump of FLASH_JUMP or more
+# away from a frame that comes back to within FLASH_BACK of it inside
+# FLASH_MAX seconds; ordinary motion and crossfades never come back.
+FLASH_RATE = 30
+FLASH_JUMP = 6.0
+FLASH_BACK = 1.5
+FLASH_MAX = 0.5
+# The flash also pulses as the picture changes, where nothing comes back to
+# compare with. Its red edge band is the other signature: the top and bottom
+# strips redden by FLASH_RED over the median of the second around them.
+FLASH_RED = 6.0
+# Its tail fades greyed for a frame or two after either signature ends (the
+# splash kept two such frames), so a cut runs this much longer, into the still.
+FLASH_TAIL = 0.12
+
 
 def ffmpeg() -> str:
     exe = shutil.which("ffmpeg")
@@ -112,6 +130,117 @@ def motion(ff: str, src: Path, a: float, b: float, crop=None) -> list[float]:
             out.append(-1.0 if dark else sum(max(abs(x - y) - GRAIN, 0) for x, y in zip(sample, prev[::7])) / len(sample))
         prev = buf
     proc.wait()
+    return out
+
+
+def flashes(ff: str, src: Path, a: float, b: float) -> list[tuple[float, float]]:
+    """The hit flashes inside [a, b] of `src`, as (start, end) in its time."""
+    area = "crop=iw*0.8:ih*0.74:iw*0.1:ih*0.13,"
+    proc = subprocess.Popen([ff, "-v", "error", "-ss", f"{a:.3f}", "-to", f"{b:.3f}", "-i", str(src),
+                             "-vf", f"fps={FLASH_RATE},{area}scale={AW}:{AH}:flags=area,format=gray",
+                             "-f", "rawvideo", "-"], stdout=subprocess.PIPE)
+    n = AW * AH
+    frames = []
+    while True:
+        buf = proc.stdout.read(n)
+        if len(buf) < n:
+            break
+        frames.append(buf[::3])
+    proc.wait()
+
+    def dist(x, y):
+        return sum(max(abs(p - q) - GRAIN, 0) for p, q in zip(x, y)) / len(x)
+
+    out, i, reach = red_spikes(ff, src, a, b), 1, int(FLASH_MAX * FLASH_RATE)
+    while i < len(frames):
+        base = frames[i - 1]
+        if dist(frames[i], base) >= FLASH_JUMP:
+            back = next((j for j in range(i + 1, min(len(frames), i + reach + 1))
+                         if dist(frames[j], base) <= FLASH_BACK), None)
+            if back is not None:
+                out.append((round(a + i / FLASH_RATE, 3), round(a + back / FLASH_RATE, 3)))
+                i = back + 1
+                continue
+        i += 1
+    return sorted(out)
+
+
+def red_spikes(ff: str, src: Path, a: float, b: float) -> list[tuple[float, float]]:
+    """Short runs where the frame's top and bottom edges go red: the flash."""
+    w, h = 80, 45
+    proc = subprocess.Popen([ff, "-v", "error", "-ss", f"{a:.3f}", "-to", f"{b:.3f}", "-i", str(src),
+                             "-vf", f"fps={FLASH_RATE},scale={w}:{h}:flags=area,format=rgb24",
+                             "-f", "rawvideo", "-"], stdout=subprocess.PIPE)
+    rows = list(range(4, 7)) + list(range(h - 8, h - 5))
+    red = []
+    while True:
+        buf = proc.stdout.read(w * h * 3)
+        if len(buf) < w * h * 3:
+            break
+        tot = 0
+        for y in rows:
+            for x in range(w):
+                o = (y * w + x) * 3
+                tot += buf[o] - (buf[o + 1] + buf[o + 2]) / 2
+        red.append(tot / (len(rows) * w))
+    proc.wait()
+    half, reach = FLASH_RATE // 2, int(FLASH_MAX * FLASH_RATE)
+    hot = []
+    for i, r in enumerate(red):
+        around = sorted(red[max(0, i - half):i + half + 1])
+        hot.append(r - around[len(around) // 2] >= FLASH_RED)
+    out, i = [], 0
+    while i < len(hot):
+        if hot[i]:
+            j = i
+            while j < len(hot) and hot[j]:
+                j += 1
+            if j - i <= reach:
+                out.append((round(a + i / FLASH_RATE, 3), round(a + j / FLASH_RATE, 3)))
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def merge(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    out: list[list[float]] = []
+    for s, e in sorted(spans):
+        if out and s <= out[-1][1] + 0.04:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return [(s, e) for s, e in out]
+
+
+def without_flashes(ff: str, pieces: list[dict]) -> list[dict]:
+    """Each piece with its hit flashes cut out (the picture either side is the
+    same still, so the cut does not show). A caption that types on keeps
+    typing only in the first part."""
+    out = []
+    for p in pieces:
+        # Looked for a little past both ends: the squeeze trims still stretches,
+        # so a flash often sits right at a piece's edge, where the piece alone
+        # has no frame before it to compare with (the splash kept one that way).
+        pad = FLASH_MAX + 0.2
+        cuts = [(max(s, p["from"]), min(e + FLASH_TAIL, p["to"]))
+                for s, e in flashes(ff, p["src"], max(0.0, p["from"] - pad), p["to"] + pad)
+                if e > p["from"] and s < p["to"]]
+        if not cuts:
+            out.append(p)
+            continue
+        cuts = merge(cuts)
+        cur, first = p["from"], True
+        for s, e in cuts + [(p["to"], p["to"])]:
+            if s - cur > 0.04:
+                part = dict(p, **{"from": cur, "to": s})
+                if not first and part.get("type_on"):
+                    part["type_on"] = False
+                out.append(part)
+                first = False
+            cur = max(cur, e)
+        print(f"    dropped {len(cuts)} hit flash(es) from {p['src'].parent.name} "
+              + ", ".join(f"{s:.2f}-{e:.2f}s" for s, e in cuts))
     return out
 
 
@@ -189,7 +318,8 @@ def plan(ff: str, clip: dict, sources: dict) -> list[dict]:
                 cap = dict(cap, type_on=False) if cap else cap
         else:
             pieces.append({"src": src, "from": a, "to": b, "speed": speed, "crop": crop, **cap})
-    return pieces
+    # "keep_flashes": a clip that is ABOUT being hit keeps them.
+    return pieces if clip.get("keep_flashes") else without_flashes(ff, pieces)
 
 
 CAPTION_FONTS = ("consola.ttf", "C:/Windows/Fonts/consola.ttf", "DejaVuSansMono.ttf",

@@ -5,10 +5,10 @@
       "experience": "outgrowth",
       "create": "Ruth 'Static' Calloway, a wiry electronic-warfare specialist in her fifties: shaved head, a cochlear implant behind her ear, a respirator at her neck, a folding antenna array on her back, a handheld jammer taped to her forearm, a grease-pencil map in a plastic sleeve, chewing bubblegum",
       "give": true,
-      "plan": "choice,encounter,act,encounter,act,goal",
+      "plan": "choice,act,encounter,act,act,goal",
       "turns": 6,
       "max_minutes": 55,
-      "act_lines": "Jam the security robot until it salutes me | Hijack the robot dog and ride it into the jungle"
+      "act_lines": "Challenge the security robot to an arm wrestle | Convince the creature that I am its long-lost mother | Build a scarecrow decoy out of my jacket and a shovel"
     },
     "run": {
       "experience": "somewhere",
@@ -16,7 +16,7 @@
       "plan": "choice,act,encounter,act,goal",
       "turns": 5,
       "max_minutes": 50,
-      "act_lines": "Kick the rusted fuel tank down the dune and ride it like a toboggan | Hot-wire the guard's truck and jump it over the fence"
+      "act_lines": "Pretend to be a lost tourist and ask the guard for directions | Light a bonfire and send smoke signals into the sky"
     },
     "cyber": {
       "experience": "untitled-experience-3",
@@ -36,12 +36,12 @@
       "max_minutes": 30
     },
     "create": {
-      "create": "Dot Mahoney, an exoskeleton operator in her forties in a scuffed lift-assist exoskeleton covered in cartoon cat stickers, respirator pushed up, a thermos of coffee clipped to her chest, a flamethrower for the growth || Dr Ezra Quill, a botanist turned breacher, sample jars strapped across his plate carrier, a machete, a bandaged vine burn up one arm, a bagged cutting of the jungle hanging from his belt, sealed goggles || Wendell 'Parrot' Byrne, a sniper in his sixties with a carbon-fibre prosthetic leg, a ghillie suit woven from blue-green jungle fronds, a boxy thermal scope, a battered bush hat, a small tethered drone perched on his shoulder like a parrot",
+      "create": "Madame Adaeze Okafor, a seventy-year-old retired opera singer in a sequinned emerald gown and a battered gas mask, a crowbar in one gloved hand and a thermos of tea in the other || Kit Vega, a sixteen-year-old skateboarder in a neon-pink windbreaker and knee pads, a homemade taser built from a TV remote, a hamster peeking out of her hood || Sir Aldous Finch, a medieval knight in dented plate armour who fell through time, a longsword, a paper birthday crown on his helmet and a very confused expression || Unit 9, a rusty 1950s tin robot butler in a bow tie, one wobbly wheel, a silver tray in one claw and a shotgun in the other",
       "plan": "choice",
       "turns": 1,
       "linger": 4,
       "max_minutes": 20,
-      "experience": "outgrowth"
+      "experience": "somewhere"
     },
     "key": {
       "first_launch": "gemini",
@@ -57,17 +57,17 @@
     "hero": {
       "film": [
         {
-          "film": "outgrowth",
+          "film": "run",
           "pick": {
-            "fight": 2
+            "fight": 3
           }
         },
-        "run"
+        "outgrowth"
       ],
       "moment": "last_fight",
       "label": "",
       "lead": 12,
-      "tail": 5,
+      "tail": 0.5,
       "hold": 0.6,
       "poster_at": 0.04
     },
@@ -79,12 +79,13 @@
       "poster_at": 0.93,
       "sub": "Any hero you can describe.",
       "max_each": 2.5,
-      "reveal_hold": 3.0,
+      "reveal_hold": 2.4,
       "caption_box": [
         0.315,
         0.34,
         0.25
-      ]
+      ],
+      "gif_whole": true
     },
     "arrive": {
       "film": [
@@ -104,19 +105,19 @@
         {
           "film": "outgrowth",
           "pick": {
-            "typed": 2
+            "typed": 1
           }
         },
         {
-          "film": "cyber",
-          "pick": {
-            "typed": 2
-          }
-        },
-        {
-          "film": "cyber",
+          "film": "run",
           "pick": {
             "typed": 1
+          }
+        },
+        {
+          "film": "outgrowth",
+          "pick": {
+            "typed": 2
           }
         }
       ],
@@ -127,7 +128,8 @@
       "tail": 4.5,
       "hold": 0.5,
       "poster_at": 0.12,
-      "sub": "Type any move. It happens."
+      "sub": "Type any move. It happens.",
+      "gif_whole": true
     },
     "wear": {
       "film": "wear",
@@ -147,9 +149,13 @@
     },
     "fight": {
       "film": [
-        "cyber",
-        "run",
-        "outgrowth"
+        {
+          "film": "outgrowth",
+          "pick": {
+            "fight": 1
+          }
+        },
+        "run"
       ],
       "moment": "hardest_fight",
       "label": "Attack.",
@@ -162,7 +168,7 @@
       "film": [
         "run",
         "outgrowth",
-        "cyber"
+        "run_goal"
       ],
       "moment": "goal",
       "label": "Arrive.",
@@ -188,6 +194,7 @@
     }
   },
   "hide_characters": [
-    "ghost"
+    "ghost",
+    "isaac"
   ]
 }

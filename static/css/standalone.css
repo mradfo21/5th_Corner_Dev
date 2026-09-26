@@ -9575,23 +9575,6 @@ body.xp-open:has(#xp-exit) #start-exit { visibility: hidden; pointer-events: non
   margin-right: -0.5em;
   color: inherit;
 }
-/* The line under the name. Nietzsche, set in the margin's own hand: the
-   build tag's mono, quiet ink, tracked wide; it trails the gap the same way
-   the wordmark does so both sit on the centre line. */
-.start-tagline {
-  margin: 6px 0 0;
-  font: 400 12px/1.4 var(--menu-font-mono);
-  letter-spacing: 0.32em;
-  text-transform: uppercase;
-  /* Brighter than the build tag: it sits over the menu's film, which can be
-     a sunrise, and at the tag's 0.42 it went under on anything bright. */
-  color: rgba(232, 230, 223, 0.78);
-  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.65);
-  white-space: nowrap;
-  text-align: center;
-  margin-right: -0.32em;
-  pointer-events: none;
-}
 
 .start-nav {
   position: absolute;
@@ -9669,7 +9652,6 @@ body.xp-open:has(#xp-exit) #start-exit { visibility: hidden; pointer-events: non
 }
 @media (max-width: 639px) {
   .start-brand { font-size: 64px; }
-  .start-tagline { white-space: normal; max-width: 86vw; font-size: 10px; }
   .start-tiles { flex-direction: column; align-items: center; gap: 8px; }
   .start-build { display: none; }
 }
