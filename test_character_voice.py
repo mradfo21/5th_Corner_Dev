@@ -181,6 +181,18 @@ class TwoTakesAndTheCloserOneKept(unittest.TestCase):
         self.assertEqual((got["takes"], got["picked_because"]), (2, "the older one"))
         delete.assert_called_once_with("voice_t1")
 
+    def test_a_server_error_on_create_is_asked_once_more(self):
+        ok = mock.Mock(status_code=200)
+        ok.json.return_value = {"id": "voice_ok"}
+        busy = mock.Mock(status_code=500, text="internal")
+        with mock.patch.object(voice_design, "_api_key", return_value="AIza-test"), \
+                mock.patch.object(voice_design, "CREATE_RETRY_AFTER_S", 0), \
+                mock.patch("requests.post", side_effect=[busy, ok]) as post:
+            got = voice_design._post_create({"voice_name": "[chr] Mara", "description": DESC,
+                                             "gender": ""})
+        self.assertEqual(got["id"], "voice_ok")
+        self.assertEqual(post.call_count, 2)
+
     def test_a_judge_that_fails_keeps_the_first(self):
         with mock.patch("requests.post", side_effect=RuntimeError("offline")):
             best, why = voice_design._judge_takes(DESC, [{"sample_audio": {"data": "A"}},
@@ -352,6 +364,15 @@ class TheScreen(unittest.TestCase):
         # a voice that lands while they are chosen speaks then
         poll = self.js.split("async function pollOnce()", 1)[1].split("\n  // ── actions", 1)[0]
         self.assertIn("sayCurrent();", poll)
+
+    def test_switching_to_a_voice_not_ready_reads_the_card_again(self):
+        """The screen kept "COULD NOT FIND IT" over a voice the roster had
+        since re-designed (Jason, after a Google 500)."""
+        pick = self.js.split("function pick(i)", 1)[1].split("\n  }", 1)[0]
+        self.assertIn("freshVoice(S.list[to]);", pick)
+        fn = self.js.split("async function freshVoice(c)", 1)[1].split("\n  }", 1)[0]
+        self.assertIn("/api/characters/${c.id}", fn)
+        self.assertIn("sayCurrent();", fn)
 
     def test_a_voice_being_designed_is_followed(self):
         fn = self.js.split("function anyBusy()", 1)[1].split("\n  }", 1)[0]
