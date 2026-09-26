@@ -107,7 +107,23 @@ class ClipsPlayOnAPhone(unittest.TestCase):
         (downloads.CLIPS_DIR / "hero-720.mp4").unlink()
         (downloads.CLIPS_DIR / "hero.mp4").write_bytes(b"x")
         clips = downloads.load_clips()
-        self.assertEqual(clips["hero"]["src720"], "/get/media/hero-720.mp4")
+        self.assertEqual(clips["hero"]["src720"], "/get/media/hero-720.mp4?v=t")
+
+    def test_a_new_shoot_is_a_new_address(self):
+        """The clips are cached for a day under their URL; the old footage
+        stayed on screen after a re-shoot until the address changed."""
+        (downloads.CLIPS_DIR / "hero-720.mp4").rename(downloads.CLIPS_DIR / "kept.bin")
+        before = downloads.load_clips()["hero"]["src720"]
+        (downloads.CLIPS_DIR / "clips.json").write_text(
+            '{"base": "https://github.com/x/y/releases/download/clips-2", '
+            '"clips": [{"name": "hero", "src720": "x"}]}', encoding="utf-8")
+        after = downloads.load_clips()["hero"]["src720"]
+        self.assertEqual(after, "/get/media/hero-720.mp4?v=clips-2")
+        self.assertNotEqual(before, after)
+        # and the versioned address is still the same clip to the server
+        (downloads.CLIPS_DIR / "kept.bin").rename(downloads.CLIPS_DIR / "hero-720.mp4")
+        r = self.client.get(after, headers={"Range": "bytes=0-9"})
+        self.assertEqual(r.status_code, 206)
 
 
 class TheSiteServesDownloadsOnly(unittest.TestCase):

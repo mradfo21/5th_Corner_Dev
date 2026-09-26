@@ -312,6 +312,11 @@ def load_clips() -> dict:
     base = str(data.get("base") or "").rstrip("/")
     if base and not base.startswith("https://github.com/"):
         base = ""
+    # /get/media answers with a day's max-age, and every shoot publishes the
+    # same names — so after the OUTGROWTH re-shoot (2026-09-25) anyone who had
+    # opened /get that day kept playing the old footage. The media release's
+    # tag is the shoot, so it goes on the address: a new shoot is a new URL.
+    shoot = re.sub(r"[^A-Za-z0-9._-]", "", base.rsplit("/", 1)[-1]) if base else ""
 
     def where(filename: str) -> str:
         if (CLIPS_DIR / filename).is_file():
@@ -319,7 +324,9 @@ def load_clips() -> dict:
         # Through this server, not straight from GitHub: release files come
         # back as application/octet-stream, which Chrome sniffs and plays and
         # iPhone Safari refuses — on a phone the page was stills only.
-        return f"/get/media/{filename}" if base else ""
+        if not base:
+            return ""
+        return f"/get/media/{filename}" + (f"?v={shoot}" if shoot else "")
 
     clips = []
     for c in data.get("clips") or []:
