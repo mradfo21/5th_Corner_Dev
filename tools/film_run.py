@@ -221,6 +221,14 @@ async def film(args, out: Path, log) -> None:
     env = isolate(out, args.experience, log, give=args.give, give_to=args.character,
                   kit=args.kit, hide=args.hide)
     env["PYTHONUNBUFFERED"] = "1"
+    if not args.realtime:
+        # Film the stills game. With REACTOR_API_KEY in .env the client
+        # defaults to the live-video layer, and a stream that "connects" and
+        # presents black sits above perfectly good frames: the Township 12
+        # film (2026-09-25) played a whole opening to a black screen while
+        # every still on disk was bright. Empty wins over .env (run_local
+        # never overrides a set variable).
+        env["REACTOR_API_KEY"] = ""
     harness_keys = {}
     cmd = [sys.executable, "-u", "run_local.py", "--no-browser", "--host", "127.0.0.1", "--port", str(args.port)]
     if args.first_launch:
@@ -391,6 +399,7 @@ def main(argv=None) -> int:
     ap.add_argument("--cdp", type=int, default=9341)
     ap.add_argument("--session", default="film")
     ap.add_argument("--allow-mock", action="store_true")
+    ap.add_argument("--realtime", action="store_true", help="keep the Reactor live-video layer (default: stills)")
     ap.add_argument("--act-lines", default="", help='typed actions for the "act" turns, "a | b | c"')
     ap.add_argument("--out", default="", help="film into this folder (default _claude_film/<stamp>); emptied first")
     ap.add_argument("--first-launch", choices=["gemini", "openai"], default="",

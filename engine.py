@@ -284,8 +284,11 @@ except Exception as _ve:
     VOICES_CONFIG = {}
 
 DEFAULT_VOICE_ID = (os.getenv("SOMEWHERE_VOICE") or "").strip()
-NARRATOR_VOICE_ID = (os.getenv("SOMEWHERE_NARRATOR_VOICE")
-                     or VOICES_CONFIG.get("narrator_voice") or "").strip()
+# Only an explicit pick (env, or the editor's tunable). Empty means "the
+# run's character, else voices.json's narrator" — seeding this from
+# voices.json made the roster's narrator look like a choice somebody made,
+# and a choice wins over the character's own voice.
+NARRATOR_VOICE_ID = (os.getenv("SOMEWHERE_NARRATOR_VOICE") or "").strip()
 
 # The narrator's pace, as a number the editor's `narrator_speed` tunable can
 # move (1.0 = as the model reads it). ElevenLabs took it as a voice setting;
@@ -353,12 +356,75 @@ def _default_voice_id() -> str:
     return (VOICES_CONFIG.get("default_voice") or "Algieba").strip()
 
 
+def _run_character_voice() -> str:
+    """The voice designed for the run's character, if it has one on this key.
+
+    The narrator is "you, speaking into a tape" (narrator_direction), so a
+    run played as a character is narrated in THEIR voice — the one the
+    character creator designed and let the player hear at the reveal. A
+    character without a usable one (made on another key, before voices, or
+    expiring) is sent to get one, and the roster speaks meanwhile."""
+    try:
+        st = _load_state(get_active_session_id()) or {}
+        cid = str(st.get("character_id") or "")
+        if not cid:
+            return ""
+        import characters as _chars
+        return _chars.ensure_voice(cid)
+    except Exception:
+        return ""
+
+
+def _narrator_lens() -> str:
+    """HOW the run's character sees and says things, as a block for the
+    narrator's brief, or "". Their lens (characters.LENS_RULE) and the words
+    their voice was designed from — the same person the player hears."""
+    try:
+        st = _load_state(get_active_session_id()) or {}
+        cid = str(st.get("character_id") or "")
+        if not cid:
+            return ""
+        import characters as _chars
+        lens = _chars.ensure_lens(cid)
+        rec = _chars.load(cid) or {}
+        voice = str((rec.get("voice") or {}).get("description") or "").strip()
+    except Exception:
+        return ""
+    if not lens:
+        return ""
+    return ("THROUGH YOUR EYES\n" + lens.strip()
+            + (f"\nYour voice: {voice}" if voice else "")
+            + "\nThis is how you look and how you talk — not a past. It decides what you notice "
+              "first and the words you reach for. The facts stay the facts.")
+
+
+def _narrator_lens_short() -> str:
+    """The run's character for the END of the narrator's brief: who they
+    are (name, role) and their lens."""
+    try:
+        st = _load_state(get_active_session_id()) or {}
+        cid = str(st.get("character_id") or "")
+        if not cid:
+            return ""
+        import characters as _chars
+        rec = _chars.load(cid) or {}
+    except Exception:
+        return ""
+    lens = str(rec.get("lens") or "").strip()
+    if not lens:
+        return ""
+    who = ", ".join(x for x in (rec.get("name"), rec.get("role")) if x)
+    return (f"You are {who}. " if who else "") + lens
+
+
 def _narrator_voice_id() -> str:
-    """Who reads the story: the editor's pick, else voices.json's narrator."""
+    """Who reads the story: the editor's pick, else the run's character,
+    else voices.json's narrator."""
     picked = (NARRATOR_VOICE_ID or "").strip()
     if picked and _valid_voice_id(picked):
         return picked
-    return (VOICES_CONFIG.get("narrator_voice") or _default_voice_id()).strip()
+    return (_run_character_voice() or VOICES_CONFIG.get("narrator_voice")
+            or _default_voice_id()).strip()
 
 
 def get_voice_registry() -> dict:
@@ -397,6 +463,8 @@ def _valid_voice_id(voice_id) -> str:
             return vid
     except Exception:
         pass
+    if vid.startswith("voice_") and vid == _run_character_voice():
+        return vid
     return ""
 
 
@@ -670,7 +738,10 @@ def resolve_cast(character: str) -> dict:
     if key == "narrator":
         entry["voice_id"] = _narrator_voice_id()
         entry["speed"] = _narrator_speed()
-    pace = _pace_words(entry.get("speed"))
+    # A designed voice (a character's own) carries its pace in the voice
+    # itself — Google: permanent traits in the design, the style short — and
+    # "slowly" on top of an "unhurried" voice read a 25-word line in 23 s.
+    pace = "" if str(entry.get("voice_id") or "").startswith("voice_") else _pace_words(entry.get("speed"))
     if pace:
         entry["style"] = ((entry.get("style") or "Say this") + ", " + pace).strip(", ")
     if not entry.get("voice_id"):
@@ -17269,7 +17340,8 @@ def api_narrator_say():
         if not _speech_available():
             return jsonify({"error": "no voice on this key", "text": text}), 503
         cast = resolve_cast(data.get("character"))
-        voice_id = _valid_voice_id(data.get("voice_id")) or cast.get("voice_id")             or _narrator_voice_id()
+        voice_id = (_valid_voice_id(data.get("voice_id")) or cast.get("voice_id")
+                    or _narrator_voice_id())
         style = str(data.get("style") or cast.get("style") or "")[:400]
         audio = _tts_synthesize(text, voice_id, {"style": style})
         if not audio:
@@ -17497,6 +17569,38 @@ _BEAT_CYCLE = (
     ("TALLY", "MYSTERY"),
 )
 
+#: A character's narration is ONE thought, not two beats (Matt, 2026-09-25:
+#: "make sure to not have many lines. really they should keep it short, a
+#: thought, what they'd think as them, the character"). The shapes still
+#: rotate so it does not settle into one; their own READ comes round most,
+#: because it is the shape that is most them.
+_THOUGHT_CYCLE = ("NOTICE", "READ", "KNOW", "QUESTION", "NOTICE", "HISTORY", "READ", "TALLY", "GOAL")
+
+#: The shapes a character's thought takes. The two-beat shapes were written for
+#: a narrator whose register is the World's history, and FACT ("what was done
+#: here, who ran it, what year") is a line anybody could say — in an A/B of one
+#: moment it swallowed two characters of four ("Horizon signed the permits for
+#: this station back in seventy-two"). These ask for what only THIS person
+#: would catch, know or make of it; the World's history keeps one slot.
+_THOUGHT_KINDS = {
+    "NOTICE": ("the thing in front of you that YOU would catch first, the way you would "
+               "catch it — present tense, no history"),
+    # READ and KNOW say what they are NOT: in a fair A/B (every character from
+    # the same point in the cycle) both slid back to "Horizon signed the
+    # permits in 1989" for three characters of four. The World's brief spends
+    # most of its words on history, and a shape that does not rule it out
+    # inherits it.
+    "READ": ("what YOU make of it — your own call, in your own words, the way someone like you "
+             "would size it up. Not a fact about its past: no year, no company, no permit"),
+    "KNOW": ("what your own trade or life tells you about the thing in front of you — the kind "
+             "of thing only someone who does what you do would know. Not the World's history: "
+             "no year, no company, no permit"),
+    "QUESTION": _BEAT_KINDS["QUESTION"],
+    "HISTORY": _BEAT_KINDS["FACT"],
+    "TALLY": _BEAT_KINDS["TALLY"],
+    "GOAL": _BEAT_KINDS["GOAL"],
+}
+
 #: Words too common to mean anything as a rut signal.
 _NARRATION_STOPWORDS = frozenset("""
 about after again against already also always another anything around away
@@ -17530,7 +17634,8 @@ def _narration_rut_words(spoken: list, min_hits: int = 2, cap: int = 6) -> list:
     return ranked[:cap]
 
 
-def _beat_directive(spoken: list, goal: str = "", spoken_count: int = -1) -> str:
+def _beat_directive(spoken: list, goal: str = "", spoken_count: int = -1,
+                    thought: bool = False, lens: str = "") -> str:
     """Name the two shapes this narration owes, and what it may not lean on.
 
     TOLD, never inferred. The brief used to ask the narrator to "read ALREADY
@@ -17556,6 +17661,8 @@ def _beat_directive(spoken: list, goal: str = "", spoken_count: int = -1) -> str
     """
     spoken = [str(s).strip() for s in (spoken or []) if str(s).strip()]
     idx = len(spoken) if spoken_count < 0 else spoken_count
+    if thought:
+        return _thought_directive(spoken, goal, idx, lens)
     first, second = _BEAT_CYCLE[idx % len(_BEAT_CYCLE)]
     # No goal authored, so the slot would ask him to measure against nothing.
     # Spend it on his own read instead of wasting the turn in the rotation.
@@ -17601,6 +17708,44 @@ def _beat_directive(spoken: list, goal: str = "", spoken_count: int = -1) -> str
     return "\n".join(out) + "\n"
 
 
+def _thought_directive(spoken: list, goal: str, idx: int, lens: str = "") -> str:
+    """The shape for a character's narration: ONE thought, in their head.
+
+    Same placement as the beats and for the same reason — last, and saying
+    that it replaces the brief's own shape rules ("TWO BEATS", "Two short
+    sentences"), which are emphatic and would otherwise win."""
+    kind = _THOUGHT_CYCLE[idx % len(_THOUGHT_CYCLE)]
+    if kind == "GOAL" and not (goal or "").strip():
+        kind = "READ"
+    out = [
+        "\nTHIS NARRATION IS ONE THOUGHT — this is the shape, and it replaces the "
+        "two beats, the two sentences and any other length rule above.",
+        "ONE short sentence, twelve words or fewer. What goes through YOUR head right "
+        "now, as you — the way you would put it, the thing you would notice. Not a "
+        "report, not an announcement, not a line for anyone else.",
+    ]
+    if kind == "GOAL":
+        out.append(f"WHAT YOU CAME HERE FOR: {str(goal).strip()[:200]}")
+    if spoken:
+        opening = " ".join(spoken[-1].split()[:3])
+        out.append(f'Your last thought began "{opening}". Do not begin this one that way.')
+        rut = _narration_rut_words(spoken)
+        if rut:
+            out.append("You have already thought more than once about: " + ", ".join(rut)
+                       + ". Think about something else this time.")
+    # WHO is thinking goes last too. Placed only under the brief's VOICE line,
+    # the lens lost to everything after it: an A/B of one moment across four
+    # characters gave four lines any of them could have said, and a rancher
+    # and a paramedic both counting "three rolls of film" — the premise's
+    # photojournalist, speaking through whoever was playing.
+    if lens:
+        out.append("WHO IS THINKING — the thought has to be one only THEY would have:\n" + lens.strip()
+                   + "\nIf the PREMISE describes the protagonist as someone else (another trade, "
+                     "other gear), that is not you: you have only what you are and what you carry.")
+    out.append(f"THE THOUGHT — {kind}: {_THOUGHT_KINDS[kind]}.")
+    return "\n".join(out) + "\n"
+
+
 def _narrator_goal(state: Optional[dict] = None) -> str:
     """What the player came here to reach — the RUN's goal first.
 
@@ -17624,6 +17769,41 @@ def _narrator_goal(state: Optional[dict] = None) -> str:
     except Exception:
         pass
     return ""
+
+
+def _narrator_sees(st: dict) -> str:
+    """What the frame on screen actually shows, for the narrator.
+
+    It read `current_observed_vision`, then `current_image_prompt`. The first
+    is only ever written by /api/observe — the live-video path — so on the
+    stills path every player plays it was empty, and the fallback is the
+    RENDER RECIPE, which opens with the camera rules: clipped to 400
+    characters, the narrator's "WHAT IS ON SCREEN" for a frame of a rancher
+    at a rusted truck facing a razor-wired bunker was "🎥 CAMERA: THIRD-PERSON
+    FOLLOW-CAM VIEW … a camera three to five metres behind the character"
+    (2026-09-25, asked "do the thoughts pertain to what's happening in the
+    scene we're looking at?" — they could not have).
+
+    Now: the live read if there is one; else the vision pass over the still
+    (_vision_analyze_all, cached per image path — the same read TALK's persona
+    and the turn already paid for); and the detector's labels for this frame
+    either way. The render recipe is never used: it is instructions, not a
+    picture. The World document is the last resort."""
+    seen = re.sub(r"\s+", " ", str(st.get("current_observed_vision") or "")).strip()
+    if not seen and st.get("current_image_url"):
+        try:
+            path = _resolve_image_path(st["current_image_url"])
+            if path and path.exists():
+                seen = re.sub(r"\s+", " ", str((_vision_analyze_all(str(path)) or {})
+                                                .get("description") or "")).strip()
+        except Exception:
+            seen = ""
+    things = [str(x).strip() for x in (st.get("scene_objects") or []) if str(x).strip()][:8]
+    if things:
+        seen = (seen + " " if seen else "") + "In the frame: " + ", ".join(things) + "."
+    if not seen:
+        seen = re.sub(r"\s+", " ", str(st.get("world_prompt") or "")).strip()
+    return seen[:600]
 
 
 def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "",
@@ -17656,12 +17836,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "",
     # Freshest first: the vision pass over the frame that actually rendered
     # (written every turn by the reground), then the prompt that frame was drawn
     # from, then the world document as a last resort — clipped either way.
-    still = ""
-    for _key in ("current_observed_vision", "current_image_prompt", "world_prompt"):
-        still = (st.get(_key) or "").strip()
-        if still:
-            break
-    still = re.sub(r"\s+", " ", still)[:400]
+    still = _narrator_sees(st)
     # MOVE TO's spoken line fires on the click, before /api/choose writes
     # last_choice. The client therefore sends `acted` on the worldbuild
     # request so this line names the trip they just committed to, not the
@@ -17744,8 +17919,13 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "",
     # end with "ONE LINE OF HISTORY", which is emphatic and, being last, wins.
     # Putting the beat shapes there produced three facts in a row; they have to
     # be the final instruction in the prompt, so they go on as a tail below.
+    # A run played as a character narrates as ONE thought through their eyes
+    # (_narrator_lens); a run without one (an older save, a harness session)
+    # keeps the two beats it was tuned on.
+    lens = _narrator_lens()
     alternation = _beat_directive(spoken, _narrator_goal(st),
-                                  spoken_count=int(st.get("narrator_beat") or 0))
+                                  spoken_count=int(st.get("narrator_beat") or 0),
+                                  thought=bool(lens), lens=_narrator_lens_short())
 
     fallback = [{"character": "narrator",
                  "text": "The light was going. Nobody had been through here in a long time."}]
@@ -17779,7 +17959,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "",
     authored = _authored_narrator_brief(
         world=world_label, self=narrator_self, premise=premise,
         scene=scene_block, recent=recent_block, focus=focus_block_line,
-        avoid=avoid_block,
+        avoid=avoid_block, lens=lens,
     )
 
     if multi:
@@ -17841,12 +18021,12 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "",
     # not baked in here: it was three hardcoded f-strings, so the one voice that
     # talks directly to the player was the one voice you couldn't write.
     if authored:
-        return _narrator_one_line(authored + "\n" + alternation, fallback, acted)
+        return _narrator_one_line(authored + "\n" + alternation, fallback, acted, thought=bool(lens))
 
     if (focus or "").strip():
         prompt = (
             f"You are the NARRATOR of {world_label} You are {narrator_self} "
-            f"speaking quietly to yourself. PREMISE: {premise}"
+            f"speaking quietly to yourself.{chr(10) + lens + chr(10) if lens else ' '}PREMISE: {premise}"
             f"{scene_block}{recent_block}\n\n"
             f"INSTRUCTIONS FOR THIS LINE: {focus.strip()}\n{avoid_block}\n"
             f"Speak in FIRST PERSON, as your own thinking. Plain words. "
@@ -17861,7 +18041,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "",
         # then did. Repetition was not the model drifting; it was the brief.
         prompt = (
             f"You are the NARRATOR of {world_label} You are {narrator_self} "
-            f"speaking quietly to yourself. PREMISE: {premise}"
+            f"speaking quietly to yourself.{chr(10) + lens + chr(10) if lens else ' '}PREMISE: {premise}"
             f"{scene_block}{recent_block}\n{avoid_block}\n"
             f"Speak in FIRST PERSON, as your own thinking — the way it occurs to you, "
             f"not the way a report reads. Plain words. "
@@ -17871,7 +18051,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "",
             f"No meta, no stage directions, no purple prose. "
             f"Take the shape of the line from the beats named at the end."
         )
-    return _narrator_one_line(prompt + "\n" + alternation, fallback, acted)
+    return _narrator_one_line(prompt + "\n" + alternation, fallback, acted, thought=bool(lens))
 
 
 def _authored_narrator_brief(**fields) -> str:
@@ -17885,6 +18065,16 @@ def _authored_narrator_brief(**fields) -> str:
     template = (PROMPTS.get("narrator_direction") or "").strip()
     if not template:
         return ""
+    # The character's lens goes right under the VOICE line, where the brief
+    # says how the narrator talks — in every World's copy of the brief, none
+    # of which name {lens}. An author who wants it elsewhere writes {lens}.
+    lens = str(fields.get("lens") or "")
+    if lens and "{lens}" not in template:
+        lines = template.split("\n")
+        at = next((i for i, ln in enumerate(lines) if ln.strip().upper().startswith("VOICE:")), 0)
+        lines.insert(at + 1, lens.replace("{", "{{").replace("}", "}}"))
+        template = "\n".join(lines)
+    fields.setdefault("lens", "")
     try:
         return template.format(**fields)
     except (KeyError, IndexError, ValueError) as fmt_err:
@@ -17893,7 +18083,7 @@ def _authored_narrator_brief(**fields) -> str:
         return ""
 
 
-def _narrator_one_line(prompt: str, fallback: list, acted: str = "") -> list:
+def _narrator_one_line(prompt: str, fallback: list, acted: str = "", thought: bool = False) -> list:
     """Ask for the narrator's line and clip it to a beat. Shared by the authored
     path and the shipped fallback so both behave identically.
 
@@ -17908,8 +18098,12 @@ def _narrator_one_line(prompt: str, fallback: list, acted: str = "") -> list:
                 for s in fallback]
     spoken = _strip_narration_staging((line or "")[:600], acted)
     return [{"character": "narrator",
-             "text": _clip_narration(spoken, _NARRATION_MAX_SENTENCES)}]
+             "text": _clip_narration(spoken, _THOUGHT_MAX_SENTENCES if thought
+                                     else _NARRATION_MAX_SENTENCES)}]
 
+
+#: A thought is one sentence; two lets a fragment land ("Fresh tracks. Not his.").
+_THOUGHT_MAX_SENTENCES = 2
 
 NARRATOR_MEMORY = 6
 
@@ -17975,6 +18169,11 @@ def api_narrator_worldbuild():
         deed_target = re.sub(r"\s+", " ", str(data.get("deed_target") or "")).strip()[:120]
         script = _narrator_script(focus, multi, session_id, acted=acted,
                                   deed_kind=deed_kind, deed_target=deed_target)
+        # A character thinks ONE thought per narration — the MOVE TO bridge's
+        # second line ("go one step further in") is two lines where one was
+        # asked for, so a run with a lens drops it.
+        if follow_focus and _narrator_lens():
+            follow_focus = ""
         if follow_focus:
             # Remembered BEFORE the follow-up is asked for, not after both.
             # Every per-line guard reads `narrator_recent` — the beat rotation,

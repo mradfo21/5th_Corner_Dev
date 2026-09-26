@@ -13,9 +13,11 @@ history and the real design document.
 ## 1. What this is
 
 **ABYSS** (the player-facing name since 2026-09-25; it was GOD before that,
-and it is still SOMEWHERE in the code, the env vars and the `%APPDATA%\SOMEWHERE`
-folder, which hold players' keys and characters and are never renamed) — tagline
-"When you stare into the abyss, the abyss stares back." **SOMEWHERE** is an
+and it is still SOMEWHERE in the code and the `SOMEWHERE_*` env vars). A
+player's keys, characters and saves live in `%APPDATA%\ABYSS` since the
+Distribution MVP (`app_identity.py`, `paths.py`), copied once from the old
+`%APPDATA%\SOMEWHERE`, which is left in place. Tagline: "The first game where
+ANYTHING is possible." **SOMEWHERE** is an
 AI-driven first-person survival horror game where nothing is
 pre-drawn. Every frame is generated as you play. You are a photojournalist in
 1993 at the fence of a quarantined facility in the Four Corners desert — hence
@@ -131,7 +133,7 @@ anywhere. Grep `add_url_rule` in `api.py` for the gameplay routes and
 | `combat.py` | ~900 | The fight's rules — d20 vs AC/DC, damage dice, initiative, morale, death saves, two HP bars — and the round as beats. The only place a fight is decided. Pure; `test_combat.py`; `tools/encounter_length_probe.py` for pacing |
 | `run_tape.py` | ~700 | THE TAPE: every run recorded as it plays (`sessions/<id>/runs/<run>/tape.json` + hard-linked frames that survive New Game's media purge), one pacing rule (`timing`) for the player and the export, and the export itself (shot pack zip: numbered frames, `shots.json` with each shot's first/last frame and video prompt, captions, MP4 animatic). Served under `/api/reel/`; the player is `Reel` in standalone.js; `test_run_tape.py` |
 | `game_identity.py` | ~3k | The cast sheet — the level, the camera, and who you play as when a run has no Character. `get_spec()` lays the run's Character over the character block; editors read and write `raw_spec()` |
-| `characters.py` | ~1.6k | CHARACTERS — the player as a thing the game owns, on disk in `characters/<id>/` (outside sessions, prompts and Worlds; a reset never touches it; a packaged build keeps it in `%APPDATA%\SOMEWHERE\characters`; every JSON write is fsynced with a `.bak` the reader falls back to). One line + pictures → a brief → a four-view A-pose TURNAROUND on a key colour (pro model, 2K, checked, one retry) → cut out → words READ OFF the render → idle hero + face sheet. The run points at one (`state.character_id` / `look_id`); the sim is shown only the turnaround. The pack lives on the character: items keep their plates, WEAR is a fitting (from the base look, cached by outfit), the run takes a new look at its next turn AND before every beat that draws the player (`engine.adopt_current_look`, `api._DRAWS_THE_PLAYER` — the reward, a fight, a photo); STYLE/CHANGE SOMETHING redraw the base and put what they wear back on over it. `/api/characters*`, `/api/character*`; screens in `static/js/characters.js` (PLAY → select/create → the picker) and the pack in `static/js/pack.js`. Starter: `assets/characters/`. `test_characters.py`; design record `docs/plans/CHARACTER_SYSTEM_PLAN.md` |
+| `characters.py` | ~1.6k | CHARACTERS — the player as a thing the game owns, on disk in `characters/<id>/` (outside sessions, prompts and Worlds; a reset never touches it; a packaged build keeps it in `%APPDATA%\SOMEWHERE\characters`; every JSON write is fsynced with a `.bak` the reader falls back to). One line + pictures → a brief → a four-view A-pose TURNAROUND on a key colour (pro model, 2K, checked, one retry) → cut out → words READ OFF the render → idle hero + face sheet. The run points at one (`state.character_id` / `look_id`); the sim is shown only the turnaround. The pack lives on the character: items keep their plates, WEAR is a fitting (from the base look, cached by outfit), the run takes a new look at its next turn AND before every beat that draws the player (`engine.adopt_current_look`, `api._DRAWS_THE_PLAYER` — the reward, a fight, a photo); STYLE/CHANGE SOMETHING redraw the base and put what they wear back on over it. Every character is designed a VOICE from their brief (two takes, the closer kept; `voice_design.design_character_voice`), heard at the reveal, and it is the narrator's voice for their runs — the narrator is "you, speaking into a tape" (`engine._narrator_voice_id`). `/api/characters*`, `/api/character*`; screens in `static/js/characters.js` (PLAY → select/create → the picker) and the pack in `static/js/pack.js`. Starter: `assets/characters/`. `test_characters.py`; design record `docs/plans/CHARACTER_SYSTEM_PLAN.md` |
 | `cutscene.py` | ~1.1k | The 4-shot montage |
 | `look_book.py` | ~1.3k | The run's contact sheet: world sheet + one designed plate per roster entry, shot in the background at reset, attached to frames and encounters; the editor's Look Book desk shows and redoes each stage |
 | `choices.py` | ~940 | Choice generation, grounded in the current frame |
@@ -250,7 +252,7 @@ earlier one.
 
 - **The /get page's clips** (`templates/download.html`, `static/video/get/`)
   are real footage, re-shot with `python tools/refresh_get.py` whenever the
-  game changes: it films a run in each Experience (The FIFTH CORNER, SWAT,
+  game changes: it films a run in each Experience (The FIFTH CORNER, OUTGROWTH,
   CYBER HORROR), three characters being made, one character suited up piece
   by piece (a `kit` from `tools/get_kit/`) and a first launch, in a sandbox
   (`tools/film_run.py`), finds

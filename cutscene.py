@@ -414,8 +414,12 @@ def mystery_shotlist(session_id: str = "default", *, goal: str = "") -> List[str
     except Exception:
         place = ""
 
+    try:
+        director = game_identity.deperiod(SHOTLIST_INSTRUCTIONS)  # 1993 only on a 1993 World
+    except Exception:
+        director = SHOTLIST_INSTRUCTIONS
     prompt = (
-        f"{SHOTLIST_INSTRUCTIONS}\n\n"
+        f"{director}\n\n"
         f"WORLD BIBLE:\n{bible[:6000]}\n\n"
         f"THE PLACE THIS OPENS IN: {place or '(see the bible)'}\n"
         + (f"WHAT THE PLAYER IS HERE FOR (do not show it reached): {goal}\n"

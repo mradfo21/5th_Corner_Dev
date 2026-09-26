@@ -202,15 +202,28 @@ def _session_id() -> str:
         return "default"
 
 
+# "gemini-3.8-flash-tts is currently experiencing high demand" — a 503 the
+# week the model launched, on a character's reveal line (2026-09-25). A busy
+# model is usually free again a moment later; a refused key or a bad request
+# is not, so only the 5xx are asked twice.
+_RETRY_STATUS = (500, 502, 503, 504)
+_RETRY_AFTER_S = 2.0
+
+
 def _gemini_line(key: str, text: str, voice: str, style: str) -> Optional[bytes]:
     import requests
     t0 = time.time()
-    resp = requests.post(
-        f"{GEMINI_API}/interactions",
-        headers={"x-goog-api-key": key, "Content-Type": "application/json"},
-        json=build_interaction(text, voice, style),
-        timeout=TIMEOUT_S,
-    )
+    for attempt in (1, 2):
+        resp = requests.post(
+            f"{GEMINI_API}/interactions",
+            headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+            json=build_interaction(text, voice, style),
+            timeout=TIMEOUT_S,
+        )
+        if resp.status_code not in _RETRY_STATUS or attempt == 2:
+            break
+        print(f"[SPEECH] {model()} http {resp.status_code}; asking once more", flush=True)
+        time.sleep(_RETRY_AFTER_S)
     ms = int((time.time() - t0) * 1000)
     body = {}
     try:

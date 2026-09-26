@@ -2,36 +2,37 @@
   "note": "Written by tools/refresh_get.py from tools/get_shoot.json. Which seconds of which recording make each /get clip; tools/cut_clips.py reads it.",
   "sources": {
     "run": "_claude_film/get-run-20260925-101518/master.mp4",
-    "create": "_claude_film/get-create-20260925-101518/master.mp4",
+    "create": "_claude_film/get-create-20260925-205132/master.mp4",
     "key": "_claude_film/get-key-20260925-101518/master.mp4",
-    "swat": "_claude_film/get-swat-20260925-001657/master.mp4",
+    "swat": "_claude_film/get-swat-20260925-192101/master.mp4",
     "cyber": "_claude_film/get-cyber-20260925-001657/master.mp4",
-    "wear": "_claude_film/get-wear-20260925-101518/master.mp4"
+    "wear": "_claude_film/get-wear-20260925-101518/master.mp4",
+    "outgrowth": "_claude_film/get-outgrowth-20260925-205132/master.mp4"
   },
   "clips": {
     "hero": {
       "label": "",
       "poster_at": 0.04,
-      "sub": "SWAT · Luka 'Grizzly' Novak",
+      "sub": "OUTGROWTH \u00b7 Ruth 'Static' Calloway",
       "segments": [
         {
-          "from": 475.16,
-          "to": 551.72,
+          "from": 441.44,
+          "to": 538.02,
           "squeeze": true,
           "hold": 0.6,
-          "src": "swat"
+          "src": "outgrowth"
         }
       ]
     },
     "create": {
       "label": "Anyone.",
       "poster_at": 0.93,
-      "sub": "Three people, each from one line",
+      "sub": "Any hero you can describe.",
       "segments": [
         {
-          "from": 11.79,
-          "to": 13.39,
-          "caption": "a wildfire smokejumper in her thirties, soot-streaked yellow Nomex shirt, orange helmet under one arm, a pulaski axe over her shoulder",
+          "from": 12.86,
+          "to": 14.46,
+          "caption": "Dot Mahoney, an exoskeleton operator in her forties in a scuffed lift-assist exoskeleton covered in cartoon cat stickers, respirator pushed up, a thermos of coffee clipped to her chest, a flamethrower for the growth",
           "caption_box": [
             0.315,
             0.34,
@@ -41,13 +42,13 @@
           "src": "create"
         },
         {
-          "from": 13.39,
-          "to": 70.56,
+          "from": 14.46,
+          "to": 62.62,
           "squeeze": true,
           "hold": 0.9,
           "keep": "end",
           "max": 2.5,
-          "caption": "a wildfire smokejumper in her thirties, soot-streaked yellow Nomex shirt, orange helmet under one arm, a pulaski axe over her shoulder",
+          "caption": "Dot Mahoney, an exoskeleton operator in her forties in a scuffed lift-assist exoskeleton covered in cartoon cat stickers, respirator pushed up, a thermos of coffee clipped to her chest, a flamethrower for the growth",
           "caption_box": [
             0.315,
             0.34,
@@ -56,9 +57,9 @@
           "src": "create"
         },
         {
-          "from": 70.56,
-          "to": 73.96,
-          "caption": "a wildfire smokejumper in her thirties, soot-streaked yellow Nomex shirt, orange helmet under one arm, a pulaski axe over her shoulder",
+          "from": 62.62,
+          "to": 66.02,
+          "caption": "Dot Mahoney, an exoskeleton operator in her forties in a scuffed lift-assist exoskeleton covered in cartoon cat stickers, respirator pushed up, a thermos of coffee clipped to her chest, a flamethrower for the growth",
           "caption_box": [
             0.315,
             0.34,
@@ -67,9 +68,9 @@
           "src": "create"
         },
         {
-          "from": 78.29,
-          "to": 79.89,
-          "caption": "a retired Victorian deep-sea diver, brass helmet tucked under his arm, canvas suit patched with rivets",
+          "from": 74.48,
+          "to": 76.08,
+          "caption": "Dr Ezra Quill, a botanist turned breacher, sample jars strapped across his plate carrier, a machete, a bandaged vine burn up one arm, a bagged cutting of the jungle hanging from his belt, sealed goggles",
           "caption_box": [
             0.315,
             0.34,
@@ -79,13 +80,13 @@
           "src": "create"
         },
         {
-          "from": 79.89,
-          "to": 131.83,
+          "from": 76.08,
+          "to": 127.26,
           "squeeze": true,
           "hold": 0.9,
           "keep": "end",
           "max": 2.5,
-          "caption": "a retired Victorian deep-sea diver, brass helmet tucked under his arm, canvas suit patched with rivets",
+          "caption": "Dr Ezra Quill, a botanist turned breacher, sample jars strapped across his plate carrier, a machete, a bandaged vine burn up one arm, a bagged cutting of the jungle hanging from his belt, sealed goggles",
           "caption_box": [
             0.315,
             0.34,
@@ -94,9 +95,9 @@
           "src": "create"
         },
         {
-          "from": 131.83,
-          "to": 135.23,
-          "caption": "a retired Victorian deep-sea diver, brass helmet tucked under his arm, canvas suit patched with rivets",
+          "from": 127.26,
+          "to": 130.66,
+          "caption": "Dr Ezra Quill, a botanist turned breacher, sample jars strapped across his plate carrier, a machete, a bandaged vine burn up one arm, a bagged cutting of the jungle hanging from his belt, sealed goggles",
           "caption_box": [
             0.315,
             0.34,
@@ -105,9 +106,9 @@
           "src": "create"
         },
         {
-          "from": 139.52,
-          "to": 141.12,
-          "caption": "a street samurai in a neon rain poncho, chrome cybernetic left arm, a katana with a glowing edge",
+          "from": 140.33,
+          "to": 141.93,
+          "caption": "Wendell 'Parrot' Byrne, a sniper in his sixties with a carbon-fibre prosthetic leg, a ghillie suit woven from blue-green jungle fronds, a boxy thermal scope, a battered bush hat, a small tethered drone perched on his shoulder like a parrot",
           "caption_box": [
             0.315,
             0.34,
@@ -117,13 +118,13 @@
           "src": "create"
         },
         {
-          "from": 141.12,
-          "to": 196.3,
+          "from": 141.93,
+          "to": 188.47,
           "squeeze": true,
           "hold": 0.9,
           "keep": "end",
           "max": 2.5,
-          "caption": "a street samurai in a neon rain poncho, chrome cybernetic left arm, a katana with a glowing edge",
+          "caption": "Wendell 'Parrot' Byrne, a sniper in his sixties with a carbon-fibre prosthetic leg, a ghillie suit woven from blue-green jungle fronds, a boxy thermal scope, a battered bush hat, a small tethered drone perched on his shoulder like a parrot",
           "caption_box": [
             0.315,
             0.34,
@@ -132,9 +133,9 @@
           "src": "create"
         },
         {
-          "from": 196.3,
-          "to": 199.7,
-          "caption": "a street samurai in a neon rain poncho, chrome cybernetic left arm, a katana with a glowing edge",
+          "from": 188.47,
+          "to": 191.87,
+          "caption": "Wendell 'Parrot' Byrne, a sniper in his sixties with a carbon-fibre prosthetic leg, a ghillie suit woven from blue-green jungle fronds, a boxy thermal scope, a battered bush hat, a small tethered drone perched on his shoulder like a parrot",
           "caption_box": [
             0.315,
             0.34,
@@ -147,8 +148,21 @@
     "arrive": {
       "label": "Anywhere.",
       "poster_at": 0.2,
-      "sub": "The FIFTH CORNER · SWAT · CYBER HORROR",
+      "sub": "Two worlds to start. No two runs alike.",
       "segments": [
+        {
+          "from": 169.13,
+          "to": 170.63,
+          "src": "outgrowth"
+        },
+        {
+          "from": 196.59,
+          "to": 215.97,
+          "squeeze": true,
+          "hold": 1.2,
+          "src": "outgrowth",
+          "max": 4.5
+        },
         {
           "from": 100.07,
           "to": 101.57,
@@ -161,55 +175,29 @@
           "hold": 1.2,
           "src": "run",
           "max": 4.5
-        },
-        {
-          "from": 100.16,
-          "to": 101.66,
-          "src": "swat"
-        },
-        {
-          "from": 129.54,
-          "to": 147.62,
-          "squeeze": true,
-          "hold": 1.2,
-          "src": "swat",
-          "max": 4.5
-        },
-        {
-          "from": 91.5,
-          "to": 93.0,
-          "src": "cyber"
-        },
-        {
-          "from": 116.79,
-          "to": 135.31,
-          "squeeze": true,
-          "hold": 1.2,
-          "src": "cyber",
-          "max": 4.5
         }
       ]
     },
     "act": {
       "label": "Anything.",
       "poster_at": 0.12,
-      "sub": "SWAT · CYBER HORROR",
+      "sub": "Type any move. It happens.",
       "segments": [
         {
-          "from": 418.49,
-          "to": 420.59,
-          "caption": "Start a conga line through the riot police",
+          "from": 634.12,
+          "to": 636.22,
+          "caption": "Hijack the robot dog and ride it into the jungle",
           "type_on": true,
-          "src": "swat"
+          "src": "outgrowth"
         },
         {
-          "from": 420.59,
-          "to": 444.23,
+          "from": 636.22,
+          "to": 660.39,
           "squeeze": true,
           "hold": 1.6,
-          "caption": "Start a conga line through the riot police",
+          "caption": "Hijack the robot dog and ride it into the jungle",
           "keep": "end",
-          "src": "swat",
+          "src": "outgrowth",
           "max": 5.9
         },
         {
@@ -251,7 +239,7 @@
     "wear": {
       "label": "Arm.",
       "poster_at": 0.85,
-      "sub": "Jason Fleece, piece by piece",
+      "sub": "Loot it. Wear it. Wield it.",
       "segments": [
         {
           "from": 150.43,
@@ -297,7 +285,7 @@
     "fight": {
       "label": "Attack.",
       "poster_at": 0.55,
-      "sub": "CYBER HORROR · Jean-Luc de la Croix",
+      "sub": "Roll to hit. Roll to survive.",
       "segments": [
         {
           "from": 390.28,
@@ -311,7 +299,7 @@
     "goal": {
       "label": "Arrive.",
       "poster_at": 0.6,
-      "sub": "The FIFTH CORNER · Jason Fleece",
+      "sub": "Find the goal. Claim the prize.",
       "segments": [
         {
           "from": 454.19,
@@ -341,6 +329,7 @@
     "key": {
       "label": "Access.",
       "poster_at": 0.55,
+      "sub": "Bring your own AI key.",
       "segments": [
         {
           "from": 2.25,

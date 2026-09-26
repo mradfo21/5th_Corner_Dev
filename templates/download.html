@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{{ title }}</title>
-<meta name="description" content="Stare into the abyss. The abyss stares back. A generative adventure game with unlimited possibility.">
+<meta name="description" content="The first game where ANYTHING is possible. Make anyone, go anywhere, type anything, and the game draws it as you play.">
 <meta name="theme-color" content="#020504">
 <meta property="og:type" content="website">
 <meta property="og:title" content="{{ title }}">
-<meta property="og:description" content="Stare into the abyss. The abyss stares back.">
+<meta property="og:description" content="The first game where ANYTHING is possible.">
 <meta property="og:url" content="{{ page_url }}">
 <meta property="og:image" content="{{ og_image }}">
 <meta name="twitter:card" content="summary_large_image">
@@ -87,7 +87,47 @@ body.past-splash .top .ui-btn { opacity: 1; transform: none; pointer-events: aut
     radial-gradient(ellipse 50% 38% at 50% 48%, rgba(2,5,4,0.55) 0%, rgba(2,5,4,0) 75%),
     linear-gradient(180deg, rgba(2,5,4,0.6) 0%, rgba(2,5,4,0) 18%, rgba(2,5,4,0) 62%, var(--bg) 100%);
 }
+/* A phone held upright: a 16:9 film cropped to the full height of the screen
+   shows a quarter of its width — the figure's elbow, not the fight. So the
+   film takes the top of the splash at a shape that keeps the action, fades
+   to black, and the name and DOWNLOAD sit in that fade; the reel below then
+   carries on in the same black (Matt, 2026-09-25: "this crop on mobile is
+   killer, you dont see the action"). */
+@media (max-aspect-ratio: 4/5) {
+  /* Full-bleed at the top, but not so tall that it crops the action away:
+     0.84x the width shows two thirds of the 16:9 frame (the whole frame was
+     too small, 1.12x too tight, the full screen height a quarter). The name
+     and DOWNLOAD sit in its fade. */
+  .splash { height: auto; min-height: 100svh; display: flex; flex-direction: column; align-items: stretch;
+            padding: calc(env(safe-area-inset-top, 0px) + 64px) 0 calc(env(safe-area-inset-bottom, 0px) + 22px); }
+  /* ^ the 64px is the fixed top bar: 5TH CORNER sits on black, above the film */
+  .splash .film { position: relative; inset: auto; width: 100%; height: min(75svh, 84vw); }
+  .splash .film video { transform: none; }
+  .splash .film::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(180deg, rgba(2,5,4,0.35) 0%, rgba(2,5,4,0) 18%, rgba(2,5,4,0) 66%, var(--bg) 100%);
+  }
+  .splash::after { background: none; }
+  .hero { margin-top: 20px; flex: 1; }   /* below the film, not over it: there is room now */
+  /* The build line waits at the bottom of the first screen; the reel is below it. */
+  .hero .meta { margin-top: auto; padding-top: 24px; }
+  .hero .brand { margin-top: auto; }   /* the name + DOWNLOAD centred between the film and the build line */
+  .splash .cue { display: none; }
+  /* While the splash is all there is, the first clip below stays under a
+     black gradient; the first scroll lifts it, so the reel is something you
+     reveal rather than something already showing. */
+  .reel .clip:first-child .frame::before {
+    content: ""; position: absolute; inset: 0; z-index: 3; pointer-events: none;
+    background: linear-gradient(180deg, var(--bg) 0%, var(--bg) 30%, rgba(2,5,4,0.88) 100%);
+    transition: opacity 0.9s var(--ease);
+  }
+  body.scrolled .reel .clip:first-child .frame::before { opacity: 0; }
+}
 .hero { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 0 var(--gutter); }
+/* What it IS, before what it is called: the genre, like a store page. */
+.genre { margin: 0 0 clamp(6px, 1vw, 12px); font-family: var(--font-mono); font-size: clamp(10px, 1vw, 12px);
+         letter-spacing: 0.34em; text-indent: 0.34em; text-transform: uppercase; color: rgba(142,255,193,0.85);
+         text-shadow: 0 1px 12px rgba(0,0,0,0.9); }
 .brand {
   margin: 0; font-family: var(--font-display); font-weight: 400;
   font-size: clamp(76px, 17vw, 230px); line-height: 0.9;
@@ -215,7 +255,7 @@ details.news li span.alt { color: var(--dim); }
 
 <header class="top">
   <a class="studio" href="https://5th-corner.com" rel="noopener"><img src="{{ url_for('static', filename='img/get/mark.jpg') }}" alt="" width="26" height="26">5TH CORNER</a>
-  <a class="ui-btn js-get" id="top-get" href="/get/latest">DOWNLOAD</a>
+  <a class="ui-btn js-get" id="top-get" href="/get/latest">PLAY NOW</a>
 </header>
 
 <main>
@@ -224,9 +264,10 @@ details.news li span.alt { color: var(--dim); }
       {% if hero %}{% if hero.poster %}<img class="still" src="{{ hero.poster }}" alt="">{% endif %}<video id="hero-video" data-src="{{ hero.src }}" data-src720="{{ hero.src720 }}" muted loop playsinline preload="auto"></video>{% endif %}
     </div>
     <div class="hero">
+      <p class="genre rise" style="--d:0.3s">Role-playing game · Single-player</p>
       <h1 class="brand">{{ title }}</h1>
-      <p class="tagline rise" style="--d:0.45s">Stare into the abyss. The abyss stares back.</p>
-      <a class="get rise js-get" id="hero-get" href="/get/latest" style="--d:0.6s">DOWNLOAD</a>
+      <p class="tagline rise" style="--d:0.45s">The first game where ANYTHING is possible.</p>
+      <a class="get rise js-get" id="hero-get" href="/get/latest" style="--d:0.6s">PLAY NOW</a>
       <div class="platforms rise" id="platforms" style="--d:0.7s" aria-label="Available for">
         <a class="plat js-get" href="/get/latest" title="Windows 10 and 11, 64-bit" aria-label="Download for Windows"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 3h8.4v8.4H3zM12.6 3H21v8.4h-8.4zM3 12.6h8.4V21H3zM12.6 12.6H21V21h-8.4z"/></svg></a>
       </div>
@@ -248,7 +289,7 @@ details.news li span.alt { color: var(--dim); }
   </section>
 
   <section class="getit" id="get" aria-label="Get it">
-    <a class="get js-get" id="end-get" href="/get/latest">DOWNLOAD</a>
+    <a class="get js-get" id="end-get" href="/get/latest">PLAY NOW</a>
     <div class="meta" id="meta-end"></div>
     <ol class="steps" id="steps">
       <li id="s1"><span>01</span><b class="js-step1">Run the installer</b></li>
@@ -371,6 +412,7 @@ details.news li span.alt { color: var(--dim); }
   const onScroll = () => {
     document.body.classList.toggle("scrolled", scrollY > 40);
     document.body.classList.toggle("past-splash", ok && scrollY > innerHeight * 0.6);
+    document.body.classList.toggle("scrolled", scrollY > 24);
   };
   addEventListener("scroll", onScroll, { passive: true }); onScroll();
 

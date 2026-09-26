@@ -1087,6 +1087,7 @@ app.add_url_rule('/api/characters/<cid>', 'characters_get', _characters_mod.api_
 app.add_url_rule('/api/characters/<cid>/draw', 'characters_draw', _characters_mod.api_draw, methods=['POST'])
 app.add_url_rule('/api/characters/<cid>/revise', 'characters_revise', _characters_mod.api_revise, methods=['POST'])
 app.add_url_rule('/api/characters/<cid>/style', 'characters_style', _characters_mod.api_style, methods=['POST'])
+app.add_url_rule('/api/characters/<cid>/voice', 'characters_voice', _characters_mod.api_voice, methods=['POST'])
 app.add_url_rule('/api/characters/<cid>/delete', 'characters_delete', _characters_mod.api_delete, methods=['POST'])
 app.add_url_rule('/api/characters/<cid>/file/<path:rel>', 'characters_file', _characters_mod.api_file, methods=['GET'])
 app.add_url_rule('/api/character', 'character_bound', _characters_mod.api_bound, methods=['GET'])

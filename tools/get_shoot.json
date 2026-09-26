@@ -1,6 +1,15 @@
 {
   "note": "The /get page's shot list. tools/refresh_get.py films each entry in `films` with tools/film_run.py, finds each clip's `moment` in the film's timeline, and cuts it. Edit this, not tools/get_clips.json (that one is written from this). One run film per Experience, so the page shows several worlds. A clip's \"film\" may be a list: the first film the moment happened in, or with \"each\": true the moment from every one in turn (\"max_each\" caps each one's seconds). \"hide_characters\" are left out of every film's roster copy. A film's \"kit\" (a JSON list of items, plates in the repo) goes into the played character's pack copy, in order. Moments: opening, create (every character made on camera), key, last_fight, hardest_fight, move, typed (the ACT turns typed from act_lines), wear (a fitting in the pack; \"all\": every fitting in the film), goal (walk to it, the reward, the take). `lead`/`tail` widen a moment (seconds); `hold` is how much of any still stretch is kept; `poster_at` is where in the finished clip the poster is taken (0-1); `sub` is the small line under the word (default: the world and who; false for none). `pick` overrides a choice: {\"turn\": 10} for move, {\"fight\": 2}, {\"typed\": 2}, {\"wear\": 2}. A film list entry can be {\"film\": \"swat\", \"pick\": {\"typed\": 2}}, so one clip can take the same film twice, in the order written. typed and create lay the words that were typed over the top of the picture, typed out.",
   "films": {
+    "outgrowth": {
+      "experience": "outgrowth",
+      "create": "Ruth 'Static' Calloway, a wiry electronic-warfare specialist in her fifties: shaved head, a cochlear implant behind her ear, a respirator at her neck, a folding antenna array on her back, a handheld jammer taped to her forearm, a grease-pencil map in a plastic sleeve, chewing bubblegum",
+      "give": true,
+      "plan": "choice,encounter,act,encounter,act,goal",
+      "turns": 6,
+      "max_minutes": 55,
+      "act_lines": "Jam the security robot until it salutes me | Hijack the robot dog and ride it into the jungle"
+    },
     "run": {
       "experience": "somewhere",
       "character": "jason",
@@ -8,15 +17,6 @@
       "turns": 5,
       "max_minutes": 50,
       "act_lines": "Kick the rusted fuel tank down the dune and ride it like a toboggan | Hot-wire the guard's truck and jump it over the fence"
-    },
-    "swat": {
-      "experience": "untitled-experience",
-      "character": "luka",
-      "give": true,
-      "plan": "choice,act,encounter,wear,act,goal",
-      "turns": 6,
-      "max_minutes": 50,
-      "act_lines": "Hijack the police drone and fly it over the crowd | Start a conga line through the riot police"
     },
     "cyber": {
       "experience": "untitled-experience-3",
@@ -36,11 +36,12 @@
       "max_minutes": 30
     },
     "create": {
-      "create": "a wildfire smokejumper in her thirties, soot-streaked yellow Nomex shirt, orange helmet under one arm, a pulaski axe over her shoulder || a retired Victorian deep-sea diver, brass helmet tucked under his arm, canvas suit patched with rivets || a street samurai in a neon rain poncho, chrome cybernetic left arm, a katana with a glowing edge",
+      "create": "Dot Mahoney, an exoskeleton operator in her forties in a scuffed lift-assist exoskeleton covered in cartoon cat stickers, respirator pushed up, a thermos of coffee clipped to her chest, a flamethrower for the growth || Dr Ezra Quill, a botanist turned breacher, sample jars strapped across his plate carrier, a machete, a bandaged vine burn up one arm, a bagged cutting of the jungle hanging from his belt, sealed goggles || Wendell 'Parrot' Byrne, a sniper in his sixties with a carbon-fibre prosthetic leg, a ghillie suit woven from blue-green jungle fronds, a boxy thermal scope, a battered bush hat, a small tethered drone perched on his shoulder like a parrot",
       "plan": "choice",
       "turns": 1,
       "linger": 4,
-      "max_minutes": 20
+      "max_minutes": 20,
+      "experience": "outgrowth"
     },
     "key": {
       "first_launch": "gemini",
@@ -55,8 +56,12 @@
   "clips": {
     "hero": {
       "film": [
-        "swat",
-        "cyber",
+        {
+          "film": "outgrowth",
+          "pick": {
+            "fight": 2
+          }
+        },
         "run"
       ],
       "moment": "last_fight",
@@ -72,7 +77,7 @@
       "label": "Anyone.",
       "hold": 0.9,
       "poster_at": 0.93,
-      "sub": "Three people, each from one line",
+      "sub": "Any hero you can describe.",
       "max_each": 2.5,
       "reveal_hold": 3.0,
       "caption_box": [
@@ -83,21 +88,21 @@
     },
     "arrive": {
       "film": [
-        "run",
-        "swat",
-        "cyber"
+        "outgrowth",
+        "run"
       ],
       "moment": "opening",
       "label": "Anywhere.",
       "each": true,
       "max_each": 4.5,
       "hold": 1.2,
-      "poster_at": 0.2
+      "poster_at": 0.2,
+      "sub": "Two worlds to start. No two runs alike."
     },
     "act": {
       "film": [
         {
-          "film": "swat",
+          "film": "outgrowth",
           "pick": {
             "typed": 2
           }
@@ -121,7 +126,8 @@
       "max_each": 8,
       "tail": 4.5,
       "hold": 0.5,
-      "poster_at": 0.12
+      "poster_at": 0.12,
+      "sub": "Type any move. It happens."
     },
     "wear": {
       "film": "wear",
@@ -132,7 +138,7 @@
       "reveal": 3.0,
       "hold": 0.8,
       "poster_at": 0.85,
-      "sub": "Jason Fleece, piece by piece",
+      "sub": "Loot it. Wear it. Wield it.",
       "fits": [
         1,
         2,
@@ -143,18 +149,19 @@
       "film": [
         "cyber",
         "run",
-        "swat"
+        "outgrowth"
       ],
       "moment": "hardest_fight",
       "label": "Attack.",
       "tail": 8,
       "hold": 0.6,
-      "poster_at": 0.55
+      "poster_at": 0.55,
+      "sub": "Roll to hit. Roll to survive."
     },
     "goal": {
       "film": [
         "run",
-        "swat",
+        "outgrowth",
         "cyber"
       ],
       "moment": "goal",
@@ -162,7 +169,8 @@
       "hold": 0.7,
       "poster_at": 0.6,
       "walk_max": 9,
-      "reward_max": 14
+      "reward_max": 14,
+      "sub": "Find the goal. Claim the prize."
     },
     "key": {
       "film": "key",
@@ -176,7 +184,7 @@
         820,
         461
       ],
-      "sub": false
+      "sub": "Bring your own AI key."
     }
   },
   "hide_characters": [

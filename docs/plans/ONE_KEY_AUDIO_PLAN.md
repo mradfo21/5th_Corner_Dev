@@ -26,6 +26,10 @@
 >   on a mic control in the TALK panel — design pass first; TALK is typed,
 >   with spoken answers, until then. A7.
 >
+> - **Also shipped the same day:** a character is designed their own voice in
+>   the character creator (two takes, the closer kept) and it narrates their
+>   runs — CHANGELOG, "A character is designed a voice when they are made".
+>
 > §6's spike questions are answered in §6. Where the body below says
 > "ElevenLabs stays an optional upgrade", Matt decided otherwise.
 
