@@ -87,7 +87,7 @@
     watching: "",            // the id whose drawing the screen is following
     pollT: null,
     changing: false,         // the CHANGE SOMETHING line is open
-    heard: {},               // character id -> the voice url already played by itself
+    saidFor: "",             // "id|voice url" of the line already spoken on this arrival
     busy: false,
     offline: false,
     t0: 0,
@@ -423,6 +423,7 @@
     S.styleOpen = false;
     S.fresh = "";
     S.entered = false;
+    S.saidFor = "";
     root.hidden = false;
     root.classList.toggle("cs-in-run", !!S.opts.inRun);
     // Under the menu's veil the veil is the fade: the screen is simply there
@@ -457,13 +458,14 @@
       if (!S.list.length) S.mode = root.dataset.mode = "create";
       paint();
       enter();
-      if (S.list.some((c) => c.status === "drawing" || (c.job && c.job.kind))) startPoll();
+      if (anyBusy()) startPoll();
       refresh(false);
     } else {
       await refresh(true);
       if (!S.list.length) { S.mode = root.dataset.mode = "create"; paint(); }
       enter();
     }
+    sayCurrentSoon(700);
     return true;
   }
   function hide() {
@@ -479,6 +481,10 @@
     if (Fig) Fig.reset();
   }
   function isOpen() { return S.open; }
+  function anyBusy() {
+    return S.list.some((c) => c.status === "drawing" || (c.job && c.job.kind) ||
+      (c.voice && c.voice.status === "designing"));
+  }
 
   async function refresh(first) {
     let data;
@@ -489,8 +495,8 @@
     if (!S.open) return;
     take(data, first);
     paint();
-    // Anyone still being drawn: keep following them.
-    if (S.list.some((c) => c.status === "drawing" || (c.job && c.job.kind))) startPoll();
+    // Anyone still being drawn, or given a voice: keep following them.
+    if (anyBusy()) startPoll();
   }
 
   // ── painting ─────────────────────────────────────────────────────────────
@@ -784,13 +790,23 @@
     a.addEventListener("playing", () => { if (voiceAudio === a && root) root.classList.add("cs-voice-playing"); });
     a.play().catch(end);
   }
-  function hearFresh() {
+  // The character you are looking at says their line: when the screen
+  // opens, and each time you move to another one — once per arrival, and not
+  // again while you stay. Arrowing through the roster speaks only for the one
+  // you stop on (sayT). A voice still being designed speaks when it lands, if
+  // they are still the one chosen (pollOnce calls this).
+  let sayT = 0;
+  function sayCurrent() {
     const c = current();
-    if (!S.open || S.mode !== "select" || !c || c.id !== S.fresh) return;
-    const url = c.voice && c.voice.url;
-    if (!url || S.heard[c.id] === url) return;
-    S.heard[c.id] = url;
+    if (!S.open || S.mode !== "select" || !c || !c.voice || !c.voice.url) return;
+    const key = c.id + "|" + c.voice.url;
+    if (S.saidFor === key) return;
+    S.saidFor = key;
     playVoice(c);
+  }
+  function sayCurrentSoon(ms) {
+    clearTimeout(sayT);
+    sayT = setTimeout(sayCurrent, ms);
   }
   function voiceLabel(v) {
     if (!v) return "";
@@ -838,8 +854,7 @@
       if (i >= 0) S.list[i] = Object.assign({}, S.list[i], res.character);
       closeChange();
       // Heard by itself once it lands, like a new character's.
-      S.fresh = c.id;
-      delete S.heard[c.id];
+      S.saidFor = "";
       snd("submit");
       paint();
       startPoll();
@@ -1015,14 +1030,15 @@
             if (ok) { S.fresh = got.id; snd("itemReveal"); } else snd("error");
             S.sel = Math.max(0, S.list.findIndex((x) => x.id === got.id));
             swapTo(() => setMode("select"));
-            setTimeout(hearFresh, 700);
+            S.saidFor = "";
+            sayCurrentSoon(700);
           };
           if (ok) { finishDev(reveal); paintDev(); } else reveal();
           continue;
         }
       }
       paint();
-      hearFresh();
+      sayCurrent();
     } finally {
       polling = false;
     }
@@ -1040,8 +1056,10 @@
     S.styleOpen = false;
     S.changing = false;
     stopVoice();
+    S.saidFor = "";
     snd("focusTick");
     paint();
+    sayCurrentSoon(350);
   }
   function startCreate() {
     if (S.mode === "create") return;

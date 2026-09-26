@@ -1646,6 +1646,15 @@ def design_voice(cid: str, *, change: str = "", wait: bool = False) -> dict:
                 wav = speech.synthesize(words["line"], made["id"], VOICE_LINE_STYLE)
             if wav:
                 _write_atomic(char_dir(cid) / VOICE_FILE, wav)
+            else:
+                # Never leave the OLD voice's recording as this one's: a line
+                # that could not be spoken (a 503 on the reveal line, measured)
+                # played the voice they used to have. No file, no url; the
+                # roster says it again next time it opens (_voice_the_roster).
+                try:
+                    (char_dir(cid) / VOICE_FILE).unlink()
+                except OSError:
+                    pass
             old = v0.get("id") or ""
 
             def put(r):
@@ -1703,10 +1712,14 @@ def voice_card(rec: dict) -> Dict[str, Any]:
         can = voice_design.is_available()
     except Exception:
         can = False
-    return {"status": v.get("status") or "", "line": v.get("line") or "",
-            "description": v.get("description") or "",
-            "url": file_url(rec["id"], VOICE_FILE) if v.get("status") == VOICE_READY else "",
-            "can": can}
+    status = v.get("status") or ""
+    url = file_url(rec["id"], VOICE_FILE) if status == VOICE_READY else ""
+    # Designed, but its line is still being spoken (_speak_line_again): the
+    # screen follows it as "finding it" and plays it the moment it exists.
+    if status == VOICE_READY and not url and v.get("line"):
+        status = VOICE_DESIGNING
+    return {"status": status, "line": v.get("line") or "",
+            "description": v.get("description") or "", "url": url, "can": can}
 
 
 # ── fittings ────────────────────────────────────────────────────────────────
@@ -2335,8 +2348,56 @@ def _body() -> dict:
     return request.get_json(silent=True) or {}
 
 
+def _voice_the_roster(rows: List[dict]) -> None:
+    """Every character on the roster gets a voice — not only the ones made
+    after voices existed. Jason (the starter), and anyone made before
+    2026-09-25, had none, and the screen speaks each character's line when
+    it is chosen ("make sure the voice of the EXISTING characters is also
+    covered", Matt). ensure_voice starts a design only where one is missing
+    or unusable on this key, at most once a minute each, and nowhere a voice
+    cannot be designed (mock mode, an OpenAI key)."""
+    try:
+        import voice_design
+        if not voice_design.is_available():
+            return
+    except Exception:
+        return
+    for r in rows:
+        if r.get("status") != STATUS_READY:
+            continue
+        try:
+            if not voice_usable(r):
+                ensure_voice(r["id"])
+            elif not (char_dir(r["id"]) / VOICE_FILE).is_file():
+                _speak_line_again(r["id"])
+        except Exception:
+            pass
+
+
+def _speak_line_again(cid: str) -> None:
+    """A voice with no recording of its line (the TTS call failed when it was
+    designed): say the line again in the background, once a minute at most."""
+    if time.time() - _VOICE_TRIES.get("line:" + cid, 0) < 60:
+        return
+    _VOICE_TRIES["line:" + cid] = time.time()
+
+    def work():
+        rec = load(cid) or {}
+        v = rec.get("voice") or {}
+        if not v.get("line") or not v.get("id"):
+            return
+        import speech
+        wav = speech.synthesize(v["line"], v["id"], VOICE_LINE_STYLE)
+        if wav:
+            _write_atomic(char_dir(cid) / VOICE_FILE, wav)
+            print(f"[CHARACTERS] {cid}: their line is spoken again", flush=True)
+    threading.Thread(target=work, daemon=True, name=f"line-{cid}").start()
+
+
 def api_list():
     """GET /api/characters -> the roster, the one played last first."""
+    rows = list_all()
+    _voice_the_roster(rows)
     rows = list_all()
     last = next((r["id"] for r in rows if r.get("status") == STATUS_READY), "")
     return _ok(characters=[card(r) for r in rows], last=last, default_style=DEFAULT_STYLE,

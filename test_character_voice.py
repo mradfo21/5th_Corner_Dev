@@ -147,6 +147,17 @@ class AVoiceIsDesigned(unittest.TestCase):
         delete.assert_called_once_with("voice_old")
         self.assertEqual(characters.load(cid)["voice"]["id"], "voice_new2")
 
+    def test_a_line_that_could_not_be_spoken_leaves_no_old_recording(self):
+        """A 503 on the reveal line kept the OLD voice's voice.wav, and the
+        screen played the voice they used to have."""
+        cid = _person(description=DESC, line="x", id="voice_old", status="ready", fingerprint="fp-this-key")
+        (characters.char_dir(cid) / "voice.wav").write_bytes(b"RIFF-old-voice")
+        made = {"id": "voice_new", "fingerprint": "fp-this-key"}
+        with mock.patch.object(voice_design, "design_character_voice", return_value=made),                 mock.patch.object(voice_design, "delete_character_voice"),                 mock.patch.object(characters, "_voice_words", return_value={"description": DESC, "line": "x"}),                 mock.patch("speech.synthesize", return_value=None):
+            characters.design_voice(cid, change="deeper", wait=True)
+        self.assertFalse((characters.char_dir(cid) / "voice.wav").exists())
+        self.assertEqual(characters.card(characters.load(cid))["voice"]["url"], "")
+
     def test_a_failed_design_says_so_and_keeps_the_description(self):
         cid = _person(description=DESC, line="x")
         with mock.patch.object(voice_design, "design_character_voice", return_value=None):
@@ -179,6 +190,38 @@ class TwoTakesAndTheCloserOneKept(unittest.TestCase):
     def test_our_voices_are_never_swept(self):
         self.assertNotEqual(voice_design.CHARACTER_PREFIX, voice_design.NAME_PREFIX)
         self.assertFalse(voice_design.CHARACTER_PREFIX.startswith(voice_design.NAME_PREFIX))
+
+
+class TheWholeRosterIsVoiced(unittest.TestCase):
+    """Matt: "make sure the voice of the EXISTING characters is also covered".
+    Listing the roster starts a design for every ready character without a
+    usable voice — the starter, anyone made before voices."""
+
+    def setUp(self):
+        _fresh()
+
+    def test_listing_the_roster_voices_the_ones_without(self):
+        mute = _person()
+        voiced = _person(id="voice_ok", status="ready", fingerprint="fp1", expires="2099-01-01")
+        with mock.patch.object(voice_design, "is_available", return_value=True), \
+                mock.patch.object(voice_design, "key_fingerprint", return_value="fp1"), \
+                mock.patch.object(characters, "ensure_voice") as ensure:
+            characters._voice_the_roster(characters.list_all())
+        called = {c.args[0] for c in ensure.call_args_list}
+        self.assertIn(mute, called)
+        self.assertNotIn(voiced, called)
+
+    def test_not_where_no_voice_can_be_designed(self):
+        _person()
+        with mock.patch.object(voice_design, "is_available", return_value=False), \
+                mock.patch.object(characters, "ensure_voice") as ensure:
+            characters._voice_the_roster(characters.list_all())
+        ensure.assert_not_called()
+
+    def test_the_list_route_does_it(self):
+        src = (ROOT / "characters.py").read_text(encoding="utf-8")
+        fn = src.split("def api_list():", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("_voice_the_roster(rows)", fn)
 
 
 class OnlyAVoiceOnThisKeyIsUsed(unittest.TestCase):
@@ -293,10 +336,26 @@ class TheScreen(unittest.TestCase):
         self.assertIn('class="cs-voice-line"', self.js)
         self.assertLess(self.js.index('class="cs-style-line"'), self.js.index('class="cs-voice-line"'))
 
-    def test_heard_once_by_itself_at_the_reveal(self):
-        fn = self.js.split("function hearFresh()", 1)[1].split("\n  }", 1)[0]
-        self.assertIn("c.id !== S.fresh", fn)
-        self.assertIn("S.heard[c.id] === url", fn)
+    def test_the_one_you_look_at_speaks_once_per_arrival(self):
+        fn = self.js.split("function sayCurrent()", 1)[1].split("\n  }", 1)[0]
+        self.assertIn('S.mode !== "select"', fn)
+        self.assertIn("if (S.saidFor === key) return;", fn)
+        self.assertIn("playVoice(c)", fn)
+
+    def test_arriving_and_switching_both_speak(self):
+        show = self.js.split("async function show(opts)", 1)[1].split("\n  function hide()", 1)[0]
+        self.assertIn('S.saidFor = "";', show)
+        self.assertIn("sayCurrentSoon(", show)
+        pick = self.js.split("function pick(i)", 1)[1].split("\n  }", 1)[0]
+        self.assertIn('S.saidFor = "";', pick)
+        self.assertIn("sayCurrentSoon(", pick)
+        # a voice that lands while they are chosen speaks then
+        poll = self.js.split("async function pollOnce()", 1)[1].split("\n  // ── actions", 1)[0]
+        self.assertIn("sayCurrent();", poll)
+
+    def test_a_voice_being_designed_is_followed(self):
+        fn = self.js.split("function anyBusy()", 1)[1].split("\n  }", 1)[0]
+        self.assertIn('c.voice.status === "designing"', fn)
 
     def test_change_something_about_the_voice_changes_the_voice(self):
         sub = self.js.split("async function submitChange()", 1)[1].split("\n  }", 1)[0]

@@ -171,6 +171,14 @@ class TestSynthesize(_TempCache):
         self.assertEqual(speech.split_prompt(
             post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]), ("quietly", "Hello."))
 
+    def test_a_busy_model_is_asked_once_more(self):
+        """503 "high demand", measured on launch week. Asked twice, not forever."""
+        wav = _wav(1)
+        answers = [_resp(503, {"error": "high demand"}), _resp(body=_interaction(wav))]
+        with mock.patch.object(speech, "can_speak", return_value=True),                 mock.patch.object(speech, "_RETRY_AFTER_S", 0),                 mock.patch("requests.post", side_effect=answers) as post:
+            self.assertEqual(speech.synthesize("Hello.", "Charon"), wav)
+        self.assertEqual(post.call_count, 2)
+
     def test_a_refusal_is_none_not_an_exception(self):
         with mock.patch.object(speech, "can_speak", return_value=True),                 mock.patch("requests.post", return_value=_resp(429, {"error": "quota"})):
             self.assertIsNone(speech.synthesize("Hello.", "Charon"))
