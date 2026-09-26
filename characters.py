@@ -616,7 +616,8 @@ Return JSON:
  "who": "ONE paragraph for an image model, head to toe: age, build, skin, face, hair; then EVERY garment top to bottom with colour, material and wear; then everything carried, slung or holstered on the body. No setting, no pose, no lighting.",
  "held": "what they hold in a relaxed hero pose, as a short phrase (e.g. 'a battered brass helmet tucked under one arm'), or 'empty hands'",
  "voice": "{voice_rule}",
- "voice_line": "{line_rule}"}}"""
+ "voice_line": "{line_rule}",
+ "lens": "{lens_rule}"}}"""
 
 _SURPRISE = """Invent ONE memorable player character for a cinematic, photoreal survival game — someone a player would be excited to BE. Grounded and specific, not a fantasy cliche; a real job or life, a look you could draw from a single line. Vary widely: age, build, gender, origin, era of clothing.
 Return JSON: {"concept": "one or two sentences in the player's own voice, e.g. 'A salvage diver in her forties. Patched olive canvas suit, brass helmet under one arm, rope and hook at the hip.'"}"""
@@ -656,10 +657,12 @@ def _expand(rec: dict, sources: List[Path]) -> dict:
                   _img_part(p, 1024)]
     parts.append({"text": _BRIEF.format(concept=concept.replace('"', "'"),
                                         with_pics=" (pictures attached)" if sources else "",
-                                        voice_rule=VOICE_RULE, line_rule=LINE_RULE)})
+                                        voice_rule=VOICE_RULE, line_rule=LINE_RULE,
+                                        lens_rule=LENS_RULE)})
     out = _text_json(parts, "character_brief", temperature=0.6)
     return {k: str(out.get(k) or "").strip() for k in
-            ("name", "pronouns", "role", "tagline", "demeanor", "who", "held", "voice", "voice_line")}
+            ("name", "pronouns", "role", "tagline", "demeanor", "who", "held", "voice", "voice_line",
+             "lens")}
 
 
 # ── ② the turnaround ────────────────────────────────────────────────────────
@@ -1343,6 +1346,8 @@ def start_draw(cid: str, *, concept: Optional[str] = None, wait: bool = False) -
                 for k in ("pronouns", "tagline", "role"):
                     if brief.get(k):
                         r[k] = brief[k]
+                if brief.get("lens"):
+                    r["lens"] = brief["lens"][:700]
                 if brief.get("voice"):
                     v = dict(r.get("voice") or {})
                     v.update(description=brief["voice"][:900],
@@ -1494,6 +1499,60 @@ VOICE_RULE = ("how they SOUND, for a voice designer: ONE sentence, archetype fir
 LINE_RULE = ("ONE line they would say into a tape recorder about who they are or why they "
              "came, first person, under 14 words, in their own voice (e.g. 'Nobody sends a "
              "diver down there twice. They sent me three times.')")
+
+# THE LENS. The narrator is the character ("You are {self}, speaking into a
+# tape"), but all it was ever told about them was what they LOOK like
+# (protagonist_line: name, role, appearance, wardrobe, gear), and its register
+# is fixed for everyone ("Low. Tired. Certain."). So a rancher and a
+# photojournalist narrated the same frame with the same eyes. The lens is who
+# is doing the looking: what they notice first, the words they reach for, what
+# they know. Perception and diction ONLY — narrator_direction forbids the
+# narrator a private history ("You are not a character with a secret"), and
+# the lens must not smuggle one in. engine._narrator_lens hands it over.
+LENS_RULE = ("how they SEE and SAY things, for the narrator who speaks as them: 2-3 short "
+             "sentences in the second person. What you notice first in any place (from their "
+             "work and life: a medic counts exits and breathing, a rancher reads weather and "
+             "tracks), the words and rhythm you talk in, and what you know that others would "
+             "not. Perception and way of speaking ONLY: no backstory, no secrets, no events, "
+             "no mission")
+
+_LENS = """The narrator of a game speaks as its PLAYER CHARACTER, first person. Who they are:
+{who}
+
+Return JSON: {{"lens": "{lens_rule}"}}"""
+
+
+def ensure_lens(cid: str) -> str:
+    """Their lens, or "" — and for a character from before lenses (the
+    starter, anyone made before 2026-09-25), write one in the background, at
+    most once a minute each. Text only: it works on any key."""
+    rec = load(cid) if valid_id(cid) else None
+    if not rec:
+        return ""
+    if rec.get("lens"):
+        return str(rec["lens"])
+    if not have_key() or time.time() - _LENS_TRIES.get(cid, 0) < 60:
+        return ""
+    _LENS_TRIES[cid] = time.time()
+
+    def work():
+        try:
+            r0 = load(cid) or {}
+            who = "\n".join(f"{k}: {r0[k]}" for k in ("name", "pronouns", "role", "tagline", "demeanor",
+                                                        "concept", "who") if r0.get(k))
+            out = _text_json([{"text": _LENS.format(who=who[:2400], lens_rule=LENS_RULE)}],
+                             "character_lens", temperature=0.6)
+            lens = str(out.get("lens") or "").strip()[:700]
+            if lens:
+                _update(cid, lambda r: r.update(lens=lens))
+                print(f"[CHARACTERS] {cid} sees it their way: {lens[:90]!r}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[CHARACTERS] {cid}: no lens ({e})", flush=True)
+    threading.Thread(target=work, daemon=True, name=f"lens-{cid}").start()
+    return ""
+
+
+_LENS_TRIES: Dict[str, float] = {}
 
 _VOICE_WORDS = """You write how a PLAYER CHARACTER sounds, for a voice designer. Who they are:
 {who}

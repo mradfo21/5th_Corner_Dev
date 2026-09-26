@@ -1,5 +1,47 @@
 # 🔧 CHANGELOG - September 25, 2026
 
+## ✅ NEW: The narrator is one short thought, as the character, about the frame on screen
+
+Matt asked three things in a row:
+- *"do we have the ability for that voice description to influence the actual words from the narrator so playing each character feels like they see the world slightly differently?"*
+- *"make sure to not have many lines. really they should keep it short, a thought, what they'd think as them, the character"*
+- *"now do the thoughts pertain to whats happening in the scene we're looking at?"*
+
+The honest answers were no, no and no.
+
+**Who is thinking.** The narrator is the character ("You are {self}, speaking into a tape"). All it was told about them was what they LOOK like: `protagonist_line` gives name, role, appearance, wardrobe and gear. Its register is fixed for everyone ("Low. Tired. Certain."). So a rancher and a photojournalist narrated the same frame with the same eyes.
+- **Each character has a LENS now.** The brief that names and voices them writes it: what they notice first, the words and rhythm they talk in, and what they know. It is perception and diction only; narrator_direction still forbids the narrator a private history. Characters from before lenses get one written in the background the first time they narrate.
+- **Where it goes:**
+  - under the World brief's VOICE line, in every World's copy, none of which name `{lens}`;
+  - again, compressed, as the LAST thing in the prompt ("WHO IS THINKING — the thought has to be one only THEY would have").
+  - Placed only up top, it lost. In an A/B of one moment, four characters gave four lines any of them could have said.
+
+**One thought, not two beats.** A run played as a character narrates ONE sentence of twelve words or fewer: what goes through their head. The rotation of shapes stays, so it doesn't settle into one. There is a character set of shapes:
+- **NOTICE:** what you would catch first.
+- **KNOW:** what your trade tells you.
+- **READ, QUESTION, TALLY, GOAL,** with READ and KNOW ruling out "a year, a company, a permit".
+- **HISTORY**, the World's facts, keeps one slot in nine.
+- The MOVE TO bridge's second line is dropped for a character: one thought per narration.
+- Runs without a character (old saves, harness sessions) keep the two beats they were tuned on.
+- The mechanism worth knowing: the two-beat FACT shape ("what was done here, who ran it, what year") swallowed half the characters even after the lens was in, because the World's brief spends most of its words on history. A shape that does not rule history out inherits it.
+
+**What is on screen.** The narrator's "WHAT IS ON SCREEN" read `current_observed_vision`, then fell back to `current_image_prompt`.
+- The first is written only by /api/observe, the live-video path, so on the stills path every player plays it was always empty.
+- The fallback is the frame's RENDER RECIPE, which opens with the camera rules. Clipped to 400 characters, what the narrator was told about a frame of a rancher at a rusted truck, facing a razor-wired bunker, was *"🎥 CAMERA: THIRD-PERSON FOLLOW-CAM VIEW … a camera three to five metres behind the character."*
+- Every narration on the stills path has been written blind to its picture. The action text and the recent prose were the only anchors, which is why lines about permits and 1989 sounded like the place and not the frame.
+- `_narrator_sees` now uses the live read if there is one; otherwise the vision pass over the still (`_vision_analyze_all`, cached per image, the same read TALK already uses) plus the detector's labels for the frame. The render recipe is never used.
+
+**How it was checked.** A real frame from the native game (the harness played a turn as Hosteen: "Sprint toward the rusted truck") was narrated in-process as four characters, each from the start of the rotation.
+- The narrator now receives *"An elderly man … leaning against the side of a rusted 1990s pickup truck. In the middle distance, a concrete bunker-like structure is enclosed by a tall chain-link fence topped with barbed wire … In the frame: rusty pickup truck, concrete bunker, barbed wire fence, metal barrel, metal tank."*
+- Every thought is about that truck, and each is someone's:
+  - **Hosteen** (rancher): *"The tread on these tires has not seen a road in years."*
+  - **Jason** (photojournalist): *"The truck's VIN plate is filed smooth, just like the others."*
+  - **Elena** (paramedic): *"That truck bed would hold a trauma board, but not a spine."*
+  - **Sadie** (radio ham): *"Signal-to-noise ratio is bottoming out near these iron-rich sedimentary deposits."*
+- Before the lens, the same four characters in the same moment gave *"Horizon did X in 19XX. Why is Y?"* four times over.
+- **Not solved:** history still slips into about one thought in four. "Rolls of film" reaches characters who aren't photographers, since the World's premise was written around one.
+- `test_character_voice` (+5, the thought shape, the lens placement, no follow-up line) and `test_narrator_grounding` (the still is read; the render recipe never is) are green.
+
 ## ✅ NEW: A character is designed a voice when they are made, and it narrates their runs
 
 Matt: *"focus on google see if we can use their new TTS that just came out this week … to get the best voice possible and then include that as part of the character creator"*, and then *"make sure custom character voicing is working and that we're generating good voices with character context as a default, that we're hearing it work in game, and that we're in good shape for rolling this into pricing and accounts."*

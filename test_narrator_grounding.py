@@ -106,9 +106,27 @@ class TestSceneIsWhatIsOnScreen(NarratorPromptCase):
         self.assertIn("flooded stairwell", p)
         self.assertNotIn("humming pipes", p)
 
-    def test_falls_back_to_the_prompt_the_frame_was_drawn_from(self):
-        self.seed(current_image_prompt=ON_SCREEN)
-        self.assertIn("flooded stairwell", self.narrate())
+    def test_without_a_live_read_it_reads_the_still(self):
+        """current_observed_vision is only written on the live-video path, so
+        on the stills path the narrator has to look at the still itself — the
+        cached vision pass TALK and the turn already use."""
+        from unittest import mock
+        self.seed(current_image_url="/images/frame.png",
+                  current_image_prompt="\U0001f3a5 CAMERA: THIRD-PERSON FOLLOW-CAM VIEW. RIG: a camera...",
+                  scene_objects=["rusty pickup truck", "concrete bunker"])
+        with mock.patch.object(engine, "_resolve_image_path", return_value=Path(__file__)), \
+                mock.patch.object(engine, "_vision_analyze_all", return_value={"description": ON_SCREEN}):
+            p = self.narrate()
+        self.assertIn("flooded stairwell", p)
+        self.assertIn("rusty pickup truck", p)
+
+    def test_the_render_recipe_is_never_the_scene(self):
+        """It was the fallback, and it opens with the camera rules: clipped,
+        a narrator's WHAT IS ON SCREEN was "CAMERA: THIRD-PERSON FOLLOW-CAM
+        VIEW … a camera three to five metres behind the character"."""
+        self.seed(current_image_prompt="\U0001f3a5 CAMERA: THIRD-PERSON FOLLOW-CAM VIEW. RIG: a camera "
+                                       "three to five metres behind the character")
+        self.assertNotIn("FOLLOW-CAM", self.narrate())
 
     def test_falls_back_to_the_world_document_last(self):
         # Still better than nothing on turn one, before any frame has rendered.
@@ -123,7 +141,7 @@ class TestSceneIsWhatIsOnScreen(NarratorPromptCase):
 
     def test_the_scene_is_clipped_even_when_it_is_long(self):
         self.seed(current_observed_vision="x" * 5000)
-        self.assertNotIn("x" * 500, self.narrate())
+        self.assertNotIn("x" * 700, self.narrate())
 
 
 class TestTheLiveStateReachesTheLine(NarratorPromptCase):

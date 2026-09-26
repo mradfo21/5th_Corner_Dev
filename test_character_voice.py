@@ -63,7 +63,10 @@ DESC = ("A dry-humoured salvage diver in her late forties with a low, slightly r
 class TheBriefSaysHowTheySound(unittest.TestCase):
     def test_the_brief_asks_for_a_voice_and_a_line(self):
         brief = characters._BRIEF.format(concept="x", with_pics="", voice_rule=characters.VOICE_RULE,
-                                         line_rule=characters.LINE_RULE)
+                                         line_rule=characters.LINE_RULE, lens_rule=characters.LENS_RULE)
+        self.assertIn('"lens":', brief)
+        # perception and diction only: narrator_direction forbids it a past
+        self.assertIn("no backstory", characters.LENS_RULE)
         self.assertIn('"voice":', brief)
         self.assertIn('"voice_line":', brief)
         # Google's shape: one sentence, archetype first; never a real person.
@@ -240,6 +243,46 @@ class TheNarratorSpeaksInIt(unittest.TestCase):
         src = (ROOT / "engine.py").read_text(encoding="utf-8")
         line = src.split("NARRATOR_VOICE_ID = ", 1)[1].split("\n", 1)[0]
         self.assertNotIn("VOICES_CONFIG", line)
+
+
+class TheyThinkAsThemselves(unittest.TestCase):
+    """Matt: "keep it short, a thought, what they'd think as them, the
+    character". A run with a lens narrates ONE thought through their eyes."""
+
+    def setUp(self):
+        import engine
+        self.e = engine
+
+    def test_one_thought_that_replaces_the_two_beats(self):
+        d = self.e._beat_directive([], "", 0, thought=True, lens="You are Mara. You read water.")
+        self.assertIn("ONE THOUGHT", d)
+        self.assertIn("twelve words or fewer", d)
+        self.assertIn("replaces the two beats", d)
+        self.assertNotIn("BEAT TWO", d)
+        # who is thinking comes LAST, next to the shape — placed only up top, it lost
+        self.assertLess(d.index("WHO IS THINKING"), d.index("THE THOUGHT"))
+        self.assertIn("You read water.", d)
+
+    def test_a_run_without_a_character_keeps_its_two_beats(self):
+        d = self.e._beat_directive([], "", 0)
+        self.assertIn("BEAT TWO", d)
+
+    def test_their_own_shapes_rule_out_history(self):
+        for kind in ("READ", "KNOW"):
+            self.assertIn("no year, no company", self.e._THOUGHT_KINDS[kind])
+        self.assertIn("NOTICE", self.e._THOUGHT_CYCLE)
+        self.assertEqual(self.e._THOUGHT_CYCLE.count("HISTORY"), 1)
+
+    def test_the_lens_sits_under_the_briefs_voice_line(self):
+        with mock.patch.dict(self.e.PROMPTS, {"narrator_direction":
+                                              "You are {self}.\nVOICE: low.\nWHAT YOU SAY\nstuff"}):
+            out = self.e._authored_narrator_brief(self="Mara", lens="THROUGH YOUR EYES\nYou read water.")
+        lines = out.split("\n")
+        self.assertEqual(lines[lines.index("VOICE: low.") + 1], "THROUGH YOUR EYES")
+
+    def test_one_line_means_no_follow_up(self):
+        src = (ROOT / "engine.py").read_text(encoding="utf-8")
+        self.assertIn("if follow_focus and _narrator_lens():", src)
 
 
 class TheScreen(unittest.TestCase):
