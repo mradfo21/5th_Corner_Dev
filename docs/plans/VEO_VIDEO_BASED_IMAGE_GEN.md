@@ -1,7 +1,7 @@
 # 🎬 Veo 3.1 Video-Based Image Generation
 
 > **Status: dormant, broken, and superseded by
-> [`VIDEO_MOTION_PLAN.md`](VIDEO_MOTION_PLAN.md).** Nothing reaches it: the
+> [`TAPE_FILM_PLAN.md`](TAPE_FILM_PLAN.md).** Nothing reaches it: the
 > only switch is `image_provider: "veo"`, which no preset offers
 > (`VEO_MODE_ENABLED` gates nothing). If something did, every frame would buy
 > a clip and then fail: `_extract_last_frame` has used an undefined
