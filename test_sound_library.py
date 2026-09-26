@@ -378,5 +378,20 @@ class TestItShips(unittest.TestCase):
         self.assertEqual(p.stdout.strip(), "", "the library must be committed, not ignored")
 
 
+
+class TheTitleScreenIsTheFilmsSound(unittest.TestCase):
+    """The start menu's background film has its own soundtrack. The shipped
+    title theme went on top of it for a day; it is for a build with no film."""
+
+    def test_the_theme_is_only_the_fallback_for_no_film(self):
+        js = (Path(__file__).resolve().parent / "static/js/standalone.js").read_text(encoding="utf-8")
+        menu = js.split("async enterMenu() {", 1)[1].split("\n      },", 1)[0]
+        self.assertIn("Signal.hasFilm()", menu)
+        self.assertIn("(!film && info.menu_library && info.menu_library.url)", menu)
+
+    def test_the_film_plays_with_its_sound(self):
+        js = (Path(__file__).resolve().parent / "static/js/standalone.js").read_text(encoding="utf-8")
+        self.assertIn("v.muted = !isLoop;", js)
+
 if __name__ == "__main__":
     unittest.main()

@@ -283,8 +283,11 @@ earlier one.
   `--budget`), then `--check --quiz` and listen. `test_sound_library` holds
   the catalog and the folder to each other.
 - `static/menu/background_loop.mp4` — the start menu's background film,
-  played muted and looping under the title by `Signal` (standalone.js). Swap
-  the file to swap the splash; absent, the menu is the black card. `*.mp4` is
+  played looping under the title by `Signal` (standalone.js) WITH ITS OWN
+  SOUND, which is the title screen's audio: no library theme is laid over it
+  (the shipped title theme plays only on a build without the film, or a
+  menu loop locked in the editor replaces both). Swap the file to swap the
+  splash; absent, the menu is the black card. `*.mp4` is
   gitignored, and `tools/ship_layout` bundles `static/`, so a build made with
   it in place carries it.
 
