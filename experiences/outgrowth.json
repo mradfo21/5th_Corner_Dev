@@ -1,0 +1,37 @@
+{
+  "id": "outgrowth",
+  "name": "OUTGROWTH",
+  "start_world": "w-outgrowth",
+  "worlds": [
+    {
+      "id": "w-outgrowth",
+      "name": "Harrow Siding",
+      "slug": "outgrowth",
+      "x": 0,
+      "y": -320
+    }
+  ],
+  "cutscenes": [],
+  "transitions": [],
+  "sound": {
+    "palette": "tape",
+    "muted": [],
+    "volume": 1.0
+  },
+  "lore": {
+    "enabled": true,
+    "notes": "2030, the arid outback. A Verdant Genomics seed-bank crop, engineered to hold water in the desert, went feral at Harrow Siding: a jungle along the creek lines, creatures grown out of it, and the company's security robots still patrolling, some of them overgrown.\n\nA small, eccentric tactical unit goes in with respirators, jammers and fire. Hard science fiction, shot like 16mm footage of a real place: practical creatures, plausible machines, dry humour.",
+    "documents": [],
+    "x": -734.1600000000001,
+    "y": -111.71999999999994
+  },
+  "threat": {
+    "escalate_at": 2,
+    "critical_at": 5,
+    "beat_normal": "BEAT: put a character or a direct threat in view early — a patrol, a figure, a voice — don't let the opening stay empty.",
+    "beat_escalating": "BEAT: pressure is rising. Push the situation forward.",
+    "beat_critical": "BEAT: the situation is critical. Offer a way through or a last stand."
+  },
+  "x": 0,
+  "y": 200
+}

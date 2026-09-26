@@ -90,6 +90,12 @@ FACTORY_FILES: Tuple[str, ...] = (
     "worlds/somewhere.frame.png",
     "worlds/somewhere.frame.json",
     "experiences/somewhere.json",
+    # OUTGROWTH, the second shipped Experience (2026-09-25): 2030 outback,
+    # an engineered crop gone feral, flesh creatures and company robots.
+    "worlds/outgrowth.json",
+    "worlds/outgrowth.frame.png",
+    "worlds/outgrowth.frame.json",
+    "experiences/outgrowth.json",
     "experiences/.gitkeep",
     "worlds/.gitkeep",
 )
