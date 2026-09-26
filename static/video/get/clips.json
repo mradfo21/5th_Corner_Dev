@@ -7,10 +7,12 @@
       "src720": "/static/video/get/hero-720.mp4",
       "poster": "/static/video/get/hero.jpg",
       "label": "",
-      "sub": "OUTGROWTH \u00b7 Ruth 'Static' Calloway",
+      "sub": "OUTGROWTH · Ruth 'Static' Calloway",
       "seconds": 18.3,
       "bytes": 14365296,
-      "bytes720": 3922133
+      "bytes720": 3922133,
+      "gif": true,
+      "gif_bytes": 5707120
     },
     {
       "name": "create",
@@ -21,7 +23,9 @@
       "sub": "Any hero you can describe.",
       "seconds": 22.3,
       "bytes": 2616570,
-      "bytes720": 939930
+      "bytes720": 939930,
+      "gif": true,
+      "gif_bytes": 1798499
     },
     {
       "name": "arrive",
@@ -32,7 +36,9 @@
       "sub": "Two worlds to start. No two runs alike.",
       "seconds": 12.0,
       "bytes": 6497990,
-      "bytes720": 1794478
+      "bytes720": 1794478,
+      "gif": true,
+      "gif_bytes": 4156588
     },
     {
       "name": "act",
@@ -43,7 +49,9 @@
       "sub": "Type any move. It happens.",
       "seconds": 24.0,
       "bytes": 22621437,
-      "bytes720": 4834204
+      "bytes720": 4834204,
+      "gif": true,
+      "gif_bytes": 5310640
     },
     {
       "name": "wear",
@@ -54,7 +62,9 @@
       "sub": "Loot it. Wear it. Wield it.",
       "seconds": 15.5,
       "bytes": 2777879,
-      "bytes720": 694477
+      "bytes720": 694477,
+      "gif": true,
+      "gif_bytes": 2014918
     },
     {
       "name": "fight",
@@ -65,7 +75,9 @@
       "sub": "Roll to hit. Roll to survive.",
       "seconds": 8.0,
       "bytes": 5795162,
-      "bytes720": 1389049
+      "bytes720": 1389049,
+      "gif": true,
+      "gif_bytes": 4406290
     },
     {
       "name": "goal",
@@ -76,7 +88,9 @@
       "sub": "Find the goal. Claim the prize.",
       "seconds": 16.7,
       "bytes": 16602977,
-      "bytes720": 3540565
+      "bytes720": 3540565,
+      "gif": true,
+      "gif_bytes": 5466303
     },
     {
       "name": "key",
@@ -87,7 +101,9 @@
       "sub": "Bring your own AI key.",
       "seconds": 15.5,
       "bytes": 3707190,
-      "bytes720": 1026291
+      "bytes720": 1026291,
+      "gif": true,
+      "gif_bytes": 3995684
     }
   ],
   "base": "https://github.com/mradfo21/abyss-media/releases/download/clips-2026-09-25-2117"

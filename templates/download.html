@@ -73,14 +73,14 @@ body.past-splash .top .ui-btn { opacity: 1; transform: none; pointer-events: aut
 /* The still is a real <img>, not the video's poster: iPhone Safari draws a
    poster stretched to the frame (object-fit is ignored until the video plays).
    The video fades in over it once it is actually playing. */
-.film video { opacity: 0; transition: opacity 0.5s ease; }
-.film video.live { opacity: 1; }
+.film video, .film img.gif { opacity: 0; transition: opacity 0.5s ease; }
+.film video.live, .film img.gif.live { opacity: 1; }
 
 /* ---------- splash ---------- */
 .splash { position: relative; isolation: isolate; height: 100svh; min-height: 560px; display: grid; place-items: center; overflow: hidden; }
 .splash .film { z-index: -2; }
 /* scaled past the game's own corner HUD, which would sit under this page's bar */
-.splash .film video { filter: saturate(0.95) brightness(0.8); transform: scale(1.1); }
+.splash .film video, .splash .film img.gif { filter: saturate(0.95) brightness(0.8); transform: scale(1.1); }
 .splash::after {
   content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
   background:
@@ -102,7 +102,7 @@ body.past-splash .top .ui-btn { opacity: 1; transform: none; pointer-events: aut
             padding: calc(env(safe-area-inset-top, 0px) + 64px) 0 calc(env(safe-area-inset-bottom, 0px) + 22px); }
   /* ^ the 64px is the fixed top bar: 5TH CORNER sits on black, above the film */
   .splash .film { position: relative; inset: auto; width: 100%; height: min(75svh, 84vw); }
-  .splash .film video { transform: none; }
+  .splash .film video, .splash .film img.gif { transform: none; }
   .splash .film::after {
     content: ""; position: absolute; inset: 0; pointer-events: none;
     background: linear-gradient(180deg, rgba(2,5,4,0.35) 0%, rgba(2,5,4,0) 18%, rgba(2,5,4,0) 66%, var(--bg) 100%);
@@ -261,7 +261,7 @@ details.news li span.alt { color: var(--dim); }
 <main>
   <section class="splash" aria-label="{{ title }}">
     <div class="film" aria-hidden="true">
-      {% if hero %}{% if hero.poster %}<img class="still" src="{{ hero.poster }}" alt="">{% endif %}<video id="hero-video" data-src="{{ hero.src }}" data-src720="{{ hero.src720 }}" muted loop playsinline preload="auto"></video>{% endif %}
+      {% if hero %}{% if hero.poster %}<img class="still" src="{{ hero.poster }}" alt="">{% endif %}<video id="hero-video" data-src="{{ hero.src }}" data-src720="{{ hero.src720 }}" data-gif="{{ hero.gif }}" muted loop playsinline preload="auto"></video>{% endif %}
     </div>
     <div class="hero">
       <p class="genre rise" style="--d:0.3s">Role-playing game · Single-player</p>
@@ -281,7 +281,7 @@ details.news li span.alt { color: var(--dim); }
     <figure class="clip{% if loop.index is even %} odd{% endif %}">
       <div class="frame film">
         {% if c.poster %}<img class="still" src="{{ c.poster }}" alt="" loading="lazy">{% endif %}
-        <video data-src="{{ c.src }}" data-src720="{{ c.src720 }}" muted loop playsinline preload="none" aria-label="{{ c.label or c.name }} — recorded in the game"></video>
+        <video data-src="{{ c.src }}" data-src720="{{ c.src720 }}" data-gif="{{ c.gif }}" muted loop playsinline preload="none" aria-label="{{ c.label or c.name }} — recorded in the game"></video>
         {% if c.label %}<figcaption class="word">{{ c.label }}{% if c.sub %}<small class="sub">{{ c.sub }}</small>{% endif %}</figcaption>{% endif %}
       </div>
     </figure>
@@ -385,16 +385,39 @@ details.news li span.alt { color: var(--dim); }
   // fling); a load() that lands after play() resets the video to paused.
   // Phones and data-saver get the 720p cut; everything else the 1080p one.
   const small = matchMedia("(max-width: 900px)").matches || !!(navigator.connection && navigator.connection.saveData);
-  const attach = (v) => { if (!v.getAttribute("src")) v.src = (small && v.dataset.src720) || v.dataset.src; };
+  // On a phone the clip is a GIF in an <img> (tools/make_gifs.py). A phone's
+  // <video> may never be allowed to start: Low Power Mode refuses every
+  // autoplay, and so do some in-app browsers. Matt, 2026-09-25: "the videos
+  // still dont play". An animated image always plays. Not under reduced
+  // motion: there the still stays.
+  const toGif = (v) => {
+    if (!small || REDUCED || !v.dataset.gif) return false;
+    const img = document.createElement("img");
+    img.className = "gif";
+    img.alt = "";
+    img.decoding = "async";
+    if (v.id) img.id = v.id;
+    img.addEventListener("load", () => img.classList.add("live"));
+    img.src = v.dataset.gif;
+    v.replaceWith(img);
+    return true;
+  };
+  const attach = (v) => {
+    if (!v || v.tagName !== "VIDEO" || !v.isConnected) return;
+    if (toGif(v)) return;
+    if (!v.getAttribute("src")) v.src = (small && v.dataset.src720) || v.dataset.src;
+  };
   const loadIO = new IntersectionObserver((es) => es.forEach((e) => {
     if (!e.isIntersecting) return;
     attach($("video", e.target));
     loadIO.unobserve(e.target);
   }), { rootMargin: "600px 0px" });
   const playIO = new IntersectionObserver((es) => es.forEach((e) => {
-    const v = $("video", e.target);
     e.target.classList.toggle("in", e.isIntersecting);
-    if (e.isIntersecting && !REDUCED) { attach(v); v.play().catch(() => {}); } else { v.pause(); }
+    if (e.isIntersecting && !REDUCED) attach($("video", e.target));
+    const v = $("video", e.target);   // gone once it became a GIF
+    if (!v) return;
+    if (e.isIntersecting && !REDUCED) v.play().catch(() => {}); else v.pause();
   }), { threshold: 0.45 });
   clips.forEach((c) => {
     const v = $("video", c);
@@ -404,6 +427,8 @@ details.news li span.alt { color: var(--dim); }
   });
   if (hero) {
     attach(hero);
+  }
+  if (hero && hero.isConnected) {
     new IntersectionObserver(([e]) => { if (e.isIntersecting && !REDUCED) hero.play().catch(() => {}); else hero.pause(); }, { threshold: 0.1 }).observe(hero);
     if (REDUCED) hero.removeAttribute("autoplay");
   }
