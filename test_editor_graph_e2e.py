@@ -1660,7 +1660,7 @@ class TestEditorDots(EditorHarness):
             self.assertIn("Play loop", body)
             self.assertIn("Play menu", body)
             self.assertIn("Play music", body)
-            self.assertIn("Generate missing", body)
+            self.assertIn("sound library", body)
             # Both ways in are actually here.
             self.assertTrue(self.page.evaluate(
                 "!!document.querySelector('#eg-sheet-body .eg-prompt')"))

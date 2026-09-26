@@ -1551,17 +1551,19 @@
   // reaching into this IIFE. Harmless if Moments isn't loaded.
   try { window.Sound = Sound; } catch (_) {}
 
-  // SceneAudio — generated ambient score for the current guide image.
+  // SceneAudio — the score and the place under the current picture.
   //
-  // Each new scene carries a text descriptor (metadata.prompt). We POST it to
-  // /api/scene_audio, which returns a music bed plus looping world SFX (stock
-  // first, then a scene-specific fill-in) — whatever is on disk, since nothing
-  // on the player's key generates them (docs/plans/ONE_KEY_AUDIO_PLAN.md). We loop both and
-  // crossfade whenever the world re-scores. Uncached music is generated in
-  // the background — we retry until the file lands instead of blocking the
-  // first scene. Encounter stingers are pre-cached stock one-shots. Shares
-  // the Sound synth's AudioContext so it inherits the same mute + first-
-  // gesture gating and silently no-ops when audio is unavailable.
+  // Each new scene carries a text descriptor (vision's read of the frame). We
+  // POST it to /api/scene_audio, which answers with a music bed and a looping
+  // ambience chosen from the shipped sound library (static/audio/library/,
+  // made once on ElevenLabs and picked by sound_library.py — nothing is
+  // generated, on any key). We loop both and crossfade whenever the scene
+  // re-scores. The pending/retry machinery below dates from when clips were
+  // generated in the background; the library never answers pending, so it no
+  // longer fires, and it costs nothing to keep. Encounter stingers are library
+  // one-shots too. Shares the Sound synth's AudioContext so it inherits the
+  // same mute + first-gesture gating and silently no-ops when audio is
+  // unavailable.
   // ------------------------------------------------------------------
   const SceneAudio = (function () {
     let currentUrl = null;      // audio_url currently playing (guards re-triggers)
@@ -1584,7 +1586,7 @@
     const SFX_BED = 1.0;        // ambience leads, at the preset's face value
     const MUSIC_BED = 0.35;     // the score sits under it
     const RETRY_MS = 3500;
-    const RETRY_MAX = 28;       // ~98s, matches Eleven Music's timeout
+    const RETRY_MAX = 28;       // ~98s, the old generator's timeout
     let audioToken = 0;         // bumps on every new score so late replies die
     let pendingTimer = null;
     let pendingTries = 0;
@@ -2317,13 +2319,13 @@
       // Title screen bed. The match loop used to keep going after LEAVE, which
       // is why the menu sounded like the same default track forever.
       //
-      // ONLY a track somebody locked in the editor plays here. It used to fall
-      // back to the menu_preview sample — the 10-second audition the Play menu
-      // button writes, which the server also generated unprompted from the
-      // direction text. So the title screen looped ten seconds of, in this
+      // A track somebody LOCKED in the editor plays here, and failing that the
+      // shipped title theme (menu_library — a track written as a title theme and
+      // chosen from the library, so a decision, not an audition). It must never
+      // fall back to the menu_preview sample: that was the 10-second audition the
+      // Play menu button wrote, which the server also generated unprompted from
+      // the direction text, and the title screen looped ten seconds of, in this
       // case, "horror action score": clanking metal, forever, under a menu.
-      // An audition is not a decision. The editor says "silent until you set
-      // one" and that is now true.
       async enterMenu() {
         try { this.unlock(); } catch (_) {}
         const t = bumpToken();
@@ -2338,7 +2340,8 @@
           info = (raw && raw.data) || raw || {};
         } catch (_) { return; }
         if (!sameToken(t)) return;
-        const locked = info.menu_loop && info.menu_loop.url;
+        const locked = (info.menu_loop && info.menu_loop.url)
+          || (info.menu_library && info.menu_library.url);
         if (locked) await crossfadeTo(locked, "music");
       },
       leaveMenu() {

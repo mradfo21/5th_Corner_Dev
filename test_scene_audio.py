@@ -1,75 +1,103 @@
 """Offline tests for scene music + world sound (no network).
 
-Nothing is generated today (see scene_audio.is_available); these hold the
-prompt builders, the lanes' contracts through the generator seam, and every
-path that plays a file already on disk."""
+Since 2026-09-25 nothing here is generated: every lane plays the shipped
+sound library (static/audio/library/, sound_library.py), made once on
+ElevenLabs by tools/build_sound_library.py. These hold the wiring — what each
+endpoint answers, from which words, under which switch — and every path that
+still plays a file a person put on disk (a locked loop, a designer one-shot).
+The library's own invariants are test_sound_library's.
+"""
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 
 import scene_audio
+import sound_library
 
 
-def test_flatten_music_prompt_is_instrumental():
-    text = scene_audio.flatten_music_prompt(
-        "a collapsing grate and a miner with a pipe",
-        mode="encounter",
-        direction="",
-    ).lower()
-    assert "instrumental" in text or "no vocal" in text
-    assert "tense" in text or "danger" in text or "confrontation" in text
+def _no_run(monkeypatch):
+    """No session state: phase normal, no world, no vision read."""
+    monkeypatch.setattr(scene_audio, "_run_context",
+                        lambda session_id="default": {"phase": "normal", "world": "", "vision": ""})
 
 
-def test_authored_direction_survives_flatten():
-    text = scene_audio.flatten_music_prompt(
-        "a sunlit kitchen", mode="scene",
-        direction="slow detuned piano, tape hiss, no drums",
-    )
-    assert "detuned piano" in text
-    assert "sunlit kitchen" in text
+def _music_dir(monkeypatch, tmp_path):
+    music = tmp_path / "music"
+    music.mkdir(exist_ok=True)
+    monkeypatch.setattr(scene_audio, "MUSIC_DIR", music)
+    monkeypatch.setattr(scene_audio, "_LOOP_META", music / "loop.json")
+    monkeypatch.setattr(scene_audio, "_DIRECTION_PATH", music / "direction.json")
+    monkeypatch.setattr(scene_audio, "_SFX_DIRECTION_PATH", music / "sfx_direction.json")
+    monkeypatch.setattr(scene_audio, "_MENU_META", music / "menu.json")
+    monkeypatch.setattr(scene_audio, "_MENU_DIRECTION_PATH", music / "menu_direction.json")
+    return music
 
 
-def test_ambience_kind_reads_the_place():
-    assert scene_audio._ambience_kind("rain on a concrete roof", "scene") == "rain"
-    assert scene_audio._ambience_kind("a flooded cave tunnel", "scene") == "cave"
-    assert scene_audio._ambience_kind("neon street market", "scene") == "urban"
-    assert scene_audio._ambience_kind("a quiet kitchen", "conversation") == "room"
-    assert scene_audio._ambience_kind("an unknown place", "encounter") == "industrial"
+def test_an_encounter_is_scored_as_a_confrontation(monkeypatch, tmp_path):
+    _no_run(monkeypatch)
+    _music_dir(monkeypatch, tmp_path)
+    rec = scene_audio.get_scene_audio("hostile — person — a miner with a pipe", mode="encounter")
+    assert rec["music_id"].startswith("mus_enc_")
+    assert sound_library.get(rec["music_id"])["instrumental"] is True
 
 
-def test_sfx_prompt_is_foley_not_a_score():
-    prompt = scene_audio._scene_to_sfx_prompt("rain on a concrete roof", "scene")
-    low = prompt.lower()
-    assert "loop" in low
-    assert "rain" in low
-    assert "no music" in low or "no melody" in low
+def test_the_authored_direction_steers_the_score(monkeypatch, tmp_path):
+    """Typing a score in the editor has to change what plays on the next scene
+    without anything being locked. With a library that means the words choose
+    the track: the direction is read into the pick, and into the world's
+    flavour, so a neon direction on a desert World scores it neon."""
+    _no_run(monkeypatch)
+    _music_dir(monkeypatch, tmp_path)
+    plain = scene_audio.get_scene_audio("a sunlit kitchen")["music_id"]
+    scene_audio.set_music_direction("neon synthwave, rain on chrome, cyberpunk")
+    steered = scene_audio.get_scene_audio("a sunlit kitchen")["music_id"]
+    assert "cyber" not in plain
+    assert "cyber" in steered, steered
+
+
+def test_the_place_decides_the_bed(monkeypatch, tmp_path):
+    _no_run(monkeypatch)
+    _music_dir(monkeypatch, tmp_path)
+    bed = lambda text, mode="scene": scene_audio.inspect_scene(text, mode)["ambience_id"]
+    assert bed("rain on a corrugated tin roof") in ("amb_rain_metal", "amb_rain")
+    assert bed("a flooded cave tunnel, water dripping") in ("amb_cave", "amb_sewer", "amb_pump_station")
+    assert bed("a neon street market, holographic signs") == "amb_neon_rain"
+    assert bed("an unknown place") == "amb_room"
+
+
+def test_every_ambience_was_asked_for_without_music():
+    for e in sound_library.entries("ambience"):
+        low = e["prompt"].lower()
+        assert "no music" in low, e["id"]
+        assert e["loop"] is True
+        assert "loop" in low, e["id"]
 
 
 def test_stock_catalog_covers_encounter_hits():
+    status = scene_audio.stock_status()
     for key in ("encounter_enter", "encounter_lock", "encounter_resolve",
                 "encounter_exit", "encounter_hitch", "encounter_die",
                 "encounter_title", "encounter_survive"):
-        spec = scene_audio.STOCK_STINGERS[key]
-        assert spec["file"].startswith("sting_")
-        assert spec["file"].endswith(".mp3")
-        assert spec["seconds"] <= 4
-        assert spec["loop"] is False
+        rec = status[key]
+        assert rec["ready"] and rec["url"].startswith(sound_library.URL_BASE + "stinger/")
+        assert rec["seconds"] <= 4
+        assert rec["loop"] is False
     for key in ("industrial", "rain", "cave", "wind", "room", "urban", "forest"):
-        spec = scene_audio.STOCK_AMBIENCE[key]
-        assert spec["loop"] is True
-        assert spec["seconds"] >= 8
+        rec = status[key]
+        assert rec["ready"] and rec["loop"] is True
+        assert rec["seconds"] >= 8
 
 
-def test_cache_names_split_music_and_sfx():
-    music = scene_audio._cache_name("a quiet hallway", 20, mode="scene")
-    sfx = scene_audio._sfx_cache_name("a quiet hallway", 14, mode="scene")
-    assert music.startswith("scene_") and music.endswith(".mp3")
-    assert sfx.startswith("amb_") and sfx.endswith(".mp3")
-    assert music != sfx
-    enc = scene_audio._cache_name("a quiet hallway", 20, mode="encounter")
-    assert enc.startswith("enc_")
-    assert enc != music
+def test_scene_conversation_and_encounter_get_different_beds(monkeypatch, tmp_path):
+    _no_run(monkeypatch)
+    _music_dir(monkeypatch, tmp_path)
+    ids = {mode: scene_audio.get_scene_audio("a quiet hallway", mode=mode)["music_id"]
+           for mode in ("scene", "conversation", "encounter")}
+    assert ids["scene"].startswith("mus_scene_")
+    assert ids["conversation"].startswith("mus_convo_")
+    assert ids["encounter"].startswith("mus_enc_")
 
 
 def _clear_mock(monkeypatch):
@@ -82,53 +110,48 @@ def _clear_mock(monkeypatch):
         pass
 
 
-def test_nothing_generates_on_either_key(monkeypatch):
-    """The game runs on one key, Gemini or OpenAI, and neither makes sound
-    effects. A key being present must not make the module claim it can; the
-    reason it gives is shown to the player, so it has to be the true one."""
+def test_a_key_changes_nothing(monkeypatch):
+    """No key makes sound and none is needed: the library plays the same with
+    a Gemini key, an OpenAI key, or nothing at all."""
     _clear_mock(monkeypatch)
     for env in ("GEMINI_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(env, raising=False)
+    assert scene_audio.is_available() is True
+    for env in ("GEMINI_API_KEY", "OPENAI_API_KEY"):
         monkeypatch.setenv(env, "a-perfectly-good-key-1234")
-    assert scene_audio.is_available() is False
-    why = scene_audio.unavailable_reason()
-    assert why == scene_audio.NO_GENERATOR_REASON
-    assert "sound generator" in why
+    assert scene_audio.is_available() is True
+    assert scene_audio.unavailable_reason() is None
 
 
-def test_every_generator_answers_none(monkeypatch, tmp_path):
-    """The seam is where Lyria plugs in. Until it does, nothing reaches the
-    disk and nothing claims to be pending, whichever lane asks."""
-    _clear_mock(monkeypatch)
-    monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
-    monkeypatch.setattr(scene_audio, "STOCK_DIR", tmp_path / "stock")
-    assert scene_audio._generate_music("a slow drone", 8, mode="scene") is None
-    assert scene_audio._generate_sfx("rain on a roof", 8, loop=True) is None
-    assert scene_audio.generate_preview("a slow drone") is None
-    assert scene_audio.generate_loop("a slow drone") is None
-    assert scene_audio.generate_test_clip("a quiet yard", layer="music") is None
-    assert scene_audio.generate_test_clip("a quiet yard", layer="sfx") is None
-    stinger = scene_audio.generate_test_clip("", layer="stinger")
-    assert stinger["url"] is None and stinger["error"] == "no_key"
-    assert stinger["reason"] == scene_audio.NO_GENERATOR_REASON
-    assert scene_audio.action_foley("Vault the fence", session_id="t") is None
+def test_playing_the_library_writes_nothing(monkeypatch, tmp_path):
+    """Previews, test clips, foley and beds are the library's own files: a
+    preview is a URL under /static/, not a sample written to disk."""
+    _no_run(monkeypatch)
+    music = _music_dir(monkeypatch, tmp_path)
+    prev = scene_audio.library_preview("a slow drone")
+    assert prev["url"].startswith(sound_library.URL_BASE + "music/")
+    for layer in ("music", "sfx", "stinger"):
+        clip = scene_audio.library_test_clip("a quiet yard", layer=layer)
+        assert clip["url"].startswith(sound_library.URL_BASE), layer
+    assert scene_audio.action_foley("Vault the fence", session_id="t")["url"].startswith(
+        sound_library.URL_BASE + "foley/")
     assert scene_audio.consequence_bed(
-        "The hinges tear out of the frame and it swings wide", session_id="t") is None
-    assert list(tmp_path.iterdir()) == []
+        "The hinges tear out of the frame and it swings wide", session_id="t")["url"].startswith(
+        sound_library.URL_BASE + "consequence/")
+    assert list(music.iterdir()) == []
 
 
-def test_the_seam_is_what_the_music_lanes_call(monkeypatch, tmp_path):
-    """One place for a generator to go: the preview and the locked loop both
-    come back the moment _generate_music answers."""
-    monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
-    monkeypatch.setattr(scene_audio, "_LOOP_META", tmp_path / "loop.json")
-    monkeypatch.setattr(scene_audio, "is_available", lambda: True)
-    seen = []
-    monkeypatch.setattr(scene_audio, "_generate_music",
-                        lambda prompt, secs, mode="scene", session_id="default": (
-                            seen.append(mode) or b"ID3" + b"\x00" * 80))
-    assert scene_audio.generate_preview("a slow drone")["file"] == "preview.mp3"
-    assert scene_audio.generate_loop("a slow drone")["source"] == "generated"
-    assert seen == ["verbatim", "verbatim"]
+def test_locking_a_track_copies_it_into_the_loop_slot(monkeypatch, tmp_path):
+    """"Lock as the only track" chooses the closest library track and copies it
+    in, so every path that serves and clears a lock keeps working, and a
+    direction change takes a derived lock off like it always did."""
+    music = _music_dir(monkeypatch, tmp_path)
+    loop = scene_audio.library_loop("a slow uneasy drone")
+    assert loop["source"] == "library"
+    assert (music / "loop.mp3").stat().st_size > 1000
+    assert scene_audio.custom_loop()["url"].startswith("/audio/loop.mp3?v=")
+    scene_audio.set_music_direction("something else entirely")
+    assert scene_audio.custom_loop() is None
 
 
 def test_no_sound_provider_is_called_from_here():
@@ -142,77 +165,63 @@ def test_no_sound_provider_is_called_from_here():
     assert "elevenlabs_api_key" not in low
 
 
-def test_get_scene_audio_is_none_with_nothing_on_disk(monkeypatch, tmp_path):
-    monkeypatch.setattr(scene_audio, "STOCK_DIR", tmp_path / "stock")
-    monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
-    monkeypatch.setattr(scene_audio, "_LOOP_META", tmp_path / "loop.json")
-    (tmp_path / "stock").mkdir()
+def test_a_missing_library_is_silence_with_a_reason(monkeypatch, tmp_path):
+    _no_run(monkeypatch)
+    _music_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(sound_library, "CATALOG_PATH", tmp_path / "nope" / "catalog.json")
+    assert scene_audio.is_available() is False
+    assert scene_audio.unavailable_reason() == scene_audio.MISSING_REASON
     assert scene_audio.get_scene_audio("a quiet forest at dawn") is None
+    assert scene_audio.action_foley("Vault the fence") is None
 
 
-def test_encounter_uses_stock_stinger_when_present(monkeypatch, tmp_path):
-    stock = tmp_path / "stock"
-    stock.mkdir()
+def test_an_encounter_opens_on_its_stinger(monkeypatch, tmp_path):
+    _no_run(monkeypatch)
+    _music_dir(monkeypatch, tmp_path)
+    rec = scene_audio.get_scene_audio("a collapsing grate", mode="encounter")
+    assert rec["stinger_url"].endswith("stinger/encounter_enter.mp3")
+    assert rec["sfx_url"].startswith(sound_library.URL_BASE + "ambience/")
+    assert len(rec["stingers"]) >= 12
+
+
+def test_resolve_audio_path_serves_session_clips_and_rejects_traversal(tmp_path, monkeypatch):
     audio = tmp_path / "audio"
     audio.mkdir()
-    monkeypatch.setattr(scene_audio, "STOCK_DIR", stock)
+    (audio / "scene_abc.mp3").write_bytes(b"ID3" + b"\x00" * 80)
     monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
-    monkeypatch.setattr(scene_audio, "_LOOP_META", tmp_path / "loop.json")
     monkeypatch.setattr(scene_audio, "_session_audio_dir",
                         lambda session_id="default", create=True: audio)
-    monkeypatch.setattr(scene_audio, "_get_audio_dir", lambda session_id="default": audio)
-    sting = stock / "sting_encounter_enter.mp3"
-    sting.write_bytes(b"ID3" + b"\x00" * 80)
-    amb = stock / "amb_industrial.mp3"
-    amb.write_bytes(b"ID3" + b"\x00" * 80)
-    rec = scene_audio.get_scene_audio("a collapsing grate", mode="encounter")
-    assert rec is not None
-    assert rec["audio_url"] is None
-    assert rec["stinger_url"] and "sting_encounter_enter.mp3" in rec["stinger_url"]
-    assert rec["sfx_url"] and "amb_industrial.mp3" in rec["sfx_url"]
-
-
-def test_resolve_audio_path_serves_stock_and_rejects_traversal(tmp_path, monkeypatch):
-    stock = tmp_path / "stock"
-    stock.mkdir()
-    (stock / "sting_encounter_enter.mp3").write_bytes(b"ID3" + b"\x00" * 80)
-    monkeypatch.setattr(scene_audio, "STOCK_DIR", stock)
-    monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
-    path = scene_audio.resolve_audio_path("sting_encounter_enter.mp3")
-    assert path is not None and path.name == "sting_encounter_enter.mp3"
+    path = scene_audio.resolve_audio_path("scene_abc.mp3")
+    assert path is not None and path.name == "scene_abc.mp3"
     assert scene_audio.resolve_audio_path("../secrets.txt") is None
-    assert scene_audio.resolve_audio_path("stock/../secrets.txt") is None
+    assert scene_audio.resolve_audio_path("audio/../scene_abc.mp3") is None
 
 
-def test_inspect_scene_exposes_both_prompts(monkeypatch, tmp_path):
-    music = tmp_path / "music"
-    music.mkdir()
-    monkeypatch.setattr(scene_audio, "MUSIC_DIR", music)
-    monkeypatch.setattr(scene_audio, "_DIRECTION_PATH", music / "direction.json")
-    monkeypatch.setattr(scene_audio, "_SFX_DIRECTION_PATH", music / "sfx_direction.json")
+def test_inspect_scene_says_what_would_play_and_why(monkeypatch, tmp_path):
+    _no_run(monkeypatch)
+    _music_dir(monkeypatch, tmp_path)
     scene_audio.set_music_direction("slow detuned piano")
-    scene_audio.set_sfx_direction("wet steam pipes")
-    rec = scene_audio.inspect_scene("a flooded cave tunnel", mode="scene")
+    scene_audio.set_sfx_direction("quiet")
+    rec = scene_audio.inspect_scene("a limestone cavern, stalactites dripping", mode="scene")
     assert rec["mode"] == "scene"
-    assert "detuned piano" in rec["music_prompt"]
-    assert "wet steam pipes" in rec["sfx_prompt"]
-    assert rec["ambience_kind"] == "cave"
+    assert rec["direction"] == "slow detuned piano"
+    assert rec["sfx_direction"] == "quiet"
+    assert rec["music_prompt"] and rec["sfx_prompt"]
+    assert rec["music_url"].startswith(sound_library.URL_BASE)
+    assert rec["ambience_id"] == "amb_cave"
+    assert "cavern" in rec["ambience_matched"]
     assert rec["stinger_id"] is None
     enc = scene_audio.inspect_scene("a collapsing grate", mode="encounter")
     assert enc["stinger_id"] == "encounter_enter"
-    assert "tense" in enc["music_prompt"].lower() or "danger" in enc["music_prompt"].lower()
+    assert enc["music_id"].startswith("mus_enc_")
 
 
-def test_sfx_direction_is_mixed_into_the_foley_prompt(monkeypatch, tmp_path):
-    music = tmp_path / "music"
-    music.mkdir()
-    monkeypatch.setattr(scene_audio, "_SFX_DIRECTION_PATH", music / "sfx_direction.json")
-    empty = scene_audio._scene_to_sfx_prompt("rain on concrete", "scene", direction="")
-    mixed = scene_audio._scene_to_sfx_prompt(
-        "rain on concrete", "scene", direction="close-mic dripping pipes")
-    assert "close-mic dripping pipes" in mixed
-    assert "rain" in mixed.lower()
-    assert "close-mic dripping pipes" not in empty
+def test_the_ambience_direction_steers_the_bed(monkeypatch, tmp_path):
+    _no_run(monkeypatch)
+    _music_dir(monkeypatch, tmp_path)
+    assert scene_audio.inspect_scene("an unknown place")["ambience_id"] == "amb_room"
+    scene_audio.set_sfx_direction("server racks and cooling fans")
+    assert scene_audio.inspect_scene("an unknown place")["ambience_id"] == "amb_server_room"
 
 
 def test_stock_status_includes_the_prompt():
@@ -244,7 +253,6 @@ def test_resolve_audio_path_finds_another_sessions_clip(tmp_path, monkeypatch):
     other.mkdir(parents=True)
     (other / "scene_abc.mp3").write_bytes(b"ID3" + b"\x00" * 40)
     monkeypatch.setattr(scene_audio, "ROOT", tmp_path)
-    monkeypatch.setattr(scene_audio, "STOCK_DIR", tmp_path / "stock")
     monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path / "music")
     monkeypatch.setattr(
         scene_audio, "_session_audio_dir",
@@ -259,18 +267,17 @@ def test_resolve_audio_path_serves_editor_test_clips(tmp_path, monkeypatch):
     music.mkdir()
     (music / "test_music.mp3").write_bytes(b"ID3" + b"\x00" * 40)
     monkeypatch.setattr(scene_audio, "MUSIC_DIR", music)
-    monkeypatch.setattr(scene_audio, "STOCK_DIR", music / "stock")
     path = scene_audio.resolve_audio_path("test_music.mp3")
     assert path is not None and path.name == "test_music.mp3"
 
 
-def test_sessionize_url_skips_stock_and_stamps_generated():
-    assert scene_audio._sessionize_url("/audio/amb_rain.mp3", "abc") == "/audio/amb_rain.mp3"
-    assert scene_audio._sessionize_url("/audio/sting_encounter_enter.mp3", "abc") == (
-        "/audio/sting_encounter_enter.mp3")
-    stamped = scene_audio._sessionize_url("/audio/scene_0123456789abcdef.mp3", "abc")
-    assert stamped.endswith("session=abc")
-    assert scene_audio._sessionize_url("/audio/scene_x.mp3", "default") == "/audio/scene_x.mp3"
+def test_library_urls_carry_no_session(monkeypatch, tmp_path):
+    """They are static files every session shares; only a clip generated into
+    a session's own folder ever needed ?session= to be found."""
+    _no_run(monkeypatch)
+    _music_dir(monkeypatch, tmp_path)
+    rec = scene_audio.get_scene_audio("a quiet hallway", session_id="abc")
+    assert "session=" not in rec["audio_url"] and "session=" not in rec["sfx_url"]
 
 
 def test_inspect_endpoint_returns_prompts():
@@ -281,111 +288,66 @@ def test_inspect_endpoint_returns_prompts():
     })
     assert rec.status_code == 200
     data = rec.get_json()["data"]
-    assert "forest" in (data.get("music_prompt") or "").lower() or data.get("ambience_kind") == "forest"
+    assert data.get("ambience_kind") in ("amb_forest", "amb_forest_day")
     assert data.get("sfx_prompt")
+    assert data.get("music_prompt")
     assert data.get("mode") == "scene"
 
 
-def test_health_and_scene_audio_say_why_there_is_no_sound(monkeypatch, tmp_path):
+def test_health_and_scene_audio_say_the_library_is_playing(monkeypatch, tmp_path):
     import api
     _clear_mock(monkeypatch)
-    monkeypatch.setattr(scene_audio, "STOCK_DIR", tmp_path / "stock")
-    monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
-    monkeypatch.setattr(scene_audio, "_LOOP_META", tmp_path / "loop.json")
+    _music_dir(monkeypatch, tmp_path)
     client = api.app.test_client()
     health = client.get("/api/health").get_json()
-    assert "music" in health
-    assert health["music"]["can_generate"] is False
-    assert scene_audio.NO_GENERATOR_REASON in (health["music"].get("reason") or "")
+    assert health["music"]["can_generate"] is True
+    assert health["music"]["reason"] == "ready"
     rec = client.post("/api/scene_audio", json={"prompt": "a quiet forest"})
     body = rec.get_json()
-    assert body.get("audio_url") is None
-    assert scene_audio.NO_GENERATOR_REASON in (body.get("reason") or "")
+    assert body.get("audio_url", "").startswith(sound_library.URL_BASE)
+    assert "reason" not in body
 
 
-def test_mock_mode_does_not_generate(monkeypatch, tmp_path):
+def test_mock_mode_plays_the_library_too(monkeypatch, tmp_path):
+    """The mock gate existed so a "fully offline" run could not bill music on
+    every scene. The library bills nothing and calls nothing, so an offline run
+    has sound now."""
     _clear_mock(monkeypatch)
+    _no_run(monkeypatch)
+    _music_dir(monkeypatch, tmp_path)
     monkeypatch.setenv("STORYGEN_BACKEND", "mock")
-    monkeypatch.setattr(scene_audio, "STOCK_DIR", tmp_path / "stock")
-    monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
-    monkeypatch.setattr(scene_audio, "_LOOP_META", tmp_path / "loop.json")
-    (tmp_path / "stock").mkdir()
-    called = []
-    monkeypatch.setattr(scene_audio, "_generate_music",
-                        lambda *a, **k: called.append("music") or b"x")
-    monkeypatch.setattr(scene_audio, "_generate_sfx",
-                        lambda *a, **k: called.append("sfx") or b"x")
-    assert scene_audio.is_available() is False
-    assert "offline mock" in scene_audio.unavailable_reason()
+    assert scene_audio.is_available() is True
     rec = scene_audio.get_scene_audio("a quiet forest at dawn")
-    assert rec is None or rec.get("audio_url") is None
-    assert rec is None or rec.get("pending_music") is not True
-    assert called == []
+    assert rec["audio_url"].startswith(sound_library.URL_BASE)
 
 
-def test_uncached_music_returns_immediately_and_marks_pending(monkeypatch, tmp_path):
-    import threading
-    import time
-    _clear_mock(monkeypatch)
-    # A generator that works (the day Lyria lands): the first scene must still
-    # not wait on it.
-    monkeypatch.setattr(scene_audio, "is_available", lambda: True)
-    audio = tmp_path / "audio"
-    stock = tmp_path / "stock"
-    audio.mkdir()
-    stock.mkdir()
-    (stock / "amb_forest.mp3").write_bytes(b"ID3" + b"\x00" * 80)
-    monkeypatch.setattr(scene_audio, "STOCK_DIR", stock)
-    monkeypatch.setattr(scene_audio, "MUSIC_DIR", tmp_path)
-    monkeypatch.setattr(scene_audio, "_LOOP_META", tmp_path / "loop.json")
-    monkeypatch.setattr(scene_audio, "_session_audio_dir",
-                        lambda session_id="default", create=True: audio)
-    monkeypatch.setattr(scene_audio, "_get_audio_dir", lambda session_id="default": audio)
-    started = threading.Event()
-    release = threading.Event()
-
-    def slow_music(*a, **k):
-        started.set()
-        release.wait(2)
-        return b"ID3" + b"\x00" * 80
-
-    monkeypatch.setattr(scene_audio, "_generate_music", slow_music)
-    monkeypatch.setattr(scene_audio, "_generate_sfx",
-                        lambda *a, **k: b"ID3" + b"\x00" * 80)
+def test_every_answer_is_immediate_and_never_pending(monkeypatch, tmp_path):
+    _no_run(monkeypatch)
+    _music_dir(monkeypatch, tmp_path)
     t0 = time.time()
     rec = scene_audio.get_scene_audio("a quiet forest at dawn")
-    elapsed = time.time() - t0
-    assert elapsed < 1.0
-    assert rec is not None
-    assert rec["audio_url"] is None
-    assert rec.get("pending_music") is True
-    assert rec.get("sfx_url")
-    started.wait(1)
-    release.set()
+    assert time.time() - t0 < 1.0
+    assert rec["cached"] is True
+    assert rec["pending_music"] is False and rec["pending_sfx"] is False
+    for got in (scene_audio.action_foley("Vault the fence"),
+                scene_audio.consequence_bed("The floor gives way beneath the crate")):
+        assert got["pending"] is False and got["cached"] is True
 
 
-def test_ensure_stock_without_a_generator_reports_missing(monkeypatch, tmp_path):
-    _clear_mock(monkeypatch)
-    monkeypatch.setattr(scene_audio, "STOCK_DIR", tmp_path)
-    rec = scene_audio.ensure_stock_sounds()
-    assert rec["ok"] is False
-    assert rec["reason"] == "no_key"   # the token api.py maps to "unavailable"
-    assert rec["why"] == scene_audio.NO_GENERATOR_REASON
-    assert rec["files"]["encounter_enter"]["ready"] is False
+def test_the_stock_box_has_nothing_to_generate():
+    rec = scene_audio.stock_record("encounter_enter")
+    assert rec["url"] and rec["cached"] is True
+    assert scene_audio.stock_record("rain")["kind"] == "ambience"
+    assert scene_audio.stock_record("no_such_thing") is None
 
 
 def test_encounter_does_not_adopt_the_explore_loop(monkeypatch, tmp_path):
-    music = tmp_path / "music"
-    stock = music / "stock"
-    music.mkdir()
-    stock.mkdir()
+    _no_run(monkeypatch)
+    music = _music_dir(monkeypatch, tmp_path)
     (music / "loop.wav").write_bytes(b"RIFF" + b"\x00" * 80)
     (music / "loop.json").write_text(
         '{"file": "loop.wav", "source": "generated", "prompt": "old", "created_at": 1}',
         encoding="utf-8")
-    monkeypatch.setattr(scene_audio, "MUSIC_DIR", music)
-    monkeypatch.setattr(scene_audio, "STOCK_DIR", stock)
-    monkeypatch.setattr(scene_audio, "_LOOP_META", music / "loop.json")
     assert scene_audio.custom_loop() is not None
     scene = scene_audio.get_scene_audio("a quiet forest", mode="scene")
     assert scene and "loop.wav" in (scene.get("audio_url") or "")
@@ -400,15 +362,16 @@ def test_encounter_designer_urls_ignore_json():
     assert all(not str(k).endswith(".json") for k in urls)
 
 
-def test_nothing_generates_a_title_bed_behind_your_back():
-    """Reading what is scoring the game must not commission new audio.
+def test_nothing_plays_an_audition_under_the_title():
+    """Reading what is scoring the game must not commission new audio, and the
+    title screen must not loop an audition.
 
     /api/music used to warm a 10-second sample off the menu direction text, and
-    the title screen played it. Writing "horror action score" in the editor and
-    never locking anything therefore put ten seconds of clanking metal on loop
-    under the main menu — billed, unasked for, and with no control that turned
-    it off. The title bed is the LOCKED track now, so there is nothing for a GET
-    to warm.
+    the title screen played it: writing "horror action score" in the editor and
+    never locking anything put ten seconds of clanking metal on loop under the
+    main menu — billed, unasked for, and with no control that turned it off.
+    The title plays the LOCKED track, or the library's title theme (a track
+    written as one), and never a preview.
     """
     src = Path(scene_audio.__file__).read_text(encoding="utf-8")
     assert "def kick_menu_preview" not in src
@@ -418,66 +381,44 @@ def test_nothing_generates_a_title_bed_behind_your_back():
               / "static" / "js" / "standalone.js").read_text(encoding="utf-8")
     menu = client.split("async enterMenu()", 1)[1].split("leaveMenu()", 1)[0]
     assert "menu_loop" in menu
+    assert "menu_library" in menu
     assert "menu_preview" not in menu
     assert "/api/music/preview" not in menu
+    assert scene_audio.menu_library()["id"].startswith("mus_menu_")
 
 
-def test_the_bed_lane_respects_the_api_text_limit():
-    """The sound model this was built against rejected over 450 characters with
-    a 400, not a truncation, so an overlong scene descriptor made no ambience
-    at all - silently. Both SFX lanes used to clip at 500."""
-    long_scene = "a dripping flooded corridor. " * 100
-    assert len(scene_audio._scene_to_sfx_prompt(long_scene, "scene")) \
-        <= scene_audio.SFX_TEXT_MAX
-    assert scene_audio.SFX_TEXT_MAX == 450
-
-def test_two_different_scenes_get_two_different_loops():
-    """The whole point of scene ambience. If the cache key collapsed, every
-    location would share one loop and the world would sound like one room."""
-    a = scene_audio._sfx_cache_name("a flooded pump house, water to the ankles", 14)
-    b = scene_audio._sfx_cache_name("a dry scrapyard under a red mesa at dusk", 14)
-    assert a != b
-    assert a == scene_audio._sfx_cache_name(
-        "a flooded pump house, water to the ankles", 14), "must be stable"
+def test_every_sound_prompt_fit_the_sound_models_limit():
+    """The sound model rejected over 450 characters with a 400, not a
+    truncation — an overlong prompt once made no ambience at all, silently.
+    tools/build_sound_library refuses one; the catalog shows none got through."""
+    for lane in ("ambience", "foley", "consequence"):
+        for e in sound_library.entries(lane):
+            assert len(e["prompt"]) <= 450, e["id"]
 
 
-def test_the_loop_prompt_names_the_scene_and_asks_to_tile():
-    prompt = scene_audio._scene_to_sfx_prompt(
-        "a flooded pump house, water to the ankles", "scene").lower()
-    assert "flooded pump house" in prompt
-    assert "loop" in prompt
-    assert "no music" in prompt or "no melody" in prompt
+def test_two_different_scenes_get_two_different_beds():
+    """The whole point of scene ambience. If every place matched the same
+    bed, the world would sound like one room."""
+    a = sound_library.pick("ambience", "a flooded pump house, water to the ankles", seed="s")
+    b = sound_library.pick("ambience", "a dry scrapyard under a red mesa at dusk", seed="s")
+    assert a["id"] != b["id"]
+    assert a["id"] == sound_library.pick(
+        "ambience", "a flooded pump house, water to the ankles", seed="s")["id"], "must be stable"
 
 
-def test_scene_ambience_can_be_switched_off_to_stock(monkeypatch):
+def test_scene_ambience_can_be_switched_off_to_the_generic_beds(monkeypatch, tmp_path):
+    _no_run(monkeypatch)
+    _music_dir(monkeypatch, tmp_path)
+    on = scene_audio.get_scene_audio("server racks with blinking lights")["sfx_id"]
     monkeypatch.setattr(scene_audio, "scene_ambience_enabled", lambda: False)
-    monkeypatch.setattr(scene_audio, "is_available", lambda: True)
-    monkeypatch.setattr(scene_audio, "stock_ambience_url", lambda kind: "/audio/stock.wav")
-    monkeypatch.setattr(scene_audio, "_kick",
-                        lambda key, fn: (_ for _ in ()).throw(
-                            AssertionError("generated a scene loop while off")))
-    url, cached, pending = scene_audio._resolve_sfx("a yard", "t", 14, "scene")
-    assert url == "/audio/stock.wav"
-    assert pending is False
+    off = scene_audio.get_scene_audio("server racks with blinking lights")["sfx_id"]
+    assert on == "amb_server_room"
+    assert sound_library.get(off).get("generic") is True
 
 
-def test_a_missing_scene_loop_is_reported_pending_so_the_client_comes_back():
-    """Stock plays immediately so there is something to hear, and the scene's
-    own loop generates behind it. The client MUST keep asking or it never
-    arrives - which is exactly the bug that made every place sound alike."""
-    import types
-    kicked = []
-    real_exists = scene_audio.Path.exists
-    url, cached, pending = None, None, None
-    import unittest.mock as m
-    with m.patch.object(scene_audio, "is_available", lambda: True), \
-         m.patch.object(scene_audio, "scene_ambience_enabled", lambda: True), \
-         m.patch.object(scene_audio, "stock_ambience_url", lambda kind: "/audio/stock.wav"), \
-         m.patch.object(scene_audio, "_kick", lambda key, fn: kicked.append(key)):
-        url, cached, pending = scene_audio._resolve_sfx(
-            "a never-before-seen place %s" % id(kicked), "t", 14, "scene")
-    assert pending is True, "a miss must be pending so the client retries"
-    assert len(kicked) == 1, "and must be generating in the background"
+def test_a_scene_with_no_audible_words_still_has_a_room():
+    got = sound_library.pick("ambience", "a figure in a long coat, facing away", seed="s")
+    assert got["id"] == "amb_room" and got.get("fallback") is True
 
 
 def test_the_client_retries_while_either_layer_is_pending():
@@ -503,18 +444,14 @@ def test_ambience_is_mixed_louder_than_the_score():
 # ───────────────────────── Action foley: the player's own sound ─────────────
 
 
-def test_foley_prompt_is_short_and_concrete():
+def test_foley_is_chosen_by_the_choice_text_not_the_camera():
     """The earlier attempt fed the render prompt in - camera rig, film stock,
     "the back of the head toward the lens" - and got mush, because none of
     that describes a sound. The choice text is four concrete words."""
-    p = scene_audio._action_foley_prompt("Sprint toward the utility truck")
-    assert "Sprint toward the utility truck" in p
-    assert len(p) <= scene_audio.SFX_TEXT_MAX
-    low = p.lower()
-    assert "foley" in low
-    assert "no music" in low and "not a loop" in low
-    for camera_noise in ("follow-cam", "film stock", "lens", "composition"):
-        assert camera_noise not in low
+    assert scene_audio.action_foley("Sprint toward the utility truck")["id"].startswith("run_")
+    # a slate line that names nothing audible gets the quiet fallback, not a guess
+    vague = scene_audio.action_foley("Give the silhouette what they want")
+    assert sound_library.get(vague["id"]).get("fallback") is True
 
 
 def test_the_slate_numbering_is_not_part_of_the_sound():
@@ -524,27 +461,16 @@ def test_the_slate_numbering_is_not_part_of_the_sound():
 
 
 def test_each_action_gets_its_own_clip():
-    a = scene_audio._foley_cache_name("Sprint toward the utility truck")
-    b = scene_audio._foley_cache_name("Vault over the chain link fence")
+    a = scene_audio.action_foley("Sprint toward the utility truck")["id"]
+    b = scene_audio.action_foley("Vault over the chain link fence")["id"]
     assert a != b
-    assert a == scene_audio._foley_cache_name("Sprint toward the utility truck")
-    assert a.startswith("foley_")
+    assert a == scene_audio.action_foley("Sprint toward the utility truck")["id"]
 
 
-def test_foley_is_short():
-    assert 0.5 <= scene_audio.ACTION_FOLEY_SECONDS <= 4.0
-
-
-def test_foley_is_not_generated_as_a_loop(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(scene_audio, "is_available", lambda: True)
-    monkeypatch.setattr(scene_audio, "_generate_sfx",
-                        lambda prompt, secs, loop=True, session_id="d": (
-                            seen.update(loop=loop, secs=secs, prompt=prompt) or b"x"))
-    monkeypatch.setattr(scene_audio, "_kick", lambda key, fn: fn())
-    scene_audio.action_foley("Kick open the rusted door", session_id="foleytest")
-    assert seen["loop"] is False
-    assert seen["secs"] == scene_audio.ACTION_FOLEY_SECONDS
+def test_foley_is_short_and_not_a_loop():
+    for e in sound_library.entries("foley"):
+        assert e["seconds"] <= 3.5, e["id"]
+        assert e["loop"] is False, e["id"]
 
 
 def test_foley_can_be_switched_off(monkeypatch):
@@ -552,8 +478,7 @@ def test_foley_can_be_switched_off(monkeypatch):
     assert scene_audio.action_foley("Vault the fence", session_id="t") is None
 
 
-def test_an_empty_or_junk_action_makes_no_sound(monkeypatch):
-    monkeypatch.setattr(scene_audio, "is_available", lambda: True)
+def test_an_empty_or_junk_action_makes_no_sound():
     for junk in ("", "   ", "1.", "a"):
         assert scene_audio.action_foley(junk, session_id="t") is None
 
@@ -561,52 +486,30 @@ def test_an_empty_or_junk_action_makes_no_sound(monkeypatch):
 # ─────────────── Consequence bed: the sound the flipbook plays over ─────────
 
 
-def test_consequence_bed_prompt_leads_with_what_happened():
-    """Same lesson foley learned: the concrete thing first, instruction after.
-    The outcome is what the frames are drawing, so it is what the bed is of."""
-    p = scene_audio._consequence_bed_prompt(
+def test_the_bed_is_chosen_by_what_happened():
+    rec = scene_audio.consequence_bed(
         "The hinges tear out of the frame and the door swings wide into the dark.")
-    assert p.startswith("The hinges tear out of the frame")
-    assert len(p) <= scene_audio.SFX_TEXT_MAX
-    low = p.lower()
-    assert "not a loop" in low
-    assert "no music" in low and "no voice" in low
+    assert rec["id"] == "csq_door_breach"
 
 
-def test_long_consequence_prose_is_cut_at_a_word():
-    """A consequence is prose and can run for paragraphs. Handing all of it to
-    a sound model buys nothing and blows the 450-character API limit."""
+def test_long_consequence_prose_still_chooses_quickly():
+    """A consequence is prose and can run for paragraphs; the pick reads all of
+    it and must not hold the turn up."""
     long_text = "The gantry gives way and " + "steel screams against steel " * 40
-    what = scene_audio._clean_consequence(long_text)
-    assert len(what) <= scene_audio.CONSEQUENCE_TEXT_MAX
-    assert not what.endswith(" ")
-    assert what in long_text, "truncation must not invent words"
-    assert len(scene_audio._consequence_bed_prompt(long_text)) <= scene_audio.SFX_TEXT_MAX
+    t0 = time.time()
+    rec = scene_audio.consequence_bed(long_text)
+    assert time.time() - t0 < 0.5
+    assert rec["id"] == "csq_structural_collapse"
 
 
 def test_the_consequence_sound_is_a_one_shot_not_a_loop():
     """It looped once, holding until the next action was committed. Played
-    that way an 18-second gesture repeats under someone who is still reading,
-    and repetition is exactly what stops a sound reading as the world
-    answering. It plays through and stops; the scene ambience underneath is
-    the lane that is built to loop."""
-    seen = {}
-    monkey = scene_audio
-    orig_avail, orig_sfx, orig_kick = (
-        monkey.is_available, monkey._generate_sfx, monkey._kick)
-    try:
-        monkey.is_available = lambda: True
-        monkey._generate_sfx = lambda prompt, secs, loop=True, session_id="d": (
-            seen.update(loop=loop, secs=secs) or b"x")
-        monkey._kick = lambda key, fn: fn()
-        scene_audio.consequence_bed("The floor gives out beneath the crate",
-                                    session_id="bedtest")
-    finally:
-        monkey.is_available, monkey._generate_sfx, monkey._kick = (
-            orig_avail, orig_sfx, orig_kick)
-    assert seen["loop"] is False
-    assert seen["secs"] == scene_audio.CONSEQUENCE_BED_SECONDS
-    assert "not a loop" in scene_audio._consequence_bed_prompt("The floor gives out")
+    that way a gesture repeats under someone who is still reading, and
+    repetition is exactly what stops a sound reading as the world answering.
+    It plays through and stops; the scene ambience underneath is the lane that
+    is built to loop."""
+    for e in sound_library.entries("consequence"):
+        assert e["loop"] is False, e["id"]
     # and the client must not loop the node or re-fire it once it has played
     js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
         encoding="utf-8")
@@ -617,9 +520,8 @@ def test_the_consequence_sound_is_a_one_shot_not_a_loop():
     assert "beatPlayed" in js
 
 
-def test_a_fragment_makes_no_bed(monkeypatch):
-    """Error strings and one-word beats are not a scene to record."""
-    monkeypatch.setattr(scene_audio, "is_available", lambda: True)
+def test_a_fragment_makes_no_bed():
+    """Error strings and one-word beats are not a scene to choose a sound by."""
     for junk in ("", "   ", "ok", "1.", "He runs."):
         assert scene_audio.consequence_bed(junk, session_id="t") is None
 
@@ -667,13 +569,12 @@ def test_the_bed_opens_when_it_is_READY_not_when_the_picture_lands():
 
 
 def test_the_scene_bed_is_scored_from_the_frame_that_rendered():
-    """Measured: scoring off metadata.base sent the sound model "seamless looping
-    environmental ambience of s grit across the pad. The place is the Four
-    Corners fence..." for a desert well pad - the pump jack, the shed and the
-    standing water sliced out by _clean_scene_text's last-240 rule, because
-    build_realtime_base puts the style anchor first and the place line last.
-    The keyword matcher then defaulted to indoor room tone. The bed is scored
-    from vision's read of the rendered frame now."""
+    """Measured: scoring off metadata.base sent "seamless looping environmental
+    ambience of s grit across the pad. The place is the Four Corners fence..."
+    for a desert well pad - the pump jack, the shed and the standing water
+    sliced out, because build_realtime_base puts the style anchor first and the
+    place line last. The bed is scored from vision's read of the rendered frame
+    now."""
     js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
         encoding="utf-8")
     api_src = (Path(__file__).resolve().parent / "api.py").read_text(encoding="utf-8")
@@ -687,24 +588,16 @@ def test_the_scene_bed_is_scored_from_the_frame_that_rendered():
     assert "does NOT score" in restage
 
 
-def test_a_desert_scored_from_the_render_base_came_out_indoors():
-    """The regression this replaced, kept as a live demonstration: feed the
-    render base and the scene is gone and the stock kind is wrong; feed the
-    frame description and both are right."""
-    import engine as _engine
+def test_a_desert_well_pad_sounds_like_one():
+    """The regression the frame read fixed, in library terms: the frame's own
+    words put a pump jack on the pad, not a room tone indoors."""
     visual = ("A rusted pump jack squats in the foreground, chain slapping "
               "against its counterweight. Beyond it a collapsed equipment shed, "
               "corrugated sheeting peeled back, standing water in the ruts. "
               "Wind moves grit across the pad.")
-    base = _engine.build_realtime_base(visual_scene=visual, narrative="")
-    from_base = scene_audio._scene_to_sfx_prompt(base, mode="scene")
-    from_frame = scene_audio._scene_to_sfx_prompt(visual, mode="scene")
-    # the picture's audible contents survive one route and not the other
-    assert "pump jack" not in from_base and "shed" not in from_base
-    assert "pump jack" in from_frame and "shed" in from_frame
-    # and the stock bed picked underneath is outdoors rather than a room
-    assert scene_audio._ambience_kind(base) == "room", "the regression"
-    assert scene_audio._ambience_kind(visual) != "room", "the fix"
+    got = sound_library.pick("ambience", visual, seed="s")
+    assert got["id"] == "amb_oilfield", got["id"]
+    assert not got.get("fallback")
 
 
 def test_the_consequence_bed_takes_the_visual_scene_not_the_prose():
@@ -762,7 +655,9 @@ def test_the_client_prewarms_the_slate_and_plays_on_commit():
 def test_generated_audio_is_loudness_normalised():
     """Measured before this existed: a scene bed at RMS 0.007, about -43 dBFS.
     Running, and inaudible. The sound model did not normalise its output, so a
-    fixed gain is always wrong for something."""
+    fixed gain is always wrong for something. The library is normalised when it
+    is built; the client still measures every buffer, so a loop someone
+    uploads is levelled too."""
     js = (Path(__file__).resolve().parent / "static" / "js" / "standalone.js").read_text(
         encoding="utf-8")
     assert "function normalizeGain(buf)" in js

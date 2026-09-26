@@ -1230,24 +1230,25 @@ FLIPBOOK_FRAME_MS = flipbook.DEFAULT_FRAME_MS
 INTRO_CUTSCENE = True
 
 # ── Scene ambience ────────────────────────────────────────────────────────────
-# Whether each scene gets its OWN generated looping ambience (~14s, cached per
-# scene descriptor; no generator on the player's key since ElevenLabs left,
-# 2026-09-25, so today only the stock bed plays) rather than only the stock bed matched by
-# keyword. This is the atmosphere layer — see scene_audio._resolve_sfx.
+# Whether each scene gets the ambience bed the shipped sound library matches to
+# what the frame shows (33 places: fence line at night, fluorescent corridor,
+# server room, neon rain…) rather than one of the seven generic beds matched by
+# keyword. This is the atmosphere layer — see scene_audio._pick_ambience. Since
+# 2026-09-25 every sound comes from the library; none is generated.
 SCENE_AMBIENCE_ENABLED = True
 
-# Whether committing an action plays a generated Foley clip of that action —
-# "Sprint toward the utility truck" becomes running footsteps on gravel. Built
-# from the choice TEXT, generated when the slate appears so the click is a
-# cache hit. See the "Action foley" section in scene_audio.py.
+# Whether committing an action plays a Foley clip of that action from the
+# library — "Sprint toward the utility truck" is running footsteps on gravel.
+# Chosen by the choice TEXT; the client asks when the slate appears and plays
+# on the click. See the "Action foley" section in scene_audio.py.
 ACTION_FOLEY_ENABLED = True
 
-# Whether a turn plays one long sound of what the choice actually did, built
-# from the visual scene it is about to draw. Kicked when the consequence lands,
-# five pipeline steps before the picture, so it covers the generation wait and
-# the flipbook. It plays ONCE — it looped at first and the repetition was the
-# whole problem. Unlike foley it is a fresh generation every turn, so it is the
-# most expensive audio lane. See the "Consequence bed" section in scene_audio.py.
+# Whether a turn plays one sound of what the choice actually did (6-12 s from
+# the library, by the turn's visual caption: a door breached, a collapse,
+# gunfire, dread). Asked for when the consequence lands, five pipeline steps
+# before the picture, so it covers the wait and the flipbook. It plays ONCE —
+# it looped at first and the repetition was the whole problem. See the
+# "Consequence bed" section in scene_audio.py.
 CONSEQUENCE_BED_ENABLED = True
 
 
