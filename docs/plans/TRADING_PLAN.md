@@ -1,10 +1,22 @@
 # Trading — characters and worlds that pass from hand to hand
 
-> **Status: proposed 2026-09-25, not started.** Nothing below is built, and
-> nothing is built before the design pass (§7): the card is a thing players
-> will post, screenshot and collect, so how it looks is most of the feature.
-> Facts about the stores are from an audit of `main` at `f5cf765`.
-
+> **Status: design pass in progress, no code (2026-09-25).** The format, the
+> flows and the safety lines below stand; the LOOK is being decided on a
+> private design canvas (claude.ai/artifact/EeCGBnSJPHNfHRP96CsJyr).
+>
+> - **Round one was rejected.** Press print, Polaroid and 35mm negative:
+>   "this looks cheesy as hell … it needs to be minimal, techy, glitch art,
+>   simple and analogue feeling" (Matt). No physical props, no handwriting.
+> - **Round two, waiting on Matt's pick:** the card is a still grabbed off a
+>   monitor. Near-black, mono type, a mint CHR / WLD label, the code and a
+>   pixel-block QR (decodes with cv2 at 250 px, light on dark, so the
+>   importer inverts first), one data line. Three treatments: V1 scanlines;
+>   V2 one torn RGB-split slice, placed by the card's own code
+>   (recommended); V3 1-bit dither.
+> - Receiving is a signal locking on: NO SIGNAL snow, TRACKING, LOCKED.
+> - Open from the canvas: a file-only card has no code until GET A CODE;
+>   where the signer's name comes from (there is no account name); phones
+>   can't play, so the /t/ page leads with the code.
 ## The idea
 
 Old Game Boy trading worked because the thing you traded was **one small,

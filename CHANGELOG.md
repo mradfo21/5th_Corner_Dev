@@ -1,5 +1,25 @@
 # 🔧 CHANGELOG - September 25, 2026
 
+## ✅ FIXED: A voice Google refused once is asked for again, and the character screen notices when it lands
+
+The first time the character screen opened on Matt's own roster (Grizzly, Jean-Luc, Jason, Ghost), none of them had a voice. They were all designed at once.
+- Three spoke: Jean-Luc the moment his voice landed while he was selected, the others as they were chosen.
+- **Jason didn't.** Both of his takes came back **HTTP 500** from Google's voice design (launch week), and nothing asked again.
+- A later roster load did re-design him, and the listener rejected one take as *"in a different language"*. But the screen had already filed him as failed and was only following voices it knew were being designed, so switching to him still showed "COULD NOT FIND IT — TRY AGAIN" over a voice that existed.
+
+**What changed.**
+- A 5xx on voice design is asked once more after 3 s, as TTS now is; a refusal (4xx) is not.
+- Switching to a character whose voice the screen last saw as not ready reads their card again. If the voice has landed they say their line; if it is being designed the screen follows it.
+
+**How it was checked.** On Matt's `5th_Corner_Dev` at `a098a5c`, in the native app, a hook on `HTMLMediaElement.play` logged every line played.
+- All four existing characters were voiced on first opening, about 100 s for the four in parallel:
+  - *"A cold syndicate enforcer in his mid-forties with a gravelly, resonant bass…"*
+  - *"A weary, fiercely loyal musketeer in his late thirties…"*
+  - *"A stoic special operations operative in his mid-thirties…"*
+  - *"A dry-humoured freelance photojournalist in his mid-thirties…"*
+- Every one but Jason spoke on arrival or on a switch. The server log shows Jason's two 500s and then his voice.
+- `test_voice_design` counts the create and its one retry, and still holds that re-asking within the failure TTL spends nothing. `test_character_voice` holds the card being re-read on a switch.
+
 ## 🔊 NEW: The game sounds like something again, on any key — a library made once on ElevenLabs and shipped
 
 Matt, the same day ElevenLabs left and took the music and effects with it: *"precache them FROM my 11 labs and ship precached whatever you need."*
