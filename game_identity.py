@@ -789,8 +789,11 @@ IDENTITY_SCHEMA: List[Dict[str, Any]] = [
              "tier": TIER_ADVANCED,
              "placeholder": "dented Nikon F3, sodium lamp",
              "help": "Visible in frame and usable in the fiction."},
+            # Not a bare "she/her": the placeholder-echo guard drops any value
+            # equal to its field's example, and she/her is a real answer
+            # (OUTGROWTH's Static lost hers to it).
             {"id": "pronouns", "label": "Pronouns", "type": "text", "tier": TIER_ADVANCED,
-             "placeholder": "she/her"},
+             "placeholder": "she/her, he/him, they/them…"},
             {"id": "demeanor", "label": "Temperament", "type": "text", "tier": TIER_ADVANCED,
              "placeholder": "dry, unflappable, talks to herself",
              "help": "Colours how the narrator writes their reactions."},
@@ -2045,6 +2048,40 @@ _DANGLING_TAIL = re.compile(
 )
 
 
+# The game shipped as one 1993 world, and a handful of shared lines still say
+# so in code: the montage anchor ("1993 analog photograph"), the montage
+# director ("a 1993 analog-horror film"), the portrait and close-up palettes.
+# On a World set somewhere else those lines fought the World's own art
+# direction in every prompt — Township 12 (2061) was told "1993 analog
+# photograph" and "Near future, 2061" in the same sentence. A World is a 1993
+# world when its art direction or its era says so, or when it has authored no
+# look at all (the shipped default); everything else gets the period words
+# taken out of those shared lines and speaks through its own look.
+_PERIOD_WORDS = re.compile(r"\b1993\s+|\banalog(?:ue)?[- ]horror\s+|\banalog(?:ue)?\s+", re.I)
+
+
+def world_is_1993(spec: Optional[Dict[str, Any]] = None) -> bool:
+    try:
+        spec = spec or get_spec()
+        look = str(PROMPTS.get("image_art_direction") or "")
+        era = str(((spec or {}).get(SETTING_KEY) or {}).get("era") or "")
+    except Exception:
+        return True
+    if not look.strip():
+        return True
+    return "1993" in look or "1993" in era
+
+
+def deperiod(text: str, spec: Optional[Dict[str, Any]] = None) -> str:
+    """``text`` without its hard-coded 1993 / analog-horror words when the
+    live World is set in another period; unchanged for a 1993 World."""
+    if not text or world_is_1993(spec):
+        return text
+    out = _PERIOD_WORDS.sub("", text)
+    out = re.sub(r"\ban ([^aeiouAEIOU\W])", r"a \1", out)
+    return re.sub(r"[ \t]{2,}", " ", out)
+
+
 def look_line(spec: Optional[Dict[str, Any]] = None) -> str:
     """A short LOOK for the live world, from the GAME art-direction prompt.
 
@@ -2155,6 +2192,7 @@ def world_anchor(
     """
     spec = spec or get_spec()
     look = look_line()
+    default = deperiod(default, spec)
     if not is_active(spec):
         if look:
             return default.rstrip(". ") + ". " + look

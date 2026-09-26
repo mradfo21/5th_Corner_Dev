@@ -251,7 +251,7 @@ earlier one.
 
 - **The /get page's clips** (`templates/download.html`, `static/video/get/`)
   are real footage, re-shot with `python tools/refresh_get.py` whenever the
-  game changes: it films a run in each Experience (The FIFTH CORNER, SWAT,
+  game changes: it films a run in each Experience (The FIFTH CORNER, OUTGROWTH,
   CYBER HORROR), three characters being made, one character suited up piece
   by piece (a `kit` from `tools/get_kit/`) and a first launch, in a sandbox
   (`tools/film_run.py`), finds
